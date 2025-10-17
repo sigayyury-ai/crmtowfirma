@@ -250,6 +250,39 @@ class PipedriveClient {
   }
 
   /**
+   * Создать активность (задачу)
+   * @param {Object} data - Данные активности
+   * @returns {Promise<Object>} - Результат создания активности
+   */
+  async createActivity(data = {}) {
+    try {
+      const response = await this.client.post('/activities', data, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data.success) {
+        return {
+          success: true,
+          activity: response.data.data,
+          message: 'Activity created successfully'
+        };
+      }
+
+      throw new Error('Failed to create activity');
+    } catch (error) {
+      logger.error('Error creating activity in Pipedrive:', {
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
    * Получить полную информацию о сделке (включая связанные данные)
    * @param {number} dealId - ID сделки
    * @returns {Promise<Object>} - Полные данные сделки

@@ -450,6 +450,47 @@ class InvoiceProcessingService {
         });
       }
 
+      // Создаем задачи на проверку оплат
+      const activityResult = await this.createPaymentCheckActivity(fullDeal, contractor);
+      if (!activityResult.success) {
+        logger.warn('Failed to create payment check activity', {
+          dealId: fullDeal.id,
+          error: activityResult.error
+        });
+      }
+
+      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
+        const secondActivityResult = await this.createPaymentCheckActivity(
+          fullDeal,
+          contractor,
+          activityResult.schedule.secondPaymentDate,
+          'second'
+        );
+
+        if (!secondActivityResult.success) {
+          logger.warn('Failed to create second payment check activity', {
+            dealId: fullDeal.id,
+            error: secondActivityResult.error
+          });
+        }
+      }
+
+      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
+        const secondActivityResult = await this.createPaymentCheckActivity(
+          fullDeal,
+          contractor,
+          activityResult.schedule.secondPaymentDate,
+          'second'
+        );
+
+        if (!secondActivityResult.success) {
+          logger.warn('Failed to create second payment check activity', {
+            dealId: fullDeal.id,
+            error: secondActivityResult.error
+          });
+        }
+      }
+
       return result;
       
     } catch (error) {
@@ -528,6 +569,103 @@ class InvoiceProcessingService {
 
     } catch (error) {
       logger.error('Error creating or assigning label:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Создать активность на проверку оплаты
+   * @param {Object} deal - Данные сделки
+   * @param {Object} contractor - Контрагент wFirma
+   * @returns {Promise<Object>} - Результат создания активности
+   */
+  async createPaymentCheckActivity(deal, contractor, customDueDate = null, activitySuffix = 'first') {
+    try {
+      if (!deal || !deal.id) {
+        return { success: false, error: 'Deal data missing' };
+      }
+
+      const personId = deal.person_id?.value || deal.person_id || null;
+      const contractorName = contractor?.name || deal.person_name || 'Контрагент';
+
+      const dueDate = customDueDate
+        ? new Date(customDueDate)
+        : new Date();
+
+      if (!customDueDate) {
+        dueDate.setDate(dueDate.getDate() + this.PAYMENT_TERMS_DAYS);
+      }
+
+      const dueDateStr = dueDate.toISOString().split('T')[0];
+
+      let secondPaymentDateStr = null;
+      if (activitySuffix === 'first' && !customDueDate && deal.expected_close_date) {
+        try {
+          const expectedCloseDate = new Date(deal.expected_close_date);
+          const balanceDueDate = new Date(expectedCloseDate);
+          balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
+
+          if (balanceDueDate > dueDate) {
+            secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+          }
+        } catch (error) {
+          logger.warn('Failed to compute second payment date for activity', {
+            dealId: deal.id,
+            expectedCloseDate: deal.expected_close_date,
+            error: error.message
+          });
+        }
+      }
+
+      const subject = activitySuffix === 'second'
+        ? `Проверить вторую оплату ${contractorName}`
+        : `Проверить оплату ${contractorName}`;
+
+      const activityData = {
+        subject,
+        type: 'task',
+        deal_id: deal.id,
+        person_id: personId,
+        due_date: dueDateStr,
+        public_description: 'Проверить поступление оплаты по созданной проформе',
+        note: activitySuffix === 'second'
+          ? `Второй платеж по проформе. Проверить поступление оплаты до ${dueDateStr}.`
+          : `Проформа: ${deal.title || ''}. Проверить поступление оплаты до ${dueDateStr}.`
+      };
+
+      const result = await this.pipedriveClient.createActivity(activityData);
+
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Failed to create activity in Pipedrive'
+        };
+      }
+
+      const logLabel = activitySuffix === 'second' ? 'Second payment check activity created' : 'Payment check activity created';
+      logger.info(logLabel, {
+        dealId: deal.id,
+        activityId: result.activity?.id,
+        dueDate: dueDateStr,
+        type: activitySuffix,
+        secondPaymentDate: secondPaymentDateStr || null
+      });
+
+      return {
+        success: true,
+        activity: result.activity,
+        schedule: activitySuffix === 'first'
+          ? {
+              dueDate: dueDateStr,
+              secondPaymentDate: secondPaymentDateStr
+            }
+          : undefined
+      };
+    } catch (error) {
+      logger.error('Error creating payment check activity:', error);
       return {
         success: false,
         error: error.message
