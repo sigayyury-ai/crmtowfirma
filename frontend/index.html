@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipedrive ↔ wFirma Integration</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔗 Pipedrive ↔ wFirma Integration</h1>
+            <p>Автоматическое создание Proforma фактур из Pipedrive сделок</p>
+        </header>
+
+        <div class="status-section">
+            <h2>📊 Статус системы</h2>
+            <div class="status-grid">
+                <div class="status-card">
+                    <h3>Планировщик</h3>
+                    <div id="scheduler-status" class="status-indicator">Загрузка...</div>
+                    <div id="scheduler-info" class="status-info"></div>
+                </div>
+                <div class="status-card">
+                    <h3>Pipedrive API</h3>
+                    <div id="pipedrive-status" class="status-indicator">Не проверен</div>
+                </div>
+                <div class="status-card">
+                    <h3>wFirma API</h3>
+                    <div id="wfirma-status" class="status-indicator">Не проверен</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls-section">
+            <h2>🎮 Управление</h2>
+            <div class="controls-grid">
+                <div class="control-group">
+                    <h3>Планировщик</h3>
+                    <div class="button-group">
+                        <button id="start-scheduler" class="btn btn-success">▶️ Запустить</button>
+                        <button id="stop-scheduler" class="btn btn-danger">⏹️ Остановить</button>
+                        <button id="refresh-status" class="btn btn-info">🔄 Обновить статус</button>
+                    </div>
+                </div>
+                
+                <div class="control-group">
+                    <h3>Ручная обработка</h3>
+                    <div class="button-group">
+                        <button id="run-polling" class="btn btn-primary">🔍 Запустить Polling</button>
+                        <button id="get-pending" class="btn btn-secondary">📋 Показать ожидающие</button>
+                        <button id="test-apis" class="btn btn-warning">🧪 Тест API</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="results-section">
+            <h2>📋 Результаты</h2>
+            <div id="results-container" class="results-container">
+                <div class="placeholder">Нажмите кнопку для запуска операций...</div>
+            </div>
+        </div>
+
+        <div class="logs-section">
+            <h2>📝 Логи</h2>
+            <div id="logs-container" class="logs-container">
+                <div class="log-entry info">Система готова к работе</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
