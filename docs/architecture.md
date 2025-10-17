@@ -67,7 +67,7 @@ This document describes the current structure of the Pipedrive → wFirma integr
 - `config/bank-accounts.js` – mapping of currencies to preferred wFirma bank account IDs/names.
 
 ### Testing & Utilities
-Numerous scripts under `test-*.js` allow ad-hoc validation (deal 1516 flow, contractor creation, XML payloads, etc.). Logs are stored in `logs/combined*.log` and `logs/error.log` for auditing.
+Ручной запуск выполняется через метод `processDealById` или REST-эндпойнты (`POST /api/invoice-processing/run`, `POST /api/invoice-processing/deal/:id`). Журналы операций пишутся в stdout и при необходимости настраиваются через `src/utils/logger.js`.
 
 ## Data Contracts
 
