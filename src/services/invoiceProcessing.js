@@ -34,6 +34,7 @@ class InvoiceProcessingService {
       // PREPAYMENT: 71,  // ID опции "Prepayment" в Pipedrive
       // FINAL_PAYMENT: 72  // ID опции "Final payment" в Pipedrive
     };
+    this.INVOICE_DONE_VALUE = 73; // ID опции "Done"
     
     // Банковские счета (получаем динамически из wFirma API)
     this.bankAccounts = null;
@@ -542,7 +543,7 @@ class InvoiceProcessingService {
   async clearInvoiceTrigger(dealId) {
     try {
       const updateResult = await this.pipedriveClient.updateDeal(dealId, {
-        [`${this.INVOICE_TYPE_FIELD_KEY}`]: null
+        [`${this.INVOICE_TYPE_FIELD_KEY}`]: this.INVOICE_DONE_VALUE
       });
 
       if (!updateResult.success) {
