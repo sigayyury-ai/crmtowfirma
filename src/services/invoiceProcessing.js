@@ -432,13 +432,24 @@ class InvoiceProcessingService {
         });
       }
       
-      return {
+      const result = {
         success: true,
         message: `Invoice ${invoiceType} created and sent successfully`,
         invoiceType: invoiceType,
         invoiceId: invoiceResult.invoiceId,
         contractorName: contractorData.name
       };
+
+      // После успешной обработки снимаем триггер в CRM
+      const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id);
+      if (!clearTriggerResult.success) {
+        logger.warn('Failed to clear invoice trigger in Pipedrive', {
+          dealId: fullDeal.id,
+          error: clearTriggerResult.error
+        });
+      }
+
+      return result;
       
     } catch (error) {
       logger.error(`Error processing deal ${deal.id}:`, error);
@@ -516,6 +527,38 @@ class InvoiceProcessingService {
 
     } catch (error) {
       logger.error('Error creating or assigning label:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Сбросить поле Invoice type после обработки
+   * @param {number} dealId - ID сделки
+   * @returns {Promise<Object>} - Результат обновления
+   */
+  async clearInvoiceTrigger(dealId) {
+    try {
+      const updateResult = await this.pipedriveClient.updateDeal(dealId, {
+        [`${this.INVOICE_TYPE_FIELD_KEY}`]: null
+      });
+
+      if (!updateResult.success) {
+        return {
+          success: false,
+          error: updateResult.error || 'Failed to update deal in Pipedrive'
+        };
+      }
+
+      logger.info(`Invoice trigger cleared for deal ${dealId}`);
+      return {
+        success: true,
+        deal: updateResult.deal
+      };
+    } catch (error) {
+      logger.error('Error clearing invoice trigger:', error);
       return {
         success: false,
         error: error.message

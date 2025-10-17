@@ -215,6 +215,41 @@ class PipedriveClient {
   }
 
   /**
+   * Обновить сделку
+   * @param {number} dealId - ID сделки
+    * @param {Object} data - Поля для обновления
+    * @returns {Promise<Object>} - Результат обновления
+    */
+  async updateDeal(dealId, data = {}) {
+    try {
+      const response = await this.client.put(`/deals/${dealId}`, data, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data.success) {
+        return {
+          success: true,
+          deal: response.data.data,
+          message: 'Deal updated successfully'
+        };
+      }
+
+      throw new Error('Failed to update deal');
+    } catch (error) {
+      logger.error('Error updating deal:', {
+        dealId,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
    * Получить полную информацию о сделке (включая связанные данные)
    * @param {number} dealId - ID сделки
    * @returns {Promise<Object>} - Полные данные сделки
