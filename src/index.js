@@ -22,6 +22,12 @@ app.use(express.urlencoded({ extended: true }));
 // Статические файлы (frontend)
 app.use(express.static(path.join(__dirname, '../frontend')));
 
+// robots.txt to disallow indexing
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain');
+  res.send('User-agent: *\nDisallow: /');
+});
+
 // API роуты
 app.use('/api', apiRoutes);
 
