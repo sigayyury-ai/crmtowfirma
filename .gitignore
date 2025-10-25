@@ -22,4 +22,9 @@ coverage/
 .vscode/
 .idea/
 
+# Spec Kit agent context
+.cursor/
+.specify/memory/
+.specify/scripts/bash/*.log
+
 
