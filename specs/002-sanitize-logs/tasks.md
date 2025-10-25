@@ -34,7 +34,7 @@
 
 - [ ] T008 [US1] Реализовать маскировку email/phone/token `src/utils/logSanitizer.js`
 - [ ] T009 [US1] Реализовать маскировку номеров проформ и сумм `src/utils/logSanitizer.js`
-- [ ] T010 [P] [US1] Обновить фронтовые логи для использования санитайзера `frontend/script.js`
+- [X] T010 [P] [US1] Обновить фронтовые логи для использования санитайзера `frontend/script.js`
 - [X] T011 [US1] Заменить прямой вывод PII в сервисах `src/services/invoiceProcessing.js`
 - [X] T012 [US1] Обновить инструкции операторов о безопасности логов `specs/002-sanitize-logs/quickstart.md`
 
@@ -50,7 +50,7 @@
 
 - [X] T013 [US2] Добавить структурированное поле metadata в вывод логов `src/utils/logger.js`
 - [ ] T014 [P] [US2] Реализовать флаг DEV_VERBOSE_LOGS и обработку `src/utils/logger.js`
-- [ ] T015 [US2] Добавить проверки флага в unit-тестах `tests/unit/logSanitizer.test.js`
+- [X] T015 [US2] Добавить проверки флага в unit-тестах `tests/unit/logSanitizer.test.js`
 - [ ] T016 [US2] Обновить developer guidelines в quickstart `specs/002-sanitize-logs/quickstart.md`
 
 ---

@@ -6,9 +6,15 @@ const {
   getIncidentStats
 } = require('../../src/utils/logSanitizer');
 
+const ORIGINAL_VERBOSE = process.env.LOG_SANITIZER_DEV_VERBOSE;
+
 describe('logSanitizer', () => {
   beforeEach(() => {
     resetIncidentStats();
+  });
+
+  afterEach(() => {
+    process.env.LOG_SANITIZER_DEV_VERBOSE = ORIGINAL_VERBOSE;
   });
 
   test('masks email addresses', () => {
@@ -49,6 +55,7 @@ describe('logSanitizer', () => {
     const sanitized = sanitizeInfo(info);
     expect(sanitized.message).not.toContain('john@doe.com');
     expect(sanitized.metadata.amount).toBe('~[amount-masked]');
+    expect(sanitized.maskedFields).toBeUndefined();
   });
 
   test('tracks incident stats', () => {
@@ -57,6 +64,32 @@ describe('logSanitizer', () => {
     expect(stats.totalMasked).toBe(1);
     expect(stats.maskedByType.EMAIL).toBe(1);
   });
-});
+
+  test('DEV verbose flag exposes masked fields', () => {
+    process.env.LOG_SANITIZER_DEV_VERBOSE = 'true';
+    const info = {
+      level: 'info',
+      message: 'Email jane@doe.com',
+      metadata: { amount: '1200 PLN' }
+    };
+
+    const sanitized = sanitizeInfo(info);
+    expect(Array.isArray(sanitized.maskedFields)).toBe(true);
+    expect(sanitized.maskedFields.length).toBeGreaterThan(0);
+  });
+
+  test('default mode hides masked fields summary', () => {
+    delete process.env.LOG_SANITIZER_DEV_VERBOSE;
+    const info = {
+      level: 'info',
+      message: 'Email jane@doe.com',
+      metadata: { amount: '1200 PLN' }
+    };
+
+    const sanitized = sanitizeInfo(info);
+    expect(sanitized.maskedFields).toBeUndefined();
+    expect(Array.isArray(sanitized.maskedSummary)).toBe(true);
+    expect(sanitized.maskedSummary[0]).toContain('masked fields');
+  });
 });
 

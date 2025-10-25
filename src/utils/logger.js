@@ -6,19 +6,10 @@ const {
 } = require('./logSanitizer');
 
 const ENABLE_SANITIZER = process.env.LOG_SANITIZER_DISABLED !== 'true';
-const DEV_VERBOSE_OVERRIDE = /true/i.test(process.env.LOG_SANITIZER_DEV_VERBOSE || 'false');
 
 const sanitizeFormat = winston.format((info) => {
   if (!ENABLE_SANITIZER) return info;
-  const originalVerbose = process.env.LOG_SANITIZER_DEV_VERBOSE;
-  if (DEV_VERBOSE_OVERRIDE) {
-    process.env.LOG_SANITIZER_DEV_VERBOSE = 'true';
-  }
-  const result = sanitizeInfo(info);
-  if (DEV_VERBOSE_OVERRIDE) {
-    process.env.LOG_SANITIZER_DEV_VERBOSE = originalVerbose;
-  }
-  return result;
+  return sanitizeInfo(info);
 });
 
 // Создаем logger с конфигурацией
