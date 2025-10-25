@@ -9,6 +9,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # Environment
+.env
 .env.local
 
 # Build artifacts
@@ -25,5 +26,6 @@ coverage/
 .cursor/
 .specify/memory/
 .specify/scripts/bash/*.log
+reports/
 
 
