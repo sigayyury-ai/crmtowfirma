@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VAT маржа — прототип</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>VAT маржа — сопоставление платежей</h1>
+      <nav>
+        <button data-tab="upload" class="active">Загрузка</button>
+        <button data-tab="report">Отчёт</button>
+        <button data-tab="manual">Ручная обработка</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="upload" class="tab active">
+        <h2>Загрузка CSV</h2>
+        <p>
+          Для теста используйте <code>test.csv</code>. Файл не отправляется на сервер,
+          данные загружаются в память.
+        </p>
+        <label class="file-upload">
+          <input type="file" id="fileInput" accept=".csv" />
+          <span>Выберите CSV-файл...</span>
+        </label>
+        <div id="uploadSummary" class="summary"></div>
+        <table id="transactionsTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Дата</th>
+              <th>Описание</th>
+              <th>Проформа</th>
+              <th>Сумма (PLN)</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="report" class="tab">
+        <h2>Агрегированный отчёт</h2>
+        <p>
+          Сводка по продуктам и месяцам: ожидаемая сумма из проформ, фактические
+          поступления, разница.
+        </p>
+        <table id="reportTable">
+          <thead>
+            <tr>
+              <th>Продукт</th>
+              <th>Месяц</th>
+              <th>Ожидаемая сумма (PLN)</th>
+              <th>Фактическая сумма (PLN)</th>
+              <th>Разница</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section id="manual" class="tab">
+        <h2>Ручная обработка</h2>
+        <p>
+          Операции без найденных проформ или с конфликтами. Нажмите «Назначить», чтобы
+          симулировать обработку.
+        </p>
+        <table id="manualTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Дата</th>
+              <th>Описание</th>
+              <th>Сумма (PLN)</th>
+              <th>Причина</th>
+              <th>Действие</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="sample-data.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
+
+

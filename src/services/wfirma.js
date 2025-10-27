@@ -3,6 +3,8 @@ const logger = require('../utils/logger');
 
 class WfirmaClient {
   constructor() {
+    console.log('🔧 Initializing wFirma client...');
+    
     // API Key credentials
     this.appKey = process.env.WFIRMA_APP_KEY?.trim();
     this.accessKey = process.env.WFIRMA_ACCESS_KEY?.trim();
@@ -11,12 +13,22 @@ class WfirmaClient {
     // Company ID - обязательный параметр для всех запросов
     this.companyId = process.env.WFIRMA_COMPANY_ID?.trim();
     
+    console.log('wFirma credentials check:');
+    console.log('WFIRMA_APP_KEY:', this.appKey ? 'SET' : 'NOT SET');
+    console.log('WFIRMA_ACCESS_KEY:', this.accessKey ? 'SET' : 'NOT SET');
+    console.log('WFIRMA_SECRET_KEY:', this.secretKey ? 'SET' : 'NOT SET');
+    console.log('WFIRMA_COMPANY_ID:', this.companyId ? 'SET' : 'NOT SET');
+    
     if (!this.appKey || !this.accessKey || !this.secretKey) {
-      throw new Error('WFIRMA_APP_KEY, WFIRMA_ACCESS_KEY and WFIRMA_SECRET_KEY must be set in environment variables');
+      const error = 'WFIRMA_APP_KEY, WFIRMA_ACCESS_KEY and WFIRMA_SECRET_KEY must be set in environment variables';
+      console.log('❌ wFirma initialization failed:', error);
+      throw new Error(error);
     }
 
     if (!this.companyId) {
-      throw new Error('WFIRMA_COMPANY_ID must be set in environment variables');
+      const error = 'WFIRMA_COMPANY_ID must be set in environment variables';
+      console.log('❌ wFirma initialization failed:', error);
+      throw new Error(error);
     }
     
     this.baseURL = process.env.WFIRMA_BASE_URL || 'https://api2.wfirma.pl';
@@ -27,6 +39,9 @@ class WfirmaClient {
     this.clientSecret = process.env.WFIRMA_CLIENT_SECRET?.trim();
     
     // Создаем axios клиент для API Key
+    console.log('🌐 Creating axios client for wFirma API...');
+    console.log('Base URL:', this.baseURL);
+    
     this.client = axios.create({
       baseURL: this.baseURL,
       headers: {
@@ -40,6 +55,8 @@ class WfirmaClient {
       },
       timeout: 15000
     });
+    
+    console.log('✅ wFirma axios client created successfully');
 
     // Добавляем interceptor для логирования
     this.client.interceptors.request.use(
@@ -476,9 +493,14 @@ class WfirmaClient {
    * @returns {Promise<Object>} - Результат теста
    */
   async testConnection() {
+    console.log('🧪 Testing wFirma API connection...');
     try {
+      console.log('Making request to /contractors/find...');
       // Попробуем простой запрос к API с API Keys и company_id
       const response = await this.client.get('/contractors/find');
+      
+      console.log('✅ wFirma API connection successful');
+      console.log('Response status:', response.status);
       
       return {
         success: true,
@@ -487,12 +509,20 @@ class WfirmaClient {
         data: response.data
       };
     } catch (error) {
+      console.log('❌ wFirma API connection test failed');
+      console.log('Error message:', error.message);
+      console.log('Error code:', error.code);
+      console.log('Response status:', error.response?.status);
+      console.log('Response data:', error.response?.data);
+      
       logger.error('wFirma API connection test failed:', error);
       
       // Если основной тест не прошел, попробуем получить контрагентов
       try {
+        console.log('Trying fallback contractors endpoint...');
         const contractorsResult = await this.getContractors();
         if (contractorsResult.success) {
+          console.log('✅ Fallback connection successful');
           return {
             success: true,
             message: 'Connection successful (via contractors endpoint)',
@@ -500,6 +530,7 @@ class WfirmaClient {
           };
         }
       } catch (contractorsError) {
+        console.log('❌ Fallback also failed:', contractorsError.message);
         logger.warn('Contractors endpoint also failed:', contractorsError.message);
       }
       

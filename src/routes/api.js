@@ -1,20 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const WfirmaClient = require('../services/wfirma');
-const PipedriveClient = require('../services/pipedrive');
-const UserManagementService = require('../services/userManagement');
-const ProductManagementService = require('../services/productManagement');
-const InvoiceProcessingService = require('../services/invoiceProcessing');
-const SchedulerService = require('../services/scheduler');
 const logger = require('../utils/logger');
+const vatMarginRoutes = require('./vatMargin');
+const {
+  getWfirmaClient,
+  getPipedriveClient,
+  getUserManagementService,
+  getProductManagementService,
+  getInvoiceProcessingService,
+  getSchedulerService
+} = require('../services/serviceManager');
 
-// Создаем экземпляры сервисов
-const wfirmaClient = new WfirmaClient();
-const pipedriveClient = new PipedriveClient();
-const userManagement = new UserManagementService();
-const productManagement = new ProductManagementService();
-const invoiceProcessing = new InvoiceProcessingService();
-const scheduler = new SchedulerService();
+console.log('🔧 API routes loaded - services will be initialized on demand');
 
 /**
  * POST /api/contractors
@@ -99,6 +96,15 @@ router.get('/contractors', async (req, res) => {
  */
 router.get('/test', async (req, res) => {
   try {
+    const wfirmaClient = getWfirmaClient();
+    if (!wfirmaClient) {
+      return res.status(500).json({
+        success: false,
+        error: 'wFirma client not initialized',
+        message: 'wFirma client failed to initialize - check environment variables'
+      });
+    }
+    
     const result = await wfirmaClient.testConnection();
     
     if (result.success) {
@@ -121,11 +127,30 @@ router.get('/test', async (req, res) => {
  * Проверка здоровья сервиса
  */
 router.get('/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Service is healthy',
+  const wfirmaClient = getWfirmaClient();
+  const pipedriveClient = getPipedriveClient();
+  const userManagement = getUserManagementService();
+  const productManagement = getProductManagementService();
+  const invoiceProcessing = getInvoiceProcessingService();
+  const scheduler = getSchedulerService();
+  
+  const services = {
+    wfirmaClient: wfirmaClient ? 'initialized' : 'failed',
+    pipedriveClient: pipedriveClient ? 'initialized' : 'failed',
+    userManagement: userManagement ? 'initialized' : 'failed',
+    productManagement: productManagement ? 'initialized' : 'failed',
+    invoiceProcessing: invoiceProcessing ? 'initialized' : 'failed',
+    scheduler: scheduler ? 'initialized' : 'failed'
+  };
+  
+  const allServicesHealthy = Object.values(services).every(status => status === 'initialized');
+  
+  res.status(allServicesHealthy ? 200 : 500).json({
+    success: allServicesHealthy,
+    message: allServicesHealthy ? 'Service is healthy' : 'Some services failed to initialize',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    services: services
   });
 });
 
@@ -604,6 +629,8 @@ router.get('/products/search/:name', async (req, res) => {
     });
   }
 });
+
+router.use('/vat-margin', vatMarginRoutes);
 
 module.exports = router;
 
