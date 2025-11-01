@@ -124,3 +124,4 @@ node test-proforma-with-dynamic-banks.js
 ## Фронтенд
 
 Откройте `frontend/index.html` в браузере для тестирования через веб-интерфейс.
+

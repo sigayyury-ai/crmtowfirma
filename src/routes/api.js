@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const router = express.Router();
 const WfirmaClient = require('../services/wfirma');
 const PipedriveClient = require('../services/pipedrive');
@@ -600,6 +601,35 @@ router.get('/products/search/:name', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/server-ip
+ * Получить IP адрес сервера (для добавления в whitelist)
+ */
+router.get('/server-ip', async (req, res) => {
+  try {
+    // Получаем IP сервера через внешний API
+    const ipResponse = await axios.get('https://api.ipify.org?format=json', {
+      timeout: 10000
+    });
+    
+    const serverIp = ipResponse.data.ip;
+    
+    res.json({
+      success: true,
+      serverIp: serverIp,
+      message: 'Use this IP address to add to wFirma whitelist',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Error getting server IP:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get server IP',
       message: error.message
     });
   }
