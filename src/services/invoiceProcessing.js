@@ -909,7 +909,7 @@ class InvoiceProcessingService {
       
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Предоплата 50% по инвойсу ${invoiceNumber}`,
+        subject: 'Проверка предоплаты',
         note: `Проверьте получение предоплаты 50% (${formatAmount(paymentSchedule.firstPaymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: firstPaymentCheckDateStr,
         type: 'task'
@@ -918,7 +918,7 @@ class InvoiceProcessingService {
       // Вторая задача: проверка остатка (50%)
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Остаток 50% по инвойсу ${invoiceNumber}`,
+        subject: 'Проверка остатка',
         note: `Проверьте получение остатка 50% (${formatAmount(paymentSchedule.secondPaymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: paymentSchedule.secondPaymentDate,
         type: 'task'
@@ -931,7 +931,7 @@ class InvoiceProcessingService {
       
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Полная оплата по инвойсу ${invoiceNumber}`,
+        subject: 'Проверка платежа',
         note: `Проверьте получение полной оплаты (${formatAmount(paymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: paymentDate,
         type: 'task'
