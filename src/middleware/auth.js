@@ -6,6 +6,14 @@ const logger = require('../utils/logger');
 /**
  * Настройка Google OAuth 2.0 стратегии
  */
+// Логируем конфигурацию для отладки
+logger.info('Google OAuth Configuration:', {
+  clientID: config.googleOAuth.clientID ? 'SET' : 'NOT SET',
+  clientSecret: config.googleOAuth.clientSecret ? 'SET' : 'NOT SET',
+  callbackURL: config.googleOAuth.callbackURL,
+  allowedDomains: config.googleOAuth.allowedDomains
+});
+
 passport.use(
   new GoogleStrategy(
     {

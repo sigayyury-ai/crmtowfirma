@@ -93,6 +93,14 @@ app.listen(PORT, () => {
   logger.info(`Frontend available at: http://localhost:${PORT}`);
   logger.info(`API available at: http://localhost:${PORT}/api`);
   
+  // Логируем Google OAuth настройки для отладки
+  const googleOAuthConfig = require('./config/googleOAuth');
+  logger.info('Google OAuth Callback URL:', {
+    callbackURL: googleOAuthConfig.googleOAuth.callbackURL,
+    NODE_ENV: process.env.NODE_ENV,
+    GOOGLE_CALLBACK_URL: process.env.GOOGLE_CALLBACK_URL || 'not set'
+  });
+  
   // Автоматически запускаем планировщик обработки счетов
   try {
     scheduler.start();

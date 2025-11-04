@@ -18,6 +18,22 @@
  *    GOOGLE_CLIENT_SECRET=your_client_secret
  */
 
+// Определяем callback URL для OAuth
+const getCallbackURL = () => {
+  // Если указана переменная окружения, используем её
+  if (process.env.GOOGLE_CALLBACK_URL) {
+    return process.env.GOOGLE_CALLBACK_URL;
+  }
+  
+  // В production используем полный URL
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://invoices.comoon.io/auth/google/callback';
+  }
+  
+  // В development используем относительный путь
+  return '/auth/google/callback';
+};
+
 module.exports = {
   // Разрешенный домен для доступа
   ALLOWED_DOMAIN: 'comoon.io',
@@ -29,10 +45,10 @@ module.exports = {
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
     
     // Callback URL для OAuth
-    // В production используем полный URL, в development - относительный
-    callbackURL: process.env.NODE_ENV === 'production' 
-      ? 'https://invoices.comoon.io/auth/google/callback'
-      : (process.env.GOOGLE_CALLBACK_URL || '/auth/google/callback'),
+    // В production должен быть полный URL (https://invoices.comoon.io/auth/google/callback)
+    // В development можно использовать относительный путь (/auth/google/callback)
+    // Можно переопределить через переменную окружения GOOGLE_CALLBACK_URL
+    callbackURL: getCallbackURL(),
     
     // Разрешенные домены для авторизации
     allowedDomains: ['comoon.io'],
