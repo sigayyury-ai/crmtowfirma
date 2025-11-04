@@ -861,30 +861,17 @@ class InvoiceProcessingService {
       return 0;
     }
 
-    // Если график 50/50 и есть дата второго платежа
+    // Если график 50/50, всегда создаем 2 задачи
     if (paymentSchedule.type === '50/50' && paymentSchedule.secondPaymentDate) {
-      // Проверяем, больше ли месяца между датами
-      const firstDate = new Date(paymentSchedule.firstPaymentDate);
-      const secondDate = new Date(paymentSchedule.secondPaymentDate);
-      const daysDiff = Math.ceil((secondDate - firstDate) / (1000 * 60 * 60 * 24));
-      
       logger.info('Determining task count for 50/50 schedule', {
         firstPaymentDate: paymentSchedule.firstPaymentDate,
         secondPaymentDate: paymentSchedule.secondPaymentDate,
-        daysDiff: daysDiff,
-        daysDiffGreaterThan30: daysDiff > 30,
-        daysDiffGreaterOrEqual30: daysDiff >= 30,
-        daysDiffGreaterOrEqual27: daysDiff >= 27
+        type: paymentSchedule.type
       });
-      
-      // Если больше или равно 27 дней (примерно месяц), создаем 2 задачи
-      // Это позволяет учитывать случаи, когда разница составляет 27-29 дней (календарный месяц)
-      if (daysDiff >= 27) {
-        return 2;
-      }
+      return 2;
     }
 
-    // Для графика 100% или если сроки меньше месяца - создаем 1 задачу
+    // Для графика 100% создаем 1 задачу
     return 1;
   }
 
@@ -1455,47 +1442,55 @@ class InvoiceProcessingService {
       const balanceAmount = Math.round((totalAmount - depositAmount) * 100) / 100;
       const formatAmount = (value) => value.toFixed(2);
 
+      // Определяем график платежей на основе разницы между сегодняшней датой и expected_close_date
       let secondPaymentDateStr = paymentDateStr;
+      let use50_50Schedule = false;
+      
       if (deal.expected_close_date) {
         try {
           logger.info('Processing expected_close_date for payment schedule', {
             dealId: deal.id,
             expectedCloseDate: deal.expected_close_date,
-            issueDateStr: issueDateStr,
-            paymentDateStr: paymentDateStr
+            issueDateStr: issueDateStr
           });
           
           const expectedCloseDate = new Date(deal.expected_close_date);
-          const balanceDueDate = new Date(expectedCloseDate);
-          balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
-
           const today = new Date(issueDateStr);
-          const balanceDueDateStr = balanceDueDate.toISOString().split('T')[0];
+          
+          // Рассчитываем разницу в днях между сегодняшней датой и expected_close_date
+          const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
           
           logger.info('Payment schedule calculation', {
             dealId: deal.id,
             expectedCloseDate: expectedCloseDate.toISOString().split('T')[0],
-            balanceDueDate: balanceDueDateStr,
             today: today.toISOString().split('T')[0],
-            balanceDueDateGreaterThanToday: balanceDueDate > today
+            daysDiff: daysDiff,
+            use50_50Schedule: daysDiff >= 30
           });
           
-          if (balanceDueDate > today) {
-            secondPaymentDateStr = balanceDueDateStr;
+          // Если разница >= 30 дней (месяц), используем график 50/50
+          if (daysDiff >= 30) {
+            use50_50Schedule = true;
+            // Вторая дата платежа - за 1 месяц до expected_close_date
+            const balanceDueDate = new Date(expectedCloseDate);
+            balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
+            secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+            
             logger.info('Using 50/50 payment schedule', {
               dealId: deal.id,
+              daysDiff: daysDiff,
               secondPaymentDateStr: secondPaymentDateStr,
               paymentDateStr: paymentDateStr
             });
           } else {
-            logger.info('balanceDueDate is not greater than today, using 100% schedule', {
+            // Если разница < 30 дней, используем график 100%
+            logger.info('Using 100% payment schedule (daysDiff < 30)', {
               dealId: deal.id,
-              balanceDueDate: balanceDueDateStr,
-              today: today.toISOString().split('T')[0]
+              daysDiff: daysDiff
             });
           }
         } catch (error) {
-          logger.warn('Failed to calculate second payment date from expected close date', {
+          logger.warn('Failed to calculate payment schedule from expected close date', {
             dealId: deal.id,
             expectedCloseDate: deal.expected_close_date,
             error: error.message
@@ -1508,7 +1503,7 @@ class InvoiceProcessingService {
       }
 
       let scheduleDescription;
-      if (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
+      if (use50_50Schedule && secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
         scheduleDescription = `График платежей: 50% предоплата (${formatAmount(depositAmount)} ${deal.currency}) оплачивается сейчас; 50% остаток (${formatAmount(balanceAmount)} ${deal.currency}) до ${secondPaymentDateStr}.`;
       } else {
         scheduleDescription = `График платежей: 100% оплата (${formatAmount(totalAmount)} ${deal.currency}) до ${paymentDateStr}.`;
@@ -1677,17 +1672,17 @@ class InvoiceProcessingService {
             
             // Подготавливаем информацию о графике платежей
             const paymentSchedule = {
-              type: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? '50/50' : '100%',
+              type: use50_50Schedule ? '50/50' : '100%',
               currency: deal.currency,
               totalAmount: totalAmount,
               // Для графика 50/50 первый платеж должен быть на paymentDateStr (issueDate + 3 дня)
               // Для графика 100% используем paymentDateStr как singlePaymentDate
-              firstPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? paymentDateStr : issueDateStr,
-              firstPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? depositAmount : totalAmount,
-              secondPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? secondPaymentDateStr : null,
-              secondPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? balanceAmount : null,
-              singlePaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : paymentDateStr,
-              singlePaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : totalAmount
+              firstPaymentDate: use50_50Schedule ? paymentDateStr : issueDateStr,
+              firstPaymentAmount: use50_50Schedule ? depositAmount : totalAmount,
+              secondPaymentDate: use50_50Schedule ? secondPaymentDateStr : null,
+              secondPaymentAmount: use50_50Schedule ? balanceAmount : null,
+              singlePaymentDate: use50_50Schedule ? null : paymentDateStr,
+              singlePaymentAmount: use50_50Schedule ? null : totalAmount
             };
             
             return {
@@ -1733,17 +1728,17 @@ class InvoiceProcessingService {
             
             // Подготавливаем информацию о графике платежей
             const paymentSchedule = {
-              type: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? '50/50' : '100%',
+              type: use50_50Schedule ? '50/50' : '100%',
               currency: deal.currency,
               totalAmount: totalAmount,
               // Для графика 50/50 первый платеж должен быть на paymentDateStr (issueDate + 3 дня)
               // Для графика 100% используем paymentDateStr как singlePaymentDate
-              firstPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? paymentDateStr : issueDateStr,
-              firstPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? depositAmount : totalAmount,
-              secondPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? secondPaymentDateStr : null,
-              secondPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? balanceAmount : null,
-              singlePaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : paymentDateStr,
-              singlePaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : totalAmount
+              firstPaymentDate: use50_50Schedule ? paymentDateStr : issueDateStr,
+              firstPaymentAmount: use50_50Schedule ? depositAmount : totalAmount,
+              secondPaymentDate: use50_50Schedule ? secondPaymentDateStr : null,
+              secondPaymentAmount: use50_50Schedule ? balanceAmount : null,
+              singlePaymentDate: use50_50Schedule ? null : paymentDateStr,
+              singlePaymentAmount: use50_50Schedule ? null : totalAmount
             };
             
             return {
