@@ -440,10 +440,17 @@ class InvoiceProcessingService {
         const sendpulseId = this.getSendpulseId(fullPerson);
         if (sendpulseId) {
           const invoiceNumberForTelegram = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
+          
+          // Получаем банковский счет для IBAN
+          const bankAccountResult = await this.getBankAccountByCurrency(deal.currency);
+          const bankAccount = bankAccountResult.success ? bankAccountResult.bankAccount : null;
+          
           telegramResult = await this.sendTelegramNotification(
             sendpulseId,
             invoiceResult.invoiceId,
-            invoiceNumberForTelegram
+            invoiceNumberForTelegram,
+            invoiceResult.paymentSchedule,
+            bankAccount
           );
           
           if (!telegramResult.success) {
@@ -1037,9 +1044,11 @@ class InvoiceProcessingService {
    * @param {string} sendpulseId - SendPulse ID контакта
    * @param {string} invoiceId - ID проформы в wFirma
    * @param {string} invoiceNumber - Номер проформы (PRO-...)
+   * @param {Object} paymentSchedule - График платежей
+   * @param {Object} bankAccount - Банковский счет с IBAN
    * @returns {Promise<Object>} - Результат отправки
    */
-  async sendTelegramNotification(sendpulseId, invoiceId, invoiceNumber) {
+  async sendTelegramNotification(sendpulseId, invoiceId, invoiceNumber, paymentSchedule, bankAccount) {
     if (!this.sendpulseClient) {
       logger.warn('SendPulse client not initialized, skipping Telegram notification');
       return {
@@ -1057,10 +1066,44 @@ class InvoiceProcessingService {
     }
 
     try {
-      const message = `Привет! Тебе был отправлен инвойс по email.\n\n` +
-                     `Номер инвойса: ${invoiceNumber || invoiceId}\n` +
-                     `Пожалуйста, проверь почту и внимательно посмотри сроки оплаты и график платежей.`;
-
+      // Базовая часть сообщения
+      let message = `Привет! Тебе был отправлен инвойс по email.\n\n` +
+                   `Номер инвойса: ${invoiceNumber || invoiceId}\n` +
+                   `Пожалуйста, проверь почту и внимательно посмотри сроки оплаты и график платежей.\n`;
+      
+      // Добавляем график платежей
+      if (paymentSchedule && paymentSchedule.type) {
+        message += `\nГрафик платежей:\n`;
+        
+        const formatAmount = (amount) => parseFloat(amount).toFixed(2);
+        const formatDate = (dateStr) => {
+          if (!dateStr) return '';
+          const date = new Date(dateStr);
+          return date.toISOString().split('T')[0];
+        };
+        
+        if (paymentSchedule.type === '50/50') {
+          // График 50/50
+          message += `• Предоплата 50%: ${formatAmount(paymentSchedule.firstPaymentAmount)} ${paymentSchedule.currency} до ${formatDate(paymentSchedule.firstPaymentDate)}\n`;
+          if (paymentSchedule.secondPaymentDate && paymentSchedule.secondPaymentAmount) {
+            message += `• Остаток 50%: ${formatAmount(paymentSchedule.secondPaymentAmount)} ${paymentSchedule.currency} до ${formatDate(paymentSchedule.secondPaymentDate)}\n`;
+          }
+        } else {
+          // График 100%
+          const paymentDate = paymentSchedule.singlePaymentDate || paymentSchedule.firstPaymentDate;
+          const paymentAmount = paymentSchedule.singlePaymentAmount || paymentSchedule.totalAmount;
+          message += `• Полная оплата: ${formatAmount(paymentAmount)} ${paymentSchedule.currency} до ${formatDate(paymentDate)}\n`;
+        }
+        
+        message += `Итого: ${formatAmount(paymentSchedule.totalAmount)} ${paymentSchedule.currency}\n`;
+      }
+      
+      // Добавляем IBAN
+      if (bankAccount && bankAccount.number) {
+        message += `\nРеквизиты для оплаты:\n` +
+                   `IBAN: ${bankAccount.number}`;
+      }
+      
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
