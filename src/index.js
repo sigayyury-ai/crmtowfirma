@@ -42,37 +42,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware для редиректа с Render subdomain на кастомный домен в production
-if (process.env.NODE_ENV === 'production') {
-  app.use((req, res, next) => {
-    const host = req.get('host');
-    const protocol = req.protocol;
-    
-    // Если заход через Render subdomain, редиректим на кастомный домен
-    if (host && host.includes('onrender.com')) {
-      const customDomain = 'invoices.comoon.io';
-      const url = `https://${customDomain}${req.originalUrl}`;
-      logger.info('Redirecting from Render subdomain to custom domain', {
-        from: `${protocol}://${host}${req.originalUrl}`,
-        to: url
-      });
-      return res.redirect(301, url);
-    }
-    
-    // Если заход через HTTP, редиректим на HTTPS
-    if (protocol === 'http' && !host.includes('localhost')) {
-      const url = `https://${host}${req.originalUrl}`;
-      logger.info('Redirecting from HTTP to HTTPS', {
-        from: `${protocol}://${host}${req.originalUrl}`,
-        to: url
-      });
-      return res.redirect(301, url);
-    }
-    
-    next();
-  });
-}
-
 // Auth роуты (должны быть доступны без авторизации)
 app.use('/auth', authRoutes);
 
