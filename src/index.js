@@ -2,10 +2,15 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const session = require('express-session');
+const passport = require('passport');
 const logger = require('./utils/logger');
+const googleOAuthConfig = require('./config/googleOAuth');
 
 // Импортируем роуты и сервисы
 const apiRoutes = require('./routes/api');
+const authRoutes = require('./routes/auth');
+const { requireAuth } = require('./middleware/auth');
 const SchedulerService = require('./services/scheduler');
 
 const app = express();
@@ -14,24 +19,43 @@ const PORT = process.env.PORT || 3000;
 // Создаем экземпляр планировщика
 const scheduler = new SchedulerService();
 
+// Настройка session
+app.use(session(googleOAuthConfig.session));
+
+// Инициализация Passport
+app.use(passport.initialize());
+app.use(passport.session());
+
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://invoices.comoon.io', 'https://www.invoices.comoon.io']
+    : true,
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Статические файлы (frontend)
-app.use(express.static(path.join(__dirname, '../frontend')));
+// Auth роуты (должны быть доступны без авторизации)
+app.use('/auth', authRoutes);
 
-// robots.txt to disallow indexing
+// robots.txt to disallow indexing (доступен без авторизации)
 app.get('/robots.txt', (req, res) => {
   res.type('text/plain');
   res.send('User-agent: *\nDisallow: /');
 });
 
-// API роуты
+// Middleware для защиты всех остальных маршрутов
+// Все маршруты ниже требуют авторизации через Google
+app.use(requireAuth);
+
+// Статические файлы (frontend) - защищены авторизацией
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+// API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
 
-// Главная страница
+// Главная страница - защищена авторизацией
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
