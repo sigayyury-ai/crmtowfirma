@@ -36,13 +36,20 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Middleware для запрета индексации поисковыми системами
+app.use((req, res, next) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet');
+  next();
+});
+
 // Auth роуты (должны быть доступны без авторизации)
 app.use('/auth', authRoutes);
 
 // robots.txt to disallow indexing (доступен без авторизации)
 app.get('/robots.txt', (req, res) => {
   res.type('text/plain');
-  res.send('User-agent: *\nDisallow: /');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.send('User-agent: *\nDisallow: /\n\n# Sitemap не используется\n');
 });
 
 // Middleware для защиты всех остальных маршрутов
