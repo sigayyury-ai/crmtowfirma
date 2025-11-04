@@ -409,12 +409,38 @@ class InvoiceProcessingService {
         return invoiceResult;
       }
       
-      // 7. Отправляем документ по email
-      const emailResult = await this.sendInvoiceByEmail(invoiceResult.invoiceId);
+      // Проверяем, что проформа действительно создана (invoiceId существует)
+      if (!invoiceResult.invoiceId) {
+        logger.error(`Invoice creation returned success but invoiceId is missing for deal ${fullDeal.id}`);
+        return {
+          success: false,
+          error: 'Invoice creation failed: invoiceId is missing'
+        };
+      }
+      
+      logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
+      
+      // 7. Отправляем документ по email через wFirma API
+      // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
+      const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
+      
+      // Используем номер проформы (PRO-...) вместо ID, если он доступен
+      const invoiceNumberForEmail = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
+      
+      const emailResult = await this.sendInvoiceByEmail(
+        invoiceResult.invoiceId,
+        customerEmail,
+        {
+          subject: 'COMOON /  INVOICE  / Комьюнити для удаленщиков',
+          body: `Привет. Внимательно посмотри, пожалуйста, сроки оплаты и график платежей. А также обязательно в назначении платежа укажи номер инвойса - ${invoiceNumberForEmail}.`
+        }
+      );
       
       if (!emailResult.success) {
         logger.warn(`Invoice created but email sending failed: ${emailResult.error}`);
-        // Не считаем это критической ошибкой
+        // Не считаем это критической ошибкой - проформа уже создана
+      } else {
+        logger.info(`Invoice ${invoiceResult.invoiceId} sent successfully by email${customerEmail ? ` to ${customerEmail}` : ''}`);
       }
 
       // 9. Создаем (если нужно) этикетку по названию сделки без дублирования
@@ -441,13 +467,24 @@ class InvoiceProcessingService {
         contractorName: contractorData.name
       };
 
-      // После успешной обработки снимаем триггер в CRM
-      const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id);
-      if (!clearTriggerResult.success) {
-        logger.warn('Failed to clear invoice trigger in Pipedrive', {
-          dealId: fullDeal.id,
-          error: clearTriggerResult.error
-        });
+      // КРИТИЧНО: Снимаем триггер в CRM ТОЛЬКО после успешного создания проформы в wFirma
+      // Проверяем еще раз, что invoiceId существует перед установкой "Done"
+      if (invoiceResult.invoiceId) {
+        logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
+        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id);
+        if (!clearTriggerResult.success) {
+          logger.warn('Failed to clear invoice trigger in Pipedrive', {
+            dealId: fullDeal.id,
+            invoiceId: invoiceResult.invoiceId,
+            error: clearTriggerResult.error
+          });
+          // Не считаем это критической ошибкой - проформа уже создана
+        } else {
+          logger.info(`Invoice trigger cleared successfully for deal ${fullDeal.id} (invoice ID: ${invoiceResult.invoiceId})`);
+        }
+      } else {
+        logger.error(`Cannot clear invoice trigger: invoiceId is missing for deal ${fullDeal.id}`);
+        // Не устанавливаем "Done", так как проформа не создана
       }
 
       return result;
@@ -769,7 +806,10 @@ class InvoiceProcessingService {
       'Sweden': 'SE',
       'Norway': 'NO',
       'Denmark': 'DK',
-      'Finland': 'FI'
+      'Finland': 'FI',
+      'Ukraine': 'UA',
+      'Україна': 'UA',
+      'Ukraina': 'UA'
     };
     
     // Если уже двухбуквенный код
@@ -810,13 +850,60 @@ class InvoiceProcessingService {
     }
     
     if (person) {
+      // Определяем страну из данных персоны
+      const country = this.normalizeCountryCode(person.postal_address_country);
+      
+      // Используем данные адреса из Pipedrive
+      // postal_address может содержать полный адрес или только улицу
+      const address = person.postal_address || person.postal_address_route || '';
+      let zip = person.postal_address_postal_code || '';
+      const city = person.postal_address_locality || '';
+      
+      // Если адрес пустой, используем дефолтные значения только для Польши
+      let defaultZip = '00-000';
+      let defaultCity = 'Gdańsk';
+      
+      // wFirma требует польский формат почтового индекса (XX-XXX)
+      // Если формат не подходит, используем универсальный "00-000"
+      if (zip && !zip.match(/^\d{2}-\d{3}$/)) {
+        // Если почтовый индекс не в польском формате (XX-XXX), пытаемся преобразовать
+        const digitsOnly = zip.replace(/\D/g, '');
+        if (digitsOnly.length === 5) {
+          zip = `${digitsOnly.substring(0, 2)}-${digitsOnly.substring(2)}`;
+        } else {
+          // Если не можем преобразовать, используем универсальный "00-000"
+          zip = '00-000';
+        }
+      }
+      
+      // Для не-польских стран используем универсальный почтовый индекс "00-000"
+      if (country !== 'PL') {
+        defaultZip = '00-000';
+        defaultCity = '';
+      }
+      
+      // Логируем данные адреса для отладки
+      logger.info('Preparing contractor data from person:', {
+        personId: person.id,
+        name: person.name,
+        address: address,
+        zip: zip || defaultZip,
+        city: city || defaultCity,
+        country: country,
+        postal_address: person.postal_address,
+        postal_address_route: person.postal_address_route,
+        postal_address_locality: person.postal_address_locality,
+        postal_address_postal_code: person.postal_address_postal_code,
+        postal_address_country: person.postal_address_country
+      });
+      
       return {
         name: person.name || `${person.first_name || ''} ${person.last_name || ''}`.trim(),
         email: email,
-        address: person.postal_address || '',
-        zip: person.postal_address_postal_code || '80-000',
-        city: person.postal_address_locality || 'Gdańsk',
-        country: this.normalizeCountryCode(person.postal_address_country),
+        address: address,
+        zip: zip || defaultZip,
+        city: city || defaultCity,
+        country: country,
         business_id: '',
         type: 'person'
       };
@@ -827,7 +914,7 @@ class InvoiceProcessingService {
       name: 'Unknown Customer',
       email: email,
       address: '',
-      zip: '80-000',
+      zip: '00-000',
       city: 'Gdańsk',
       country: 'PL',
       business_id: '',
@@ -922,6 +1009,7 @@ class InvoiceProcessingService {
       return {
         success: true,
         invoiceId: invoiceResult.invoiceId,
+        invoiceNumber: invoiceResult.invoiceNumber,
         amount: amountResult.amount,
         currency: deal.currency,
         vatRate: this.VAT_RATE,
@@ -1140,8 +1228,11 @@ class InvoiceProcessingService {
           // Проверяем успешное создание
           if (response.data.invoice || response.data.id) {
             const invoiceId = response.data.invoice?.id || response.data.id;
+            const invoiceNumber = response.data.invoice?.number || response.data.number || null;
+            
             logger.info('Proforma invoice created successfully (JSON response):', {
               invoiceId: invoiceId,
+              invoiceNumber: invoiceNumber,
               response: response.data
             });
             
@@ -1149,6 +1240,7 @@ class InvoiceProcessingService {
               success: true,
               invoice: response.data.invoice || response.data,
               invoiceId: invoiceId,
+              invoiceNumber: invoiceNumber,
               message: 'Proforma invoice created successfully'
             };
           } else if (response.data.error || response.data.message) {
@@ -1168,10 +1260,27 @@ class InvoiceProcessingService {
             const idMatch = response.data.match(/<id>(\d+)<\/id>/);
             const invoiceId = idMatch ? idMatch[1] : null;
             
+            // Извлекаем номер проформы (number) из XML ответа
+            // Пробуем разные варианты: <number>, <fullnumber>, <invoice_number>
+            let numberMatch = response.data.match(/<fullnumber>(.*?)<\/fullnumber>/);
+            if (!numberMatch) {
+              numberMatch = response.data.match(/<invoice_number>(.*?)<\/invoice_number>/);
+            }
+            if (!numberMatch) {
+              numberMatch = response.data.match(/<number>(.*?)<\/number>/);
+            }
+            const invoiceNumber = numberMatch ? numberMatch[1] : null;
+            
+            logger.info('Proforma invoice details:', {
+              invoiceId: invoiceId,
+              invoiceNumber: invoiceNumber
+            });
+            
             return {
               success: true,
               message: 'Proforma invoice created successfully',
               invoiceId: invoiceId,
+              invoiceNumber: invoiceNumber,
               response: response.data
             };
           } else if (response.data.includes('<code>ERROR</code>')) {
@@ -1201,18 +1310,27 @@ class InvoiceProcessingService {
 
   /**
    * Отправить документ по email через wFirma
-   * @param {string} invoiceId - ID документа в wFirma
+   * @param {string|number} invoiceId - ID документа в wFirma
+   * @param {string} email - Email адрес получателя (опционально, если не указан, используется email из проформы)
+   * @param {Object} options - Дополнительные опции для отправки
+   * @param {string} options.subject - Тема письма (по умолчанию: "Otrzymałeś fakturę")
+   * @param {string} options.body - Текст письма (по умолчанию: "Przesyłam fakturę")
    * @returns {Promise<Object>} - Результат отправки
    */
-  async sendInvoiceByEmail(invoiceId) {
+  async sendInvoiceByEmail(invoiceId, email = null, options = {}) {
     try {
-      // TODO: реализовать отправку по email через wFirma API
-      logger.info(`Would send invoice ${invoiceId} by email`);
+      logger.info(`Sending invoice ${invoiceId} by email${email ? ` to ${email}` : ''} via wFirma API`);
       
-      return {
-        success: true,
-        message: 'Mock email sent'
-      };
+      // Используем метод из wFirma клиента для отправки проформы по email
+      const result = await this.wfirmaClient.sendInvoiceByEmail(invoiceId, email, options);
+      
+      if (result.success) {
+        logger.info(`Invoice ${invoiceId} sent successfully by email${email ? ` to ${email}` : ''}`);
+      } else {
+        logger.error(`Failed to send invoice ${invoiceId} by email: ${result.error}`);
+      }
+      
+      return result;
       
     } catch (error) {
       logger.error('Error sending invoice by email:', error);

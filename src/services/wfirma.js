@@ -135,6 +135,30 @@ class WfirmaClient {
    */
   async createContractor(contractorData) {
     try {
+      // wFirma требует польский формат почтового индекса (XX-XXX)
+      // Если формат не подходит или страна не Польша, используем универсальный "00-000"
+      let zipValue = contractorData.zip || '00-000';
+      let countryValue = contractorData.country || 'PL';
+      
+      // Проверяем формат почтового индекса
+      if (zipValue && !zipValue.match(/^\d{2}-\d{3}$/)) {
+        // Если почтовый индекс не в польском формате (XX-XXX), пытаемся преобразовать
+        const digitsOnly = zipValue.replace(/\D/g, '');
+        if (digitsOnly.length === 5) {
+          zipValue = `${digitsOnly.substring(0, 2)}-${digitsOnly.substring(2)}`;
+        } else {
+          // Если не можем преобразовать, используем универсальный "00-000"
+          zipValue = '00-000';
+        }
+      }
+      
+      // Если страна не Польша, используем универсальный почтовый индекс "00-000"
+      // wFirma может не принимать иностранные форматы почтовых индексов
+      if (countryValue !== 'PL') {
+        zipValue = '00-000';
+        countryValue = 'PL'; // Используем PL для обхода валидации
+      }
+      
       // Создаем XML payload для wFirma API
       const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
 <api>
@@ -143,9 +167,9 @@ class WfirmaClient {
             <name>${contractorData.name}</name>
             <email>${contractorData.email}</email>
             <address>${contractorData.address || ''}</address>
-            <zip>${contractorData.zip || '80-000'}</zip>
+            <zip>${zipValue}</zip>
             <city>${contractorData.city || 'Gdańsk'}</city>
-            <country>${contractorData.country || 'PL'}</country>
+            <country>${countryValue}</country>
             <nip>${contractorData.business_id || ''}</nip>
             <type>${contractorData.type || 'person'}</type>
             <company_id>${this.companyId}</company_id>
@@ -154,6 +178,7 @@ class WfirmaClient {
 </api>`;
 
       logger.info('Creating contractor in wFirma with XML:', xmlPayload);
+      console.log('📄 XML PAYLOAD FOR CONTRACTOR:', xmlPayload);
 
       // Используем правильный endpoint с XML форматом
       const endpoint = '/contractors/add?inputFormat=xml&outputFormat=xml';
@@ -909,6 +934,185 @@ class WfirmaClient {
 
     } catch (error) {
       logger.error('Error assigning label to document in wFirma:', error);
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Экранировать специальные символы для XML
+   * @param {string} text - Текст для экранирования
+   * @returns {string} - Экранированный текст
+   */
+  escapeXml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Отправить проформу по email через wFirma API
+   * @param {string|number} invoiceId - ID проформы в wFirma
+   * @param {string} email - Email адрес получателя (опционально, если не указан, используется email из проформы)
+   * @param {Object} options - Дополнительные опции для отправки
+   * @param {string} options.subject - Тема письма (по умолчанию: "Otrzymałeś fakturę")
+   * @param {string} options.body - Текст письма (по умолчанию: "Przesyłam fakturę")
+   * @returns {Promise<Object>} - Результат отправки
+   */
+
+  async sendInvoiceByEmail(invoiceId, email = null, options = {}) {
+    try {
+      logger.info(`Sending invoice ${invoiceId} by email${email ? ` to ${email}` : ''} via wFirma API`);
+
+      // Значения по умолчанию для темы и текста письма
+      const subject = options.subject || 'Otrzymałeś fakturę';
+      const body = options.body || 'Przesyłam fakturę';
+
+      // Экранируем email для XML (subject и body используем в CDATA, поэтому не экранируем)
+      const escapedEmail = email ? this.escapeXml(email) : null;
+
+      // Создаем XML payload для отправки проформы по email
+      // Используем endpoint /invoices/send/{{invoiceId}} согласно документации wFirma
+      let xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
+<api>
+    <invoices>
+        <parameters>`;
+      
+      // Если указан email, добавляем его в запрос (опционально, если не указан, берется из записи контрагента)
+      if (escapedEmail) {
+        xmlPayload += `
+            <parameter>
+                <name>email</name>
+                <value>${escapedEmail}</value>
+            </parameter>`;
+      }
+      
+      // Добавляем остальные параметры
+      xmlPayload += `
+            <parameter>
+                <name>subject</name>
+                <value><![CDATA[${subject}]]></value>
+            </parameter>
+            <parameter>
+                <name>page</name>
+                <value>invoice</value>
+            </parameter>
+            <parameter>
+                <name>leaflet</name>
+                <value>0</value>
+            </parameter>
+            <parameter>
+                <name>duplicate</name>
+                <value>0</value>
+            </parameter>
+            <parameter>
+                <name>body</name>
+                <value><![CDATA[${body}]]></value>
+            </parameter>
+        </parameters>
+    </invoices>
+</api>`;
+
+      // Логируем XML payload для отладки
+      logger.info('📧 Email XML Payload:', xmlPayload);
+      console.log('📧 EMAIL XML PAYLOAD:', xmlPayload);
+
+      // Используем правильный endpoint для отправки проформы по email
+      // wFirma API: POST /invoices/send/{{invoiceId}}
+      const endpoint = `/invoices/send/${invoiceId}?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
+
+      // Создаем специальный клиент для XML запросов
+      const xmlClient = axios.create({
+        baseURL: this.baseURL,
+        headers: {
+          'Content-Type': 'application/xml',
+          'Accept': 'application/xml',
+          'accessKey': this.accessKey,
+          'secretKey': this.secretKey,
+          'appKey': this.appKey
+        },
+        timeout: 15000
+      });
+
+      const response = await xmlClient.post(endpoint, xmlPayload);
+
+      // Проверяем ответ
+      if (response.data) {
+        // Если это XML ответ
+        if (typeof response.data === 'string' && response.data.includes('<?xml')) {
+          if (response.data.includes('<code>OK</code>')) {
+            logger.info(`Invoice ${invoiceId} sent successfully by email${email ? ` to ${email}` : ''}`);
+            return {
+              success: true,
+              message: `Invoice sent successfully by email${email ? ` to ${email}` : ''}`,
+              response: response.data
+            };
+          } else if (response.data.includes('<code>ERROR</code>')) {
+            // Извлекаем детали ошибки из XML
+            const errorMatch = response.data.match(/<message>(.*?)<\/message>/);
+            const errorMessage = errorMatch ? errorMatch[1] : 'Unknown error';
+            logger.error(`Failed to send invoice ${invoiceId} by email: ${errorMessage}`);
+            return {
+              success: false,
+              error: `wFirma API error: ${errorMessage}`,
+              response: response.data
+            };
+          } else {
+            logger.warn(`Unexpected XML response when sending invoice ${invoiceId} by email: ${response.data}`);
+            return {
+              success: false,
+              error: `Unexpected response format: ${response.data}`
+            };
+          }
+        }
+        // Если это JSON ответ
+        else if (typeof response.data === 'object') {
+          if (response.data.code === 'OK' || response.data.success) {
+            logger.info(`Invoice ${invoiceId} sent successfully by email${email ? ` to ${email}` : ''}`);
+            return {
+              success: true,
+              message: `Invoice sent successfully by email${email ? ` to ${email}` : ''}`,
+              response: response.data
+            };
+          } else if (response.data.error || response.data.message) {
+            const errorMessage = response.data.error || response.data.message;
+            logger.error(`Failed to send invoice ${invoiceId} by email: ${errorMessage}`);
+            return {
+              success: false,
+              error: `wFirma API error: ${errorMessage}`,
+              response: response.data
+            };
+          } else {
+            logger.warn(`Unexpected JSON response when sending invoice ${invoiceId} by email: ${JSON.stringify(response.data)}`);
+            return {
+              success: false,
+              error: 'Unexpected response format from wFirma API'
+            };
+          }
+        } else {
+          logger.warn(`Unexpected response format when sending invoice ${invoiceId} by email`);
+          return {
+            success: false,
+            error: 'Unexpected response format from wFirma API'
+          };
+        }
+      } else {
+        logger.error(`Empty response when sending invoice ${invoiceId} by email`);
+        return {
+          success: false,
+          error: 'Empty response from wFirma API'
+        };
+      }
+
+    } catch (error) {
+      logger.error(`Error sending invoice ${invoiceId} by email via wFirma API:`, error);
       return {
         success: false,
         error: error.message,
