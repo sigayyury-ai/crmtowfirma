@@ -250,6 +250,61 @@ class PipedriveClient {
   }
 
   /**
+   * Создать задачу в сделке
+   * @param {Object} taskData - Данные задачи
+   * @param {number} taskData.deal_id - ID сделки
+   * @param {string} taskData.subject - Название задачи
+   * @param {string} taskData.note - Описание задачи (опционально)
+   * @param {string} taskData.due_date - Срок выполнения (YYYY-MM-DD)
+   * @param {string} taskData.type - Тип задачи (опционально, по умолчанию 'task')
+   * @param {number} taskData.assigned_to_user_id - ID пользователя, ответственного за задачу (опционально)
+   * @returns {Promise<Object>} - Результат создания задачи
+   */
+  async createTask(taskData) {
+    try {
+      const params = {
+        api_token: this.apiToken,
+        deal_id: taskData.deal_id,
+        subject: taskData.subject,
+        type: taskData.type || 'task',
+        due_date: taskData.due_date
+      };
+
+      if (taskData.note) {
+        params.note = taskData.note;
+      }
+
+      if (taskData.assigned_to_user_id) {
+        params.assigned_to_user_id = taskData.assigned_to_user_id;
+      }
+
+      // Pipedrive API использует POST /activities для создания задач
+      const response = await this.client.post('/activities', params);
+
+      if (response.data.success) {
+        return {
+          success: true,
+          task: response.data.data,
+          message: 'Task created successfully'
+        };
+      }
+
+      throw new Error('Failed to create task');
+    } catch (error) {
+      logger.error('Error creating task:', {
+        dealId: taskData.deal_id,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
    * Получить полную информацию о сделке (включая связанные данные)
    * @param {number} dealId - ID сделки
    * @returns {Promise<Object>} - Полные данные сделки

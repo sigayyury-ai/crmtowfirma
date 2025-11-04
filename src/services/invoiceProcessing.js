@@ -467,7 +467,47 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
       
-      // 9. Отправляем документ по email через wFirma API
+      // 9. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
+      try {
+        if (invoiceResult.paymentSchedule) {
+          const invoiceNumberForTasks = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
+          const tasksResult = await this.createPaymentVerificationTasks(
+            invoiceResult.paymentSchedule,
+            invoiceNumberForTasks,
+            fullDeal.id
+          );
+          
+          if (!tasksResult.success || tasksResult.tasksFailed > 0) {
+            logger.warn('Payment verification tasks creation failed or partially failed (non-critical):', {
+              dealId: fullDeal.id,
+              invoiceId: invoiceResult.invoiceId,
+              tasksCreated: tasksResult.tasksCreated,
+              tasksFailed: tasksResult.tasksFailed,
+              error: tasksResult.error
+            });
+          } else {
+            logger.info('Payment verification tasks created successfully', {
+              dealId: fullDeal.id,
+              invoiceId: invoiceResult.invoiceId,
+              tasksCreated: tasksResult.tasksCreated
+            });
+          }
+        } else {
+          logger.info('Payment schedule not found in invoice result, skipping task creation', {
+            dealId: fullDeal.id,
+            invoiceId: invoiceResult.invoiceId
+          });
+        }
+      } catch (error) {
+        logger.warn('Error creating payment verification tasks (non-critical):', {
+          dealId: fullDeal.id,
+          invoiceId: invoiceResult.invoiceId,
+          error: error.message
+        });
+        // Не критичная ошибка - продолжаем процесс
+      }
+      
+      // 10. Отправляем документ по email через wFirma API
       // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
       const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
       
@@ -490,7 +530,7 @@ class InvoiceProcessingService {
         logger.info(`Invoice ${invoiceResult.invoiceId} sent successfully by email${customerEmail ? ` to ${customerEmail}` : ''}`);
       }
 
-      // 10. Создаем (если нужно) этикетку по названию сделки без дублирования
+      // 11. Создаем (если нужно) этикетку по названию сделки без дублирования
       const labelResult = await this.ensureLabelForDeal(fullDeal, product);
       if (!labelResult.success) {
         logger.info('Label creation skipped or failed', {
@@ -793,6 +833,184 @@ class InvoiceProcessingService {
     }
 
     return String(sendpulseId).trim();
+  }
+
+  /**
+   * Определить количество задач для создания на основе графика платежей
+   * @param {Object} paymentSchedule - График платежей
+   * @returns {number} - Количество задач (1 или 2)
+   */
+  determineTaskCount(paymentSchedule) {
+    if (!paymentSchedule || !paymentSchedule.type) {
+      return 0;
+    }
+
+    // Если график 50/50 и есть дата второго платежа
+    if (paymentSchedule.type === '50/50' && paymentSchedule.secondPaymentDate) {
+      // Проверяем, больше ли месяца между датами
+      const firstDate = new Date(paymentSchedule.firstPaymentDate);
+      const secondDate = new Date(paymentSchedule.secondPaymentDate);
+      const daysDiff = Math.ceil((secondDate - firstDate) / (1000 * 60 * 60 * 24));
+      
+      // Если больше 30 дней, создаем 2 задачи
+      if (daysDiff > 30) {
+        return 2;
+      }
+    }
+
+    // Для графика 100% или если сроки меньше месяца - создаем 1 задачу
+    return 1;
+  }
+
+  /**
+   * Сгенерировать параметры задач на основе графика платежей
+   * @param {Object} paymentSchedule - График платежей
+   * @param {string} invoiceNumber - Номер проформы
+   * @param {number} dealId - ID сделки
+   * @returns {Array<Object>} - Массив параметров задач
+   */
+  generateTaskParams(paymentSchedule, invoiceNumber, dealId) {
+    const tasks = [];
+    const taskCount = this.determineTaskCount(paymentSchedule);
+
+    if (taskCount === 0) {
+      return tasks;
+    }
+
+    if (taskCount === 2 && paymentSchedule.type === '50/50') {
+      // Создаем две задачи для графика 50/50
+      const formatAmount = (amount) => amount.toFixed(2);
+      
+      // Первая задача: проверка предоплаты (50%)
+      // Предоплата должна быть проверена через несколько дней после создания проформы
+      // Используем дату выдачи проформы + 3 дня для проверки предоплаты
+      const firstPaymentCheckDate = new Date(paymentSchedule.firstPaymentDate);
+      firstPaymentCheckDate.setDate(firstPaymentCheckDate.getDate() + this.PAYMENT_TERMS_DAYS);
+      const firstPaymentCheckDateStr = firstPaymentCheckDate.toISOString().split('T')[0];
+      
+      tasks.push({
+        deal_id: dealId,
+        subject: `Проверка платежа: Предоплата 50% по проформе ${invoiceNumber}`,
+        note: `Проверьте получение предоплаты 50% (${formatAmount(paymentSchedule.firstPaymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        due_date: firstPaymentCheckDateStr,
+        type: 'task'
+      });
+
+      // Вторая задача: проверка остатка (50%)
+      tasks.push({
+        deal_id: dealId,
+        subject: `Проверка платежа: Остаток 50% по проформе ${invoiceNumber}`,
+        note: `Проверьте получение остатка 50% (${formatAmount(paymentSchedule.secondPaymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        due_date: paymentSchedule.secondPaymentDate,
+        type: 'task'
+      });
+    } else {
+      // Создаем одну задачу для графика 100%
+      const formatAmount = (amount) => amount.toFixed(2);
+      const paymentDate = paymentSchedule.singlePaymentDate || paymentSchedule.firstPaymentDate;
+      const paymentAmount = paymentSchedule.singlePaymentAmount || paymentSchedule.totalAmount;
+      
+      tasks.push({
+        deal_id: dealId,
+        subject: `Проверка платежа: Полная оплата по проформе ${invoiceNumber}`,
+        note: `Проверьте получение полной оплаты (${formatAmount(paymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        due_date: paymentDate,
+        type: 'task'
+      });
+    }
+
+    return tasks;
+  }
+
+  /**
+   * Создать задачи в Pipedrive для проверки платежей
+   * @param {Object} paymentSchedule - График платежей
+   * @param {string} invoiceNumber - Номер проформы
+   * @param {number} dealId - ID сделки
+   * @returns {Promise<Object>} - Результат создания задач
+   */
+  async createPaymentVerificationTasks(paymentSchedule, invoiceNumber, dealId) {
+    if (!paymentSchedule || !invoiceNumber || !dealId) {
+      logger.warn('Cannot create payment verification tasks: missing required parameters', {
+        hasPaymentSchedule: !!paymentSchedule,
+        hasInvoiceNumber: !!invoiceNumber,
+        hasDealId: !!dealId
+      });
+      return {
+        success: false,
+        error: 'Missing required parameters for task creation'
+      };
+    }
+
+    try {
+      const taskParams = this.generateTaskParams(paymentSchedule, invoiceNumber, dealId);
+      
+      if (taskParams.length === 0) {
+        logger.info('No tasks to create for payment verification', {
+          dealId,
+          invoiceNumber,
+          paymentScheduleType: paymentSchedule.type
+        });
+        return {
+          success: true,
+          tasksCreated: 0,
+          message: 'No tasks to create'
+        };
+      }
+
+      const results = [];
+      for (const taskParam of taskParams) {
+        const result = await this.pipedriveClient.createTask(taskParam);
+        if (result.success) {
+          results.push({
+            success: true,
+            taskId: result.task.id,
+            subject: taskParam.subject,
+            dueDate: taskParam.due_date
+          });
+          logger.info('Payment verification task created successfully', {
+            dealId,
+            invoiceNumber,
+            taskId: result.task.id,
+            subject: taskParam.subject,
+            dueDate: taskParam.due_date
+          });
+        } else {
+          results.push({
+            success: false,
+            error: result.error,
+            subject: taskParam.subject
+          });
+          logger.warn('Failed to create payment verification task', {
+            dealId,
+            invoiceNumber,
+            subject: taskParam.subject,
+            error: result.error
+          });
+        }
+      }
+
+      const successfulTasks = results.filter(r => r.success).length;
+      const failedTasks = results.filter(r => !r.success).length;
+
+      return {
+        success: successfulTasks > 0,
+        tasksCreated: successfulTasks,
+        tasksFailed: failedTasks,
+        tasks: results,
+        message: `Created ${successfulTasks} of ${taskParams.length} tasks`
+      };
+    } catch (error) {
+      logger.error('Error creating payment verification tasks', {
+        dealId,
+        invoiceNumber,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
@@ -1362,11 +1580,25 @@ class InvoiceProcessingService {
               response: response.data
             });
             
+            // Подготавливаем информацию о графике платежей
+            const paymentSchedule = {
+              type: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? '50/50' : '100%',
+              currency: deal.currency,
+              totalAmount: totalAmount,
+              firstPaymentDate: issueDateStr,
+              firstPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? depositAmount : totalAmount,
+              secondPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? secondPaymentDateStr : null,
+              secondPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? balanceAmount : null,
+              singlePaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : paymentDateStr,
+              singlePaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : totalAmount
+            };
+            
             return {
               success: true,
               invoice: response.data.invoice || response.data,
               invoiceId: invoiceId,
               invoiceNumber: invoiceNumber,
+              paymentSchedule: paymentSchedule,
               message: 'Proforma invoice created successfully'
             };
           } else if (response.data.error || response.data.message) {
@@ -1402,11 +1634,25 @@ class InvoiceProcessingService {
               invoiceNumber: invoiceNumber
             });
             
+            // Подготавливаем информацию о графике платежей
+            const paymentSchedule = {
+              type: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? '50/50' : '100%',
+              currency: deal.currency,
+              totalAmount: totalAmount,
+              firstPaymentDate: issueDateStr,
+              firstPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? depositAmount : totalAmount,
+              secondPaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? secondPaymentDateStr : null,
+              secondPaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? balanceAmount : null,
+              singlePaymentDate: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : paymentDateStr,
+              singlePaymentAmount: (secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) ? null : totalAmount
+            };
+            
             return {
               success: true,
               message: 'Proforma invoice created successfully',
               invoiceId: invoiceId,
               invoiceNumber: invoiceNumber,
+              paymentSchedule: paymentSchedule,
               response: response.data
             };
           } else if (response.data.includes('<code>ERROR</code>')) {
