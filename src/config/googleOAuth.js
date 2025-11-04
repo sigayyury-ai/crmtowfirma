@@ -20,12 +20,12 @@
 
 // Определяем callback URL для OAuth
 const getCallbackURL = () => {
-  // Если указана переменная окружения, используем её
+  // Если указана переменная окружения, используем её (приоритет)
   if (process.env.GOOGLE_CALLBACK_URL) {
     return process.env.GOOGLE_CALLBACK_URL;
   }
   
-  // В production используем полный URL
+  // В production ВСЕГДА используем кастомный домен (не Render subdomain)
   if (process.env.NODE_ENV === 'production') {
     return 'https://invoices.comoon.io/auth/google/callback';
   }
