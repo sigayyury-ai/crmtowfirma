@@ -1,6 +1,7 @@
 const PipedriveClient = require('./pipedrive');
 const WfirmaClient = require('./wfirma');
 const UserManagementService = require('./userManagement');
+const SendPulseClient = require('./sendpulse');
 const logger = require('../utils/logger');
 const bankAccountConfig = require('../../config/bank-accounts');
 
@@ -17,6 +18,15 @@ class InvoiceProcessingService {
     this.wfirmaClient = new WfirmaClient();
     this.userManagement = new UserManagementService();
     
+    // Инициализируем SendPulse клиент (может быть не настроен, поэтому не критично)
+    try {
+      this.sendpulseClient = new SendPulseClient();
+      logger.info('SendPulse client initialized successfully');
+    } catch (error) {
+      logger.warn('SendPulse client not initialized (credentials missing or invalid):', error.message);
+      this.sendpulseClient = null;
+    }
+    
     // Конфигурация
     this.ADVANCE_PERCENT = 50; // 50% предоплата
     this.PAYMENT_TERMS_DAYS = 3; // Срок оплаты 3 дня
@@ -27,6 +37,10 @@ class InvoiceProcessingService {
     
     // Кастомное поле Invoice type в Pipedrive
     this.INVOICE_TYPE_FIELD_KEY = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+    
+    // Кастомное поле Sendpulse ID в Pipedrive
+    // Ключ поля: "Sendpulse ID" (статический, одинаковый для всех пользователей)
+    this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
     
     // Типы фактур с ID опций из Pipedrive (пока только Pro forma)
     this.INVOICE_TYPES = {
@@ -338,7 +352,7 @@ class InvoiceProcessingService {
       const contractor = contractorResult.contractor;
       logger.info(`Using contractor: ${contractor.name} (ID: ${contractor.id})`);
 
-      // 7. Получаем продукты из сделки Pipedrive
+      // 6. Получаем продукты из сделки Pipedrive
       const dealProducts = await this.getDealProducts(fullDeal.id);
       let product;
       const defaultProductName = fullDeal.title || 'Camp / Tourist service';
@@ -397,7 +411,7 @@ class InvoiceProcessingService {
         });
       }
 
-      // 8. Создаем документ в wFirma с существующим контрагентом и продуктом
+      // 7. Создаем документ в wFirma с существующим контрагентом и продуктом
       const invoiceResult = await this.createInvoiceInWfirma(
         fullDeal,
         contractor,
@@ -420,7 +434,40 @@ class InvoiceProcessingService {
       
       logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
       
-      // 7. Отправляем документ по email через wFirma API
+      // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
+      try {
+        const sendpulseId = this.getSendpulseId(fullPerson);
+        if (sendpulseId) {
+          const invoiceNumberForTelegram = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
+          const telegramResult = await this.sendTelegramNotification(
+            sendpulseId,
+            invoiceResult.invoiceId,
+            invoiceNumberForTelegram
+          );
+          
+          if (!telegramResult.success) {
+            logger.warn('Telegram notification failed (non-critical):', {
+              dealId: fullDeal.id,
+              invoiceId: invoiceResult.invoiceId,
+              error: telegramResult.error
+            });
+          }
+        } else {
+          logger.info('Telegram Message ID not found in person, skipping Telegram notification', {
+            dealId: fullDeal.id,
+            personId: fullPerson?.id
+          });
+        }
+      } catch (error) {
+        logger.warn('Error sending Telegram notification (non-critical):', {
+          dealId: fullDeal.id,
+          invoiceId: invoiceResult.invoiceId,
+          error: error.message
+        });
+        // Не критичная ошибка - продолжаем процесс
+      }
+      
+      // 9. Отправляем документ по email через wFirma API
       // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
       const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
       
@@ -443,7 +490,7 @@ class InvoiceProcessingService {
         logger.info(`Invoice ${invoiceResult.invoiceId} sent successfully by email${customerEmail ? ` to ${customerEmail}` : ''}`);
       }
 
-      // 9. Создаем (если нужно) этикетку по названию сделки без дублирования
+      // 10. Создаем (если нужно) этикетку по названию сделки без дублирования
       const labelResult = await this.ensureLabelForDeal(fullDeal, product);
       if (!labelResult.success) {
         logger.info('Label creation skipped or failed', {
@@ -727,6 +774,85 @@ class InvoiceProcessingService {
     }
     
     return null;
+  }
+
+  /**
+   * Получить SendPulse ID из персоны
+   * @param {Object} person - Данные персоны
+   * @returns {string|null} - SendPulse ID или null
+   */
+  getSendpulseId(person) {
+    if (!person) {
+      return null;
+    }
+
+    const sendpulseId = person[this.SENDPULSE_ID_FIELD_KEY];
+    
+    if (!sendpulseId || String(sendpulseId).trim() === '') {
+      return null;
+    }
+
+    return String(sendpulseId).trim();
+  }
+
+  /**
+   * Отправить Telegram уведомление через SendPulse
+   * @param {string} sendpulseId - SendPulse ID контакта
+   * @param {string} invoiceId - ID проформы в wFirma
+   * @param {string} invoiceNumber - Номер проформы (PRO-...)
+   * @returns {Promise<Object>} - Результат отправки
+   */
+  async sendTelegramNotification(sendpulseId, invoiceId, invoiceNumber) {
+    if (!this.sendpulseClient) {
+      logger.warn('SendPulse client not initialized, skipping Telegram notification');
+      return {
+        success: false,
+        error: 'SendPulse client not initialized'
+      };
+    }
+
+    if (!sendpulseId) {
+      logger.warn('SendPulse ID is missing, skipping Telegram notification');
+      return {
+        success: false,
+        error: 'SendPulse ID is missing'
+      };
+    }
+
+    try {
+      const message = `Привет! Тебе была отправлена проформа по email.\n\n` +
+                     `Номер проформы: ${invoiceNumber || invoiceId}\n` +
+                     `Пожалуйста, проверь почту и внимательно посмотри сроки оплаты и график платежей.`;
+
+      const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
+
+      if (result.success) {
+        logger.info('SendPulse Telegram notification sent successfully', {
+          sendpulseId,
+          invoiceId,
+          invoiceNumber,
+          messageId: result.messageId
+        });
+      } else {
+        logger.warn('Failed to send SendPulse Telegram notification', {
+          sendpulseId,
+          invoiceId,
+          error: result.error
+        });
+      }
+
+      return result;
+    } catch (error) {
+      logger.error('Error sending SendPulse Telegram notification', {
+        sendpulseId,
+        invoiceId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   /**
