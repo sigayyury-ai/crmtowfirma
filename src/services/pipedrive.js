@@ -262,8 +262,13 @@ class PipedriveClient {
    */
   async createTask(taskData) {
     try {
-      const params = {
-        api_token: this.apiToken,
+      // Параметры для query string (api_token)
+      const queryParams = {
+        api_token: this.apiToken
+      };
+
+      // Данные задачи в теле запроса
+      const bodyData = {
         deal_id: taskData.deal_id,
         subject: taskData.subject,
         type: taskData.type || 'task',
@@ -271,15 +276,18 @@ class PipedriveClient {
       };
 
       if (taskData.note) {
-        params.note = taskData.note;
+        bodyData.note = taskData.note;
       }
 
       if (taskData.assigned_to_user_id) {
-        params.assigned_to_user_id = taskData.assigned_to_user_id;
+        bodyData.assigned_to_user_id = taskData.assigned_to_user_id;
       }
 
       // Pipedrive API использует POST /activities для создания задач
-      const response = await this.client.post('/activities', params);
+      // api_token в query string, остальные данные в теле запроса
+      const response = await this.client.post('/activities', bodyData, {
+        params: queryParams
+      });
 
       if (response.data.success) {
         return {

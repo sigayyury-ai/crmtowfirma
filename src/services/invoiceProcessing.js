@@ -435,11 +435,12 @@ class InvoiceProcessingService {
       logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
       
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
+      let telegramResult = null;
       try {
         const sendpulseId = this.getSendpulseId(fullPerson);
         if (sendpulseId) {
           const invoiceNumberForTelegram = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
-          const telegramResult = await this.sendTelegramNotification(
+          telegramResult = await this.sendTelegramNotification(
             sendpulseId,
             invoiceResult.invoiceId,
             invoiceNumberForTelegram
@@ -468,10 +469,11 @@ class InvoiceProcessingService {
       }
       
       // 9. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
+      let tasksResult = null;
       try {
         if (invoiceResult.paymentSchedule) {
           const invoiceNumberForTasks = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
-          const tasksResult = await this.createPaymentVerificationTasks(
+          tasksResult = await this.createPaymentVerificationTasks(
             invoiceResult.paymentSchedule,
             invoiceNumberForTasks,
             fullDeal.id
@@ -551,7 +553,14 @@ class InvoiceProcessingService {
         message: `Invoice ${invoiceType} created and sent successfully`,
         invoiceType: invoiceType,
         invoiceId: invoiceResult.invoiceId,
-        contractorName: contractorData.name
+        invoiceNumber: invoiceResult.invoiceNumber,
+        amount: invoiceResult.amount || fullDeal.value,
+        currency: invoiceResult.currency || fullDeal.currency,
+        contractorName: contractorData.name,
+        dealId: fullDeal.id,
+        tasks: tasksResult,
+        telegramNotification: telegramResult,
+        emailSent: emailResult?.success || false
       };
 
       // КРИТИЧНО: Снимаем триггер в CRM ТОЛЬКО после успешного создания проформы в wFirma
@@ -882,16 +891,16 @@ class InvoiceProcessingService {
       const formatAmount = (amount) => amount.toFixed(2);
       
       // Первая задача: проверка предоплаты (50%)
-      // Предоплата должна быть проверена через несколько дней после создания проформы
-      // Используем дату выдачи проформы + 3 дня для проверки предоплаты
+      // Предоплата должна быть проверена через несколько дней после создания инвойса
+      // Используем дату выдачи инвойса + 3 дня для проверки предоплаты
       const firstPaymentCheckDate = new Date(paymentSchedule.firstPaymentDate);
       firstPaymentCheckDate.setDate(firstPaymentCheckDate.getDate() + this.PAYMENT_TERMS_DAYS);
       const firstPaymentCheckDateStr = firstPaymentCheckDate.toISOString().split('T')[0];
       
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Предоплата 50% по проформе ${invoiceNumber}`,
-        note: `Проверьте получение предоплаты 50% (${formatAmount(paymentSchedule.firstPaymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        subject: `Проверка платежа: Предоплата 50% по инвойсу ${invoiceNumber}`,
+        note: `Проверьте получение предоплаты 50% (${formatAmount(paymentSchedule.firstPaymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: firstPaymentCheckDateStr,
         type: 'task'
       });
@@ -899,8 +908,8 @@ class InvoiceProcessingService {
       // Вторая задача: проверка остатка (50%)
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Остаток 50% по проформе ${invoiceNumber}`,
-        note: `Проверьте получение остатка 50% (${formatAmount(paymentSchedule.secondPaymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        subject: `Проверка платежа: Остаток 50% по инвойсу ${invoiceNumber}`,
+        note: `Проверьте получение остатка 50% (${formatAmount(paymentSchedule.secondPaymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: paymentSchedule.secondPaymentDate,
         type: 'task'
       });
@@ -912,8 +921,8 @@ class InvoiceProcessingService {
       
       tasks.push({
         deal_id: dealId,
-        subject: `Проверка платежа: Полная оплата по проформе ${invoiceNumber}`,
-        note: `Проверьте получение полной оплаты (${formatAmount(paymentAmount)} ${paymentSchedule.currency}) по проформе ${invoiceNumber}.`,
+        subject: `Проверка платежа: Полная оплата по инвойсу ${invoiceNumber}`,
+        note: `Проверьте получение полной оплаты (${formatAmount(paymentAmount)} ${paymentSchedule.currency}) по инвойсу ${invoiceNumber}.`,
         due_date: paymentDate,
         type: 'task'
       });
@@ -1038,8 +1047,8 @@ class InvoiceProcessingService {
     }
 
     try {
-      const message = `Привет! Тебе была отправлена проформа по email.\n\n` +
-                     `Номер проформы: ${invoiceNumber || invoiceId}\n` +
+      const message = `Привет! Тебе был отправлен инвойс по email.\n\n` +
+                     `Номер инвойса: ${invoiceNumber || invoiceId}\n` +
                      `Пожалуйста, проверь почту и внимательно посмотри сроки оплаты и график платежей.`;
 
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
@@ -1357,6 +1366,7 @@ class InvoiceProcessingService {
         amount: amountResult.amount,
         currency: deal.currency,
         vatRate: this.VAT_RATE,
+        paymentSchedule: invoiceResult.paymentSchedule,
         message: `Proforma invoice created successfully for ${amountResult.amount} ${deal.currency} (no VAT)`
       };
       
