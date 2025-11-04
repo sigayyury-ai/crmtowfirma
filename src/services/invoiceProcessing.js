@@ -20,10 +20,25 @@ class InvoiceProcessingService {
     
     // Инициализируем SendPulse клиент (может быть не настроен, поэтому не критично)
     try {
+      const hasSendpulseId = !!process.env.SENDPULSE_ID?.trim();
+      const hasSendpulseSecret = !!process.env.SENDPULSE_SECRET?.trim();
+      
+      logger.info('SendPulse initialization check:', {
+        hasSendpulseId,
+        hasSendpulseSecret,
+        sendpulseIdLength: process.env.SENDPULSE_ID?.trim()?.length || 0,
+        sendpulseSecretLength: process.env.SENDPULSE_SECRET?.trim()?.length || 0
+      });
+      
       this.sendpulseClient = new SendPulseClient();
       logger.info('SendPulse client initialized successfully');
     } catch (error) {
-      logger.warn('SendPulse client not initialized (credentials missing or invalid):', error.message);
+      logger.error('SendPulse client not initialized (credentials missing or invalid):', {
+        error: error.message,
+        stack: error.stack,
+        hasSendpulseId: !!process.env.SENDPULSE_ID?.trim(),
+        hasSendpulseSecret: !!process.env.SENDPULSE_SECRET?.trim()
+      });
       this.sendpulseClient = null;
     }
     
@@ -437,7 +452,20 @@ class InvoiceProcessingService {
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
       try {
+        logger.info('Checking Telegram notification requirements:', {
+          dealId: fullDeal.id,
+          hasSendpulseClient: !!this.sendpulseClient,
+          personId: fullPerson?.id
+        });
+        
         const sendpulseId = this.getSendpulseId(fullPerson);
+        logger.info('SendPulse ID check result:', {
+          dealId: fullDeal.id,
+          sendpulseId: sendpulseId || 'NOT FOUND',
+          personId: fullPerson?.id,
+          personFields: fullPerson ? Object.keys(fullPerson) : []
+        });
+        
         if (sendpulseId) {
           const invoiceNumberForTelegram = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
           
@@ -454,10 +482,17 @@ class InvoiceProcessingService {
           );
           
           if (!telegramResult.success) {
-            logger.warn('Telegram notification failed (non-critical):', {
+            logger.error('Telegram notification failed (non-critical):', {
               dealId: fullDeal.id,
               invoiceId: invoiceResult.invoiceId,
-              error: telegramResult.error
+              error: telegramResult.error,
+              details: telegramResult.details
+            });
+          } else {
+            logger.info('Telegram notification sent successfully:', {
+              dealId: fullDeal.id,
+              invoiceId: invoiceResult.invoiceId,
+              messageId: telegramResult.messageId
             });
           }
         } else {
@@ -467,10 +502,11 @@ class InvoiceProcessingService {
           });
         }
       } catch (error) {
-        logger.warn('Error sending Telegram notification (non-critical):', {
+        logger.error('Error sending Telegram notification (non-critical):', {
           dealId: fullDeal.id,
           invoiceId: invoiceResult.invoiceId,
-          error: error.message
+          error: error.message,
+          stack: error.stack
         });
         // Не критичная ошибка - продолжаем процесс
       }
@@ -478,6 +514,13 @@ class InvoiceProcessingService {
       // 9. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
       let tasksResult = null;
       try {
+        logger.info('Checking task creation requirements:', {
+          dealId: fullDeal.id,
+          hasPaymentSchedule: !!invoiceResult.paymentSchedule,
+          paymentScheduleType: invoiceResult.paymentSchedule?.type,
+          invoiceId: invoiceResult.invoiceId
+        });
+        
         if (invoiceResult.paymentSchedule) {
           const invoiceNumberForTasks = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
           tasksResult = await this.createPaymentVerificationTasks(
@@ -487,31 +530,35 @@ class InvoiceProcessingService {
           );
           
           if (!tasksResult.success || tasksResult.tasksFailed > 0) {
-            logger.warn('Payment verification tasks creation failed or partially failed (non-critical):', {
+            logger.error('Payment verification tasks creation failed or partially failed (non-critical):', {
               dealId: fullDeal.id,
               invoiceId: invoiceResult.invoiceId,
               tasksCreated: tasksResult.tasksCreated,
               tasksFailed: tasksResult.tasksFailed,
-              error: tasksResult.error
+              error: tasksResult.error,
+              tasks: tasksResult.tasks
             });
           } else {
             logger.info('Payment verification tasks created successfully', {
               dealId: fullDeal.id,
               invoiceId: invoiceResult.invoiceId,
-              tasksCreated: tasksResult.tasksCreated
+              tasksCreated: tasksResult.tasksCreated,
+              tasks: tasksResult.tasks
             });
           }
         } else {
-          logger.info('Payment schedule not found in invoice result, skipping task creation', {
+          logger.warn('Payment schedule not found in invoice result, skipping task creation', {
             dealId: fullDeal.id,
-            invoiceId: invoiceResult.invoiceId
+            invoiceId: invoiceResult.invoiceId,
+            invoiceResultKeys: Object.keys(invoiceResult)
           });
         }
       } catch (error) {
-        logger.warn('Error creating payment verification tasks (non-critical):', {
+        logger.error('Error creating payment verification tasks (non-critical):', {
           dealId: fullDeal.id,
           invoiceId: invoiceResult.invoiceId,
-          error: error.message
+          error: error.message,
+          stack: error.stack
         });
         // Не критичная ошибка - продолжаем процесс
       }

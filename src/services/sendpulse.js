@@ -109,7 +109,19 @@ class SendPulseClient {
   async sendTelegramMessage(sendpulseId, message, file = null, fileName = null) {
     let payload = null; // Объявляем payload вне try блока для использования в catch
     try {
+      logger.info('Preparing to send Telegram message:', {
+        sendpulseId,
+        messageLength: message?.length || 0,
+        hasClientId: !!this.clientId,
+        hasClientSecret: !!this.clientSecret
+      });
+      
       const accessToken = await this.getAccessToken();
+      
+      logger.info('SendPulse access token obtained:', {
+        hasToken: !!accessToken,
+        tokenLength: accessToken?.length || 0
+      });
 
       // Формируем URL для отправки сообщения
       // SendPulse API для отправки сообщений через мессенджер (Telegram)

@@ -262,6 +262,14 @@ class PipedriveClient {
    */
   async createTask(taskData) {
     try {
+      logger.info('Creating task in Pipedrive:', {
+        dealId: taskData.deal_id,
+        subject: taskData.subject,
+        dueDate: taskData.due_date,
+        hasApiToken: !!this.apiToken,
+        apiTokenLength: this.apiToken?.length || 0
+      });
+      
       // Параметры для query string (api_token)
       const queryParams = {
         api_token: this.apiToken
