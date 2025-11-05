@@ -19,6 +19,36 @@ body {
     padding: 20px;
 }
 
+/* Navigation */
+.main-nav {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+}
+
+.nav-link {
+    padding: 10px 20px;
+    color: white;
+    text-decoration: none;
+    border-radius: 6px;
+    transition: all 0.3s ease;
+    font-weight: 600;
+}
+
+.nav-link:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-2px);
+}
+
+.nav-link.active {
+    background: white;
+    color: #667eea;
+}
+
 /* Header */
 header {
     text-align: center;
@@ -40,6 +70,7 @@ header p {
 /* Sections */
 .status-section,
 .controls-section,
+.vat-margin-section,
 .results-section,
 .logs-section {
     background: white;
@@ -322,6 +353,247 @@ h2 {
 }
 
 /* Responsive */
+/* VAT Margin Section */
+.vat-margin-controls {
+    margin-bottom: 20px;
+}
+
+.date-range-selector {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+.date-range-selector label {
+    font-weight: 600;
+    color: #4a5568;
+}
+
+.date-range-selector input[type="date"] {
+    padding: 8px 12px;
+    border: 2px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 1rem;
+    transition: border-color 0.3s ease;
+}
+
+.date-range-selector input[type="date"]:focus {
+    outline: none;
+    border-color: #4299e1;
+}
+
+.vat-margin-container {
+    min-height: 200px;
+}
+
+.vat-margin-summary {
+    background: #f7fafc;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 20px;
+    border-left: 4px solid #4299e1;
+}
+
+.vat-margin-summary h3 {
+    color: #2d3748;
+    margin-bottom: 10px;
+}
+
+.vat-margin-summary p {
+    color: #4a5568;
+    margin-bottom: 5px;
+}
+
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-top: 10px;
+}
+
+.summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.summary-label {
+    font-size: 0.9rem;
+    color: #718096;
+}
+
+.summary-value {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.vat-margin-table {
+    overflow-x: auto;
+}
+
+.product-group {
+    margin-bottom: 30px;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.product-group-header {
+    padding: 15px 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    margin: 0;
+    font-size: 1.2em;
+    font-weight: 600;
+}
+
+.product-group-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.product-group-table thead {
+    background: #f8f9fa;
+}
+
+.product-group-table th {
+    padding: 12px 15px;
+    text-align: left;
+    font-weight: 600;
+    color: #495057;
+    border-bottom: 2px solid #dee2e6;
+}
+
+.product-group-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.product-group-table tbody tr:hover {
+    background: #f8f9fa;
+}
+
+.product-group-total {
+    border-top: 2px solid #dee2e6;
+}
+
+.product-group-total td {
+    border-bottom: none !important;
+}
+
+.vat-margin-table table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.vat-margin-table thead {
+    background: #f8f9fa;
+    color: #495057;
+}
+
+.vat-margin-table th {
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+}
+
+.vat-margin-table td {
+    padding: 12px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.vat-margin-table tbody tr:hover {
+    background: #f7fafc;
+}
+
+.vat-margin-table .product-name {
+    font-weight: 600;
+    color: #2d3748;
+    max-width: 300px;
+    word-wrap: break-word;
+}
+
+.vat-margin-table .currency {
+    text-align: center;
+    font-weight: 600;
+    color: #4a5568;
+}
+
+.vat-margin-table .count {
+    text-align: center;
+}
+
+.vat-margin-table .amount {
+    text-align: right;
+    font-weight: 600;
+    color: #2d3748;
+}
+
+.invoices-detail td {
+    background: #f7fafc;
+    padding: 20px;
+}
+
+.invoices-list {
+    margin-left: 20px;
+}
+
+.invoices-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.invoices-table thead {
+    background: #e2e8f0;
+}
+
+.invoices-table th {
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 0.9rem;
+    color: #4a5568;
+    font-weight: 600;
+}
+
+.invoices-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    font-size: 0.9rem;
+}
+
+.invoices-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: #4299e1;
+    cursor: pointer;
+    text-decoration: underline;
+    font-size: 0.9rem;
+    padding: 0;
+}
+
+.btn-link:hover {
+    color: #3182ce;
+}
+
+.period-info {
+    color: #718096;
+    font-size: 0.9rem;
+    margin-top: 10px;
+}
+
 @media (max-width: 768px) {
     .container {
         padding: 15px;
@@ -343,5 +615,23 @@ h2 {
     .btn {
         width: 100%;
         justify-content: center;
+    }
+    
+    .date-range-selector {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .date-range-selector input[type="date"] {
+        width: 100%;
+    }
+    
+    .vat-margin-table {
+        font-size: 0.9rem;
+    }
+    
+    .vat-margin-table th,
+    .vat-margin-table td {
+        padding: 8px;
     }
 }

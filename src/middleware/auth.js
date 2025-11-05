@@ -14,13 +14,15 @@ logger.info('Google OAuth Configuration:', {
   allowedDomains: config.googleOAuth.allowedDomains
 });
 
-passport.use(
-  new GoogleStrategy(
-    {
-      clientID: config.googleOAuth.clientID,
-      clientSecret: config.googleOAuth.clientSecret,
-      callbackURL: config.googleOAuth.callbackURL
-    },
+// Создаем стратегию только если clientID установлен
+if (config.googleOAuth.clientID && config.googleOAuth.clientSecret) {
+  passport.use(
+    new GoogleStrategy(
+      {
+        clientID: config.googleOAuth.clientID,
+        clientSecret: config.googleOAuth.clientSecret,
+        callbackURL: config.googleOAuth.callbackURL
+      },
     async (accessToken, refreshToken, profile, done) => {
       try {
         // Проверяем, что email принадлежит разрешенному домену
@@ -67,7 +69,10 @@ passport.use(
       }
     }
   )
-);
+  );
+} else {
+  logger.warn('Google OAuth credentials not set. OAuth authentication will not work.');
+}
 
 /**
  * Сериализация пользователя для сессии
@@ -86,8 +91,14 @@ passport.deserializeUser((user, done) => {
 /**
  * Middleware для проверки авторизации
  * Пользователь должен быть авторизован и иметь email с доменом @comoon.io
+ * В development режиме авторизация не требуется
  */
 const requireAuth = (req, res, next) => {
+  // В development режиме пропускаем авторизацию
+  if (process.env.NODE_ENV !== 'production') {
+    return next();
+  }
+  
   if (req.isAuthenticated && req.isAuthenticated()) {
     const user = req.user;
     
@@ -116,8 +127,14 @@ const requireAuth = (req, res, next) => {
 
 /**
  * Middleware для проверки авторизации с JSON ответом (для API)
+ * В development режиме авторизация не требуется
  */
 const requireAuthJSON = (req, res, next) => {
+  // В development режиме пропускаем авторизацию
+  if (process.env.NODE_ENV !== 'production') {
+    return next();
+  }
+  
   if (req.isAuthenticated && req.isAuthenticated()) {
     const user = req.user;
     

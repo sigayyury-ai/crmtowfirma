@@ -1,0 +1,750 @@
+const WfirmaClient = require('../wfirma');
+const logger = require('../../utils/logger');
+const axios = require('axios');
+
+class WfirmaLookup {
+  constructor() {
+    this.wfirmaClient = new WfirmaClient();
+    this.companyId = '885512';
+    this.baseURL = process.env.WFIRMA_BASE_URL || 'https://api2.wfirma.pl';
+    
+    // Настройки для работы с XML API wFirma
+    this.xmlClient = axios.create({
+      baseURL: this.baseURL,
+      headers: {
+        'Content-Type': 'application/xml',
+        'Accept': 'application/xml',
+        'accessKey': process.env.WFIRMA_ACCESS_KEY?.trim(),
+        'secretKey': process.env.WFIRMA_SECRET_KEY?.trim(),
+        'appKey': process.env.WFIRMA_APP_KEY?.trim()
+      },
+      timeout: 30000
+    });
+  }
+
+  /**
+   * Получить проформы за текущий месяц, сгруппированные по продуктам
+   * @param {Object} options - Опции фильтрации
+   * @param {Date} options.dateFrom - Дата начала периода (по умолчанию - начало текущего месяца)
+   * @param {Date} options.dateTo - Дата окончания периода (по умолчанию - конец текущего месяца)
+   * @returns {Promise<Array>} - Массив объектов с группировкой по продуктам
+   */
+  async getMonthlyProformasByProduct(options = {}) {
+    try {
+      // Временно убираем фильтр по дате - загружаем все проформы
+      let proformas = [];
+      
+      if (options.dateFrom && options.dateTo) {
+        // Если даты указаны, используем их
+        const dateFrom = options.dateFrom;
+        const dateTo = options.dateTo;
+        
+        logger.info('Getting monthly proformas by product with date filter:', {
+          dateFrom: dateFrom.toISOString().split('T')[0],
+          dateTo: dateTo.toISOString().split('T')[0]
+        });
+        
+        proformas = await this.getProformasByDateRange(dateFrom, dateTo);
+      } else {
+        // Если даты не указаны, загружаем все проформы (без фильтра по дате)
+        logger.info('Getting all proformas (no date filter)');
+        
+        // Используем расширенный диапазон: последние 10 лет от сегодня
+        const now = new Date();
+        const dateFrom = new Date(now.getFullYear() - 10, 0, 1); // 10 лет назад
+        const dateTo = new Date(now.getFullYear() + 2, 11, 31, 23, 59, 59); // До конца через 2 года
+        
+        logger.info('Using date range for all proformas:', {
+          dateFrom: dateFrom.toISOString().split('T')[0],
+          dateTo: dateTo.toISOString().split('T')[0]
+        });
+        
+        proformas = await this.getProformasByDateRange(dateFrom, dateTo);
+      }
+
+      // Создаем плоскую таблицу продуктов
+      const productTable = this.createProductTable(proformas);
+
+      logger.info(`Found ${proformas.length} proformas, created ${productTable.length} product table rows`);
+
+      return productTable;
+    } catch (error) {
+      logger.error('Error getting monthly proformas by product:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Получить проформы из wFirma за указанный период
+   * @param {Date} dateFrom - Дата начала
+   * @param {Date} dateTo - Дата окончания
+   * @returns {Promise<Array>} - Массив проформ
+   */
+  async getProformasByDateRange(dateFrom, dateTo) {
+    try {
+      // Форматируем даты для wFirma API (YYYY-MM-DD)
+      const dateFromStr = dateFrom.toISOString().split('T')[0];
+      const dateToStr = dateTo.toISOString().split('T')[0];
+
+      logger.info('Fetching proformas from wFirma:', { 
+        dateFrom: dateFromStr, 
+        dateTo: dateToStr,
+        dateFromObj: dateFrom.toISOString(),
+        dateToObj: dateTo.toISOString()
+      });
+
+      let allInvoices = [];
+      let page = 1;
+      const limit = 100; // wFirma обычно возвращает максимум 100 записей на страницу
+      let hasMore = true;
+
+      // Делаем пагинацию для получения всех записей
+      while (hasMore) {
+      // Строим XML запрос для получения проформ
+      // Пробуем без фильтра по типу, так как wFirma может не возвращать результаты с фильтром
+      // Будем фильтровать по номеру CO-PROF при парсинге
+      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
+<api>
+    <invoices>
+        <invoice>
+            <parameters>
+                <date>
+                    <from>${dateFromStr}</from>
+                    <to>${dateToStr}</to>
+                </date>
+                <limit>${limit}</limit>
+                <page>${page}</page>
+            </parameters>
+        </invoice>
+    </invoices>
+</api>`;
+
+        const endpoint = `/invoices/find?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
+
+        logger.info(`Making request to wFirma API: ${endpoint}`, {
+          page,
+          limit,
+          dateFrom: dateFromStr,
+          dateTo: dateToStr
+        });
+
+        const response = await this.xmlClient.post(endpoint, xmlPayload);
+
+        if (!response.data) {
+          logger.warn(`Empty response from wFirma API for page ${page}`);
+          hasMore = false;
+          break;
+        }
+
+        // Парсим XML ответ вручную
+        logger.info(`Parsing XML response from wFirma, page ${page}`);
+        logger.info(`Response type: ${typeof response.data}`);
+        logger.info(`Response length: ${typeof response.data === 'string' ? response.data.length : 'N/A'}`);
+        
+        // Логируем начало ответа для отладки
+        if (typeof response.data === 'string') {
+          const preview = response.data.substring(0, 1000);
+          logger.info(`XML response preview (first 1000 chars): ${preview}`);
+          
+          // Проверяем наличие ошибок в ответе
+          if (response.data.includes('<code>ERROR</code>') || response.data.includes('<error>')) {
+            logger.error('wFirma API returned an error in XML response');
+            logger.error('Full error response:', response.data);
+          }
+        }
+        
+        // Проверяем, есть ли invoice теги в ответе
+        const hasInvoices = typeof response.data === 'string' && response.data.includes('<invoice>');
+        logger.info(`Response contains invoice tags: ${hasInvoices}`);
+        
+        const invoices = await this.parseInvoicesFromXmlString(response.data, dateFrom, dateTo);
+        
+        logger.info(`Page ${page}: parsed ${invoices.length} proformas (CO-PROF only)`);
+        
+        // Добавляем найденные проформы
+        if (invoices.length > 0) {
+          allInvoices = allInvoices.concat(invoices);
+        }
+        
+        // Проверяем, есть ли invoice теги в ответе
+        const hasInvoiceTags = typeof response.data === 'string' && response.data.includes('<invoice>');
+        
+        // Если нет invoice тегов, прекращаем пагинацию
+        if (!hasInvoiceTags) {
+          logger.info('No invoice tags found in response, stopping pagination');
+          hasMore = false;
+          break;
+        }
+        
+        // Проверяем, есть ли еще страницы
+        // Если на странице меньше записей, чем лимит, значит это последняя страница
+        // Но нужно проверить, сколько invoice тегов в ответе (не только CO-PROF)
+        const invoiceTagsCount = (response.data.match(/<invoice>/g) || []).length;
+        logger.info(`Page ${page}: found ${invoiceTagsCount} invoice tags in XML, ${invoices.length} are CO-PROF proformas`);
+        
+        if (invoiceTagsCount < limit) {
+          // Это последняя страница
+          hasMore = false;
+        } else {
+          // Переходим на следующую страницу
+          page++;
+            // Ограничиваем максимальное количество страниц для безопасности
+            if (page > 200) {
+              logger.warn('Reached maximum page limit (200), stopping pagination');
+              hasMore = false;
+            }
+        }
+      }
+
+      logger.info(`Fetched ${allInvoices.length} total proformas from ${page} page(s)`);
+      
+      // Проверяем, есть ли проформы без продуктов
+      // Если в /invoices/find invoicecontents пустые, получаем полные данные через /invoices/get
+      const proformasWithoutProducts = allInvoices.filter(inv => !inv.products || inv.products.length === 0);
+      
+      if (proformasWithoutProducts.length > 0) {
+        logger.info(`Found ${proformasWithoutProducts.length} proformas without products, fetching full data via /invoices/get`);
+        
+        // Получаем полные данные для проформ без продуктов
+        for (const proforma of proformasWithoutProducts) {
+          try {
+            logger.info(`Fetching full proforma ${proforma.fullnumber || proforma.number} (ID: ${proforma.id})`);
+            const fullProforma = await this.getFullProformaById(proforma.id);
+            
+            if (fullProforma) {
+              logger.info(`Full proforma ${proforma.fullnumber || proforma.number}: products count = ${fullProforma.products ? fullProforma.products.length : 0}`);
+              
+              if (fullProforma.products && fullProforma.products.length > 0) {
+                // Обновляем проформу с полными данными
+                const index = allInvoices.findIndex(inv => inv.id === proforma.id);
+                if (index >= 0) {
+                  allInvoices[index] = fullProforma;
+                  logger.info(`✓ Updated proforma ${proforma.fullnumber || proforma.number} with ${fullProforma.products.length} products`);
+                } else {
+                  logger.warn(`Proforma ${proforma.fullnumber || proforma.number} not found in allInvoices array`);
+                }
+              } else {
+                logger.warn(`Full proforma ${proforma.fullnumber || proforma.number} has no products after fetching`);
+              }
+            } else {
+              logger.warn(`Failed to get full proforma ${proforma.id}: returned null`);
+            }
+          } catch (error) {
+            logger.warn(`Failed to get full proforma ${proforma.id}: ${error.message}`);
+            logger.error(`Error details:`, error);
+          }
+        }
+      }
+      
+      // Фильтруем проформы без продуктов (они не нужны)
+      const proformasWithProducts = allInvoices.filter(inv => inv.products && inv.products.length > 0);
+      logger.info(`After filtering: ${proformasWithProducts.length} proformas with products out of ${allInvoices.length} total`);
+      
+      return proformasWithProducts;
+    } catch (error) {
+      logger.error('Error fetching proformas from wFirma:', error);
+      
+      // Если XML парсинг не работает, пробуем парсить вручную
+      if (error.response && error.response.data) {
+        return this.parseInvoicesFromXmlString(error.response.data, dateFrom, dateTo);
+      }
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Парсинг проформ из XML строки (fallback метод)
+   */
+  async parseInvoicesFromXmlString(xmlString, dateFrom, dateTo) {
+    try {
+      const invoices = [];
+      
+      // Проверяем, что это строка
+      if (typeof xmlString !== 'string') {
+        logger.warn('XML response is not a string:', typeof xmlString);
+        return [];
+      }
+      
+      // Логируем первые 500 символов ответа для отладки
+      logger.debug('XML response preview:', xmlString.substring(0, 500));
+      
+      // Ищем все теги <invoice> в XML
+      const invoiceMatches = xmlString.match(/<invoice>[\s\S]*?<\/invoice>/g);
+      
+      if (!invoiceMatches) {
+        logger.info('No invoice tags found in XML response');
+        logger.debug('Full XML response:', xmlString);
+        return [];
+      }
+
+      logger.info(`Found ${invoiceMatches.length} invoice tags in XML`);
+
+      let parsedCount = 0;
+      let filteredCount = 0;
+      let proformaCount = 0;
+
+      for (const invoiceXml of invoiceMatches) {
+        try {
+          const invoice = await this.parseInvoiceFromXml(invoiceXml);
+          parsedCount++;
+          
+          if (invoice) {
+            proformaCount++;
+            
+            // Фильтруем по дате, если указаны
+            if (dateFrom && dateTo) {
+              const invoiceDate = new Date(invoice.date);
+              
+              // Сравниваем только даты (без времени) - используем UTC для корректного сравнения
+              const invoiceDateOnly = new Date(Date.UTC(invoiceDate.getFullYear(), invoiceDate.getMonth(), invoiceDate.getDate()));
+              const dateFromOnly = new Date(Date.UTC(dateFrom.getFullYear(), dateFrom.getMonth(), dateFrom.getDate()));
+              const dateToOnly = new Date(Date.UTC(dateTo.getFullYear(), dateTo.getMonth(), dateTo.getDate()));
+              
+              logger.debug(`Checking invoice ${invoice.number || invoice.fullnumber}: date=${invoice.date}, invoiceDateOnly=${invoiceDateOnly.toISOString()}, range=${dateFromOnly.toISOString()} to ${dateToOnly.toISOString()}`);
+              
+              if (invoiceDateOnly >= dateFromOnly && invoiceDateOnly <= dateToOnly) {
+                logger.info(`✓ Adding invoice ${invoice.number || invoice.fullnumber} (date: ${invoice.date})`);
+                invoices.push(invoice);
+                filteredCount++;
+              } else {
+                logger.debug(`✗ Invoice ${invoice.number || invoice.fullnumber} date ${invoice.date} (${invoiceDateOnly.toISOString().split('T')[0]}) is outside range ${dateFromOnly.toISOString().split('T')[0]} - ${dateToOnly.toISOString().split('T')[0]}`);
+              }
+            } else {
+              invoices.push(invoice);
+              filteredCount++;
+            }
+          } else {
+            logger.debug('Invoice parsed as null (not a proforma), skipping');
+          }
+        } catch (parseError) {
+          logger.warn('Error parsing invoice from XML:', parseError.message);
+        }
+      }
+      
+      logger.info(`Parsed ${parsedCount} invoices, found ${proformaCount} proformas, ${filteredCount} passed date filter, ${invoices.length} total returned`);
+
+      return invoices;
+    } catch (error) {
+      logger.error('Error parsing invoices from XML string:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Получить название продукта по good.id через /goods/get
+   * @param {string} goodId - ID товара
+   * @returns {Promise<string|null>} - Название продукта или null
+   */
+  async getProductNameByGoodId(goodId) {
+    try {
+      const endpoint = `/goods/get/${goodId}?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
+      
+      logger.debug(`Fetching product name via good.id=${goodId}`);
+      
+      const response = await this.xmlClient.get(endpoint);
+      
+      if (!response.data || typeof response.data !== 'string') {
+        logger.warn(`Empty or invalid response for good.id ${goodId}`);
+        return null;
+      }
+      
+      // Ищем название продукта в XML
+      const nameMatch = response.data.match(/<name>([^<]+)<\/name>/);
+      if (nameMatch) {
+        const productName = nameMatch[1].trim();
+        logger.debug(`Got product name for good.id ${goodId}: ${productName}`);
+        return productName;
+      }
+      
+      logger.warn(`No name found in response for good.id ${goodId}`);
+      return null;
+    } catch (error) {
+      logger.error(`Error fetching product name for good.id ${goodId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Получить полную проформу по ID через /invoices/get
+   * @param {string} invoiceId - ID проформы
+   * @returns {Promise<Object|null>} - Полная проформа или null
+   */
+  async getFullProformaById(invoiceId) {
+    try {
+      const endpoint = `/invoices/get/${invoiceId}?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
+      
+      logger.debug(`Fetching full proforma ${invoiceId} via /invoices/get`);
+      
+      const response = await this.xmlClient.get(endpoint);
+      
+      if (!response.data || typeof response.data !== 'string') {
+        logger.warn(`Empty or invalid response for proforma ${invoiceId}`);
+        return null;
+      }
+      
+      // Парсим XML ответ
+      const invoiceMatches = response.data.match(/<invoice>[\s\S]*?<\/invoice>/g);
+      
+      if (!invoiceMatches || invoiceMatches.length === 0) {
+        logger.warn(`No invoice found in response for proforma ${invoiceId}`);
+        return null;
+      }
+      
+      // Проверяем наличие invoicecontents в ответе
+      const invoiceXml = invoiceMatches[0];
+      const hasInvoicecontents = invoiceXml.includes('<invoicecontents>');
+      logger.debug(`Full proforma ${invoiceId}: invoicecontents present = ${hasInvoicecontents}`);
+      
+      if (hasInvoicecontents) {
+        const invoicecontentsMatch = invoiceXml.match(/<invoicecontents>[\s\S]*?<\/invoicecontents>/);
+        if (invoicecontentsMatch) {
+          const contents = invoicecontentsMatch[0];
+          const hasInvoicecontent = contents.includes('<invoicecontent>');
+          logger.debug(`Full proforma ${invoiceId}: invoicecontent present = ${hasInvoicecontent}, length = ${contents.length}`);
+          
+          if (hasInvoicecontent) {
+            const contentMatches = contents.match(/<invoicecontent>[\s\S]*?<\/invoicecontent>/g);
+            logger.debug(`Full proforma ${invoiceId}: invoicecontent elements count = ${contentMatches ? contentMatches.length : 0}`);
+            
+            if (contentMatches) {
+              contentMatches.forEach((content, i) => {
+                const nameMatch = content.match(/<name>([^<]+)<\/name>/);
+                logger.debug(`Full proforma ${invoiceId}: invoicecontent[${i}] name = ${nameMatch ? nameMatch[1].trim() : 'NOT FOUND'}`);
+              });
+            }
+          } else {
+            logger.warn(`Full proforma ${invoiceId}: invoicecontents found but no invoicecontent inside`);
+            logger.debug(`invoicecontents content (first 500 chars): ${contents.substring(0, 500)}`);
+          }
+        }
+      } else {
+        logger.warn(`Full proforma ${invoiceId}: no invoicecontents in response`);
+      }
+      
+      // Парсим первую проформу (должна быть одна)
+      const invoice = await this.parseInvoiceFromXml(invoiceMatches[0]);
+      
+      return invoice;
+    } catch (error) {
+      logger.error(`Error fetching full proforma ${invoiceId}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Парсинг одной проформы из XML
+   * @param {string} xmlString - XML строка с данными проформы
+   * @returns {Promise<Object|null>} - Проформа или null
+   */
+  async parseInvoiceFromXml(xmlString) {
+    try {
+      // Извлекаем основные поля из XML
+      const idMatch = xmlString.match(/<id>(\d+)<\/id>/);
+      const numberMatch = xmlString.match(/<number>([^<]+)<\/number>/);
+      const fullnumberMatch = xmlString.match(/<fullnumber>([^<]+)<\/fullnumber>/);
+      const dateMatch = xmlString.match(/<date>([^<]+)<\/date>/);
+      const totalMatch = xmlString.match(/<total>([^<]+)<\/total>/);
+      const totalComposedMatch = xmlString.match(/<total_composed>([^<]+)<\/total_composed>/);
+      const currencyMatch = xmlString.match(/<currency>([^<]+)<\/currency>/);
+      const descriptionMatch = xmlString.match(/<description>([^<]*)<\/description>/);
+      
+      // Проверяем, что это проформа (по описанию или типу)
+      const description = descriptionMatch ? descriptionMatch[1] : '';
+      
+      // Проверяем по номеру проформы - только CO-PROF (не CO-FV инвойсы)
+      const number = numberMatch ? numberMatch[1].trim() : '';
+      const fullnumber = fullnumberMatch ? fullnumberMatch[1].trim() : '';
+      
+      // Исключаем инвойсы CO-FV - если это CO-FV, пропускаем
+      if ((number && number.startsWith('CO-FV')) || (fullnumber && fullnumber.startsWith('CO-FV'))) {
+        logger.debug(`Skipping invoice: CO-FV invoice (number: ${number}, fullnumber: ${fullnumber})`);
+        return null;
+      }
+      
+      // Проверяем, что это проформа с префиксом CO-PROF
+      const isProforma = (number && number.startsWith('CO-PROF')) || 
+                         (fullnumber && fullnumber.startsWith('CO-PROF')) ||
+                         description.includes('VAT marża') || 
+                         description.includes('marża');
+
+      // Если это не проформа CO-PROF, пропускаем
+      if (!isProforma) {
+        logger.debug(`Skipping invoice: not a CO-PROF proforma (number: ${number}, fullnumber: ${fullnumber})`);
+        return null;
+      }
+
+      // Извлекаем продукты из invoicecontents
+      const products = [];
+      
+      // Ищем все блоки <invoicecontents>
+      const invoicecontentsMatches = xmlString.match(/<invoicecontents>[\s\S]*?<\/invoicecontents>/g);
+      
+      logger.debug(`Parsing products for ${fullnumber || number}: found ${invoicecontentsMatches ? invoicecontentsMatches.length : 0} invoicecontents blocks`);
+      
+      if (invoicecontentsMatches) {
+        for (const contentsXml of invoicecontentsMatches) {
+          // Проверяем, не пустой ли блок
+          const trimmedContents = contentsXml.replace(/<invoicecontents>|<\/invoicecontents>/g, '').trim();
+          if (!trimmedContents) {
+            logger.debug(`Empty invoicecontents block for ${fullnumber || number}`);
+            continue;
+          }
+          
+          // Ищем элементы <invoicecontent> внутри <invoicecontents>
+          const contentMatches = contentsXml.match(/<invoicecontent>[\s\S]*?<\/invoicecontent>/g);
+          
+          logger.debug(`Found ${contentMatches ? contentMatches.length : 0} invoicecontent elements in invoicecontents`);
+          
+          if (contentMatches) {
+            for (const contentXml of contentMatches) {
+              const nameMatch = contentXml.match(/<name>([^<]+)<\/name>/);
+              const priceMatch = contentXml.match(/<price>([^<]+)<\/price>/);
+              const countMatch = contentXml.match(/<count>([^<]+)<\/count>/);
+              
+              // Если нет name, пробуем получить через good.id
+              let productName = nameMatch ? nameMatch[1].trim() : null;
+              const goodIdMatch = contentXml.match(/<good>[\s\S]*?<id>(\d+)<\/id>[\s\S]*?<\/good>/);
+              
+              if (!productName && goodIdMatch) {
+                const goodId = goodIdMatch[1];
+                logger.debug(`No name found in invoicecontent, trying to get product name via good.id=${goodId} for ${fullnumber || number}`);
+                
+                try {
+                  productName = await this.getProductNameByGoodId(goodId);
+                  logger.debug(`Got product name via good.id: ${productName}`);
+                } catch (error) {
+                  logger.warn(`Failed to get product name via good.id ${goodId}: ${error.message}`);
+                }
+              }
+              
+              if (productName) {
+                const productPrice = priceMatch ? parseFloat(priceMatch[1]) : 0;
+                const productCount = countMatch ? parseFloat(countMatch[1]) : 1;
+                
+                products.push({
+                  name: productName,
+                  price: productPrice,
+                  count: productCount
+                });
+                
+                logger.debug(`Found product: ${productName} (price: ${productPrice}, count: ${productCount})`);
+              } else {
+                logger.warn(`invoicecontent found but no <name> tag and no good.id in ${fullnumber || number}`);
+                logger.debug(`Content XML: ${contentXml.substring(0, 200)}`);
+              }
+            }
+          } else {
+            logger.debug(`No invoicecontent elements found in invoicecontents for ${fullnumber || number}`);
+            logger.debug(`invoicecontents content: ${contentsXml.substring(0, 300)}`);
+          }
+        }
+      }
+      
+      // Если не нашли через invoicecontents, пробуем прямой поиск <invoicecontent>
+      if (products.length === 0) {
+        logger.debug(`No products found in invoicecontents, trying direct invoicecontent search for ${fullnumber || number}`);
+        const directContentMatches = xmlString.match(/<invoicecontent>[\s\S]*?<\/invoicecontent>/g);
+        if (directContentMatches) {
+          logger.debug(`Found ${directContentMatches.length} direct invoicecontent elements`);
+          for (const contentXml of directContentMatches) {
+            const nameMatch = contentXml.match(/<name>([^<]+)<\/name>/);
+            const priceMatch = contentXml.match(/<price>([^<]+)<\/price>/);
+            const countMatch = contentXml.match(/<count>([^<]+)<\/count>/);
+            
+            // Если нет name, пробуем получить через good.id
+            let productName = nameMatch ? nameMatch[1].trim() : null;
+            const goodIdMatch = contentXml.match(/<good>[\s\S]*?<id>(\d+)<\/id>[\s\S]*?<\/good>/);
+            
+            if (!productName && goodIdMatch) {
+              const goodId = goodIdMatch[1];
+              logger.debug(`No name found, trying to get product name via good.id=${goodId} for ${fullnumber || number}`);
+              
+              try {
+                productName = await this.getProductNameByGoodId(goodId);
+                logger.debug(`Got product name via good.id: ${productName}`);
+              } catch (error) {
+                logger.warn(`Failed to get product name via good.id ${goodId}: ${error.message}`);
+              }
+            }
+            
+            if (productName) {
+              const productPrice = priceMatch ? parseFloat(priceMatch[1]) : 0;
+              const productCount = countMatch ? parseFloat(countMatch[1]) : 1;
+              
+              products.push({
+                name: productName,
+                price: productPrice,
+                count: productCount
+              });
+              
+              logger.debug(`Found product (direct): ${productName} (price: ${productPrice}, count: ${productCount})`);
+            }
+          }
+        } else {
+          logger.debug(`No direct invoicecontent elements found for ${fullnumber || number}`);
+        }
+      }
+      
+      // Если все еще нет продуктов, пробуем найти good.id в invoicecontent и получить названия
+      if (products.length === 0) {
+        logger.debug(`Still no products, trying to find good.id in invoicecontent for ${fullnumber || number}`);
+        const goodIdMatches = xmlString.match(/<good>[\s\S]*?<id>(\d+)<\/id>[\s\S]*?<\/good>/g);
+        if (goodIdMatches) {
+          logger.debug(`Found ${goodIdMatches.length} good.id references`);
+          for (const goodXml of goodIdMatches) {
+            const goodIdMatch = goodXml.match(/<id>(\d+)<\/id>/);
+            if (goodIdMatch) {
+              const goodId = goodIdMatch[1];
+              try {
+                const productName = await this.getProductNameByGoodId(goodId);
+                const priceMatch = xmlString.match(/<price>([^<]+)<\/price>/);
+                const countMatch = xmlString.match(/<count>([^<]+)<\/count>/);
+                
+                products.push({
+                  name: productName,
+                  price: priceMatch ? parseFloat(priceMatch[1]) : 0,
+                  count: countMatch ? parseFloat(countMatch[1]) : 1
+                });
+                
+                logger.debug(`Found product via good.id: ${productName}`);
+              } catch (error) {
+                logger.warn(`Failed to get product name via good.id ${goodId}: ${error.message}`);
+              }
+            }
+          }
+        }
+      }
+
+      // Если нет продуктов, возвращаем проформу с пустым массивом продуктов
+      // Это позволит потом получить полные данные через /invoices/get
+      if (products.length === 0) {
+        logger.warn(`No products found in invoicecontents for ${fullnumber || number}, will fetch full data later`);
+        // Не возвращаем null, а возвращаем проформу с пустым массивом продуктов
+        // Это позволит нам потом получить полные данные
+      }
+      
+      logger.debug(`Found ${products.length} products in invoice ${fullnumber || number}`);
+
+      // Извлекаем currency_exchange если есть
+      const currencyExchangeMatch = xmlString.match(/<currency_exchange>([^<]+)<\/currency_exchange>/);
+      const currencyExchange = currencyExchangeMatch ? parseFloat(currencyExchangeMatch[1]) : null;
+      
+      return {
+        id: idMatch ? idMatch[1] : null,
+        number: numberMatch ? numberMatch[1].trim() : null,
+        fullnumber: fullnumberMatch ? fullnumberMatch[1].trim() : null,
+        date: dateMatch ? dateMatch[1] : null,
+        total: totalMatch ? parseFloat(totalMatch[1]) : 0,
+        totalComposed: totalComposedMatch ? parseFloat(totalComposedMatch[1]) : 0,
+        currency: currencyMatch ? currencyMatch[1].trim() : 'PLN',
+        currencyExchange: currencyExchange,
+        description: description,
+        products: products
+      };
+    } catch (error) {
+      logger.error('Error parsing invoice from XML:', error);
+      return null;
+    }
+  }
+
+
+  /**
+   * Группировка проформ по продуктам
+   * @param {Array} proformas - Массив проформ
+   * @returns {Array} - Массив объектов с группировкой по продуктам
+   */
+  groupProformasByProduct(proformas) {
+    const productMap = new Map();
+
+    for (const proforma of proformas) {
+      // Для каждой проформы обрабатываем все её продукты
+      for (const product of proforma.products || []) {
+        const productName = product.name || 'Без названия';
+        const currency = proforma.currency || 'PLN';
+        const key = `${productName}::${currency}`;
+
+        if (!productMap.has(key)) {
+          productMap.set(key, {
+            productName: productName,
+            currency: currency,
+            count: 0,
+            totalAmount: 0,
+            invoices: []
+          });
+        }
+
+        const group = productMap.get(key);
+        group.count += 1;
+        
+        // Используем цену продукта * количество, или общую сумму проформы
+        const productAmount = (product.price || 0) * (product.count || 1);
+        group.totalAmount += productAmount;
+
+        // Добавляем информацию о проформе
+        group.invoices.push({
+          id: proforma.id,
+          number: proforma.number || proforma.fullnumber,
+          fullnumber: proforma.fullnumber,
+          date: proforma.date,
+          amount: productAmount,
+          currency: currency
+        });
+      }
+
+      // Если у проформы нет продуктов, пропускаем её (не должно происходить после фильтрации)
+      if (!proforma.products || proforma.products.length === 0) {
+        logger.warn(`Proforma ${proforma.number || proforma.fullnumber} has no products, skipping`);
+        continue;
+      }
+    }
+
+    // Преобразуем Map в массив и сортируем по названию продукта
+    return Array.from(productMap.values()).sort((a, b) => 
+      a.productName.localeCompare(b.productName)
+    );
+  }
+
+  /**
+   * Создание плоской таблицы продуктов из проформ
+   * Каждая строка - это один продукт из invoicecontent с информацией о проформе
+   * @param {Array} proformas - Массив проформ
+   * @returns {Array} - Массив объектов с полями: name, fullnumber, date, currency, total, currency_exchange
+   */
+  createProductTable(proformas) {
+    const productRows = [];
+
+    for (const proforma of proformas) {
+      // Для каждой проформы обрабатываем все её продукты
+      for (const product of proforma.products || []) {
+        productRows.push({
+          name: product.name || 'Без названия',
+          fullnumber: proforma.fullnumber || '',
+          date: proforma.date || '',
+          currency: proforma.currency || 'PLN',
+          total: proforma.total || 0, // Общая сумма проформы
+          currency_exchange: proforma.currencyExchange !== null && proforma.currencyExchange !== undefined ? proforma.currencyExchange : null
+        });
+      }
+    }
+
+    // Сортируем по дате (от новых к старым), затем по названию продукта
+    return productRows.sort((a, b) => {
+      if (a.date > b.date) return -1;
+      if (a.date < b.date) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }
+}
+
+// Экспортируем функцию для обратной совместимости с тестом
+async function getMonthlyProformasByProduct(options = {}) {
+  const lookup = new WfirmaLookup();
+  return await lookup.getMonthlyProformasByProduct(options);
+}
+
+module.exports = {
+  WfirmaLookup,
+  getMonthlyProformasByProduct
+};
+

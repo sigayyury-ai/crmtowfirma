@@ -59,6 +59,11 @@ app.use(requireAuth);
 // Статические файлы (frontend) - защищены авторизацией
 app.use(express.static(path.join(__dirname, '../frontend')));
 
+// Маршрут для VAT Margin страницы
+app.get('/vat-margin.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/vat-margin.html'));
+});
+
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
 

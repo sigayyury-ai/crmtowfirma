@@ -16,7 +16,7 @@ const elements = {
     refreshStatus: document.getElementById('refresh-status'),
     runPolling: document.getElementById('run-polling'),
     getPending: document.getElementById('get-pending'),
-    testApis: document.getElementById('test-apis')
+    testApis: document.getElementById('test-apis'),
 };
 
 // State

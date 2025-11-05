@@ -7,6 +7,7 @@ const UserManagementService = require('../services/userManagement');
 const ProductManagementService = require('../services/productManagement');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
 const SchedulerService = require('../services/scheduler');
+const { WfirmaLookup } = require('../services/vatMargin/wfirmaLookup');
 const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
@@ -630,6 +631,77 @@ router.get('/server-ip', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get server IP',
+      message: error.message
+    });
+  }
+});
+
+// ==================== VAT MARGIN TRACKER ENDPOINTS ====================
+
+/**
+ * GET /api/vat-margin/monthly-proformas
+ * Получить проформы текущего месяца, сгруппированные по продуктам
+ */
+router.get('/vat-margin/monthly-proformas', async (req, res) => {
+  try {
+    // Временно убираем фильтр по дате - загружаем все проформы
+    const options = {}; // Пустые опции - без фильтра по дате
+    
+    const lookup = new WfirmaLookup();
+    const result = await lookup.getMonthlyProformasByProduct(options);
+    
+    res.json({
+      success: true,
+      data: result,
+      count: result.length,
+      period: {}
+    });
+  } catch (error) {
+    logger.error('Error getting monthly proformas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get monthly proformas',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/vat-margin/proformas
+ * Получить проформы за указанный период
+ */
+router.get('/vat-margin/proformas', async (req, res) => {
+  try {
+    const { dateFrom, dateTo } = req.query;
+    
+    if (!dateFrom || !dateTo) {
+      return res.status(400).json({
+        success: false,
+        error: 'dateFrom and dateTo query parameters are required (format: YYYY-MM-DD)'
+      });
+    }
+    
+    const lookup = new WfirmaLookup();
+    const dateFromObj = new Date(dateFrom);
+    const dateToObj = new Date(dateTo);
+    dateToObj.setHours(23, 59, 59, 999); // Конец дня
+    
+    const result = await lookup.getProformasByDateRange(dateFromObj, dateToObj);
+    
+    res.json({
+      success: true,
+      data: result,
+      count: result.length,
+      period: {
+        dateFrom: dateFromObj,
+        dateTo: dateToObj
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting proformas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get proformas',
       message: error.message
     });
   }
