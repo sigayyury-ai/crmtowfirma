@@ -118,10 +118,6 @@ class ProformaRepository {
     const total = this.toNumber(proforma.total) ?? 0;
     const currencyExchange = this.toNumber(proforma.currencyExchange);
     const paymentsTotal = this.toNumber(proforma.paymentsTotal) ?? 0;
-    const paymentsTotalPln = this.toNumber(proforma.paymentsTotalPln)
-      ?? (currencyExchange ? paymentsTotal * currencyExchange : paymentsTotal);
-    const paymentsCurrencyExchange = this.toNumber(proforma.paymentsCurrencyExchange)
-      ?? currencyExchange ?? null;
     const paymentsCount = Array.isArray(proforma.payments)
       ? proforma.payments.length
       : this.toNumber(proforma.paymentsCount) ?? 0;
@@ -140,8 +136,6 @@ class ProformaRepository {
       total,
       currency_exchange: currencyExchange,
       payments_total: paymentsTotal,
-      payments_total_pln: paymentsTotalPln,
-      payments_currency_exchange: paymentsCurrencyExchange,
       payments_count: paymentsCount
     });
 

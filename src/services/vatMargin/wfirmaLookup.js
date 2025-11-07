@@ -491,8 +491,10 @@ class WfirmaLookup {
       // Логируем первые 500 символов ответа для отладки
       logger.debug('XML response preview:', xmlString.substring(0, 500));
       
+      const sanitizedXml = this.sanitizeNestedInvoiceReferences(xmlString);
+
       // Ищем все теги <invoice> в XML
-      const invoiceMatches = xmlString.match(/<invoice>[\s\S]*?<\/invoice>/g);
+      const invoiceMatches = sanitizedXml.match(/<invoice>[\s\S]*?<\/invoice>/g);
       
       if (!invoiceMatches) {
         logger.info('No invoice tags found in XML response');
@@ -592,6 +594,14 @@ class WfirmaLookup {
    * @param {string} invoiceId - ID проформы
    * @returns {Promise<Object|null>} - Полная проформа или null
    */
+  sanitizeNestedInvoiceReferences(xmlString) {
+    if (!xmlString || typeof xmlString !== 'string') {
+      return xmlString;
+    }
+
+    return xmlString.replace(/<invoice>\s*<id>\d+<\/id>\s*<\/invoice>/g, '');
+  }
+
   async getFullProformaById(invoiceId) {
     try {
       const endpoint = `/invoices/get/${invoiceId}?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
@@ -605,8 +615,10 @@ class WfirmaLookup {
         return null;
       }
       
+      const sanitizedXml = this.sanitizeNestedInvoiceReferences(response.data);
+
       // Парсим XML ответ
-      const invoiceMatches = response.data.match(/<invoice>[\s\S]*?<\/invoice>/g);
+      const invoiceMatches = sanitizedXml.match(/<invoice>[\s\S]*?<\/invoice>/g);
       
       if (!invoiceMatches || invoiceMatches.length === 0) {
         logger.warn(`No invoice found in response for proforma ${invoiceId}`);

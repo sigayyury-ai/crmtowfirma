@@ -3,6 +3,7 @@ require('dotenv').config();
 const supabase = require('../src/services/supabaseClient');
 const { WfirmaLookup } = require('../src/services/vatMargin/wfirmaLookup');
 const logger = require('../src/utils/logger');
+const InvoiceProcessingService = require('../src/services/invoiceProcessing');
 
 if (!supabase) {
   logger.error('Supabase client is not initialized. Check environment variables.');
@@ -136,72 +137,30 @@ async function migrate() {
   }
 
   logger.info('Finished upserting proforma records. Now migrating product rows...');
-
-  const productRows = [];
+  const invoiceService = new InvoiceProcessingService();
+  let processed = 0;
   for (const proforma of normalizedProformas) {
-    if (!proforma.id || !Array.isArray(proforma.products)) {
-      continue;
-    }
-
-    proforma.products.forEach(product => {
-      const productId = product.productId || product.id || null;
-
-      if (!productId) {
-        logger.warn(`Skipping product without productId for proforma ${proforma.fullnumber || proforma.id}`);
-        return;
-      }
-
-      productRows.push({
-        proforma_id: proforma.id,
-        product_id: productId,
-        name: product.name || 'Без названия',
-        good_id: product.goodId || null,
-        quantity: typeof product.count === 'number' ? product.count : parseFloat(product.count) || 1,
-        unit_price: typeof product.price === 'number' ? product.price : (product.price ? parseFloat(product.price) : null)
+    try {
+      await invoiceService.persistProformaToDatabase(proforma.id, {
+        invoiceNumber: proforma.fullnumber,
+        issueDate: proforma.date ? new Date(proforma.date) : new Date(),
+        currency: proforma.currency || 'PLN',
+        totalAmount: typeof proforma.total === 'number' ? proforma.total : parseFloat(proforma.total) || 0,
+        fallbackProduct: (proforma.products && proforma.products.length > 0)
+          ? proforma.products[0]
+          : null
       });
-    });
-  }
-
-  logger.info(`Prepared ${productRows.length} product rows for Supabase.`);
-
-  const proformaIds = [...new Set(productRows.map(row => row.proforma_id))];
-
-  if (proformaIds.length > 0) {
-    const idChunks = chunkArray(proformaIds, 100);
-    for (const [index, idChunk] of idChunks.entries()) {
-      logger.info(`Clearing existing products chunk ${index + 1}/${idChunks.length} (${idChunk.length} proformas)...`);
-      const { error } = await supabase
-        .from('proforma_products')
-        .delete()
-        .in('proforma_id', idChunk);
-
-      if (error) {
-        logger.error('Error clearing proforma_products:', error);
-        process.exit(1);
+      processed += 1;
+      if (processed % 25 === 0) {
+        logger.info(`Persisted ${processed} proformas into Supabase via repository`);
       }
-
-      await sleep(200);
+      await sleep(60);
+    } catch (error) {
+      logger.error(`Failed to persist proforma ${proforma.fullnumber || proforma.id}:`, error);
     }
   }
 
-  if (productRows.length > 0) {
-    const productChunks = chunkArray(productRows, 100);
-    for (const [index, chunk] of productChunks.entries()) {
-      logger.info(`Inserting product chunk ${index + 1}/${productChunks.length} (${chunk.length} rows)...`);
-      const { error } = await supabase
-        .from('proforma_products')
-        .insert(chunk);
-
-      if (error) {
-        logger.error('Error inserting proforma_products:', error);
-        process.exit(1);
-      }
-
-      await sleep(200);
-    }
-  }
-
-  logger.info('Migration completed successfully.');
+  logger.info(`Migration completed successfully. Processed ${processed} proformas.`);
   process.exit(0);
 }
 
