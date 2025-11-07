@@ -642,54 +642,86 @@ h2 {
 }
 
 .product-group {
-    margin-bottom: 30px;
+    margin-bottom: 28px;
     background: white;
-    border-radius: 8px;
+    border-radius: 14px;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.12);
     overflow: hidden;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border: 1px solid rgba(148, 163, 184, 0.2);
 }
 
 .product-group-header {
-    padding: 15px 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    margin: 0;
-    font-size: 1.2em;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 20px;
+    padding: 18px 24px;
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(59, 130, 246, 0.05));
+}
+
+.product-title {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.product-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.product-meta {
+    font-size: 0.85rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #64748b;
     font-weight: 600;
 }
 
-.product-group-table {
+.product-summary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.product-summary span {
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: #1f2937;
+}
+
+.group-table {
     width: 100%;
     border-collapse: collapse;
+    background: white;
 }
 
-.product-group-table thead {
-    background: #f8f9fa;
+.group-table thead {
+    background: #f8fafc;
 }
 
-.product-group-table th {
-    padding: 12px 15px;
+.group-table th {
+    padding: 14px 16px;
     text-align: left;
     font-weight: 600;
-    color: #495057;
-    border-bottom: 2px solid #dee2e6;
+    color: #334155;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.4);
 }
 
-.product-group-table td {
-    padding: 12px 15px;
-    border-bottom: 1px solid #e9ecef;
+.group-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25);
 }
 
-.product-group-table tbody tr:hover {
-    background: #f8f9fa;
+.group-table tbody tr:hover {
+    background: rgba(59, 130, 246, 0.06);
 }
 
-.product-group-total {
-    border-top: 2px solid #dee2e6;
-}
-
-.product-group-total td {
-    border-bottom: none !important;
+.group-table .fullnumber {
+    font-weight: 600;
+    color: #2563eb;
 }
 
 .vat-margin-table table {

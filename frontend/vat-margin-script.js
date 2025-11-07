@@ -1,6 +1,7 @@
 const API_BASE = '/api';
 
 let elements = {};
+let paymentsLoaded = false;
 
 document.addEventListener('DOMContentLoaded', () => {
   cacheDom();
@@ -15,8 +16,6 @@ document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
 
   addLog('info', 'VAT Margin Tracker инициализирован');
-  loadVatMarginData();
-  loadPaymentsData({ silent: true });
 });
 
 function cacheDom() {
@@ -70,6 +69,11 @@ function switchTab(tabName) {
   elements.tabContents.forEach((content) => {
     content.classList.toggle('active', content.id === `tab-${tabName}`);
   });
+
+  if (tabName === 'payments' && !paymentsLoaded) {
+    loadPaymentsData();
+    paymentsLoaded = true;
+  }
 }
 
 function initMonthYearSelectors() {
@@ -160,51 +164,141 @@ function renderVatMarginTable(data) {
     return;
   }
 
-  const rows = data
-    .map((item) => {
-      const currency = item.currency || 'PLN';
-      const amount = Number(item.total) || 0;
-      const exchange = Number(item.currency_exchange) || (currency === 'PLN' ? 1 : null);
-      const amountPln = exchange ? amount * exchange : amount;
-      const paidRaw = Number(item.payments_total_pln ?? item.payments_total) || 0;
-      const paymentsExchange = Number(item.payments_currency_exchange || exchange || 1);
-      const paidPln = exchange ? Math.min(paidRaw * paymentsExchange, amountPln) : Math.min(paidRaw, amountPln);
-      const status = determinePaymentStatus(amountPln, paidPln);
+  const groupsMap = new Map();
+
+  data.forEach((item) => {
+    const name = item.name && typeof item.name === 'string' && item.name.trim().length > 0
+      ? item.name.trim()
+      : 'Без названия';
+    const currency = item.currency || 'PLN';
+    const key = `${name}||${currency}`;
+
+    if (!groupsMap.has(key)) {
+      groupsMap.set(key, {
+        name,
+        currency,
+        rows: [],
+        totals: {
+          count: 0,
+          quantity: 0,
+          original: 0,
+          pln: 0,
+          paid: 0,
+          hasPln: false
+        },
+        proformas: new Set()
+      });
+    }
+
+    const group = groupsMap.get(key);
+
+    const rawQuantity = Number(item.quantity ?? item.count ?? 0);
+    const quantity = Number.isFinite(rawQuantity) && rawQuantity !== 0 ? rawQuantity : 1;
+    const rawUnitPrice = Number(item.unit_price ?? item.price ?? 0);
+    const unitPrice = Number.isFinite(rawUnitPrice) ? rawUnitPrice : 0;
+    const rawLineTotal = Number(item.line_total);
+    let lineTotal = Number.isFinite(rawLineTotal) ? rawLineTotal : unitPrice * quantity;
+    if (!Number.isFinite(lineTotal)) {
+      const fallbackTotal = Number(item.total ?? item.proforma_total ?? 0) || 0;
+      lineTotal = fallbackTotal;
+    }
+
+    const exchangeRate = Number(item.currency_exchange ?? item.currencyExchange);
+    let totalPlnValue = null;
+    if (Number.isFinite(exchangeRate) && exchangeRate > 0) {
+      totalPlnValue = lineTotal * exchangeRate;
+    } else if (currency === 'PLN') {
+      totalPlnValue = lineTotal;
+    }
+
+    const rawPaid = Number(item.payments_total_pln ?? item.payments_total ?? 0) || 0;
+    const paidPln = totalPlnValue !== null ? Math.min(rawPaid, totalPlnValue) : rawPaid;
+    const status = determinePaymentStatus(totalPlnValue ?? lineTotal, paidPln);
+
+    group.rows.push({
+      fullnumber: item.fullnumber || item.number || '—',
+      date: item.date || null,
+      quantity,
+      unitPrice,
+      lineTotal,
+      exchangeRate: Number.isFinite(exchangeRate) ? exchangeRate : null,
+      totalPlnValue,
+      paidPln,
+      status
+    });
+
+    group.totals.count += 1;
+    group.totals.quantity += quantity;
+    group.totals.original += lineTotal;
+    if (totalPlnValue !== null) {
+      group.totals.pln += totalPlnValue;
+      group.totals.paid += paidPln;
+      group.totals.hasPln = true;
+    }
+    const proformaKey = item.fullnumber || item.number || `id:${item.proforma_id || item.id || Math.random()}`;
+    group.proformas.add(proformaKey);
+  });
+
+  const groups = Array.from(groupsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+
+  const html = groups
+    .map((group) => {
+      const totalOriginalFormatted = formatCurrency(group.totals.original, group.currency);
+      const totalPlnFormatted = group.totals.hasPln ? formatCurrency(group.totals.pln, 'PLN') : '—';
+      const paidPlnFormatted = group.totals.hasPln ? formatCurrency(group.totals.paid, 'PLN') : '—';
+      const proformaCount = group.proformas.size;
+
+      const rowsHtml = group.rows
+        .map((row) => `
+          <tr>
+            <td class="fullnumber">${escapeHtml(row.fullnumber)}</td>
+            <td>${formatDate(row.date)}</td>
+            <td class="amount">${row.quantity.toLocaleString('ru-RU')}</td>
+            <td class="amount">${formatCurrency(row.unitPrice, group.currency)}</td>
+            <td class="amount">${formatCurrency(row.lineTotal, group.currency)}</td>
+            <td class="amount">${row.exchangeRate ? row.exchangeRate.toFixed(4) : '—'}</td>
+            <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.totalPlnValue, 'PLN') : '—'}</td>
+            <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.paidPln, 'PLN') : '—'}</td>
+            <td><span class="status ${row.status.className}">${row.status.label}</span></td>
+          </tr>
+        `)
+        .join('');
 
       return `
-        <tr>
-          <td>${escapeHtml(item.name || '—')}</td>
-          <td>${escapeHtml(item.fullnumber || item.number || '—')}</td>
-          <td>${formatDate(item.date)}</td>
-          <td>${currency}</td>
-          <td class="amount">${formatCurrency(amount, currency)}</td>
-          <td class="amount">${exchange ? exchange.toFixed(4) : '—'}</td>
-          <td class="amount">${formatCurrency(amountPln, 'PLN')}</td>
-          <td class="amount">${formatCurrency(paidPln, 'PLN')}</td>
-          <td><span class="status ${status.className}">${status.label}</span></td>
-        </tr>
+        <div class="product-group">
+          <div class="product-group-header">
+            <div class="product-title">
+              <div class="product-name">${escapeHtml(group.name)}</div>
+              <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${group.totals.quantity.toLocaleString('ru-RU')} позиций</div>
+            </div>
+            <div class="product-summary">
+              <span>${totalOriginalFormatted}</span>
+              <span>${totalPlnFormatted}</span>
+              <span>${paidPlnFormatted}</span>
+            </div>
+          </div>
+          <table class="payments-table group-table">
+            <thead>
+              <tr>
+                <th>Проформа</th>
+                <th>Дата</th>
+                <th>Кол-во</th>
+                <th>Цена</th>
+                <th>Сумма</th>
+                <th>Курс</th>
+                <th>Всего в PLN</th>
+                <th>Оплачено</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
       `;
     })
     .join('');
 
-  elements.vatMarginContainer.innerHTML = `
-    <table class="payments-table vat-report-table">
-      <thead>
-        <tr>
-          <th>Продукт</th>
-          <th>Проформа</th>
-          <th>Дата</th>
-          <th>Валюта</th>
-          <th>Сумма</th>
-          <th>Курс</th>
-          <th>Всего в PLN</th>
-          <th>Оплачено</th>
-          <th>Статус</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
+  elements.vatMarginContainer.innerHTML = html;
 }
 
 function determinePaymentStatus(totalPln, paidPln) {
