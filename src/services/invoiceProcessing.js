@@ -1899,13 +1899,50 @@ class InvoiceProcessingService {
       };
     }
 
-    if (!Array.isArray(proforma.products) || proforma.products.length === 0) {
-      if (fallbackProduct) {
-        proforma.products = [fallbackProduct];
-      } else {
-        proforma.products = [];
-      }
+    const fallbackName = fallbackProduct?.name && String(fallbackProduct.name).trim().length
+      ? String(fallbackProduct.name).trim()
+      : 'Без названия';
+
+    let products = Array.isArray(proforma.products) ? proforma.products : [];
+
+    if (!products.length && fallbackProduct) {
+      products = [fallbackProduct];
     }
+
+    const parseNumber = (value) => {
+      if (!this.proformaRepository) {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return this.proformaRepository.toNumber(value);
+    };
+
+    const sanitizedProducts = products.map((product, index) => {
+      const rawName = product?.name && String(product.name).trim().length > 0
+        ? String(product.name).trim()
+        : fallbackName;
+      const sanitizedName = rawName && rawName.length > 0 ? rawName : `Без названия ${index + 1}`;
+
+      const quantityValue = parseNumber(product.count ?? product.quantity ?? 0);
+      const quantity = Number.isFinite(quantityValue) && quantityValue !== 0 ? quantityValue : 1;
+
+      const unitPriceValue = parseNumber(product.price ?? product.unit_price);
+      const unitPrice = Number.isFinite(unitPriceValue) ? unitPriceValue : 0;
+
+      const lineTotalValue = parseNumber(product.line_total);
+      const lineTotal = Number.isFinite(lineTotalValue) ? lineTotalValue : unitPrice * quantity;
+
+      return {
+        name: sanitizedName,
+        price: unitPrice,
+        unit_price: unitPrice,
+        count: quantity,
+        quantity,
+        line_total: lineTotal,
+        goodId: product.goodId || product.good_id || null,
+        productId: product.productId || product.id || null
+      };
+    });
 
     const repositoryPayload = {
       id: proforma.id || invoiceId,
@@ -1918,12 +1955,7 @@ class InvoiceProcessingService {
       paymentsTotalPln: proforma.paymentsTotalPln ?? proforma.payments_total_pln ?? null,
       paymentsCurrencyExchange: proforma.paymentsCurrencyExchange ?? proforma.payments_currency_exchange ?? null,
       paymentsCount: proforma.paymentsCount ?? proforma.payments_count ?? 0,
-      products: (proforma.products || []).map((item) => ({
-        name: item.name,
-        price: item.price ?? item.unit_price ?? null,
-        count: item.count ?? item.quantity ?? 1,
-        goodId: item.goodId || item.good_id || null
-      }))
+      products: sanitizedProducts
     };
 
     try {

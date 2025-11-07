@@ -23,9 +23,9 @@ class ProformaRepository {
     if (!trimmed) return null;
     return trimmed
       .toLowerCase()
-      .normalize('NFD')
+      .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9\s\.\-_/]/g, '')
+      .replace(/[^\p{L}\p{N}\s\.\-_/]/gu, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
