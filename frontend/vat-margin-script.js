@@ -253,8 +253,6 @@ function renderVatMarginTable(data) {
           <tr>
             <td class="fullnumber">${escapeHtml(row.fullnumber)}</td>
             <td>${formatDate(row.date)}</td>
-            <td class="amount">${row.quantity.toLocaleString('ru-RU')}</td>
-            <td class="amount">${formatCurrency(row.unitPrice, group.currency)}</td>
             <td class="amount">${formatCurrency(row.lineTotal, group.currency)}</td>
             <td class="amount">${row.exchangeRate ? row.exchangeRate.toFixed(4) : '—'}</td>
             <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.totalPlnValue, 'PLN') : '—'}</td>
@@ -282,8 +280,6 @@ function renderVatMarginTable(data) {
               <tr>
                 <th>Проформа</th>
                 <th>Дата</th>
-                <th>Кол-во</th>
-                <th>Цена</th>
                 <th>Сумма</th>
                 <th>Курс</th>
                 <th>Всего в PLN</th>
