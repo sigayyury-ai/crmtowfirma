@@ -2,6 +2,21 @@ const API_BASE = '/api';
 
 let elements = {};
 let paymentsLoaded = false;
+let productsLoaded = false;
+
+const paymentsState = {
+  items: [],
+  history: [],
+  selectedId: null,
+  details: new Map(),
+  detailRowEl: null,
+  detailCellEl: null
+};
+
+const productStatusLabels = {
+  in_progress: 'В процессе',
+  calculated: 'Рассчитан'
+};
 
 document.addEventListener('DOMContentLoaded', () => {
   cacheDom();
@@ -29,6 +44,8 @@ function cacheDom() {
     clearLogs: document.getElementById('clear-logs'),
     tabButtons: Array.from(document.querySelectorAll('.tab-button')),
     tabContents: Array.from(document.querySelectorAll('.tab-content')),
+    refreshProducts: document.getElementById('refresh-products'),
+    productSummaryTable: document.getElementById('product-summary-table'),
     bankCsvInput: document.getElementById('bank-csv-input'),
     refreshPayments: document.getElementById('refresh-payments'),
     applyMatches: document.getElementById('apply-matches'),
@@ -47,6 +64,9 @@ function bindEvents() {
   elements.loadVatMargin?.addEventListener('click', () => loadVatMarginData());
   elements.exportReport?.addEventListener('click', exportReportCsv);
   elements.clearLogs?.addEventListener('click', clearLogs);
+  elements.refreshProducts?.addEventListener('click', () => {
+    loadProductSummary();
+  });
   elements.refreshPayments?.addEventListener('click', () => loadPaymentsData());
   elements.applyMatches?.addEventListener('click', applyPaymentMatches);
   elements.resetMatches?.addEventListener('click', resetPaymentMatches);
@@ -69,6 +89,16 @@ function switchTab(tabName) {
   elements.tabContents.forEach((content) => {
     content.classList.toggle('active', content.id === `tab-${tabName}`);
   });
+
+  if (tabName === 'products') {
+    if (!productsLoaded) {
+      loadProductSummary();
+      productsLoaded = true;
+    } else {
+      renderProductSummary();
+    }
+    return;
+  }
 
   if (tabName === 'payments' && !paymentsLoaded) {
     loadPaymentsData();
@@ -156,6 +186,22 @@ async function loadVatMarginData({ silent = false } = {}) {
   }
 }
 
+function normalizeProductKey(value) {
+  if (value === null || value === undefined) {
+    return 'без названия';
+  }
+
+  const normalized = String(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s\.\-_/]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized || 'без названия';
+}
+
 function renderVatMarginTable(data) {
   if (!elements.vatMarginContainer) return;
 
@@ -171,17 +217,19 @@ function renderVatMarginTable(data) {
       ? item.name.trim()
       : 'Без названия';
     const currency = item.currency || 'PLN';
-    const key = `${name}||${currency}`;
+    const productKey = item.product_id
+      ? `id:${item.product_id}`
+      : item.product_key || normalizeProductKey(name);
 
-    if (!groupsMap.has(key)) {
-      groupsMap.set(key, {
+    if (!groupsMap.has(productKey)) {
+      groupsMap.set(productKey, {
+        key: productKey,
         name,
-        currency,
+        currencyTotals: {},
         rows: [],
         totals: {
           count: 0,
           quantity: 0,
-          original: 0,
           pln: 0,
           paid: 0,
           hasPln: false
@@ -190,7 +238,12 @@ function renderVatMarginTable(data) {
       });
     }
 
-    const group = groupsMap.get(key);
+    const group = groupsMap.get(productKey);
+
+    if ((group.name === 'Без названия' || group.name === normalizeProductKey(group.name))
+      && name !== 'Без названия') {
+      group.name = name;
+    }
 
     const rawQuantity = Number(item.quantity ?? item.count ?? 0);
     const quantity = Number.isFinite(rawQuantity) && rawQuantity !== 0 ? rawQuantity : 1;
@@ -218,6 +271,7 @@ function renderVatMarginTable(data) {
     group.rows.push({
       fullnumber: item.fullnumber || item.number || '—',
       date: item.date || null,
+      currency,
       quantity,
       unitPrice,
       lineTotal,
@@ -229,7 +283,7 @@ function renderVatMarginTable(data) {
 
     group.totals.count += 1;
     group.totals.quantity += quantity;
-    group.totals.original += lineTotal;
+    group.currencyTotals[currency] = (group.currencyTotals[currency] || 0) + lineTotal;
     if (totalPlnValue !== null) {
       group.totals.pln += totalPlnValue;
       group.totals.paid += paidPln;
@@ -243,7 +297,12 @@ function renderVatMarginTable(data) {
 
   const html = groups
     .map((group) => {
-      const totalOriginalFormatted = formatCurrency(group.totals.original, group.currency);
+      const originalParts = Object.entries(group.currencyTotals)
+        .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
+        .map(([cur, amount]) => formatCurrency(amount, cur));
+      const totalOriginalFormatted = originalParts.length > 0
+        ? originalParts.join(' + ')
+        : '—';
       const totalPlnFormatted = group.totals.hasPln ? formatCurrency(group.totals.pln, 'PLN') : '—';
       const paidPlnFormatted = group.totals.hasPln ? formatCurrency(group.totals.paid, 'PLN') : '—';
       const proformaCount = group.proformas.size;
@@ -253,7 +312,7 @@ function renderVatMarginTable(data) {
           <tr>
             <td class="fullnumber">${escapeHtml(row.fullnumber)}</td>
             <td>${formatDate(row.date)}</td>
-            <td class="amount">${formatCurrency(row.lineTotal, group.currency)}</td>
+            <td class="amount">${formatCurrency(row.lineTotal, row.currency)}</td>
             <td class="amount">${row.exchangeRate ? row.exchangeRate.toFixed(4) : '—'}</td>
             <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.totalPlnValue, 'PLN') : '—'}</td>
             <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.paidPln, 'PLN') : '—'}</td>
@@ -295,6 +354,188 @@ function renderVatMarginTable(data) {
     .join('');
 
   elements.vatMarginContainer.innerHTML = html;
+}
+
+// === Product Report Prototype ===
+
+let productSummaryData = [];
+
+async function loadProductSummary({ silent = false } = {}) {
+  if (!elements.productSummaryTable) return;
+
+  try {
+    if (!silent) {
+      elements.productSummaryTable.innerHTML = '<div class="placeholder">Загружаю данные по продуктам...</div>';
+    }
+
+    const result = await apiCall('/vat-margin/products/summary');
+
+    if (!result?.success) {
+      throw new Error(result?.error || 'Не удалось получить список продуктов');
+    }
+
+    productSummaryData = Array.isArray(result.data) ? result.data : [];
+    renderProductSummaryTable(productSummaryData);
+
+    if (!silent) {
+      addLog('success', `Загружено продуктов: ${productSummaryData.length}`);
+    }
+  } catch (error) {
+    console.error('Product summary fetch error:', error); // eslint-disable-line no-console
+    addLog('error', `Ошибка при загрузке продуктов: ${error.message}`);
+    elements.productSummaryTable.innerHTML = `<div class="placeholder">Не удалось загрузить данные: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderProductSummaryTable(products) {
+  if (!elements.productSummaryTable) return;
+
+  if (!Array.isArray(products) || products.length === 0) {
+    elements.productSummaryTable.innerHTML = '<div class="placeholder">Нет продуктов для отображения</div>';
+    return;
+  }
+
+  const rows = products
+    .map((product) => {
+      const details = [];
+      if (typeof product.proformaCount === 'number') {
+        details.push(`${product.proformaCount.toLocaleString('ru-RU')} проф.`);
+      }
+      if (product.lastSaleDate) {
+        details.push(`последняя продажа ${formatDate(product.lastSaleDate)}`);
+      }
+      if (product.calculationDueMonth) {
+        details.push(`рассчитать до ${formatMonthLabel(product.calculationDueMonth)}`);
+      }
+
+      const detailHtml = details.length
+        ? `<div class="product-table-note">${escapeHtml(details.join(' • '))}</div>`
+        : '';
+
+      const slug = encodeURIComponent(product.productSlug || product.productKey || product.productId || 'unknown');
+      const detailUrl = `/vat-margin-product.html?product=${slug}`;
+
+      return `
+        <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
+          <td>
+            <a class="product-link" href="${detailUrl}">${escapeHtml(product.productName || 'Без названия')}</a>
+            ${detailHtml}
+          </td>
+          <td>
+            <select class="status-select" data-product-slug="${escapeHtml(product.productSlug || '')}">
+              <option value="in_progress"${product.calculationStatus === 'in_progress' ? ' selected' : ''}>В процессе</option>
+              <option value="calculated"${product.calculationStatus === 'calculated' ? ' selected' : ''}>Рассчитан</option>
+            </select>
+          </td>
+          <td>
+            <input
+              type="month"
+              class="due-month-input"
+              data-product-slug="${escapeHtml(product.productSlug || '')}"
+              value="${product.calculationDueMonth || ''}"
+              placeholder="YYYY-MM"
+            />
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  elements.productSummaryTable.innerHTML = `
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Продукт</th>
+          <th>Статус</th>
+          <th>Месяц расчёта</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+
+  elements.productSummaryTable
+    .querySelectorAll('.status-select')
+    .forEach((select) => {
+      select.addEventListener('change', () => {
+        handleProductStatusChange(select.dataset.productSlug, select.value);
+      });
+    });
+
+  elements.productSummaryTable
+    .querySelectorAll('.due-month-input')
+    .forEach((input) => {
+      input.addEventListener('change', () => {
+        handleProductDueMonthChange(input.dataset.productSlug, input.value);
+      });
+    });
+}
+
+async function handleProductStatusChange(productSlug, nextStatus) {
+  if (!productSlug) return;
+
+  try {
+    const result = await apiCall(`/vat-margin/products/${encodeURIComponent(productSlug)}/status`, 'POST', {
+      status: nextStatus
+    });
+
+    if (!result?.success) {
+      throw new Error(result?.error || 'Не удалось обновить статус');
+    }
+
+    const target = productSummaryData.find((item) => (item.productSlug || '') === result.data.productSlug);
+    if (target) {
+      target.calculationStatus = result.data.calculationStatus;
+    }
+
+    addLog('success', `Статус продукта обновлён на «${productStatusLabels[result.data.calculationStatus] || result.data.calculationStatus}»`);
+    renderProductSummaryTable(productSummaryData);
+  } catch (error) {
+    addLog('error', `Не удалось обновить статус: ${error.message}`);
+    renderProductSummaryTable(productSummaryData);
+  }
+}
+
+async function handleProductDueMonthChange(productSlug, dueMonthValue) {
+  if (!productSlug) return;
+
+  try {
+    const result = await apiCall(`/vat-margin/products/${encodeURIComponent(productSlug)}/status`, 'POST', {
+      dueMonth: dueMonthValue || null
+    });
+
+    if (!result?.success) {
+      throw new Error(result?.error || 'Не удалось обновить месяц расчёта');
+    }
+
+    const target = productSummaryData.find((item) => (item.productSlug || '') === result.data.productSlug);
+    if (target) {
+      target.calculationDueMonth = result.data.calculationDueMonth || null;
+    }
+
+    if (result.data.calculationDueMonth) {
+      addLog('info', `Месяц расчёта обновлён на ${formatMonthLabel(result.data.calculationDueMonth)}`);
+    } else {
+      addLog('info', 'Месяц расчёта очищен');
+    }
+
+    renderProductSummaryTable(productSummaryData);
+  } catch (error) {
+    addLog('error', `Не удалось обновить месяц расчёта: ${error.message}`);
+    renderProductSummaryTable(productSummaryData);
+  }
+}
+
+function formatMonthLabel(monthString) {
+  if (!monthString) return '—';
+  const [year, month] = monthString.split('-').map((part) => parseInt(part, 10));
+  if (!year || Number.isNaN(month) || month < 1 || month > 12) return monthString;
+
+  const date = new Date(Date.UTC(year, month - 1, 1));
+  return date.toLocaleDateString('ru-RU', {
+    month: 'long',
+    year: 'numeric'
+  });
 }
 
 function determinePaymentStatus(totalPln, paidPln) {
@@ -342,9 +583,36 @@ async function loadPaymentsData({ silent = false } = {}) {
       throw new Error(result?.error || 'Не удалось получить платежи');
     }
 
-    renderUploadsHistory(result.history || []);
-    renderPaymentsTable(result.data || []);
-    if (!silent) addLog('success', `Получено ${result.data?.length || 0} платежей`);
+    const previousSelectedId = paymentsState.selectedId;
+
+    paymentsState.items = (Array.isArray(result.data) ? result.data : [])
+      .filter((item) => item.manual_status !== 'approved');
+    paymentsState.history = Array.isArray(result.history) ? result.history : [];
+
+    const pendingIds = new Set(paymentsState.items.map((item) => String(item.id)));
+    Array.from(paymentsState.details.keys()).forEach((key) => {
+      if (!pendingIds.has(key)) {
+        paymentsState.details.delete(key);
+      }
+    });
+
+    renderUploadsHistory(paymentsState.history);
+    renderPaymentsTable(paymentsState.items);
+
+    if (previousSelectedId && paymentsState.items.some((item) => String(item.id) === String(previousSelectedId))) {
+      paymentsState.selectedId = String(previousSelectedId);
+      const selectedRow = getPaymentRowElement(paymentsState.selectedId);
+      if (selectedRow) {
+        await selectPaymentRow(selectedRow, { forceReload: true, skipScroll: true });
+      } else {
+        clearPaymentDetailRow();
+      }
+    } else {
+      paymentsState.selectedId = null;
+      clearPaymentDetailRow();
+    }
+
+    if (!silent) addLog('success', `Получено ${paymentsState.items.length} платежей`);
   } catch (error) {
     console.warn('Payments fetch error:', error.message);
     if (!silent) addLog('warning', `Не удалось загрузить платежи: ${error.message}`);
@@ -355,6 +623,7 @@ async function loadPaymentsData({ silent = false } = {}) {
 function renderPaymentsPlaceholder(message = 'Пока нет данных') {
   if (!elements.paymentsTable) return;
   elements.paymentsTable.innerHTML = `<div class="placeholder">${message}</div>`;
+  clearPaymentDetailRow();
 }
 
 function renderUploadsHistory(history) {
@@ -390,24 +659,29 @@ function renderPaymentsTable(data) {
     return;
   }
 
+  clearPaymentDetailRow();
+
   const rows = data
     .map((item) => {
-      const statusClass = item.status || 'needs_review';
-      const statusLabel = {
-        matched: 'Сопоставлено',
-        auto: 'Авто',
-        needs_review: 'Требует проверки',
-        unmatched: 'Не найдено'
-      }[statusClass] || 'Неизвестно';
+      const statusPresentation = getPaymentStatusPresentation(item);
+      const manualBadge = renderManualStatusBadge(statusPresentation.badge);
+      const rawPaymentId = String(item.id);
+      const paymentId = escapeHtml(rawPaymentId);
+      const isSelected = paymentsState.selectedId && paymentsState.selectedId === rawPaymentId;
+      const confidence = Number.isFinite(item.confidence) ? `${Math.round(item.confidence)}%` : '—';
 
       return `
-        <tr>
+        <tr data-payment-id="${paymentId}"${isSelected ? ' class="selected"' : ''}>
           <td>${formatDate(item.date)}</td>
           <td>${escapeHtml(item.description || '')}</td>
           <td class="amount">${formatCurrency(item.amount || 0, item.currency || 'PLN')}</td>
           <td>${escapeHtml(item.payer || '—')}</td>
           <td>${escapeHtml(item.matched_proforma || '—')}</td>
-          <td><span class="status ${statusClass}">${statusLabel}</span></td>
+          <td>
+            <span class="status ${statusPresentation.className}">${statusPresentation.label}</span>
+            ${manualBadge}
+            <div class="status-meta">⭐ ${confidence}</div>
+          </td>
         </tr>
       `;
     })
@@ -428,6 +702,396 @@ function renderPaymentsTable(data) {
       <tbody>${rows}</tbody>
     </table>
   `;
+
+  elements.paymentsTable
+    .querySelectorAll('tbody tr')
+    .forEach((row) => {
+      row.addEventListener('click', handlePaymentRowClick);
+    });
+
+  highlightSelectedPaymentRow();
+
+  if (paymentsState.selectedId) {
+    const selectedRow = getPaymentRowElement(paymentsState.selectedId);
+    if (selectedRow) {
+      selectPaymentRow(selectedRow, { skipScroll: true }).catch(() => {
+        clearPaymentDetailRow();
+      });
+    } else {
+      clearPaymentDetailRow();
+    }
+  } else {
+    clearPaymentDetailRow();
+  }
+}
+
+function getPaymentStatusPresentation(item = {}) {
+  if (item.manual_status === 'approved') {
+    return { label: 'Сопоставлено (ручн.)', className: 'matched manual', badge: 'approved' };
+  }
+
+  if (item.manual_status === 'rejected') {
+    return { label: 'Отклонено (ручн.)', className: 'unmatched manual', badge: 'rejected' };
+  }
+
+  const baseStatus = item.status || 'needs_review';
+  const origin = item.origin || 'auto';
+
+  if (baseStatus === 'matched') {
+    if (origin === 'manual') {
+      return { label: 'Сопоставлено (ручн.)', className: 'matched manual', badge: 'approved' };
+    }
+    return { label: 'Сопоставлено (авто)', className: 'matched', badge: null };
+  }
+
+  if (baseStatus === 'needs_review') {
+    return { label: 'Требует проверки', className: 'needs_review', badge: null };
+  }
+
+  if (baseStatus === 'unmatched') {
+    return { label: 'Не найдено', className: 'unmatched', badge: null };
+  }
+
+  return { label: 'Неизвестно', className: 'needs_review', badge: null };
+}
+
+function renderManualStatusBadge(type) {
+  if (!type) return '';
+  if (type === 'approved') {
+    return '<span class="manual-status-badge">Ручное сопоставление</span>';
+  }
+  if (type === 'rejected') {
+    return '<span class="manual-status-badge rejected">Отклонено вручную</span>';
+  }
+  return '';
+}
+
+function handlePaymentRowClick(event) {
+  const row = event.currentTarget || event.target.closest('tr[data-payment-id]');
+  if (!row || !row.dataset.paymentId) return;
+  selectPaymentRow(row).catch((error) => {
+    console.warn('selectPaymentRow error:', error);
+  });
+}
+
+function highlightSelectedPaymentRow() {
+  if (!elements.paymentsTable) return;
+  const rows = elements.paymentsTable.querySelectorAll('tbody tr');
+  rows.forEach((row) => {
+    row.classList.toggle('selected', paymentsState.selectedId && row.dataset.paymentId === paymentsState.selectedId);
+  });
+}
+
+function getPaymentRowElement(paymentId) {
+  if (!elements.paymentsTable) return null;
+  const idKey = String(paymentId);
+  try {
+    const selector = `tbody tr[data-payment-id="${CSS && CSS.escape ? CSS.escape(idKey) : idKey}"]`;
+    return elements.paymentsTable.querySelector(selector);
+  } catch (error) {
+    return elements.paymentsTable.querySelector(`tbody tr[data-payment-id="${idKey.replace(/"/g, '\\"')}"]`);
+  }
+}
+
+function clearPaymentDetailRow() {
+  if (paymentsState.detailRowEl && paymentsState.detailRowEl.parentNode) {
+    paymentsState.detailRowEl.remove();
+  }
+  paymentsState.detailRowEl = null;
+  paymentsState.detailCellEl = null;
+}
+
+function ensurePaymentDetailRow(anchorRow) {
+  if (!anchorRow || !anchorRow.parentNode) {
+    clearPaymentDetailRow();
+    return { detailRow: null, detailCell: null };
+  }
+
+  const anchorId = anchorRow.dataset.paymentId;
+
+  if (paymentsState.detailRowEl && paymentsState.detailRowEl.dataset.anchorId === anchorId) {
+    paymentsState.detailCellEl.colSpan = anchorRow.children.length;
+    return { detailRow: paymentsState.detailRowEl, detailCell: paymentsState.detailCellEl };
+  }
+
+  clearPaymentDetailRow();
+
+  const detailRow = document.createElement('tr');
+  detailRow.className = 'payment-detail-row';
+  detailRow.dataset.anchorId = anchorId;
+
+  const detailCell = document.createElement('td');
+  detailCell.colSpan = anchorRow.children.length;
+  detailCell.className = 'payment-detail-cell';
+  detailCell.innerHTML = '<div class="payment-detail-placeholder">Выберите платеж, чтобы открыть детали</div>';
+
+  detailRow.appendChild(detailCell);
+
+  if (anchorRow.nextSibling) {
+    anchorRow.parentNode.insertBefore(detailRow, anchorRow.nextSibling);
+  } else {
+    anchorRow.parentNode.appendChild(detailRow);
+  }
+
+  paymentsState.detailRowEl = detailRow;
+  paymentsState.detailCellEl = detailCell;
+
+  return { detailRow, detailCell };
+}
+
+function renderPaymentDetailPlaceholder(message = 'Выберите платеж, чтобы открыть детали', target = paymentsState.detailCellEl) {
+  if (!target) return;
+  target.innerHTML = `<div class="payment-detail-placeholder">${escapeHtml(message)}</div>`;
+}
+
+function renderPaymentDetailLoading(target = paymentsState.detailCellEl) {
+  renderPaymentDetailPlaceholder('Загружаю детали платежа...', target);
+}
+
+async function selectPaymentRow(row, { forceReload = false, skipScroll = false } = {}) {
+  if (!row) return;
+
+  const paymentId = row.dataset.paymentId;
+  const idKey = String(paymentId);
+
+  paymentsState.selectedId = idKey;
+  highlightSelectedPaymentRow();
+
+  const { detailCell } = ensurePaymentDetailRow(row);
+  if (!detailCell) {
+    addLog('warning', 'Не удалось открыть панель детализации для выбранного платежа');
+    return;
+  }
+
+  renderPaymentDetailLoading(detailCell);
+
+  if (!skipScroll) {
+    row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  try {
+    const detail = await loadPaymentDetails(idKey, { forceReload });
+    renderPaymentDetail(detail, detailCell);
+  } catch (error) {
+    addLog('error', `Не удалось получить детали платежа: ${error.message}`);
+    renderPaymentDetailPlaceholder(`Не удалось получить детали: ${escapeHtml(error.message)}`, detailCell);
+  }
+}
+
+async function loadPaymentDetails(paymentId, { forceReload = false } = {}) {
+  const cacheKey = String(paymentId);
+  if (!forceReload && paymentsState.details.has(cacheKey)) {
+    return paymentsState.details.get(cacheKey);
+  }
+
+  const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(cacheKey)}`);
+  if (!result?.success) {
+    throw new Error(result?.error || 'Не удалось получить детали платежа');
+  }
+
+  paymentsState.details.set(cacheKey, result);
+  return result;
+}
+
+function renderPaymentMeta(label, value) {
+  return `
+    <div class="payment-meta-row">
+      <span class="payment-meta-label">${escapeHtml(label)}</span>
+      <span class="payment-meta-value">${value}</span>
+    </div>
+  `;
+}
+
+function renderPaymentDetail(data, target = paymentsState.detailCellEl) {
+  if (!target) return;
+  if (!data || !data.payment) {
+    renderPaymentDetailPlaceholder(undefined, target);
+    return;
+  }
+
+  const { payment, candidates = [] } = data;
+  const statusPresentation = getPaymentStatusPresentation(payment);
+  const manualBadge = renderManualStatusBadge(statusPresentation.badge);
+  const manualInputValue = payment.manual_status === 'approved'
+    ? payment.matched_proforma || ''
+    : payment.matched_proforma || payment.auto_proforma_fullnumber || '';
+  const commentValue = payment.manual_comment || '';
+
+  const metaRows = [
+    renderPaymentMeta('ID платежа', escapeHtml(String(payment.id))),
+    renderPaymentMeta('Дата', escapeHtml(formatDate(payment.date))),
+    renderPaymentMeta('Сумма', escapeHtml(formatCurrency(payment.amount || 0, payment.currency || 'PLN'))),
+    renderPaymentMeta('Плательщик', escapeHtml(payment.payer || '—')),
+    renderPaymentMeta('Описание', escapeHtml(payment.description || '—')),
+    renderPaymentMeta('Авто совпадение', escapeHtml(payment.auto_proforma_fullnumber || '—')),
+    renderPaymentMeta('Текущая привязка', escapeHtml(payment.matched_proforma || '—')),
+    renderPaymentMeta('Статус', escapeHtml(statusPresentation.label)),
+    renderPaymentMeta('Уверенность', escapeHtml(
+      Number.isFinite(payment.confidence) ? `${Math.round(payment.confidence)}%` : '—'
+    ))
+  ];
+
+  const candidateItems = candidates.length > 0
+    ? candidates.map((candidate) => {
+      const isSelected = candidate.proforma_fullnumber === payment.matched_proforma;
+      const candidateCurrency = candidate.proforma_currency || payment.currency || 'PLN';
+      const amountDiff = Number.isFinite(candidate.amount_diff) ? formatCurrency(candidate.amount_diff, candidateCurrency) : '—';
+      return `
+        <li
+          class="candidate-card${isSelected ? ' selected' : ''}"
+          data-fullnumber="${escapeHtml(candidate.proforma_fullnumber || '')}"
+          data-proforma-id="${escapeHtml(String(candidate.proforma_id || ''))}"
+        >
+          <div class="candidate-title">${escapeHtml(candidate.proforma_fullnumber || '—')}</div>
+          <div class="candidate-meta">
+            <span>👤 ${escapeHtml(candidate.buyer_name || '—')}</span>
+            <span>💰 ${formatCurrency(candidate.proforma_total || 0, candidateCurrency)}</span>
+            <span>⚖️ Остаток ${formatCurrency(candidate.remaining || 0, candidateCurrency)}</span>
+            <span>⭐ ${candidate.score !== undefined ? escapeHtml(String(candidate.score)) : '—'}</span>
+            <span>Δ ${amountDiff}</span>
+          </div>
+        </li>
+      `;
+    }).join('')
+    : '<li class="candidate-card disabled">Совпадения не найдены</li>';
+
+  target.innerHTML = `
+    <div class="payment-detail" data-payment-id="${escapeHtml(String(payment.id))}">
+      <header>
+        <h3>Платёж ${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</h3>
+        ${manualBadge || ''}
+      </header>
+      <div class="payment-meta">
+        ${metaRows.join('')}
+      </div>
+      <div class="manual-match-panel">
+        <label for="payment-proforma-input">Номер проформы</label>
+        <input id="payment-proforma-input" type="text" autocomplete="off" value="${escapeHtml(manualInputValue)}" placeholder="Например: CO-PROF 123/2025" />
+        <span class="manual-match-hint">Введите номер проформы и нажмите «Сохранить», чтобы подтвердить связь вручную.</span>
+        <label for="payment-comment-input">Комментарий</label>
+        <textarea id="payment-comment-input" rows="3" placeholder="Комментарий для истории">${escapeHtml(commentValue)}</textarea>
+        <div class="manual-match-actions">
+          <button class="btn btn-primary" id="payment-manual-save">💾 Сохранить</button>
+          <button class="btn btn-secondary" id="payment-manual-reset">↩️ Очистить</button>
+        </div>
+      </div>
+      <div class="candidate-panel">
+        <h4>Возможные совпадения</h4>
+        <ul class="candidate-list">
+          ${candidateItems}
+        </ul>
+      </div>
+    </div>
+  `;
+
+  setupPaymentDetailHandlers(payment.id, target);
+}
+
+function setupPaymentDetailHandlers(paymentId, root = paymentsState.detailCellEl) {
+  if (!root) return;
+
+  const input = root.querySelector('#payment-proforma-input');
+  const comment = root.querySelector('#payment-comment-input');
+  const saveButton = root.querySelector('#payment-manual-save');
+  const resetButton = root.querySelector('#payment-manual-reset');
+  const candidateCards = root.querySelectorAll('.candidate-card');
+
+  candidateCards.forEach((card) => {
+    if (card.classList.contains('disabled')) return;
+    card.addEventListener('click', () => {
+      const fullnumber = card.dataset.fullnumber || '';
+      if (input) {
+        input.value = fullnumber;
+        input.focus();
+      }
+      candidateCards.forEach((node) => {
+        node.classList.toggle('selected', node === card);
+      });
+    });
+  });
+
+  saveButton?.addEventListener('click', async () => {
+    if (!input) return;
+    const fullnumber = input.value.trim();
+    if (!fullnumber) {
+      addLog('warning', 'Введите номер проформы перед сохранением');
+      input.focus();
+      return;
+    }
+
+    try {
+      setButtonLoading(saveButton, true, 'Сохранение...');
+      const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}/assign`, 'POST', {
+        fullnumber,
+        comment: comment?.value?.trim() || null
+      });
+
+      paymentsState.details.set(String(paymentId), result);
+      updatePaymentInState(result.payment);
+      renderPaymentsTable(paymentsState.items);
+      paymentsState.selectedId = result.payment && result.payment.manual_status === 'approved'
+        ? null
+        : String(paymentId);
+      if (paymentsState.selectedId) {
+        const updatedRow = getPaymentRowElement(paymentsState.selectedId);
+        if (updatedRow) {
+          selectPaymentRow(updatedRow, { skipScroll: true }).catch(() => clearPaymentDetailRow());
+        } else {
+          clearPaymentDetailRow();
+        }
+      } else {
+        clearPaymentDetailRow();
+      }
+      addLog('success', `Платёж ${paymentId} привязан к проформе ${fullnumber}`);
+    } catch (error) {
+      addLog('error', `Не удалось сохранить привязку: ${error.message}`);
+    } finally {
+      setButtonLoading(saveButton, false, '💾 Сохранить');
+    }
+  });
+
+  resetButton?.addEventListener('click', async () => {
+    try {
+      setButtonLoading(resetButton, true, 'Очистка...');
+      const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}/unmatch`, 'POST', {
+        comment: comment?.value?.trim() || null
+      });
+
+      paymentsState.details.set(String(paymentId), result);
+      updatePaymentInState(result.payment);
+      renderPaymentsTable(paymentsState.items);
+      paymentsState.selectedId = String(paymentId);
+      const updatedRow = getPaymentRowElement(paymentsState.selectedId);
+      if (updatedRow) {
+        selectPaymentRow(updatedRow, { skipScroll: true }).catch(() => clearPaymentDetailRow());
+      } else {
+        clearPaymentDetailRow();
+      }
+      addLog('info', `Привязка платежа ${paymentId} сброшена`);
+    } catch (error) {
+      addLog('error', `Не удалось сбросить привязку: ${error.message}`);
+    } finally {
+      setButtonLoading(resetButton, false, '↩️ Очистить');
+    }
+  });
+}
+
+function updatePaymentInState(payment) {
+  if (!payment) return;
+  const idKey = String(payment.id);
+
+  if (payment.manual_status === 'approved') {
+    paymentsState.items = paymentsState.items.filter((item) => String(item.id) !== idKey);
+    paymentsState.details.delete(idKey);
+    return;
+  }
+
+  const index = paymentsState.items.findIndex((item) => String(item.id) === idKey);
+  if (index !== -1) {
+    paymentsState.items[index] = payment;
+  } else {
+    paymentsState.items.unshift(payment);
+  }
 }
 
 async function handleCsvUpload(event) {
