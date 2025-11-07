@@ -519,6 +519,115 @@ class PaymentService {
     return this.getPaymentDetails(paymentId);
   }
 
+  async bulkApproveAutoMatches({ user = null, minConfidence = 80 } = {}) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const { data, error } = await supabase
+      .from('payments')
+      .select('id, proforma_id, proforma_fullnumber, match_confidence, match_status, match_reason')
+      .is('manual_status', null)
+      .in('match_status', ['matched', 'needs_review'])
+      .gte('match_confidence', minConfidence)
+      .order('match_confidence', { ascending: false })
+      .limit(1000);
+
+    if (error) {
+      logger.error('Supabase error while loading auto-matched payments:', error);
+      throw error;
+    }
+
+    const candidates = data || [];
+    if (!candidates.length) {
+      return { total: 0, processed: 0, skipped: 0 };
+    }
+
+    const now = new Date().toISOString();
+    const updates = [];
+
+    for (const payment of candidates) {
+      if (!payment.proforma_id || !payment.proforma_fullnumber) {
+        continue;
+      }
+
+      updates.push({
+        id: payment.id,
+        manual_status: MANUAL_STATUS_APPROVED,
+        manual_proforma_id: payment.proforma_id,
+        manual_proforma_fullnumber: payment.proforma_fullnumber,
+        manual_user: user || 'bulk-auto',
+        manual_comment: payment.match_reason || null,
+        manual_updated_at: now
+      });
+    }
+
+    if (!updates.length) {
+      return { total: candidates.length, processed: 0, skipped: candidates.length };
+    }
+
+    let processed = 0;
+    const failedUpdates = [];
+
+    for (const update of updates) {
+      const { id, ...changes } = update;
+      const { error: updateError } = await supabase
+        .from('payments')
+        .update(changes)
+        .eq('id', id);
+
+      if (updateError) {
+        logger.error('Supabase error while approving payment match:', updateError);
+        failedUpdates.push({ id, error: updateError });
+      } else {
+        processed += 1;
+      }
+    }
+
+    const skipped = candidates.length - processed;
+
+    return {
+      total: candidates.length,
+      processed,
+      skipped,
+      failed: failedUpdates
+    };
+  }
+
+  async approveAutoMatch(paymentId, { user = null } = {}) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const raw = await this.fetchPaymentRaw(paymentId);
+
+    if (!raw.proforma_id || !raw.proforma_fullnumber) {
+      const validationError = new Error('Для этого платежа нет автоматического совпадения');
+      validationError.statusCode = 400;
+      throw validationError;
+    }
+
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('payments')
+      .update({
+        manual_status: MANUAL_STATUS_APPROVED,
+        manual_proforma_id: raw.proforma_id,
+        manual_proforma_fullnumber: raw.proforma_fullnumber,
+        manual_comment: raw.match_reason || null,
+        manual_user: user || 'quick-auto',
+        manual_updated_at: now
+      })
+      .eq('id', paymentId);
+
+    if (error) {
+      logger.error('Supabase error while approving payment match:', error);
+      throw error;
+    }
+
+    return this.getPaymentDetails(paymentId);
+  }
+
   async clearManualMatch(paymentId, { user = null, comment = null } = {}) {
     if (!supabase) {
       throw new Error('Supabase client is not configured');
@@ -546,6 +655,24 @@ class PaymentService {
     }
 
     return this.getPaymentDetails(paymentId);
+  }
+
+  async deletePayment(paymentId) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    await this.fetchPaymentRaw(paymentId);
+
+    const { error } = await supabase
+      .from('payments')
+      .delete()
+      .eq('id', paymentId);
+
+    if (error) {
+      logger.error('Supabase error while deleting payment:', error);
+      throw error;
+    }
   }
 
   async buildMatchingContext(payments) {

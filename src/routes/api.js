@@ -1018,12 +1018,64 @@ router.post('/vat-margin/payments/:id/unmatch', async (req, res) => {
   }
 });
 
-router.post('/vat-margin/payments/apply', async (_req, res) => {
-  // Автосопоставление применяется сразу после загрузки, поэтому здесь просто возвращаем успех
-  res.json({
-    success: true,
-    message: 'Новые сопоставления применяются автоматически после загрузки CSV'
-  });
+router.post('/vat-margin/payments/apply', async (req, res) => {
+  try {
+    const user = req.session?.user?.email || req.user?.email || null;
+    const result = await paymentService.bulkApproveAutoMatches({ user });
+    res.json({
+      success: true,
+      ...result,
+      message: 'Автоматические совпадения подтверждены'
+    });
+  } catch (error) {
+    logger.error('Error applying automatic payment matches:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось подтвердить автоматические совпадения',
+      message: error.message
+    });
+  }
+});
+
+router.post('/vat-margin/payments/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.session?.user?.email || req.user?.email || null;
+    const result = await paymentService.approveAutoMatch(id, { user });
+    res.json({
+      success: true,
+      payment: result.payment,
+      candidates: result.candidates,
+      message: 'Платёж подтверждён'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error approving payment match:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 400 ? 'Нет автоматического совпадения для подтверждения' : 'Не удалось подтвердить платеж',
+      message: error.message
+    });
+  }
+});
+
+router.delete('/vat-margin/payments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await paymentService.deletePayment(id);
+    res.json({
+      success: true,
+      message: 'Платёж удалён'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error deleting payment:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 404 ? 'Платёж не найден' : 'Не удалось удалить платеж',
+      message: error.message
+    });
+  }
 });
 
 router.post('/vat-margin/payments/reset', async (_req, res) => {

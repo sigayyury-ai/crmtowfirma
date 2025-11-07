@@ -47,8 +47,7 @@ function cacheDom() {
     refreshProducts: document.getElementById('refresh-products'),
     productSummaryTable: document.getElementById('product-summary-table'),
     bankCsvInput: document.getElementById('bank-csv-input'),
-    refreshPayments: document.getElementById('refresh-payments'),
-    applyMatches: document.getElementById('apply-matches'),
+    bulkApproveMatches: document.getElementById('bulk-approve-matches'),
     resetMatches: document.getElementById('reset-matches'),
     exportPayments: document.getElementById('export-payments'),
     uploadsHistory: document.querySelector('[data-history="list"]'),
@@ -67,11 +66,11 @@ function bindEvents() {
   elements.refreshProducts?.addEventListener('click', () => {
     loadProductSummary();
   });
-  elements.refreshPayments?.addEventListener('click', () => loadPaymentsData());
-  elements.applyMatches?.addEventListener('click', applyPaymentMatches);
+  elements.bulkApproveMatches?.addEventListener('click', bulkApproveMatches);
   elements.resetMatches?.addEventListener('click', resetPaymentMatches);
   elements.exportPayments?.addEventListener('click', exportPaymentsCsv);
   elements.bankCsvInput?.addEventListener('change', handleCsvUpload);
+  elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
 
   [elements.monthSelect, elements.yearSelect].forEach((select) => {
     select?.addEventListener('change', () => loadVatMarginData({ silent: true }));
@@ -669,6 +668,7 @@ function renderPaymentsTable(data) {
       const paymentId = escapeHtml(rawPaymentId);
       const isSelected = paymentsState.selectedId && paymentsState.selectedId === rawPaymentId;
       const confidence = Number.isFinite(item.confidence) ? `${Math.round(item.confidence)}%` : '—';
+      const hasAutoMatch = Boolean(item.auto_proforma_fullnumber);
 
       return `
         <tr data-payment-id="${paymentId}"${isSelected ? ' class="selected"' : ''}>
@@ -681,6 +681,21 @@ function renderPaymentsTable(data) {
             <span class="status ${statusPresentation.className}">${statusPresentation.label}</span>
             ${manualBadge}
             <div class="status-meta">⭐ ${confidence}</div>
+          </td>
+          <td class="actions-cell">
+            <button
+              class="action-btn approve"
+              data-action="approve"
+              data-id="${paymentId}"
+              ${hasAutoMatch ? '' : 'disabled'}
+              title="${hasAutoMatch ? 'Подтвердить автоматическое совпадение' : 'Нет автоматического совпадения'}"
+            >✓</button>
+            <button
+              class="action-btn delete"
+              data-action="delete"
+              data-id="${paymentId}"
+              title="Удалить платеж"
+            >✕</button>
           </td>
         </tr>
       `;
@@ -697,6 +712,7 @@ function renderPaymentsTable(data) {
           <th>Плательщик</th>
           <th>Проформа</th>
           <th>Статус</th>
+          <th>Действия</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -772,6 +788,28 @@ function handlePaymentRowClick(event) {
   selectPaymentRow(row).catch((error) => {
     console.warn('selectPaymentRow error:', error);
   });
+}
+
+function handlePaymentActionClick(event) {
+  const actionButton = event.target.closest('[data-action][data-id]');
+  if (!actionButton || !elements.paymentsTable.contains(actionButton)) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const { action, id } = actionButton.dataset;
+  if (!id) return;
+
+  if (action === 'approve') {
+    approvePaymentQuick(id);
+    return;
+  }
+
+  if (action === 'delete') {
+    deletePaymentQuick(id);
+  }
 }
 
 function highlightSelectedPaymentRow() {
@@ -1127,19 +1165,25 @@ async function handleCsvUpload(event) {
   }
 }
 
-async function applyPaymentMatches() {
+async function bulkApproveMatches() {
   try {
-    setButtonLoading(elements.applyMatches, true, 'Применение...');
+    setButtonLoading(elements.bulkApproveMatches, true, 'Подтверждаю...');
     const result = await apiCall('/vat-margin/payments/apply', 'POST');
     if (!result.success) {
       throw new Error(result.error || 'Не удалось применить сопоставления');
     }
-    addLog('success', 'Сопоставления применены');
+    const processed = result?.processed || 0;
+    const skipped = result?.skipped || 0;
+    if (processed === 0) {
+      addLog('info', 'Нет автоматических совпадений для подтверждения');
+    } else {
+      addLog('success', `Подтверждено автоматически: ${processed}. Пропущено: ${skipped}.`);
+    }
     await loadPaymentsData({ silent: true });
   } catch (error) {
-    addLog('error', `Ошибка применения сопоставлений: ${error.message}`);
+    addLog('error', `Ошибка подтверждения: ${error.message}`);
   } finally {
-    setButtonLoading(elements.applyMatches, false, '✔️ Применить');
+    setButtonLoading(elements.bulkApproveMatches, false, '✅ Подтвердить авто-совпадения');
   }
 }
 
@@ -1156,6 +1200,67 @@ async function resetPaymentMatches() {
     addLog('error', `Ошибка сброса: ${error.message}`);
   } finally {
     setButtonLoading(elements.resetMatches, false, '❌ Сбросить');
+  }
+}
+
+async function approvePaymentQuick(paymentId) {
+  const payment = paymentsState.items.find((item) => String(item.id) === String(paymentId));
+  if (!payment) {
+    addLog('warning', `Платёж ${paymentId} не найден в списке`);
+    return;
+  }
+
+  if (!payment.auto_proforma_fullnumber) {
+    addLog('warning', `У платежа ${paymentId} нет автоматического совпадения`);
+    return;
+  }
+
+  try {
+    addLog('info', `Подтверждаю платеж ${paymentId} → ${payment.auto_proforma_fullnumber}`);
+    const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}/approve`, 'POST');
+    if (!result.success) {
+      throw new Error(result.error || 'Не удалось подтвердить платеж');
+    }
+
+    paymentsState.details.delete(String(paymentId));
+    updatePaymentInState(result.payment);
+    renderPaymentsTable(paymentsState.items);
+    paymentsState.selectedId = null;
+    addLog('success', `Платёж ${paymentId} подтверждён`);
+  } catch (error) {
+    addLog('error', `Ошибка подтверждения платежа: ${error.message}`);
+  }
+}
+
+async function deletePaymentQuick(paymentId) {
+  const paymentIndex = paymentsState.items.findIndex((item) => String(item.id) === String(paymentId));
+  if (paymentIndex === -1) {
+    addLog('warning', `Платёж ${paymentId} не найден в списке`);
+    return;
+  }
+
+  const payment = paymentsState.items[paymentIndex];
+  const confirmation = window.confirm(`Удалить платеж ${paymentId} (${payment.payer || '—'}, ${formatCurrency(payment.amount || 0, payment.currency || 'PLN')})?`);
+  if (!confirmation) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаляю платеж ${paymentId}`);
+    const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}`, 'DELETE');
+    if (!result.success) {
+      throw new Error(result.error || 'Не удалось удалить платеж');
+    }
+
+    paymentsState.details.delete(String(paymentId));
+    paymentsState.items.splice(paymentIndex, 1);
+    if (paymentsState.selectedId === String(paymentId)) {
+      paymentsState.selectedId = null;
+    }
+    renderPaymentsTable(paymentsState.items);
+    addLog('success', `Платёж ${paymentId} удалён`);
+  } catch (error) {
+    addLog('error', `Ошибка удаления платежа: ${error.message}`);
   }
 }
 

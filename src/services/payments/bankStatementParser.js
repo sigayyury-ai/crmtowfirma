@@ -63,14 +63,52 @@ function parseAmount(raw) {
   };
 }
 
+const ADDRESS_STOP_WORDS = new Set([
+  'UL', 'UL.', 'ULICA', 'ULICY', 'ULICZNA',
+  'PRZELEW', 'PROSPEKT', 'PR', 'PR.',
+  'STR', 'STR.', 'ST', 'ST.', 'STREET',
+  'AV', 'AV.', 'AVENUE', 'AVE', 'AVE.',
+  'PL', 'PL.', 'PLAC', 'PLZ', 'PLZ.'
+]);
+
 function extractPayer(description) {
   if (!description) return null;
   const trimmed = normalizeWhitespace(description);
   if (!trimmed) return null;
 
   const parts = trimmed.split(',');
-  const firstPart = parts[0] || trimmed;
-  return normalizeWhitespace(firstPart.replace(/PRZELEW.*$/i, '').trim());
+  const firstPart = normalizeWhitespace((parts[0] || trimmed).replace(/PRZELEW.*$/i, '').trim());
+
+  if (!firstPart) return null;
+
+  const tokens = firstPart.split(/\s+/);
+  const nameTokens = [];
+
+  for (const token of tokens) {
+    if (!token) continue;
+    const upper = token.toUpperCase();
+    const stripped = upper.replace(/[^\p{L}]/gu, '');
+
+    if (ADDRESS_STOP_WORDS.has(upper) || ADDRESS_STOP_WORDS.has(stripped)) {
+      break;
+    }
+
+    if (/[0-9]/.test(token)) {
+      break;
+    }
+
+    if (/^[A-Z]{2,}\.$/.test(upper) && ADDRESS_STOP_WORDS.has(upper.slice(0, -1))) {
+      break;
+    }
+
+    nameTokens.push(token);
+  }
+
+  if (nameTokens.length === 0) {
+    return firstPart;
+  }
+
+  return normalizeWhitespace(nameTokens.join(' '));
 }
 
 function parseBankStatement(content) {
@@ -141,6 +179,7 @@ function parseBankStatement(content) {
 }
 
 module.exports = {
-  parseBankStatement
+  parseBankStatement,
+  extractPayerName: extractPayer
 };
 
