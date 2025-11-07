@@ -19,20 +19,94 @@
             <p>Отслеживание проформ с VAT margin по продуктам</p>
         </header>
 
-        <div class="vat-margin-section">
-            <h2>📊 Данные по проформам</h2>
-            <div class="vat-margin-controls">
-                <div class="date-range-selector">
-                    <button id="load-vat-margin" class="btn btn-primary">📈 Загрузить все проформы</button>
-                </div>
+        <div class="tab-container">
+            <div class="tab-header">
+                <button class="tab-button active" data-tab="report">📊 Отчёт</button>
+                <button class="tab-button" data-tab="payments">💳 Платежи</button>
             </div>
-            <div id="vat-margin-container" class="vat-margin-container">
-                <div class="placeholder">Нажмите "Загрузить все проформы" для загрузки данных...</div>
+
+            <div class="tab-content active" id="tab-report">
+                <section class="vat-margin-section">
+                    <div class="section-header">
+                        <h2>📊 Данные по проформам</h2>
+                        <div class="controls">
+                            <div class="month-year-select">
+                                <label for="month-select">Месяц</label>
+                                <select id="month-select">
+                                    <option value="1">Январь</option>
+                                    <option value="2">Февраль</option>
+                                    <option value="3">Март</option>
+                                    <option value="4">Апрель</option>
+                                    <option value="5">Май</option>
+                                    <option value="6">Июнь</option>
+                                    <option value="7">Июль</option>
+                                    <option value="8">Август</option>
+                                    <option value="9">Сентябрь</option>
+                                    <option value="10">Октябрь</option>
+                                    <option value="11">Ноябрь</option>
+                                    <option value="12">Декабрь</option>
+                                </select>
+                            </div>
+                            <div class="month-year-select">
+                                <label for="year-select">Год</label>
+                                <select id="year-select">
+                                    <option value="2025">2025</option>
+                                    <option value="2026">2026</option>
+                                    <option value="2027">2027</option>
+                                    <option value="2028">2028</option>
+                                    <option value="2029">2029</option>
+                                    <option value="2030">2030</option>
+                                </select>
+                            </div>
+                            <button id="load-vat-margin" class="btn btn-primary">🔄 Обновить</button>
+                            <button id="export-report" class="btn btn-secondary">⬇️ Экспорт CSV</button>
+                        </div>
+                    </div>
+
+                    <div id="vat-margin-container" class="vat-margin-container">
+                        <div class="placeholder">Выберите месяц и нажмите «Обновить», чтобы загрузить данные</div>
+                    </div>
+                </section>
+            </div>
+
+            <div class="tab-content" id="tab-payments">
+                <section class="payments-section">
+                    <div class="section-header">
+                        <h2>💳 Платежи и сопоставление</h2>
+                        <div class="controls">
+                            <label class="upload-btn">
+                                <input type="file" id="bank-csv-input" accept=".csv" hidden>
+                                📤 Загрузить CSV
+                            </label>
+                            <button id="refresh-payments" class="btn btn-primary">🔄 Обновить</button>
+                            <button id="apply-matches" class="btn btn-success">✔️ Применить</button>
+                            <button id="reset-matches" class="btn btn-danger">❌ Сбросить</button>
+                            <button id="export-payments" class="btn btn-secondary">⬇️ Экспорт CSV</button>
+                        </div>
+                    </div>
+
+                    <div class="uploads-history" id="uploads-history">
+                        <div class="uploads-header">
+                            <h3>📁 История загрузок</h3>
+                            <span class="hint">Последние 5 файлов</span>
+                        </div>
+                        <ul class="uploads-list" data-history="list">
+                            <li class="placeholder">Загрузите CSV, чтобы увидеть историю</li>
+                        </ul>
+                    </div>
+
+                    <div class="payments-table-container" id="payments-table">
+                        <div class="placeholder">Пока нет загруженных платежей</div>
+                    </div>
+                </section>
             </div>
         </div>
 
         <div class="logs-section">
-            <h2>📝 Логи</h2>
+            <div class="section-header">
+                <h2>📝 Логи</h2>
+                <button id="clear-logs" class="btn btn-link">Очистить</button>
+            </div>
             <div id="logs-container" class="logs-container">
                 <div class="log-entry info">Система готова к работе</div>
             </div>

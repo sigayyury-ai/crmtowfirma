@@ -1,6 +1,7 @@
 const WfirmaClient = require('../wfirma');
 const logger = require('../../utils/logger');
 const axios = require('axios');
+const supabase = require('../supabaseClient');
 
 class WfirmaLookup {
   constructor() {
@@ -31,47 +32,201 @@ class WfirmaLookup {
    */
   async getMonthlyProformasByProduct(options = {}) {
     try {
-      // Временно убираем фильтр по дате - загружаем все проформы
-      let proformas = [];
-      
-      if (options.dateFrom && options.dateTo) {
-        // Если даты указаны, используем их
-        const dateFrom = options.dateFrom;
-        const dateTo = options.dateTo;
-        
-        logger.info('Getting monthly proformas by product with date filter:', {
-          dateFrom: dateFrom.toISOString().split('T')[0],
-          dateTo: dateTo.toISOString().split('T')[0]
-        });
-        
-        proformas = await this.getProformasByDateRange(dateFrom, dateTo);
-      } else {
-        // Если даты не указаны, загружаем все проформы (без фильтра по дате)
-        logger.info('Getting all proformas (no date filter)');
-        
-        // Используем расширенный диапазон: последние 10 лет от сегодня
-        const now = new Date();
-        const dateFrom = new Date(now.getFullYear() - 10, 0, 1); // 10 лет назад
-        const dateTo = new Date(now.getFullYear() + 2, 11, 31, 23, 59, 59); // До конца через 2 года
-        
-        logger.info('Using date range for all proformas:', {
-          dateFrom: dateFrom.toISOString().split('T')[0],
-          dateTo: dateTo.toISOString().split('T')[0]
-        });
-        
-        proformas = await this.getProformasByDateRange(dateFrom, dateTo);
+      const { dateFrom, dateTo } = this.resolveDateRange(options);
+
+      logger.info('Fetching proforma data for frontend', {
+        dateFrom: dateFrom.toISOString().split('T')[0],
+        dateTo: dateTo.toISOString().split('T')[0]
+      });
+
+      const supabaseRows = await this.getProductRowsFromSupabase(dateFrom, dateTo);
+
+      if (supabaseRows && supabaseRows.length > 0) {
+        logger.info(`Supabase returned ${supabaseRows.length} product rows, using them for response`);
+        return supabaseRows;
       }
 
-      // Создаем плоскую таблицу продуктов
+      logger.warn('Supabase returned no product rows for requested range, falling back to wFirma API');
+
+      const proformas = await this.getProformasByDateRange(dateFrom, dateTo);
       const productTable = this.createProductTable(proformas);
 
-      logger.info(`Found ${proformas.length} proformas, created ${productTable.length} product table rows`);
+      logger.info(`Prepared ${productTable.length} product rows based on ${proformas.length} proformas from wFirma`);
 
       return productTable;
     } catch (error) {
       logger.error('Error getting monthly proformas by product:', error);
       throw error;
     }
+  }
+
+  resolveDateRange(options = {}) {
+    const normalizeDate = (value) => {
+      if (value instanceof Date) return value;
+      if (typeof value === 'string' || typeof value === 'number') {
+        const parsed = new Date(value);
+        if (!isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+      return null;
+    };
+
+    if (options.dateFrom && options.dateTo) {
+      const dateFrom = normalizeDate(options.dateFrom);
+      const dateTo = normalizeDate(options.dateTo);
+
+      if (dateFrom && dateTo) {
+        return { dateFrom, dateTo };
+      }
+    }
+
+    if (typeof options.dateFrom === 'string' && typeof options.dateTo === 'string') {
+      const dateFrom = normalizeDate(options.dateFrom);
+      const dateTo = normalizeDate(options.dateTo);
+      if (dateFrom && dateTo) {
+        return { dateFrom, dateTo };
+      }
+    }
+
+    if (typeof options.month === 'string') {
+      const parsedMonth = parseInt(options.month, 10);
+      if (!isNaN(parsedMonth)) {
+        options.month = parsedMonth;
+      }
+    }
+
+    if (typeof options.year === 'string') {
+      const parsedYear = parseInt(options.year, 10);
+      if (!isNaN(parsedYear)) {
+        options.year = parsedYear;
+      }
+    }
+
+    if (typeof options.month === 'number' && typeof options.year === 'number') {
+      const month = options.month - 1; // JS months start at 0
+      const year = options.year;
+      const dateFrom = new Date(Date.UTC(year, month, 1));
+      const dateTo = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59));
+      return { dateFrom, dateTo };
+    }
+
+    if (options.dateFrom || options.dateTo) {
+      const maybeFrom = normalizeDate(options.dateFrom) || new Date(0);
+      const maybeTo = normalizeDate(options.dateTo) || new Date();
+      return {
+        dateFrom: maybeFrom,
+        dateTo: maybeTo
+      };
+    }
+
+    const now = new Date();
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59));
+    return { dateFrom: start, dateTo: end };
+  }
+
+  async getProductRowsFromSupabase(dateFrom, dateTo) {
+    if (!supabase) {
+      logger.warn('Supabase client is not configured. Skipping Supabase fetch.');
+      return [];
+    }
+
+    const dateFromStr = dateFrom.toISOString().split('T')[0];
+    const dateToStr = dateTo.toISOString().split('T')[0];
+
+    logger.info('Querying Supabase for proforma product rows', { dateFrom: dateFromStr, dateTo: dateToStr });
+
+    const { data, error } = await supabase
+      .from('proforma_products')
+      .select(`
+        proforma_id,
+        quantity,
+        unit_price,
+        name,
+        proformas (
+          id,
+          fullnumber,
+          issued_at,
+          currency,
+          total,
+          currency_exchange,
+          payments_total,
+          payments_total_pln,
+          payments_currency_exchange
+        ),
+        products ( name )
+      `)
+      .gte('proformas.issued_at', dateFromStr)
+      .lte('proformas.issued_at', dateToStr)
+      .order('proforma_id', { ascending: true });
+
+    if (error) {
+      logger.error('Supabase error while fetching product rows:', error);
+      return [];
+    }
+
+    if (!data || data.length === 0) {
+      logger.info('Supabase returned no product rows for the requested range');
+      return [];
+    }
+
+    const rows = [];
+
+    for (const row of data) {
+      const proforma = row.proformas;
+      if (!proforma) {
+        logger.warn(`proforma_products row ${row.proforma_id} has no linked proforma, skipping`);
+        continue;
+      }
+
+      const productName = row.products?.name || row.name || 'Без названия';
+      const quantity = typeof row.quantity === 'number' ? row.quantity : parseFloat(row.quantity);
+      const unitPrice = typeof row.unit_price === 'number' ? row.unit_price : parseFloat(row.unit_price);
+
+      const lineQuantity = Number.isFinite(quantity) ? quantity : 1;
+      const pricePerUnit = Number.isFinite(unitPrice) ? unitPrice : 0;
+      const lineTotal = pricePerUnit * lineQuantity;
+
+      const paymentsTotalPln = this.parseNumber(proforma.payments_total_pln);
+      const paymentsTotal = this.parseNumber(proforma.payments_total);
+      const currencyExchange = this.parseNumber(proforma.currency_exchange);
+      const paymentsExchange = this.parseNumber(proforma.payments_currency_exchange) || currencyExchange || null;
+
+      const proformaTotal = this.parseNumber(proforma.total) || 0;
+
+      rows.push({
+        proforma_id: proforma.id,
+        name: productName,
+        fullnumber: proforma.fullnumber,
+        date: proforma.issued_at,
+        currency: proforma.currency || 'PLN',
+        total: proformaTotal,
+        proforma_total: proformaTotal,
+        line_total: lineTotal || null,
+        currency_exchange: currencyExchange,
+        quantity: lineQuantity,
+        unit_price: pricePerUnit,
+        payments_total_pln: Number.isFinite(paymentsTotalPln)
+          ? paymentsTotalPln
+          : Number.isFinite(paymentsTotal) && Number.isFinite(paymentsExchange)
+            ? paymentsTotal * paymentsExchange
+            : paymentsTotal || 0,
+        payments_total: Number.isFinite(paymentsTotal) ? paymentsTotal : 0,
+        payments_currency_exchange: paymentsExchange
+      });
+    }
+
+    return rows;
+  }
+
+  parseNumber(value) {
+    if (typeof value === 'number') return value;
+    if (typeof value === 'string') {
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
   }
 
   /**
@@ -95,7 +250,7 @@ class WfirmaLookup {
 
       let allInvoices = [];
       let page = 1;
-      const limit = 100; // wFirma обычно возвращает максимум 100 записей на страницу
+      const requestedLimit = 20; // wFirma стабильно возвращает 20 записей на страницу
       let hasMore = true;
 
       // Делаем пагинацию для получения всех записей
@@ -106,16 +261,34 @@ class WfirmaLookup {
       const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
 <api>
     <invoices>
-        <invoice>
-            <parameters>
-                <date>
-                    <from>${dateFromStr}</from>
-                    <to>${dateToStr}</to>
-                </date>
-                <limit>${limit}</limit>
-                <page>${page}</page>
-            </parameters>
-        </invoice>
+        <parameters>
+            <order>
+                <asc>Invoice.id</asc>
+            </order>
+            <conditions>
+                <condition>
+                    <field>type</field>
+                    <operator>eq</operator>
+                    <value>proforma</value>
+                </condition>
+            </conditions>
+            <fields>
+                <field>Invoice.id</field>
+                <field>Invoice.fullnumber</field>
+                <field>Invoice.number</field>
+                <field>Invoice.date</field>
+                <field>Invoice.currency</field>
+                <field>Invoice.currency_exchange</field>
+                <field>Invoice.total</field>
+                <field>Invoice.total_composed</field>
+                <field>InvoiceContent.name</field>
+                <field>InvoiceContent.count</field>
+                <field>InvoiceContent.price</field>
+                <field>InvoiceContent.good.id</field>
+            </fields>
+            <limit>${requestedLimit}</limit>
+            <page>${page}</page>
+        </parameters>
     </invoices>
 </api>`;
 
@@ -123,7 +296,7 @@ class WfirmaLookup {
 
         logger.info(`Making request to wFirma API: ${endpoint}`, {
           page,
-          limit,
+          requestedLimit,
           dateFrom: dateFromStr,
           dateTo: dateToStr
         });
@@ -182,17 +355,66 @@ class WfirmaLookup {
         const invoiceTagsCount = (response.data.match(/<invoice>/g) || []).length;
         logger.info(`Page ${page}: found ${invoiceTagsCount} invoice tags in XML, ${invoices.length} are CO-PROF proformas`);
         
-        if (invoiceTagsCount < limit) {
-          // Это последняя страница
-          hasMore = false;
-        } else {
-          // Переходим на следующую страницу
-          page++;
-            // Ограничиваем максимальное количество страниц для безопасности
-            if (page > 200) {
-              logger.warn('Reached maximum page limit (200), stopping pagination');
-              hasMore = false;
+        let actualLimit = requestedLimit;
+        let totalCount = null;
+        let actualPage = page;
+        let totalPages = null;
+
+        if (typeof response.data === 'string') {
+          const parametersMatches = response.data.match(/<parameters>[\s\S]*?<\/parameters>/g);
+          const metaBlock = parametersMatches ? parametersMatches[parametersMatches.length - 1] : null;
+
+          if (metaBlock) {
+            const limitMatch = metaBlock.match(/<limit>(\d+)<\/limit>/);
+            const totalMatch = metaBlock.match(/<total>(\d+)<\/total>/);
+            const pageMatch = metaBlock.match(/<page>(\d+)<\/page>/);
+
+            if (limitMatch) {
+              actualLimit = parseInt(limitMatch[1], 10);
             }
+            if (totalMatch) {
+              totalCount = parseInt(totalMatch[1], 10);
+            }
+            if (pageMatch) {
+              actualPage = parseInt(pageMatch[1], 10);
+            }
+
+            if (totalCount !== null && actualLimit > 0) {
+              totalPages = Math.max(1, Math.ceil(totalCount / actualLimit));
+            }
+
+            logger.info(`Pagination metadata: totalCount=${totalCount}, actualLimit=${actualLimit}, actualPage=${actualPage}, totalPages=${totalPages}, invoiceTagsCount=${invoiceTagsCount}`);
+          } else {
+            logger.warn('No pagination metadata found in response. Falling back to tag count logic.');
+          }
+        }
+
+        if (totalPages !== null) {
+          if (allInvoices.length >= totalCount) {
+            logger.info(`Collected ${allInvoices.length} invoices which matches totalCount ${totalCount}. Stopping pagination.`);
+            hasMore = false;
+            continue;
+          }
+
+          if (actualPage >= totalPages) {
+            logger.info(`Reached last page (${actualPage}/${totalPages}), stopping pagination. Collected ${allInvoices.length} proformas total.`);
+            hasMore = false;
+          } else {
+            page = actualPage + 1;
+            logger.info(`Moving to next page: ${page} of ${totalPages} (have ${allInvoices.length} proformas so far)`);
+          }
+        } else {
+          if (invoiceTagsCount === 0) {
+            hasMore = false;
+          } else {
+            page++;
+            logger.info(`Moving to next page: ${page} (found ${invoiceTagsCount} invoices on page ${page - 1}, ${allInvoices.length} proformas total so far)`);
+          }
+        }
+
+        if (page > 200) {
+          logger.warn('Reached maximum page limit (200), stopping pagination');
+          hasMore = false;
         }
       }
 
@@ -475,7 +697,7 @@ class WfirmaLookup {
       }
 
       // Извлекаем продукты из invoicecontents
-      const products = [];
+          const products = [];
       
       // Ищем все блоки <invoicecontents>
       const invoicecontentsMatches = xmlString.match(/<invoicecontents>[\s\S]*?<\/invoicecontents>/g);
@@ -498,6 +720,8 @@ class WfirmaLookup {
           
           if (contentMatches) {
             for (const contentXml of contentMatches) {
+              const productIdMatch = contentXml.match(/<invoicecontent>\s*<id>(\d+)<\/id>/);
+              const invoiceProductId = productIdMatch ? productIdMatch[1] : null;
               const nameMatch = contentXml.match(/<name>([^<]+)<\/name>/);
               const priceMatch = contentXml.match(/<price>([^<]+)<\/price>/);
               const countMatch = contentXml.match(/<count>([^<]+)<\/count>/);
@@ -505,9 +729,9 @@ class WfirmaLookup {
               // Если нет name, пробуем получить через good.id
               let productName = nameMatch ? nameMatch[1].trim() : null;
               const goodIdMatch = contentXml.match(/<good>[\s\S]*?<id>(\d+)<\/id>[\s\S]*?<\/good>/);
+              const goodId = goodIdMatch ? goodIdMatch[1] : null;
               
-              if (!productName && goodIdMatch) {
-                const goodId = goodIdMatch[1];
+              if (!productName && goodId) {
                 logger.debug(`No name found in invoicecontent, trying to get product name via good.id=${goodId} for ${fullnumber || number}`);
                 
                 try {
@@ -523,6 +747,9 @@ class WfirmaLookup {
                 const productCount = countMatch ? parseFloat(countMatch[1]) : 1;
                 
                 products.push({
+                  id: invoiceProductId,
+                  productId: invoiceProductId,
+                  goodId,
                   name: productName,
                   price: productPrice,
                   count: productCount
@@ -548,6 +775,8 @@ class WfirmaLookup {
         if (directContentMatches) {
           logger.debug(`Found ${directContentMatches.length} direct invoicecontent elements`);
           for (const contentXml of directContentMatches) {
+            const productIdMatch = contentXml.match(/<invoicecontent>\s*<id>(\d+)<\/id>/);
+            const invoiceProductId = productIdMatch ? productIdMatch[1] : null;
             const nameMatch = contentXml.match(/<name>([^<]+)<\/name>/);
             const priceMatch = contentXml.match(/<price>([^<]+)<\/price>/);
             const countMatch = contentXml.match(/<count>([^<]+)<\/count>/);
@@ -555,9 +784,9 @@ class WfirmaLookup {
             // Если нет name, пробуем получить через good.id
             let productName = nameMatch ? nameMatch[1].trim() : null;
             const goodIdMatch = contentXml.match(/<good>[\s\S]*?<id>(\d+)<\/id>[\s\S]*?<\/good>/);
+            const goodId = goodIdMatch ? goodIdMatch[1] : null;
             
-            if (!productName && goodIdMatch) {
-              const goodId = goodIdMatch[1];
+            if (!productName && goodId) {
               logger.debug(`No name found, trying to get product name via good.id=${goodId} for ${fullnumber || number}`);
               
               try {
@@ -573,6 +802,9 @@ class WfirmaLookup {
               const productCount = countMatch ? parseFloat(countMatch[1]) : 1;
               
               products.push({
+                id: invoiceProductId,
+                productId: invoiceProductId,
+                goodId,
                 name: productName,
                 price: productPrice,
                 count: productCount
@@ -602,6 +834,9 @@ class WfirmaLookup {
                 const countMatch = xmlString.match(/<count>([^<]+)<\/count>/);
                 
                 products.push({
+                  id: null,
+                  productId: null,
+                  goodId,
                   name: productName,
                   price: priceMatch ? parseFloat(priceMatch[1]) : 0,
                   count: countMatch ? parseFloat(countMatch[1]) : 1
@@ -722,8 +957,19 @@ class WfirmaLookup {
           fullnumber: proforma.fullnumber || '',
           date: proforma.date || '',
           currency: proforma.currency || 'PLN',
-          total: proforma.total || 0, // Общая сумма проформы
-          currency_exchange: proforma.currencyExchange !== null && proforma.currencyExchange !== undefined ? proforma.currencyExchange : null
+          total: this.parseNumber(product.price) && this.parseNumber(product.count)
+            ? this.parseNumber(product.price) * this.parseNumber(product.count)
+            : this.parseNumber(proforma.total) || 0,
+          proforma_total: this.parseNumber(proforma.total) || 0,
+          quantity: this.parseNumber(product.count) || 0,
+          unit_price: this.parseNumber(product.price) || 0,
+          currency_exchange: proforma.currencyExchange !== null && proforma.currencyExchange !== undefined ? this.parseNumber(proforma.currencyExchange) : null,
+          payments_total_pln: this.parseNumber(proforma.paymentsTotalPln) || this.parseNumber(proforma.paymentsTotal) || 0,
+          payments_total: this.parseNumber(proforma.paymentsTotal) || 0,
+          line_total: this.parseNumber(product.price) && this.parseNumber(product.count)
+            ? this.parseNumber(product.price) * this.parseNumber(product.count)
+            : null,
+          payments_currency_exchange: this.parseNumber(proforma.paymentsCurrencyExchange) || this.parseNumber(proforma.currencyExchange) || null
         });
       }
     }

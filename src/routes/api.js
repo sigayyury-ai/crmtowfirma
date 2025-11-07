@@ -642,19 +642,100 @@ router.get('/server-ip', async (req, res) => {
  * GET /api/vat-margin/monthly-proformas
  * Получить проформы текущего месяца, сгруппированные по продуктам
  */
+function computeSummary(data = []) {
+  const totalsByCurrency = {};
+  const proformas = new Set();
+  let totalPLN = 0;
+  let paidPLN = 0;
+
+  data.forEach(item => {
+    const currency = item.currency || 'PLN';
+    const amount = Number(item.total) || 0;
+    const exchange = Number(item.currency_exchange) || (currency === 'PLN' ? 1 : null);
+    const paymentsTotalRaw = Number(item.payments_total_pln ?? item.payments_total) || 0;
+    const paymentsExchange = Number(item.payments_currency_exchange || exchange || 1);
+
+    totalsByCurrency[currency] = (totalsByCurrency[currency] || 0) + amount;
+    if (item.fullnumber || item.number || item.id) {
+      proformas.add(item.fullnumber || item.number || item.id);
+    }
+
+    const amountPln = exchange ? amount * exchange : amount;
+    const paidPln = exchange ? paymentsTotalRaw * paymentsExchange : paymentsTotalRaw;
+
+    totalPLN += amountPln;
+    paidPLN += Math.min(paidPln, amountPln);
+  });
+
+  const pendingPLN = Math.max(totalPLN - paidPLN, 0);
+
+  return {
+    totalProducts: data.length,
+    totalProformas: proformas.size,
+    totalsByCurrency,
+    totalPLN,
+    paidPLN,
+    pendingPLN
+  };
+}
+
 router.get('/vat-margin/monthly-proformas', async (req, res) => {
   try {
-    // Временно убираем фильтр по дате - загружаем все проформы
-    const options = {}; // Пустые опции - без фильтра по дате
-    
+    const { month, year, dateFrom, dateTo } = req.query;
+    const options = {};
+
+    if (dateFrom && dateTo) {
+      const fromDate = new Date(dateFrom);
+      const toDate = new Date(dateTo);
+
+      if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid dateFrom/dateTo format. Expected ISO date string.'
+        });
+      }
+
+      options.dateFrom = fromDate;
+      options.dateTo = toDate;
+    } else {
+      if (month) {
+        const parsedMonth = parseInt(month, 10);
+        if (Number.isNaN(parsedMonth) || parsedMonth < 1 || parsedMonth > 12) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid month parameter. Expected value from 1 to 12.'
+          });
+        }
+        options.month = parsedMonth;
+      }
+
+      if (year) {
+        const parsedYear = parseInt(year, 10);
+        if (Number.isNaN(parsedYear) || parsedYear < 2000 || parsedYear > 2100) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid year parameter. Expected reasonable year (2000-2100).' 
+          });
+        }
+        options.year = parsedYear;
+      }
+    }
+
     const lookup = new WfirmaLookup();
-    const result = await lookup.getMonthlyProformasByProduct(options);
-    
+    const data = await lookup.getMonthlyProformasByProduct(options);
+    const summary = computeSummary(data);
+
     res.json({
       success: true,
-      data: result,
-      count: result.length,
-      period: {}
+      data,
+      count: data.length,
+      summary,
+      period: {
+        month: options.month || null,
+        year: options.year || null,
+        dateFrom: options.dateFrom || null,
+        dateTo: options.dateTo || null
+      }
     });
   } catch (error) {
     logger.error('Error getting monthly proformas:', error);
@@ -705,6 +786,46 @@ router.get('/vat-margin/proformas', async (req, res) => {
       message: error.message
     });
   }
+});
+
+/**
+ * Temporary stubs for payments matching UI until backend is implemented.
+ */
+router.get('/vat-margin/payments', async (_req, res) => {
+  res.json({
+    success: true,
+    data: [],
+    history: []
+  });
+});
+
+router.post('/vat-margin/payments/upload', async (_req, res) => {
+  res.json({
+    success: true,
+    matched: 0,
+    needs_review: 0,
+    message: 'Обработка CSV ещё не реализована'
+  });
+});
+
+router.post('/vat-margin/payments/apply', async (_req, res) => {
+  res.json({
+    success: true,
+    message: 'Применение сопоставлений будет реализовано позже'
+  });
+});
+
+router.post('/vat-margin/payments/reset', async (_req, res) => {
+  res.json({
+    success: true,
+    message: 'Сброс сопоставлений будет реализован позже'
+  });
+});
+
+router.get('/vat-margin/payments/export', async (_req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="payments-export.csv"');
+  res.send('date,description,amount,currency,payer,matched_proforma,status\n');
 });
 
 module.exports = router;

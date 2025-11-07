@@ -309,6 +309,214 @@ h2 {
     font-size: 0.9rem;
 }
 
+/* === VAT MARGIN TAB UI === */
+.tab-container {
+    margin-bottom: 30px;
+}
+
+.tab-header {
+    display: inline-flex;
+    background: rgba(255, 255, 255, 0.25);
+    padding: 6px;
+    border-radius: 12px;
+    gap: 6px;
+    margin-bottom: 22px;
+}
+
+.tab-button {
+    border: none;
+    background: transparent;
+    color: #e2e8f0;
+    font-weight: 600;
+    border-radius: 10px;
+    padding: 10px 16px;
+    cursor: pointer;
+    transition: all .2s ease;
+}
+
+.tab-button.active {
+    background: white;
+    color: #2563eb;
+    box-shadow: 0 10px 25px rgba(37, 99, 235, .25);
+}
+
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.vat-margin-section,
+.payments-section {
+    background: white;
+    border-radius: 18px;
+    padding: 30px;
+    box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+}
+
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 22px;
+}
+
+.section-header h2 {
+    margin: 0;
+    font-size: 1.35rem;
+    color: #1f2937;
+}
+
+.controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.month-year-select {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 140px;
+}
+
+.month-year-select label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+.month-year-select select {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #dee7ff;
+    background: #f8fbff;
+    font-size: .95rem;
+    color: #1e293b;
+}
+
+.vat-margin-container,
+.payments-table-container {
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: #f8fbff;
+    min-height: 220px;
+    overflow: hidden;
+}
+
+.payments-section .placeholder,
+.vat-margin-container .placeholder {
+    padding: 38px;
+    text-align: center;
+    color: #64748b;
+}
+
+.upload-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 10px;
+    background: #16a34a;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 12px 28px rgba(22, 163, 74, 0.25);
+}
+
+.uploads-history {
+    margin-top: 24px;
+    background: #f1f5ff;
+    border-radius: 14px;
+    padding: 18px;
+}
+
+.uploads-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 12px;
+}
+
+.uploads-header h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: #1e293b;
+}
+
+.uploads-header .hint {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.uploads-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.uploads-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: white;
+    border-radius: 10px;
+    border: 1px solid rgba(37, 99, 235, 0.18);
+    box-shadow: 0 10px 24px rgba(37, 99, 235, 0.12);
+}
+
+.payments-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+}
+
+.payments-table thead {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.18), rgba(37, 99, 235, 0.05));
+}
+
+.payments-table th,
+.payments-table td {
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.6);
+    text-align: left;
+    font-size: 0.95rem;
+}
+
+.payments-table tbody tr:hover {
+    background: rgba(37, 99, 235, 0.05);
+}
+
+.status {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    gap: 6px;
+}
+
+.status.auto { background: rgba(22, 163, 74, 0.18); color: #166534; }
+.status.needs_review { background: rgba(234, 179, 8, 0.2); color: #a16207; }
+.status.unmatched { background: rgba(248, 113, 113, 0.18); color: #b91c1c; }
+
+.btn-link {
+    border: none;
+    background: transparent;
+    color: #2563eb;
+    font-weight: 600;
+    cursor: pointer;
+}
+
 .log-entry {
     margin-bottom: 8px;
     padding: 4px 8px;

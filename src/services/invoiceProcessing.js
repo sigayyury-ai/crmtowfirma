@@ -2,8 +2,12 @@ const PipedriveClient = require('./pipedrive');
 const WfirmaClient = require('./wfirma');
 const UserManagementService = require('./userManagement');
 const SendPulseClient = require('./sendpulse');
+const ProformaRepository = require('./proformaRepository');
+const { WfirmaLookup } = require('./vatMargin/wfirmaLookup');
 const logger = require('../utils/logger');
 const bankAccountConfig = require('../../config/bank-accounts');
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const escapeXml = (value = '') => String(value)
   .replace(/&/g, '&amp;')
@@ -17,6 +21,13 @@ class InvoiceProcessingService {
     this.pipedriveClient = new PipedriveClient();
     this.wfirmaClient = new WfirmaClient();
     this.userManagement = new UserManagementService();
+    this.proformaRepository = new ProformaRepository();
+    try {
+      this.wfirmaLookup = new WfirmaLookup();
+    } catch (error) {
+      logger.warn('Failed to initialize WfirmaLookup for Supabase sync:', error.message);
+      this.wfirmaLookup = null;
+    }
     
     // Инициализируем SendPulse клиент (может быть не настроен, поэтому не критично)
     try {
@@ -448,6 +459,19 @@ class InvoiceProcessingService {
       }
       
       logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
+      
+      await this.persistProformaToDatabase(invoiceResult.invoiceId, {
+        invoiceNumber: invoiceResult.invoiceNumber,
+        issueDate: new Date(),
+        currency: deal.currency,
+        totalAmount: invoiceResult.amount || parseFloat(deal.value) || 0,
+        fallbackProduct: {
+          name: product.name,
+          price: product.price,
+          count: product.quantity || product.count || 1,
+          goodId: product.id || product.goodId || null
+        }
+      });
       
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
@@ -1818,6 +1842,97 @@ class InvoiceProcessingService {
         error: error.message,
         details: error.response?.data || null
       };
+    }
+  }
+
+  async persistProformaToDatabase(invoiceId, options = {}) {
+    if (!this.proformaRepository || !this.proformaRepository.isEnabled()) {
+      logger.debug('Supabase not configured, skipping proforma persistence');
+      return;
+    }
+
+    if (!invoiceId) {
+      logger.warn('Cannot persist proforma without invoiceId');
+      return;
+    }
+
+    const {
+      invoiceNumber = null,
+      issueDate = new Date(),
+      currency = 'PLN',
+      totalAmount = null,
+      fallbackProduct = null
+    } = options;
+
+    let proforma = null;
+
+    if (this.wfirmaLookup) {
+      for (let attempt = 1; attempt <= 3 && !proforma; attempt++) {
+        try {
+          proforma = await this.wfirmaLookup.getFullProformaById(invoiceId);
+        } catch (error) {
+          logger.warn(`Attempt ${attempt} to fetch proforma ${invoiceId} failed: ${error.message}`);
+        }
+
+        if (!proforma) {
+          await sleep(300 * attempt);
+        }
+      }
+    } else {
+      logger.warn('WfirmaLookup not available, using fallback data for proforma persistence');
+    }
+
+    if (!proforma) {
+      logger.warn(`Falling back to local data for proforma ${invoiceId}`);
+      proforma = {
+        id: invoiceId,
+        fullnumber: invoiceNumber,
+        date: issueDate,
+        currency,
+        total: totalAmount,
+        currencyExchange: null,
+        paymentsTotal: 0,
+        paymentsTotalPln: 0,
+        paymentsCurrencyExchange: null,
+        paymentsCount: 0,
+        products: []
+      };
+    }
+
+    if (!Array.isArray(proforma.products) || proforma.products.length === 0) {
+      if (fallbackProduct) {
+        proforma.products = [fallbackProduct];
+      } else {
+        proforma.products = [];
+      }
+    }
+
+    const repositoryPayload = {
+      id: proforma.id || invoiceId,
+      fullnumber: proforma.fullnumber || invoiceNumber || null,
+      date: proforma.date || issueDate,
+      currency: proforma.currency || currency || 'PLN',
+      total: proforma.total ?? totalAmount ?? 0,
+      currencyExchange: proforma.currencyExchange ?? null,
+      paymentsTotal: proforma.paymentsTotal ?? proforma.payments_total ?? 0,
+      paymentsTotalPln: proforma.paymentsTotalPln ?? proforma.payments_total_pln ?? null,
+      paymentsCurrencyExchange: proforma.paymentsCurrencyExchange ?? proforma.payments_currency_exchange ?? null,
+      paymentsCount: proforma.paymentsCount ?? proforma.payments_count ?? 0,
+      products: (proforma.products || []).map((item) => ({
+        name: item.name,
+        price: item.price ?? item.unit_price ?? null,
+        count: item.count ?? item.quantity ?? 1,
+        goodId: item.goodId || item.good_id || null
+      }))
+    };
+
+    try {
+      await this.proformaRepository.upsertProforma(repositoryPayload);
+    } catch (error) {
+      logger.error('Failed to persist proforma into Supabase:', {
+        invoiceId,
+        error: error.message
+      });
     }
   }
 
