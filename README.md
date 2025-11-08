@@ -63,7 +63,6 @@
 # Pipedrive API Configuration
 PIPEDRIVE_API_TOKEN=your_pipedrive_token
 PIPEDRIVE_BASE_URL=https://api.pipedrive.com/v1
-PIPEDRIVE_WFIRMA_INVOICE_ID_FIELD_KEY=
 
 # wFirma API Configuration
 WFIRMA_APP_KEY=your_app_key
@@ -118,6 +117,25 @@ node test-new-contractor-logic.js
 # Тест создания Proforma
 node test-proforma-with-dynamic-banks.js
 ```
+
+## Служебные скрипты
+
+### Backfill номера проформы в CRM
+
+Скрипт `scripts/backfillInvoiceNumbers.js` заполняет поле «Invoice number» в сделках Pipedrive на основании данных в Supabase:
+
+```bash
+# Просмотреть первые 50 сделок без применения изменений
+node scripts/backfillInvoiceNumbers.js --dry-run --limit=50
+
+# Обновить конкретную сделку
+node scripts/backfillInvoiceNumbers.js --deal=1234
+
+# Батчевое обновление (помните про rate limit Pipedrive)
+node scripts/backfillInvoiceNumbers.js --limit=100 --offset=0
+```
+
+Для запуска необходимы переменные `PIPEDRIVE_API_TOKEN`, а также `SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY`.
 
 ## API Endpoints
 

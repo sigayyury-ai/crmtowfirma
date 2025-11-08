@@ -68,7 +68,8 @@ class InvoiceProcessingService {
     // Ключ поля: "Sendpulse ID" (статический, одинаковый для всех пользователей)
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
 
-    this.WFIRMA_INVOICE_ID_FIELD_KEY = process.env.PIPEDRIVE_WFIRMA_INVOICE_ID_FIELD_KEY?.trim() || null;
+    this.WFIRMA_INVOICE_ID_FIELD_KEY = 'd89358b2be5826fc748a0600a9db7bcdf8d924c7';
+    this.INVOICE_NUMBER_FIELD_KEY = '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
     this.DELETE_TRIGGER_FIELD_KEY = this.INVOICE_TYPE_FIELD_KEY;
     this.DELETE_TRIGGER_VALUE = 'delete';
     
@@ -92,7 +93,9 @@ class InvoiceProcessingService {
       paymentTermsDays: this.PAYMENT_TERMS_DAYS,
       language: this.DEFAULT_LANGUAGE,
       vatRate: this.VAT_RATE,
-      invoiceTypes: Object.keys(this.INVOICE_TYPES)
+      invoiceTypes: Object.keys(this.INVOICE_TYPES),
+      invoiceTypeFieldKey: this.INVOICE_TYPE_FIELD_KEY,
+      invoiceNumberFieldKey: this.INVOICE_NUMBER_FIELD_KEY
     });
   }
 
@@ -820,6 +823,23 @@ class InvoiceProcessingService {
         fallbackBuyer: contractor,
         dealId: fullDeal.id
       });
+
+      const invoiceNumberForCrm = await this.determineInvoiceNumber(invoiceResult);
+      if (invoiceNumberForCrm) {
+        const syncResult = await this.ensureInvoiceNumber(fullDeal, invoiceNumberForCrm);
+        if (!syncResult?.success && !syncResult?.skipped) {
+          logger.error('Failed to sync invoice number to Pipedrive', {
+            dealId: fullDeal.id,
+            invoiceNumber: invoiceNumberForCrm,
+            error: syncResult?.error || 'unknown error'
+          });
+        }
+      } else {
+        logger.warn('Unable to determine invoice number for CRM sync', {
+          dealId: fullDeal.id,
+          invoiceId: invoiceResult.invoiceId
+        });
+      }
       
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
@@ -1130,6 +1150,180 @@ class InvoiceProcessingService {
         error: error.message
       };
     }
+  }
+
+  async determineInvoiceNumber(invoiceResult) {
+    if (!invoiceResult) {
+      return null;
+    }
+
+    const directNumber = typeof invoiceResult.invoiceNumber === 'string'
+      ? invoiceResult.invoiceNumber.trim()
+      : null;
+
+    if (directNumber && directNumber.length > 0) {
+      return directNumber;
+    }
+
+    const invoiceId = invoiceResult.invoiceId;
+    if (!invoiceId) {
+      return null;
+    }
+
+    if (!this.wfirmaLookup) {
+      logger.warn('Cannot fetch proforma fullnumber from wFirma: lookup service is not available.', {
+        invoiceId
+      });
+      return null;
+    }
+
+    try {
+      const fullProforma = await this.wfirmaLookup.getFullProformaById(invoiceId);
+      const fetchedNumber = typeof fullProforma?.fullnumber === 'string'
+        ? fullProforma.fullnumber.trim()
+        : null;
+
+      if (!fetchedNumber) {
+        logger.warn('Full proforma fetched but fullnumber is missing', { invoiceId });
+      }
+
+      return fetchedNumber;
+    } catch (error) {
+      logger.warn('Failed to fetch proforma from wFirma while resolving invoice number', {
+        invoiceId,
+        error: error.message
+      });
+      return null;
+    }
+  }
+
+  async ensureInvoiceNumber(deal, invoiceNumber, options = {}) {
+    if (!deal || !deal.id) {
+      logger.warn('Cannot sync invoice number: deal information is missing.', {
+        invoiceNumber
+      });
+      return { success: false, skipped: true, reason: 'missing_deal' };
+    }
+
+    const normalizedInvoiceNumber = typeof invoiceNumber === 'string'
+      ? invoiceNumber.trim()
+      : '';
+
+    if (!normalizedInvoiceNumber) {
+      logger.warn('Cannot sync invoice number: value is empty.', {
+        dealId: deal.id
+      });
+      return { success: false, skipped: true, reason: 'empty_invoice_number' };
+    }
+
+    try {
+      const result = await this.syncInvoiceNumber(
+        deal.id,
+        normalizedInvoiceNumber,
+        deal[this.INVOICE_NUMBER_FIELD_KEY],
+        options
+      );
+
+      if (result.success && !result.skipped) {
+        deal[this.INVOICE_NUMBER_FIELD_KEY] = normalizedInvoiceNumber;
+      }
+
+      return result;
+    } catch (error) {
+      logger.error('Failed to sync invoice number in Pipedrive', {
+        dealId: deal.id,
+        invoiceNumber: normalizedInvoiceNumber,
+        error: error.message
+      });
+      return { success: false, skipped: false, error: error.message };
+    }
+  }
+
+  async syncInvoiceNumber(dealId, invoiceNumber, currentValue = null, options = {}) {
+    if (!dealId) {
+      logger.warn('Cannot sync invoice number: dealId is missing.', {
+        invoiceNumber
+      });
+      return { success: false, skipped: true, reason: 'missing_deal_id' };
+    }
+
+    const normalizedInvoiceNumber = typeof invoiceNumber === 'string'
+      ? invoiceNumber.trim()
+      : '';
+
+    if (!normalizedInvoiceNumber) {
+      logger.warn('Cannot sync invoice number: value is empty.', {
+        dealId
+      });
+      return { success: false, skipped: true, reason: 'empty_invoice_number' };
+    }
+
+    const currentNormalized = typeof currentValue === 'string'
+      ? currentValue.trim()
+      : null;
+
+    if (currentNormalized && currentNormalized === normalizedInvoiceNumber) {
+      logger.info('Invoice number already synchronized in Pipedrive', {
+        dealId,
+        invoiceNumber: normalizedInvoiceNumber
+      });
+      return { success: true, skipped: true, reason: 'already_synced' };
+    }
+
+    const attempts = Number.isFinite(options.attempts)
+      ? Math.max(1, Number(options.attempts))
+      : 3;
+    const backoffBaseMs = Number.isFinite(options.backoffBaseMs)
+      ? Math.max(50, Number(options.backoffBaseMs))
+      : 300;
+
+    const payload = {
+      [this.INVOICE_NUMBER_FIELD_KEY]: normalizedInvoiceNumber.slice(0, 255)
+    };
+
+    let attempt = 0;
+    let lastError = null;
+
+    while (attempt < attempts) {
+      attempt += 1;
+      try {
+        const result = await this.pipedriveClient.updateDeal(dealId, payload);
+        if (!result.success) {
+          throw new Error(result.error || 'Pipedrive update failed');
+        }
+
+        logger.info('Invoice number synced to Pipedrive', {
+          dealId,
+          invoiceNumber: normalizedInvoiceNumber,
+          attempts: attempt
+        });
+
+        return { success: true, skipped: false };
+      } catch (error) {
+        lastError = error;
+        logger.warn('Attempt to sync invoice number in Pipedrive failed', {
+          dealId,
+          invoiceNumber: normalizedInvoiceNumber,
+          attempt,
+          attempts,
+          error: error.message
+        });
+
+        if (attempt < attempts) {
+          const delay = backoffBaseMs * attempt;
+          await sleep(delay);
+        }
+      }
+    }
+
+    logger.error('Failed to sync invoice number to Pipedrive after retries', {
+      dealId,
+      invoiceNumber: normalizedInvoiceNumber,
+      attempts,
+      error: lastError?.message
+    });
+
+    throw lastError || new Error('Failed to sync invoice number to Pipedrive');
   }
 
   /**
