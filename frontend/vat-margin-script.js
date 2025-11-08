@@ -29,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initMonthYearSelectors();
   bindEvents();
+  applyInitialHashSelection();
 
   addLog('info', 'VAT Margin Tracker инициализирован');
 });
@@ -94,7 +95,7 @@ function switchTab(tabName) {
       loadProductSummary();
       productsLoaded = true;
     } else {
-      renderProductSummary();
+      renderProductSummaryTable(productSummaryData);
     }
     return;
   }
@@ -328,9 +329,7 @@ function renderVatMarginTable(data) {
               <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${group.totals.quantity.toLocaleString('ru-RU')} позиций</div>
             </div>
             <div class="product-summary">
-              <span>${totalOriginalFormatted}</span>
-              <span>${totalPlnFormatted}</span>
-              <span>${paidPlnFormatted}</span>
+              <span>${paidPlnFormatted !== '—' ? paidPlnFormatted : '0,00 PLN'}</span>
             </div>
           </div>
           <table class="payments-table group-table">
@@ -417,7 +416,7 @@ function renderProductSummaryTable(products) {
       return `
         <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
           <td>
-            <a class="product-link" href="${detailUrl}">${escapeHtml(product.productName || 'Без названия')}</a>
+            <a class="product-link" href="${detailUrl}" data-product-link-id="${escapeHtml(product.productSlug || '')}">${escapeHtml(product.productName || 'Без названия')}</a>
             ${detailHtml}
           </td>
           <td>
@@ -466,6 +465,20 @@ function renderProductSummaryTable(products) {
     .forEach((input) => {
       input.addEventListener('change', () => {
         handleProductDueMonthChange(input.dataset.productSlug, input.value);
+      });
+    });
+
+  elements.productSummaryTable
+    .querySelectorAll('[data-product-link]')
+    .forEach((link) => {
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        const targetSlug = link.dataset.productLink;
+        if (targetSlug) {
+          window.location.hash = 'tab-products';
+          handleProductLinkClick(targetSlug);
+          window.location.href = link.getAttribute('href');
+        }
       });
     });
 }
@@ -1305,4 +1318,11 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function applyInitialHashSelection() {
+  const hash = window.location.hash?.replace('#', '').trim();
+  if (hash === 'tab-products') {
+    switchTab('products');
+  }
 }
