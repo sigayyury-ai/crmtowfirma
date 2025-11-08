@@ -133,6 +133,10 @@ class ProformaRepository {
     const paymentsCount = Array.isArray(proforma.payments)
       ? proforma.payments.length
       : this.toNumber(proforma.paymentsCount) ?? 0;
+    const rawDealId = proforma.pipedriveDealId || proforma.dealId || proforma.pipedrive_deal_id || null;
+    const pipedriveDealId = rawDealId !== undefined && rawDealId !== null
+      ? String(rawDealId).trim()
+      : null;
 
     const buyer = proforma.buyer || {};
     const buyerNameRaw = buyer.name || buyer.altName || null;
@@ -171,7 +175,8 @@ class ProformaRepository {
       buyer_zip: buyerZip,
       buyer_city: buyerCity,
       buyer_country: buyerCountry,
-      buyer_tax_id: buyerTaxId
+      buyer_tax_id: buyerTaxId,
+      pipedrive_deal_id: pipedriveDealId || undefined
     });
 
     const { error: upsertError } = await this.supabase
@@ -305,6 +310,136 @@ class ProformaRepository {
     }
 
     return data || [];
+  }
+
+  async findByDealId(dealId) {
+    if (!this.isEnabled()) {
+      return [];
+    }
+
+    if (!dealId) {
+      return [];
+    }
+
+    const sanitized = String(dealId).trim();
+    if (!sanitized.length) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('proformas')
+      .select('id, fullnumber, currency, total, pipedrive_deal_id, issued_at')
+      .eq('pipedrive_deal_id', sanitized);
+
+    if (error) {
+      logger.error('Supabase error while fetching proformas by deal id:', error);
+      throw error;
+    }
+
+    return data || [];
+  }
+
+  async findByIds(ids = []) {
+    if (!this.isEnabled()) {
+      return [];
+    }
+
+    const sanitized = Array.from(new Set(
+      ids
+        .filter(Boolean)
+        .map((value) => normalizeWhitespace(String(value)))
+        .filter((value) => value.length > 0)
+    ));
+
+    if (!sanitized.length) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('proformas')
+      .select('id, fullnumber, currency, total, pipedrive_deal_id, issued_at')
+      .in('id', sanitized);
+
+    if (error) {
+      logger.error('Supabase error while fetching proformas by ids:', error);
+      throw error;
+    }
+
+    return data || [];
+  }
+
+  async deleteProformaCascade(proformaId) {
+    if (!this.isEnabled()) {
+      return { success: false, error: 'Supabase client not configured' };
+    }
+
+    if (!proformaId) {
+      return { success: false, error: 'Proforma id is required' };
+    }
+
+    const id = String(proformaId);
+
+    const { error: paymentsError } = await this.supabase
+      .from('payments')
+      .delete()
+      .or(`manual_proforma_id.eq.${id},proforma_id.eq.${id}`);
+
+    if (paymentsError) {
+      logger.error('Supabase error while deleting payments for proforma:', paymentsError);
+      return { success: false, error: paymentsError.message, stage: 'payments' };
+    }
+
+    const { error: productsError } = await this.supabase
+      .from('proforma_products')
+      .delete()
+      .eq('proforma_id', id);
+
+    if (productsError) {
+      logger.error('Supabase error while deleting proforma products:', productsError);
+      return { success: false, error: productsError.message, stage: 'products' };
+    }
+
+    const { error: proformaError } = await this.supabase
+      .from('proformas')
+      .delete()
+      .eq('id', id);
+
+    if (proformaError) {
+      logger.error('Supabase error while deleting proforma:', proformaError);
+      return { success: false, error: proformaError.message, stage: 'proformas' };
+    }
+
+    return { success: true };
+  }
+
+  async recordDeletionLog(entry = {}) {
+    if (!this.isEnabled()) {
+      return;
+    }
+
+    try {
+      const payload = this.compactRecord({
+        proforma_id: entry.proformaId ? String(entry.proformaId) : null,
+        deal_id: entry.dealId ? String(entry.dealId) : null,
+        status: entry.status || null,
+        wfirma_status: entry.wfirmaStatus || null,
+        supabase_status: entry.supabaseStatus || null,
+        message: entry.message || null,
+        deleted_by: entry.deletedBy || 'crm-delete-trigger',
+        metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
+        deleted_at: (entry.deletedAt || new Date()).toISOString()
+      });
+
+      const { error } = await this.supabase
+        .from('proforma_deletion_logs')
+        .insert(payload);
+
+      if (error) {
+        logger.error('Supabase error while recording proforma deletion log:', error);
+      }
+    } catch (error) {
+      logger.error('Unexpected error while recording proforma deletion log:', error);
+    }
   }
 }
 

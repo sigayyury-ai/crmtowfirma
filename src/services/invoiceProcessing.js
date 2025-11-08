@@ -67,6 +67,10 @@ class InvoiceProcessingService {
     // Кастомное поле Sendpulse ID в Pipedrive
     // Ключ поля: "Sendpulse ID" (статический, одинаковый для всех пользователей)
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+
+    this.WFIRMA_INVOICE_ID_FIELD_KEY = process.env.PIPEDRIVE_WFIRMA_INVOICE_ID_FIELD_KEY?.trim() || null;
+    this.DELETE_TRIGGER_FIELD_KEY = this.INVOICE_TYPE_FIELD_KEY;
+    this.DELETE_TRIGGER_VALUE = 'delete';
     
     // Типы фактур с ID опций из Pipedrive (пока только Pro forma)
     this.INVOICE_TYPES = {
@@ -198,6 +202,20 @@ class InvoiceProcessingService {
   async processPendingInvoices() {
     try {
       logger.info('Starting invoice processing for pending deals...');
+
+      const deletionResult = await this.processDeletionRequests();
+      if (!deletionResult.success) {
+        logger.warn('Deletion trigger processing finished with errors', {
+          error: deletionResult.error,
+          details: deletionResult.details
+        });
+      } else if (deletionResult.total > 0) {
+        logger.info('Deletion trigger processing summary', {
+          processed: deletionResult.processed,
+          errors: deletionResult.errors,
+          total: deletionResult.total
+        });
+      }
       
       // 1. Получаем все сделки с измененным полем Invoice type
       const pendingDeals = await this.getPendingInvoiceDeals();
@@ -256,6 +274,321 @@ class InvoiceProcessingService {
     }
   }
 
+  async processDeletionRequests() {
+    try {
+      if (!this.DELETE_TRIGGER_FIELD_KEY) {
+        logger.debug('Delete trigger field key is not configured, skipping deletion checks');
+        return { success: true, total: 0, processed: 0, errors: 0, results: [] };
+      }
+
+      const dealsResult = await this.getDealsMarkedForDeletion();
+      if (!dealsResult.success) {
+        return dealsResult;
+      }
+
+      if (!dealsResult.deals.length) {
+        logger.info('No deals marked for deletion found');
+        return { success: true, total: 0, processed: 0, errors: 0, results: [] };
+      }
+
+      logger.info(`Found ${dealsResult.deals.length} deals marked for proforma deletion`);
+
+      const results = [];
+      for (const deal of dealsResult.deals) {
+        try {
+          const result = await this.handleDealDeletion(deal);
+          results.push({
+            dealId: deal.id,
+            success: result.success,
+            processed: result.processed || 0,
+            error: result.error || null
+          });
+        } catch (error) {
+          logger.error(`Error while handling delete trigger for deal ${deal.id}:`, error);
+          results.push({
+            dealId: deal.id,
+            success: false,
+            processed: 0,
+            error: error.message
+          });
+        }
+      }
+
+      const processed = results.filter((item) => item.success).reduce((acc, item) => acc + (item.processed || 0), 0);
+      const errors = results.filter((item) => !item.success).length;
+
+      return {
+        success: true,
+        total: dealsResult.deals.length,
+        processed,
+        errors,
+        results
+      };
+    } catch (error) {
+      logger.error('Error while processing deletion requests:', error);
+      return {
+        success: false,
+        error: error.message,
+        details: error.stack
+      };
+    }
+  }
+
+  async getDealsMarkedForDeletion() {
+    try {
+      const dealsResult = await this.pipedriveClient.getDeals({
+        limit: 500,
+        start: 0,
+        status: 'all_not_deleted'
+      });
+
+      if (!dealsResult.success) {
+        return dealsResult;
+      }
+
+      const deletionDeals = dealsResult.deals.filter((deal) => {
+        const rawValue = deal[this.DELETE_TRIGGER_FIELD_KEY];
+        if (rawValue === undefined || rawValue === null) {
+          return false;
+        }
+        const normalized = String(rawValue).trim().toLowerCase();
+        return normalized === this.DELETE_TRIGGER_VALUE;
+      });
+
+      return {
+        success: true,
+        deals: deletionDeals
+      };
+    } catch (error) {
+      logger.error('Error getting deals marked for deletion:', error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async handleDealDeletion(deal) {
+    const dealId = deal?.id;
+    if (!dealId) {
+      return { success: false, error: 'Deal id is missing' };
+    }
+
+    const proformaMap = new Map();
+    try {
+      const linkedProformas = await this.proformaRepository.findByDealId(dealId);
+      (linkedProformas || []).forEach((item) => {
+        proformaMap.set(String(item.id), item);
+      });
+    } catch (error) {
+      logger.error('Error fetching proformas by deal id:', {
+        dealId,
+        error: error.message
+      });
+    }
+
+    const additionalIds = [];
+    if (this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+      const rawInvoiceIds = deal[this.WFIRMA_INVOICE_ID_FIELD_KEY];
+      if (rawInvoiceIds) {
+        String(rawInvoiceIds)
+          .split(',')
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0)
+          .forEach((value) => {
+            const numericId = value.replace(/\D/g, '');
+            if (!numericId.length) {
+              return;
+            }
+
+            if (!proformaMap.has(numericId)) {
+              additionalIds.push(numericId);
+            }
+          });
+      }
+    }
+
+    if (additionalIds.length) {
+      try {
+        const extraProformas = await this.proformaRepository.findByIds(additionalIds);
+        (extraProformas || []).forEach((item) => {
+          proformaMap.set(String(item.id), item);
+        });
+        additionalIds.forEach((id) => {
+          if (!proformaMap.has(id)) {
+            proformaMap.set(id, { id });
+          }
+        });
+      } catch (error) {
+        logger.error('Error fetching proformas by explicit ids:', {
+          dealId,
+          ids: additionalIds,
+          error: error.message
+        });
+      }
+    }
+
+    if (proformaMap.size === 0) {
+      logger.warn('No proformas linked to deal for deletion', { dealId });
+      await this.proformaRepository.recordDeletionLog({
+        proformaId: null,
+        dealId,
+        status: 'not-found',
+        wfirmaStatus: null,
+        supabaseStatus: null,
+        message: 'No linked proformas found'
+      });
+      return { success: false, error: 'No linked proformas found' };
+    }
+
+    let allSuccess = true;
+    let processed = 0;
+
+    for (const proforma of proformaMap.values()) {
+      const proformaId = String(proforma.id);
+
+      try {
+        const deleteResult = await this.wfirmaClient.deleteInvoice(proformaId);
+
+        if (!deleteResult.success) {
+          allSuccess = false;
+          await this.proformaRepository.recordDeletionLog({
+            proformaId,
+            dealId,
+            status: 'wfirma-error',
+            wfirmaStatus: deleteResult.error || 'unknown',
+            metadata: {
+              fullnumber: proforma.fullnumber || null
+            }
+          });
+          logger.error('Failed to delete proforma in wFirma', {
+            dealId,
+            proformaId,
+            error: deleteResult.error
+          });
+          continue;
+        }
+
+        const supabaseResult = await this.proformaRepository.deleteProformaCascade(proformaId);
+        if (!supabaseResult.success) {
+          allSuccess = false;
+          await this.proformaRepository.recordDeletionLog({
+            proformaId,
+            dealId,
+            status: 'supabase-error',
+            wfirmaStatus: 'deleted',
+            supabaseStatus: supabaseResult.error || supabaseResult.stage || 'unknown',
+            metadata: {
+              fullnumber: proforma.fullnumber || null
+            }
+          });
+          logger.error('Failed to delete proforma from Supabase', {
+            dealId,
+            proformaId,
+            error: supabaseResult.error,
+            stage: supabaseResult.stage
+          });
+          continue;
+        }
+
+        processed += 1;
+
+        await this.proformaRepository.recordDeletionLog({
+          proformaId,
+          dealId,
+          status: 'deleted',
+          wfirmaStatus: 'deleted',
+          supabaseStatus: 'deleted',
+          metadata: {
+            fullnumber: proforma.fullnumber || null,
+            currency: proforma.currency || null,
+            total: proforma.total || null
+          }
+        });
+
+        logger.info('Proforma deleted successfully', {
+          dealId,
+          proformaId,
+          fullnumber: proforma.fullnumber || null
+        });
+      } catch (error) {
+        allSuccess = false;
+        logger.error('Unexpected error while deleting proforma linked to deal', {
+          dealId,
+          proformaId: proforma.id,
+          error: error.message
+        });
+        await this.proformaRepository.recordDeletionLog({
+          proformaId: proforma.id,
+          dealId,
+          status: 'unexpected-error',
+          wfirmaStatus: 'unknown',
+          supabaseStatus: 'unknown',
+          message: error.message
+        });
+      }
+    }
+
+    if (allSuccess) {
+      const clearResult = await this.clearDeleteTrigger(dealId);
+      if (!clearResult.success) {
+        allSuccess = false;
+        await this.proformaRepository.recordDeletionLog({
+          proformaId: null,
+          dealId,
+          status: 'pipedrive-error',
+          wfirmaStatus: 'deleted',
+          supabaseStatus: 'deleted',
+          message: clearResult.error
+        });
+        logger.error('Failed to clear delete trigger in Pipedrive', {
+          dealId,
+          error: clearResult.error
+        });
+      } else {
+        logger.info('Delete trigger cleared in Pipedrive', { dealId });
+      }
+    }
+
+    return { success: allSuccess, processed, error: allSuccess ? null : 'One or more deletions failed' };
+  }
+
+  async clearDeleteTrigger(dealId) {
+    if (!this.DELETE_TRIGGER_FIELD_KEY) {
+      return { success: true };
+    }
+
+    try {
+      const payload = {
+        [`${this.DELETE_TRIGGER_FIELD_KEY}`]: null
+      };
+
+      if (this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+        payload[this.WFIRMA_INVOICE_ID_FIELD_KEY] = null;
+      }
+
+      const updateResult = await this.pipedriveClient.updateDeal(dealId, payload);
+
+      if (!updateResult.success) {
+        return {
+          success: false,
+          error: updateResult.error || 'Failed to clear delete trigger in Pipedrive'
+        };
+      }
+
+      return { success: true };
+    } catch (error) {
+      logger.error('Error clearing delete trigger in Pipedrive:', {
+        dealId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   /**
    * Получить сделки с измененным полем Invoice type
    * @returns {Promise<Object>} - Список сделок для обработки
@@ -276,16 +609,29 @@ class InvoiceProcessingService {
       // Фильтруем сделки с установленным полем Invoice type
       const pendingDeals = dealsResult.deals.filter(deal => {
         const invoiceTypeValue = deal[this.INVOICE_TYPE_FIELD_KEY];
-        
-        // Проверяем, что поле Invoice type заполнено
-        if (!invoiceTypeValue || invoiceTypeValue === '' || invoiceTypeValue === null) {
+
+        if (invoiceTypeValue === undefined || invoiceTypeValue === null) {
           return false;
         }
-        
-        // Конвертируем в число для сравнения (Pipedrive может возвращать строку)
-        const invoiceTypeId = parseInt(invoiceTypeValue);
-        
-        // Проверяем, что значение соответствует одному из наших типов
+
+        const normalizedValue = String(invoiceTypeValue).trim().toLowerCase();
+
+        // Пропускаем сделки, помеченные триггером на удаление
+        if (normalizedValue === this.DELETE_TRIGGER_VALUE) {
+          return false;
+        }
+
+        if (normalizedValue.length === 0) {
+          return false;
+        }
+
+        const invoiceTypeId = parseInt(normalizedValue, 10);
+
+        if (Number.isNaN(invoiceTypeId)) {
+          logger.warn(`Deal ${deal.id} has non-numeric invoice type value: ${invoiceTypeValue}`);
+          return false;
+        }
+
         const validTypes = Object.values(this.INVOICE_TYPES);
         return validTypes.includes(invoiceTypeId);
       });
@@ -471,7 +817,8 @@ class InvoiceProcessingService {
           count: product.quantity || product.count || 1,
           goodId: product.id || product.goodId || null
         },
-        fallbackBuyer: contractor
+        fallbackBuyer: contractor,
+        dealId: fullDeal.id
       });
       
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
@@ -646,7 +993,7 @@ class InvoiceProcessingService {
       // Проверяем еще раз, что invoiceId существует перед установкой "Done"
       if (invoiceResult.invoiceId) {
         logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
-        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id);
+        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId);
         if (!clearTriggerResult.success) {
           logger.warn('Failed to clear invoice trigger in Pipedrive', {
             dealId: fullDeal.id,
@@ -752,11 +1099,17 @@ class InvoiceProcessingService {
    * @param {number} dealId - ID сделки
    * @returns {Promise<Object>} - Результат обновления
    */
-  async clearInvoiceTrigger(dealId) {
+  async clearInvoiceTrigger(dealId, invoiceId = null) {
     try {
-      const updateResult = await this.pipedriveClient.updateDeal(dealId, {
+      const payload = {
         [`${this.INVOICE_TYPE_FIELD_KEY}`]: this.INVOICE_DONE_VALUE
-      });
+      };
+
+      if (this.WFIRMA_INVOICE_ID_FIELD_KEY && invoiceId) {
+        payload[this.WFIRMA_INVOICE_ID_FIELD_KEY] = String(invoiceId);
+      }
+
+      const updateResult = await this.pipedriveClient.updateDeal(dealId, payload);
 
       if (!updateResult.success) {
         return {
@@ -1863,7 +2216,8 @@ class InvoiceProcessingService {
       currency = 'PLN',
       totalAmount = null,
       fallbackProduct = null,
-      fallbackBuyer = null
+      fallbackBuyer = null,
+      dealId = null
     } = options;
 
     let proforma = null;
@@ -1947,6 +2301,8 @@ class InvoiceProcessingService {
       };
     });
 
+    const effectiveDealId = dealId ?? proforma.pipedriveDealId ?? proforma.dealId ?? proforma.pipedrive_deal_id ?? null;
+
     const repositoryPayload = {
       id: proforma.id || invoiceId,
       fullnumber: proforma.fullnumber || invoiceNumber || null,
@@ -1959,7 +2315,10 @@ class InvoiceProcessingService {
       paymentsCurrencyExchange: proforma.paymentsCurrencyExchange ?? proforma.payments_currency_exchange ?? null,
       paymentsCount: proforma.paymentsCount ?? proforma.payments_count ?? 0,
       products: sanitizedProducts,
-      buyer: proforma.buyer || fallbackBuyer || null
+      buyer: proforma.buyer || fallbackBuyer || null,
+      pipedriveDealId: effectiveDealId !== null && effectiveDealId !== undefined
+        ? String(effectiveDealId).trim()
+        : undefined
     };
 
     try {
