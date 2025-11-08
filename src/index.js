@@ -64,6 +64,10 @@ app.get('/vat-margin.html', requireAuth, (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/vat-margin.html'));
 });
 
+app.get('/vat-margin-product.html', requireAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/vat-margin-product.html'));
+});
+
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
 

@@ -731,6 +731,14 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
     const data = await lookup.getMonthlyProformasByProduct(options);
     const summary = computeSummary(data);
 
+    if (Array.isArray(data) && data.length > 0) {
+      const missingDealCount = data.filter((item) => !item.pipedrive_deal_id).length;
+      logger.info('Monthly proformas deal link coverage', {
+        total: data.length,
+        missing: missingDealCount
+      });
+    }
+
     res.json({
       success: true,
       data,

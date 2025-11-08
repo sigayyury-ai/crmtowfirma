@@ -3,6 +3,8 @@ const logger = require('../../utils/logger');
 const axios = require('axios');
 const supabase = require('../supabaseClient');
 
+const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+
 class WfirmaLookup {
   constructor() {
     this.wfirmaClient = new WfirmaClient();
@@ -179,7 +181,8 @@ class WfirmaLookup {
           currency_exchange,
           payments_total,
           payments_total_pln,
-          payments_currency_exchange
+          payments_currency_exchange,
+          pipedrive_deal_id
         ),
         products ( id, name, normalized_name )
       `)
@@ -198,6 +201,7 @@ class WfirmaLookup {
     }
 
     const rows = [];
+    let missingDealIdCount = 0;
 
     for (const row of data) {
       const proforma = row.proformas;
@@ -224,6 +228,17 @@ class WfirmaLookup {
       const paymentsExchange = this.parseNumber(proforma.payments_currency_exchange) || currencyExchange || null;
 
       const proformaTotal = this.parseNumber(proforma.total) || 0;
+      const dealIdRaw = proforma.pipedrive_deal_id;
+      const dealId = dealIdRaw !== null && dealIdRaw !== undefined
+        ? String(dealIdRaw).trim()
+        : null;
+      const dealUrl = dealId && dealId.length > 0
+        ? `${CRM_DEAL_BASE_URL}${encodeURIComponent(dealId)}`
+        : null;
+
+      if (!dealId) {
+        missingDealIdCount += 1;
+      }
 
       rows.push({
         proforma_id: proforma.id,
@@ -245,7 +260,16 @@ class WfirmaLookup {
             ? paymentsTotal * paymentsExchange
             : paymentsTotal || 0,
         payments_total: Number.isFinite(paymentsTotal) ? paymentsTotal : 0,
-        payments_currency_exchange: paymentsExchange
+        payments_currency_exchange: paymentsExchange,
+        pipedrive_deal_id: dealId || null,
+        pipedrive_deal_url: dealUrl
+      });
+    }
+
+    if (rows.length > 0) {
+      logger.info('Supabase proforma rows fetched', {
+        totalRows: rows.length,
+        missingDealIdCount
       });
     }
 
@@ -1029,6 +1053,14 @@ class WfirmaLookup {
       for (const product of proforma.products || []) {
         const productName = product.name || 'Без названия';
         const productKey = this.normalizeProductName(productName) || 'без названия';
+        const dealIdRaw = proforma.pipedriveDealId || proforma.dealId || proforma.pipedrive_deal_id || null;
+        const dealId = dealIdRaw !== null && dealIdRaw !== undefined
+          ? String(dealIdRaw).trim()
+          : null;
+        const dealUrl = dealId && dealId.length > 0
+          ? `${CRM_DEAL_BASE_URL}${encodeURIComponent(dealId)}`
+          : null;
+
         productRows.push({
           product_id: product.productId || product.id || null,
           product_key: productKey,
@@ -1048,7 +1080,9 @@ class WfirmaLookup {
           line_total: this.parseNumber(product.price) && this.parseNumber(product.count)
             ? this.parseNumber(product.price) * this.parseNumber(product.count)
             : null,
-          payments_currency_exchange: this.parseNumber(proforma.paymentsCurrencyExchange) || this.parseNumber(proforma.currencyExchange) || null
+          payments_currency_exchange: this.parseNumber(proforma.paymentsCurrencyExchange) || this.parseNumber(proforma.currencyExchange) || null,
+          pipedrive_deal_id: dealId || null,
+          pipedrive_deal_url: dealUrl
         });
       }
     }

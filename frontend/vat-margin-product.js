@@ -239,16 +239,26 @@ function renderProformasTable(items) {
   }
 
   const rows = items
-    .map((item) => `
+    .map((item) => {
+      const dealId = item.dealId ? String(item.dealId) : null;
+      const dealLinkHtml = item.dealUrl && dealId
+        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${item.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
+        : '';
+
+      return `
       <tr>
-        <td>${escapeHtml(item.fullnumber || '—')}</td>
+        <td>
+          <div>${escapeHtml(item.fullnumber || '—')}</div>
+          ${dealLinkHtml}
+        </td>
         <td>${escapeHtml(formatDate(item.date))}</td>
         <td>${formatCurrencyMap(item.currencyTotals || {})}</td>
         <td class="numeric">${formatCurrency(item.totalPln || 0, 'PLN')}</td>
         <td class="numeric">${formatCurrency(item.paidPln || 0, 'PLN')}</td>
         <td>${escapeHtml(paymentStatusLabels[item.paymentStatus] || paymentStatusLabels.unknown)}</td>
       </tr>
-    `)
+    `;
+    })
     .join('');
 
   elements.proformasContainer.innerHTML = `

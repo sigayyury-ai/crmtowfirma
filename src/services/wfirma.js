@@ -1121,6 +1121,79 @@ class WfirmaClient {
     }
   }
 
+  async deleteInvoice(invoiceId) {
+    if (!invoiceId) {
+      return { success: false, error: 'Invoice ID is required' };
+    }
+
+    try {
+      logger.info('Deleting invoice in wFirma', { invoiceId });
+
+      const response = await this.client.post(
+        `/invoices/delete/${invoiceId}`,
+        null,
+        {
+          params: {
+            outputFormat: 'json'
+          }
+        }
+      );
+
+      const { data } = response;
+
+      if (!data) {
+        logger.error('Empty response from wFirma API when deleting invoice', { invoiceId });
+        return { success: false, error: 'Empty response from wFirma API' };
+      }
+
+      if (typeof data === 'string') {
+        if (data.includes('<code>OK</code>')) {
+          return { success: true };
+        }
+
+        if (data.includes('<code>ERROR</code>')) {
+          const errorMatch = data.match(/<message>(.*?)<\/message>/);
+          const message = errorMatch ? errorMatch[1] : 'Unknown wFirma error';
+          return { success: false, error: message };
+        }
+
+        return { success: false, error: 'Unexpected response format from wFirma API', details: data };
+      }
+
+      if (
+        data.success === true
+        || data.status?.code === 'OK'
+        || data.status?.success === true
+      ) {
+        return { success: true };
+      }
+
+      const message = data.status?.message || data.error || 'Failed to delete invoice in wFirma';
+      return { success: false, error: message, details: data };
+    } catch (error) {
+      if (error.response?.status === 404) {
+        logger.warn('Invoice not found in wFirma during deletion', {
+          invoiceId,
+          status: error.response.status
+        });
+        return { success: false, error: 'Invoice not found', notFound: true };
+      }
+
+      logger.error('Error deleting invoice in wFirma:', {
+        invoiceId,
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message
+      });
+
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
   /**
    * Получить список VAT кодов
    * @returns {Promise<Object>} - Список VAT кодов

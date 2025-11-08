@@ -278,7 +278,9 @@ function renderVatMarginTable(data) {
       exchangeRate: Number.isFinite(exchangeRate) ? exchangeRate : null,
       totalPlnValue,
       paidPln,
-      status
+      status,
+      dealId: item.pipedrive_deal_id || null,
+      dealUrl: item.pipedrive_deal_url || null
     });
 
     group.totals.count += 1;
@@ -308,9 +310,18 @@ function renderVatMarginTable(data) {
       const proformaCount = group.proformas.size;
 
       const rowsHtml = group.rows
-        .map((row) => `
+        .map((row) => {
+          const dealId = row.dealId ? String(row.dealId) : null;
+          const dealLinkHtml = row.dealUrl && dealId
+            ? `<div class="deal-link-wrapper"><a class="deal-link" href="${row.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
+            : '';
+
+          return `
           <tr>
-            <td class="fullnumber">${escapeHtml(row.fullnumber)}</td>
+            <td class="fullnumber">
+              <div>${escapeHtml(row.fullnumber)}</div>
+              ${dealLinkHtml}
+            </td>
             <td>${formatDate(row.date)}</td>
             <td class="amount">${formatCurrency(row.lineTotal, row.currency)}</td>
             <td class="amount">${row.exchangeRate ? row.exchangeRate.toFixed(4) : '—'}</td>
@@ -318,7 +329,8 @@ function renderVatMarginTable(data) {
             <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.paidPln, 'PLN') : '—'}</td>
             <td><span class="status ${row.status.className}">${row.status.label}</span></td>
           </tr>
-        `)
+        `;
+        })
         .join('');
 
       return `

@@ -14,6 +14,91 @@ class PaymentService {
     this.proformaRepository = new ProformaRepository();
   }
 
+  async updateProformaPaymentAggregates(proformaId) {
+    if (!supabase || !proformaId) {
+      return;
+    }
+
+    const targetId = String(proformaId);
+
+    const { data: paymentRows, error: paymentsError } = await supabase
+      .from('payments')
+      .select('amount, currency')
+      .eq('manual_status', MANUAL_STATUS_APPROVED)
+      .eq('manual_proforma_id', targetId);
+
+    if (paymentsError) {
+      logger.error('Supabase error while aggregating proforma payments:', paymentsError);
+      return;
+    }
+
+    const totalsByCurrency = {};
+    let paymentsCount = 0;
+
+    (paymentRows || []).forEach((row) => {
+      const amount = Number(row.amount);
+      if (!Number.isFinite(amount)) {
+        return;
+      }
+      const currency = row.currency || 'PLN';
+      totalsByCurrency[currency] = (totalsByCurrency[currency] || 0) + amount;
+      paymentsCount += 1;
+    });
+
+    const { data: proforma, error: proformaError } = await supabase
+      .from('proformas')
+      .select('id, currency, currency_exchange')
+      .eq('id', targetId)
+      .single();
+
+    if (proformaError) {
+      logger.error('Supabase error while fetching proforma for payment aggregate:', proformaError);
+      return;
+    }
+
+    if (!proforma) {
+      return;
+    }
+
+    const proformaCurrency = proforma.currency || 'PLN';
+    const exchangeRate = Number(proforma.currency_exchange);
+
+    let paymentsTotal = totalsByCurrency[proformaCurrency] || 0;
+    let paymentsTotalPln = null;
+
+    if (proformaCurrency === 'PLN') {
+      paymentsTotalPln = paymentsTotal;
+    } else if (Number.isFinite(exchangeRate) && exchangeRate > 0) {
+      paymentsTotalPln = paymentsTotal * exchangeRate;
+    }
+
+    if (paymentsTotal === 0 && Number.isFinite(exchangeRate) && exchangeRate > 0 && totalsByCurrency.PLN) {
+      paymentsTotal = totalsByCurrency.PLN / exchangeRate;
+      if (!Number.isFinite(paymentsTotalPln)) {
+        paymentsTotalPln = totalsByCurrency.PLN;
+      }
+    }
+
+    if (paymentsTotalPln === null && totalsByCurrency.PLN) {
+      paymentsTotalPln = totalsByCurrency.PLN;
+    }
+
+    const updatePayload = {
+      payments_total: Number.isFinite(paymentsTotal) ? paymentsTotal : 0,
+      payments_total_pln: Number.isFinite(paymentsTotalPln) ? paymentsTotalPln : null,
+      payments_count: paymentsCount
+    };
+
+    const { error: updateError } = await supabase
+      .from('proformas')
+      .update(updatePayload)
+      .eq('id', targetId);
+
+    if (updateError) {
+      logger.error('Supabase error while updating proforma payment totals:', updateError);
+    }
+  }
+
   resolvePaymentRecord(record) {
     const manualStatus = record.manual_status || null;
     let status = record.match_status || 'unmatched';
@@ -217,6 +302,15 @@ class PaymentService {
       throw new Error('Supabase client is not configured');
     }
 
+    const { data: affected, error: listError } = await supabase
+      .from('payments')
+      .select('manual_proforma_id')
+      .not('manual_status', 'is', null);
+
+    if (listError) {
+      logger.error('Supabase error while listing payments before reset:', listError);
+    }
+
     const { error } = await supabase
       .from('payments')
       .update({
@@ -232,6 +326,19 @@ class PaymentService {
     if (error) {
       logger.error('Supabase error while resetting payment matches:', error);
       throw error;
+    }
+
+    if (affected && affected.length > 0) {
+      const uniqueIds = Array.from(new Set(
+        affected
+          .map((row) => row.manual_proforma_id)
+          .filter(Boolean)
+      ));
+
+      for (const proformaId of uniqueIds) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.updateProformaPaymentAggregates(proformaId);
+      }
     }
   }
 
@@ -516,6 +623,8 @@ class PaymentService {
       throw error;
     }
 
+    await this.updateProformaPaymentAggregates(proforma.id);
+
     return this.getPaymentDetails(paymentId);
   }
 
@@ -570,7 +679,7 @@ class PaymentService {
     const failedUpdates = [];
 
     for (const update of updates) {
-      const { id, ...changes } = update;
+      const { id, manual_proforma_id: linkedProformaId, ...changes } = update;
       const { error: updateError } = await supabase
         .from('payments')
         .update(changes)
@@ -581,6 +690,8 @@ class PaymentService {
         failedUpdates.push({ id, error: updateError });
       } else {
         processed += 1;
+        // eslint-disable-next-line no-await-in-loop
+        await this.updateProformaPaymentAggregates(linkedProformaId);
       }
     }
 
@@ -625,6 +736,8 @@ class PaymentService {
       throw error;
     }
 
+    await this.updateProformaPaymentAggregates(raw.proforma_id);
+
     return this.getPaymentDetails(paymentId);
   }
 
@@ -633,7 +746,8 @@ class PaymentService {
       throw new Error('Supabase client is not configured');
     }
 
-    await this.fetchPaymentRaw(paymentId);
+    const raw = await this.fetchPaymentRaw(paymentId);
+    const targetProformaId = raw.manual_proforma_id;
 
     const now = new Date().toISOString();
 
@@ -654,6 +768,14 @@ class PaymentService {
       throw error;
     }
 
+    if (targetProformaId) {
+      await this.updateProformaPaymentAggregates(targetProformaId);
+    }
+
+    if (raw.proforma_id && raw.proforma_id !== targetProformaId) {
+      await this.updateProformaPaymentAggregates(raw.proforma_id);
+    }
+
     return this.getPaymentDetails(paymentId);
   }
 
@@ -662,7 +784,8 @@ class PaymentService {
       throw new Error('Supabase client is not configured');
     }
 
-    await this.fetchPaymentRaw(paymentId);
+    const raw = await this.fetchPaymentRaw(paymentId);
+    const targetProformaId = raw.manual_proforma_id || raw.proforma_id;
 
     const { error } = await supabase
       .from('payments')
@@ -672,6 +795,14 @@ class PaymentService {
     if (error) {
       logger.error('Supabase error while deleting payment:', error);
       throw error;
+    }
+
+    if (targetProformaId) {
+      await this.updateProformaPaymentAggregates(targetProformaId);
+    }
+
+    if (raw.manual_proforma_id && raw.manual_proforma_id !== targetProformaId) {
+      await this.updateProformaPaymentAggregates(raw.manual_proforma_id);
     }
   }
 

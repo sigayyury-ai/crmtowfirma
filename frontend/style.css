@@ -1393,6 +1393,21 @@ h2 {
     color: #2563eb;
 }
 
+.group-table .deal-link-wrapper {
+    margin-top: 4px;
+}
+
+.group-table .deal-link {
+    font-weight: 500;
+    color: #0f172a;
+    text-decoration: underline;
+    font-size: 13px;
+}
+
+.group-table .deal-link:hover {
+    color: #1d4ed8;
+}
+
 .vat-margin-table table {
     width: 100%;
     border-collapse: collapse;
@@ -1542,5 +1557,147 @@ h2 {
     .vat-margin-table th,
     .vat-margin-table td {
         padding: 8px;
+    }
+}
+
+.product-detail-section {
+    background: white;
+    border-radius: 18px;
+    padding: 30px;
+    box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+}
+
+.product-detail-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.product-detail-controls .control-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 200px;
+}
+
+.product-detail-controls .control-field label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+.product-detail-controls select,
+.product-detail-controls input[type="month"] {
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid #dee7ff;
+    background: #f8fbff;
+    font-size: 0.95rem;
+    color: #1e293b;
+}
+
+.product-detail-controls select:focus,
+.product-detail-controls input[type="month"]:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.control-actions {
+    display: flex;
+    gap: 12px;
+}
+
+.product-alert {
+    padding: 14px 18px;
+    border-radius: 12px;
+    font-weight: 600;
+}
+
+.product-alert.hidden {
+    display: none;
+}
+
+.product-alert.alert-success {
+    background: rgba(46, 204, 113, 0.18);
+    color: #2f855a;
+}
+
+.product-alert.alert-info {
+    background: rgba(59, 130, 246, 0.15);
+    color: #1d4ed8;
+}
+
+.product-alert.alert-error {
+    background: rgba(248, 113, 113, 0.18);
+    color: #b91c1c;
+}
+
+.product-summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 18px;
+}
+
+.summary-card {
+    background: #f8fbff;
+    border-radius: 14px;
+    padding: 16px 18px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.summary-card .summary-label {
+    font-size: 0.75rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.summary-card .summary-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.detail-block h2 {
+    margin: 0 0 12px;
+    font-size: 1.2rem;
+    color: #1f2937;
+}
+
+.detail-table th,
+.detail-table td {
+    font-size: 0.95rem;
+}
+
+.detail-table td.numeric {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.product-table-note {
+    font-size: 0.82rem;
+    color: #94a3b8;
+    margin-top: 4px;
+}
+
+@media (max-width: 768px) {
+    .product-detail-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .control-actions {
+        flex-direction: column;
+        align-items: stretch;
     }
 }

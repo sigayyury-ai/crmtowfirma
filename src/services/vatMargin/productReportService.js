@@ -1,6 +1,8 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
 
+const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+
 const STATUS_DEFAULT = 'in_progress';
 const STATUS_ORDER = {
   in_progress: 0,
@@ -134,7 +136,9 @@ class ProductReportService {
           currencyTotals: roundCurrencyMap(detail.currencyTotals),
           totalPln: Number(detail.totalPln.toFixed(2)),
           paidPln: Number(detail.paidPln.toFixed(2)),
-          paymentStatus: status
+          paymentStatus: status,
+          dealId: detail.dealId || null,
+          dealUrl: detail.dealUrl || null
         };
       })
       .sort((a, b) => {
@@ -238,45 +242,38 @@ class ProductReportService {
   }
 
   async fetchAllProductRows() {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
     let offset = 0;
     const rows = [];
+    let includeStatusColumns = true;
+    let includeLineTotal = true;
 
     while (true) {
       const rangeStart = offset;
       const rangeEnd = offset + PRODUCT_PAGE_SIZE - 1;
 
-      const { data, error } = await supabase
-        .from('proforma_products')
-        .select(`
-          proforma_id,
-          product_id,
-          quantity,
-          unit_price,
-          line_total,
-          name,
-          proformas (
-            id,
-            fullnumber,
-            issued_at,
-            currency,
-            total,
-            currency_exchange,
-            payments_total,
-            payments_total_pln,
-            payments_currency_exchange
-          ),
-          products (
-            id,
-            name,
-            normalized_name,
-            calculation_status,
-            calculation_due_month
-          )
-        `)
-        .order('proforma_id', { ascending: true })
-        .range(rangeStart, rangeEnd);
+      const { data, error } = await this.fetchProductRowsRange(rangeStart, rangeEnd, includeStatusColumns, includeLineTotal);
 
       if (error) {
+        if (error.code === '42703') {
+          const diagnostic = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`.toLowerCase();
+
+          if (includeStatusColumns && (diagnostic.includes('calculation_status') || diagnostic.includes('calculation_due_month'))) {
+            logger.warn('Supabase products table has no calculation status columns, retrying without them');
+            includeStatusColumns = false;
+            continue;
+          }
+
+          if (includeLineTotal && diagnostic.includes('line_total')) {
+            logger.warn('Supabase proforma_products table has no line_total column, retrying without it');
+            includeLineTotal = false;
+            continue;
+          }
+        }
+
         logger.error('Supabase error while fetching product rows:', error);
         throw new Error('Не удалось получить данные продуктов из базы');
       }
@@ -297,9 +294,66 @@ class ProductReportService {
     return rows;
   }
 
+  async fetchProductRowsRange(rangeStart, rangeEnd, includeStatusColumns, includeLineTotal = true) {
+    const productFields = includeStatusColumns
+      ? 'id,name,normalized_name,calculation_status,calculation_due_month'
+      : 'id,name,normalized_name';
+
+    const selectedColumns = includeLineTotal
+      ? `
+        proforma_id,
+        product_id,
+        quantity,
+        unit_price,
+        line_total,
+        name,
+        proformas (
+          id,
+          fullnumber,
+          issued_at,
+          currency,
+          total,
+          currency_exchange,
+          payments_total,
+          payments_total_pln,
+          payments_currency_exchange,
+          pipedrive_deal_id
+        ),
+        products (${productFields})
+      `
+      : `
+        proforma_id,
+        product_id,
+        quantity,
+        unit_price,
+        name,
+        proformas (
+          id,
+          fullnumber,
+          issued_at,
+          currency,
+          total,
+          currency_exchange,
+          payments_total,
+          payments_total_pln,
+          payments_currency_exchange,
+          pipedrive_deal_id
+        ),
+        products (${productFields})
+      `;
+
+    return supabase
+      .from('proforma_products')
+      .select(selectedColumns)
+      .order('proforma_id', { ascending: true })
+      .range(rangeStart, rangeEnd);
+  }
+
   aggregateRows(rows) {
     const products = new Map();
     let totalGrossPln = 0;
+    let processedProformas = 0;
+    let missingDealIdCount = 0;
 
     rows.forEach((row) => {
       const productRecord = row.products || {};
@@ -337,9 +391,20 @@ class ProductReportService {
       const proforma = row.proformas || {};
       const proformaId = proforma.id || row.proforma_id || null;
       const issuedAt = proforma.issued_at || null;
+      const proformaDealIdRaw = proforma.pipedrive_deal_id;
+      const proformaDealId = proformaDealIdRaw !== undefined && proformaDealIdRaw !== null
+        ? String(proformaDealIdRaw).trim()
+        : null;
+      const proformaDealUrl = proformaDealId
+        ? `${CRM_DEAL_BASE_URL}${encodeURIComponent(proformaDealId)}`
+        : null;
 
       if (proformaId) {
         entry.proformaIds.add(proformaId);
+        processedProformas += 1;
+        if (!proformaDealId) {
+          missingDealIdCount += 1;
+        }
       }
 
       if (issuedAt && (!entry.lastSaleDate || issuedAt > entry.lastSaleDate)) {
@@ -410,10 +475,16 @@ class ProductReportService {
             date: issuedAt,
             currencyTotals: {},
             totalPln: 0,
-            paidPln: 0
+            paidPln: 0,
+            dealId: proformaDealId || null,
+            dealUrl: proformaDealUrl
           });
         }
         const detail = entry.proformaDetails.get(proformaId);
+        if (!detail.dealId && proformaDealId) {
+          detail.dealId = proformaDealId;
+          detail.dealUrl = proformaDealUrl;
+        }
         if (Number.isFinite(lineTotal)) {
           detail.currencyTotals[currency] = (detail.currencyTotals[currency] || 0) + lineTotal;
         }
@@ -425,6 +496,13 @@ class ProductReportService {
         }
       }
     });
+
+    if (processedProformas > 0) {
+      logger.info('Product aggregation deal link coverage', {
+        processedProformas,
+        missingDealIdCount
+      });
+    }
 
     return {
       products,

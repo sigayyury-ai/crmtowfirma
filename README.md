@@ -63,6 +63,7 @@
 # Pipedrive API Configuration
 PIPEDRIVE_API_TOKEN=your_pipedrive_token
 PIPEDRIVE_BASE_URL=https://api.pipedrive.com/v1
+PIPEDRIVE_WFIRMA_INVOICE_ID_FIELD_KEY=
 
 # wFirma API Configuration
 WFIRMA_APP_KEY=your_app_key
