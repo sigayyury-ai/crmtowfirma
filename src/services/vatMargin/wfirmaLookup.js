@@ -23,6 +23,32 @@ class WfirmaLookup {
     });
   }
 
+  normalizeWhitespace(value) {
+    return String(value).replace(/\s+/g, ' ').trim();
+  }
+
+  normalizeProductName(name) {
+    if (!name) return null;
+    const trimmed = this.normalizeWhitespace(name);
+    if (!trimmed) return null;
+
+    return trimmed
+      .toLowerCase()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s\.\-_/]/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  extractTagValue(xml, tag) {
+    if (!xml) return null;
+    const regex = new RegExp(`<${tag}>([\s\S]*?)<\/${tag}>`, 'i');
+    const match = xml.match(regex);
+    if (!match) return null;
+    return match[1].trim();
+  }
+
   /**
    * Получить проформы за текущий месяц, сгруппированные по продуктам
    * @param {Object} options - Опции фильтрации
@@ -155,7 +181,7 @@ class WfirmaLookup {
           payments_total_pln,
           payments_currency_exchange
         ),
-        products ( name )
+        products ( id, name, normalized_name )
       `)
       .gte('proformas.issued_at', dateFromStr)
       .lte('proformas.issued_at', dateToStr)
@@ -181,6 +207,10 @@ class WfirmaLookup {
       }
 
       const productName = row.products?.name || row.name || 'Без названия';
+      const normalizedKey = row.products?.normalized_name
+        || this.normalizeProductName(productName)
+        || 'без названия';
+      const productId = row.products?.id || null;
       const quantity = typeof row.quantity === 'number' ? row.quantity : parseFloat(row.quantity);
       const unitPrice = typeof row.unit_price === 'number' ? row.unit_price : parseFloat(row.unit_price);
 
@@ -197,6 +227,8 @@ class WfirmaLookup {
 
       rows.push({
         proforma_id: proforma.id,
+        product_id: productId,
+        product_key: normalizedKey,
         name: productName,
         fullnumber: proforma.fullnumber,
         date: proforma.issued_at,
@@ -887,12 +919,43 @@ class WfirmaLookup {
         currency: currencyMatch ? currencyMatch[1].trim() : 'PLN',
         currencyExchange: currencyExchange,
         description: description,
-        products: products
+        products: products,
+        buyer: this.extractBuyerFromInvoiceXml(xmlString)
       };
     } catch (error) {
       logger.error('Error parsing invoice from XML:', error);
       return null;
     }
+  }
+
+  extractBuyerFromInvoiceXml(xmlString) {
+    if (!xmlString) {
+      return null;
+    }
+
+    const contractorMatch = xmlString.match(/<contractor>[\s\S]*?<\/contractor>/);
+    const contractorDetailMatch = xmlString.match(/<contractor_detail>[\s\S]*?<\/contractor_detail>/);
+
+    const contractorXml = contractorMatch ? contractorMatch[0] : null;
+    const contractorDetailXml = contractorDetailMatch ? contractorDetailMatch[0] : null;
+
+    const buyerName = this.extractTagValue(contractorDetailXml, 'name')
+      || this.extractTagValue(contractorXml, 'altname')
+      || this.extractTagValue(contractorXml, 'name');
+
+    return {
+      id: this.extractTagValue(contractorXml, 'id') || null,
+      detailId: this.extractTagValue(contractorDetailXml, 'id') || null,
+      name: buyerName || null,
+      altName: this.extractTagValue(contractorXml, 'altname') || null,
+      email: this.extractTagValue(contractorDetailXml, 'email') || this.extractTagValue(contractorXml, 'email') || null,
+      phone: this.extractTagValue(contractorDetailXml, 'phone') || this.extractTagValue(contractorXml, 'phone') || null,
+      street: this.extractTagValue(contractorDetailXml, 'street') || null,
+      zip: this.extractTagValue(contractorDetailXml, 'zip') || null,
+      city: this.extractTagValue(contractorDetailXml, 'city') || null,
+      country: this.extractTagValue(contractorDetailXml, 'country') || null,
+      taxId: this.extractTagValue(contractorDetailXml, 'nip') || null
+    };
   }
 
 
@@ -964,8 +1027,12 @@ class WfirmaLookup {
     for (const proforma of proformas) {
       // Для каждой проформы обрабатываем все её продукты
       for (const product of proforma.products || []) {
+        const productName = product.name || 'Без названия';
+        const productKey = this.normalizeProductName(productName) || 'без названия';
         productRows.push({
-          name: product.name || 'Без названия',
+          product_id: product.productId || product.id || null,
+          product_key: productKey,
+          name: productName,
           fullnumber: proforma.fullnumber || '',
           date: proforma.date || '',
           currency: proforma.currency || 'PLN',

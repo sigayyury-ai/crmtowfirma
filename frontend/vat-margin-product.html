@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VAT Margin Tracker — Продукт</title>
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <nav class="main-nav">
+            <a href="/" class="nav-link">🔗 Pipedrive ↔ wFirma</a>
+            <a href="/vat-margin.html" class="nav-link">📊 VAT Margin Tracker</a>
+            <span class="nav-link active">🛍 Отчёт по продукту</span>
+        </nav>
+
+        <header>
+            <h1 id="product-title">Загрузка...</h1>
+            <p id="product-subtitle">Получаем данные по продукту</p>
+        </header>
+
+        <section class="product-detail-section">
+            <div class="product-detail-controls">
+                <div class="control-field">
+                    <label for="detail-status">Статус расчёта</label>
+                    <select id="detail-status">
+                        <option value="in_progress">В процессе</option>
+                        <option value="calculated">Рассчитан</option>
+                    </select>
+                </div>
+                <div class="control-field">
+                    <label for="detail-due-month">Месяц расчёта</label>
+                    <input type="month" id="detail-due-month" placeholder="YYYY-MM">
+                </div>
+                <div class="control-actions">
+                    <button id="product-save-status" class="btn btn-primary">💾 Сохранить</button>
+                    <a href="/vat-margin.html#tab-products" class="btn btn-secondary">← Назад к сводке</a>
+                </div>
+            </div>
+
+            <div id="product-alert" class="product-alert hidden"></div>
+
+            <div id="product-summary" class="product-summary-cards"></div>
+
+            <div class="detail-block">
+                <h2>Распределение по месяцам</h2>
+                <div id="product-monthly" class="table-wrapper">
+                    <div class="placeholder">Данные отсутствуют</div>
+                </div>
+            </div>
+
+            <div class="detail-block">
+                <h2>Проформы продукта</h2>
+                <div id="product-proformas" class="table-wrapper">
+                    <div class="placeholder">Данные отсутствуют</div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="vat-margin-product.js"></script>
+</body>
+</html>
+

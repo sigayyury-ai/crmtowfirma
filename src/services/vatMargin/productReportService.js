@@ -1,0 +1,471 @@
+const supabase = require('../supabaseClient');
+const logger = require('../../utils/logger');
+
+const STATUS_DEFAULT = 'in_progress';
+const STATUS_ORDER = {
+  in_progress: 0,
+  calculated: 1
+};
+
+const PRODUCT_PAGE_SIZE = 1000;
+
+function normalizeWhitespace(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeProductName(name) {
+  if (!name) return null;
+  const trimmed = normalizeWhitespace(name);
+  if (!trimmed) return null;
+
+  return trimmed
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s.\-_/]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function toNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function convertToPln(amount, currency, exchangeRate) {
+  const numericAmount = toNumber(amount) || 0;
+  const normalizedCurrency = (currency || 'PLN').toUpperCase();
+  const rate = toNumber(exchangeRate);
+
+  if (normalizedCurrency === 'PLN') {
+    return numericAmount;
+  }
+
+  if (rate && rate > 0) {
+    return numericAmount * rate;
+  }
+
+  return numericAmount;
+}
+
+function determinePaymentStatus(totalPln, paidPln) {
+  if (!totalPln || totalPln <= 0) {
+    return 'unknown';
+  }
+
+  const ratio = paidPln / totalPln;
+  if (ratio >= 0.98) return 'paid';
+  if (ratio > 0) return 'partial';
+  return 'unpaid';
+}
+
+function roundCurrencyMap(map) {
+  const result = {};
+  Object.entries(map || {}).forEach(([key, value]) => {
+    result[key] = Number((value || 0).toFixed(2));
+  });
+  return result;
+}
+
+class ProductReportService {
+  constructor() {
+    if (!supabase) {
+      logger.warn('Supabase client is not configured. Product report features will be unavailable.');
+    }
+  }
+
+  async getProductSummary() {
+    const { products } = await this.loadAggregatedData();
+
+    const summary = Array.from(products.values())
+      .map((entry) => ({
+        productId: entry.productId,
+        productKey: entry.productKey,
+        productSlug: entry.slug,
+        productName: entry.productName,
+        calculationStatus: entry.calculationStatus,
+        calculationDueMonth: entry.calculationDueMonth,
+        proformaCount: entry.proformaIds.size,
+        lastSaleDate: entry.lastSaleDate,
+        totals: {
+          grossPln: Number(entry.totals.grossPln.toFixed(2)),
+          paidPln: Number(entry.totals.paidPln.toFixed(2))
+        }
+      }))
+      .sort((a, b) => {
+        const statusDiff = (STATUS_ORDER[a.calculationStatus] ?? 99) - (STATUS_ORDER[b.calculationStatus] ?? 99);
+        if (statusDiff !== 0) return statusDiff;
+        return a.productName.localeCompare(b.productName, 'ru');
+      });
+
+    return summary;
+  }
+
+  async getProductDetail(identifier) {
+    const { products, totalGrossPln } = await this.loadAggregatedData();
+    const entry = this.findProductEntry(products, identifier);
+
+    if (!entry) {
+      return null;
+    }
+
+    const monthlyBreakdown = Array.from(entry.monthly.values())
+      .map((item) => ({
+        month: item.month,
+        proformaCount: item.proformaIds.size,
+        grossPln: Number(item.grossPln.toFixed(2)),
+        currencyTotals: roundCurrencyMap(item.originalTotals)
+      }))
+      .sort((a, b) => b.month.localeCompare(a.month));
+
+    const proformas = Array.from(entry.proformaDetails.values())
+      .map((detail) => {
+        const status = determinePaymentStatus(detail.totalPln, detail.paidPln);
+        return {
+          proformaId: detail.proformaId,
+          fullnumber: detail.fullnumber,
+          date: detail.date,
+          currencyTotals: roundCurrencyMap(detail.currencyTotals),
+          totalPln: Number(detail.totalPln.toFixed(2)),
+          paidPln: Number(detail.paidPln.toFixed(2)),
+          paymentStatus: status
+        };
+      })
+      .sort((a, b) => {
+        if (a.date && b.date) {
+          return b.date.localeCompare(a.date);
+        }
+        return 0;
+      });
+
+    const revenueShare = totalGrossPln > 0
+      ? Number((entry.totals.grossPln / totalGrossPln).toFixed(4))
+      : 0;
+
+    return {
+      productId: entry.productId,
+      productKey: entry.productKey,
+      productSlug: entry.slug,
+      productName: entry.productName,
+      calculationStatus: entry.calculationStatus,
+      calculationDueMonth: entry.calculationDueMonth,
+      lastSaleDate: entry.lastSaleDate,
+      proformaCount: entry.proformaIds.size,
+      totals: {
+        grossPln: Number(entry.totals.grossPln.toFixed(2)),
+        paidPln: Number(entry.totals.paidPln.toFixed(2)),
+        currencyTotals: roundCurrencyMap(entry.totals.originalTotals)
+      },
+      revenueShare,
+      monthlyBreakdown,
+      proformas
+    };
+  }
+
+  async updateProductStatus(identifier, { status, dueMonth }) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const { products } = await this.loadAggregatedData();
+    const entry = this.findProductEntry(products, identifier);
+
+    if (!entry || !entry.productId) {
+      throw new Error('Указанный продукт не найден или не имеет идентификатора в базе');
+    }
+
+    const updates = {};
+
+    let nextStatus = entry.calculationStatus;
+    if (status !== undefined) {
+      const normalizedStatus = status === 'calculated' ? 'calculated' : 'in_progress';
+      updates.calculation_status = normalizedStatus;
+      nextStatus = normalizedStatus;
+    }
+
+    let nextDueMonth = entry.calculationDueMonth;
+    if (dueMonth !== undefined) {
+      if (typeof dueMonth === 'string' && dueMonth.trim().length > 0) {
+        const trimmed = dueMonth.trim();
+        updates.calculation_due_month = trimmed;
+        nextDueMonth = trimmed;
+      } else {
+        updates.calculation_due_month = null;
+        nextDueMonth = null;
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return {
+        productId: entry.productId,
+        productSlug: entry.slug,
+        calculationStatus: entry.calculationStatus,
+        calculationDueMonth: entry.calculationDueMonth
+      };
+    }
+
+    const { error } = await supabase
+      .from('products')
+      .update(updates)
+      .eq('id', entry.productId);
+
+    if (error) {
+      logger.error('Failed to update product status in Supabase:', error);
+      throw new Error('Не удалось обновить статус в базе данных');
+    }
+
+    return {
+      productId: entry.productId,
+      productSlug: entry.slug,
+      calculationStatus: nextStatus,
+      calculationDueMonth: nextDueMonth
+    };
+  }
+
+  async loadAggregatedData() {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const rows = await this.fetchAllProductRows();
+    return this.aggregateRows(rows);
+  }
+
+  async fetchAllProductRows() {
+    let offset = 0;
+    const rows = [];
+
+    while (true) {
+      const rangeStart = offset;
+      const rangeEnd = offset + PRODUCT_PAGE_SIZE - 1;
+
+      const { data, error } = await supabase
+        .from('proforma_products')
+        .select(`
+          proforma_id,
+          product_id,
+          quantity,
+          unit_price,
+          line_total,
+          name,
+          proformas (
+            id,
+            fullnumber,
+            issued_at,
+            currency,
+            total,
+            currency_exchange,
+            payments_total,
+            payments_total_pln,
+            payments_currency_exchange
+          ),
+          products (
+            id,
+            name,
+            normalized_name,
+            calculation_status,
+            calculation_due_month
+          )
+        `)
+        .order('proforma_id', { ascending: true })
+        .range(rangeStart, rangeEnd);
+
+      if (error) {
+        logger.error('Supabase error while fetching product rows:', error);
+        throw new Error('Не удалось получить данные продуктов из базы');
+      }
+
+      if (!data || data.length === 0) {
+        break;
+      }
+
+      rows.push(...data);
+
+      if (data.length < PRODUCT_PAGE_SIZE) {
+        break;
+      }
+
+      offset += PRODUCT_PAGE_SIZE;
+    }
+
+    return rows;
+  }
+
+  aggregateRows(rows) {
+    const products = new Map();
+    let totalGrossPln = 0;
+
+    rows.forEach((row) => {
+      const productRecord = row.products || {};
+      const productId = productRecord.id || row.product_id || null;
+      const productName = productRecord.name || row.name || 'Без названия';
+      const productKey = productRecord.normalized_name
+        || normalizeProductName(productName)
+        || 'без названия';
+      const slug = productId ? `id-${productId}` : `slug-${productKey}`;
+
+      const mapKey = productId ? `id:${productId}` : `key:${productKey}`;
+
+      if (!products.has(mapKey)) {
+        products.set(mapKey, {
+          mapKey,
+          productId,
+          productKey,
+          slug,
+          productName,
+          calculationStatus: productRecord.calculation_status || STATUS_DEFAULT,
+          calculationDueMonth: productRecord.calculation_due_month || null,
+          proformaIds: new Set(),
+          lastSaleDate: null,
+          totals: {
+            grossPln: 0,
+            paidPln: 0,
+            originalTotals: {}
+          },
+          monthly: new Map(),
+          proformaDetails: new Map()
+        });
+      }
+
+      const entry = products.get(mapKey);
+      const proforma = row.proformas || {};
+      const proformaId = proforma.id || row.proforma_id || null;
+      const issuedAt = proforma.issued_at || null;
+
+      if (proformaId) {
+        entry.proformaIds.add(proformaId);
+      }
+
+      if (issuedAt && (!entry.lastSaleDate || issuedAt > entry.lastSaleDate)) {
+        entry.lastSaleDate = issuedAt;
+      }
+
+      const quantity = toNumber(row.quantity) || 0;
+      const unitPrice = toNumber(row.unit_price) || 0;
+      const lineTotal = toNumber(row.line_total)
+        ?? (quantity * unitPrice)
+        ?? toNumber(proforma.total)
+        ?? 0;
+
+      const currency = (proforma.currency || 'PLN').toUpperCase();
+      const exchangeRate = toNumber(proforma.currency_exchange);
+
+      const plnValue = convertToPln(lineTotal, currency, exchangeRate);
+
+      if (Number.isFinite(lineTotal)) {
+        entry.totals.originalTotals[currency] = (entry.totals.originalTotals[currency] || 0) + lineTotal;
+      }
+
+      if (Number.isFinite(plnValue)) {
+        entry.totals.grossPln += plnValue;
+        totalGrossPln += plnValue;
+      }
+
+      const paymentsTotalPln = toNumber(proforma.payments_total_pln);
+      const paymentsTotal = toNumber(proforma.payments_total);
+      const paymentsExchange = toNumber(proforma.payments_currency_exchange) || exchangeRate || (currency === 'PLN' ? 1 : null);
+
+      let paidPln = 0;
+      if (Number.isFinite(paymentsTotalPln)) {
+        paidPln = paymentsTotalPln;
+      } else if (Number.isFinite(paymentsTotal) && Number.isFinite(paymentsExchange)) {
+        paidPln = paymentsTotal * paymentsExchange;
+      }
+
+      if (Number.isFinite(plnValue)) {
+        entry.totals.paidPln += Math.min(paidPln, plnValue);
+      }
+
+      const monthKey = issuedAt ? issuedAt.slice(0, 7) : 'unknown';
+      if (!entry.monthly.has(monthKey)) {
+        entry.monthly.set(monthKey, {
+          month: monthKey,
+          proformaIds: new Set(),
+          grossPln: 0,
+          originalTotals: {}
+        });
+      }
+      const monthEntry = entry.monthly.get(monthKey);
+      if (proformaId) {
+        monthEntry.proformaIds.add(proformaId);
+      }
+      if (Number.isFinite(plnValue)) {
+        monthEntry.grossPln += plnValue;
+      }
+      if (Number.isFinite(lineTotal)) {
+        monthEntry.originalTotals[currency] = (monthEntry.originalTotals[currency] || 0) + lineTotal;
+      }
+
+      if (proformaId) {
+        if (!entry.proformaDetails.has(proformaId)) {
+          entry.proformaDetails.set(proformaId, {
+            proformaId,
+            fullnumber: proforma.fullnumber || null,
+            date: issuedAt,
+            currencyTotals: {},
+            totalPln: 0,
+            paidPln: 0
+          });
+        }
+        const detail = entry.proformaDetails.get(proformaId);
+        if (Number.isFinite(lineTotal)) {
+          detail.currencyTotals[currency] = (detail.currencyTotals[currency] || 0) + lineTotal;
+        }
+        if (Number.isFinite(plnValue)) {
+          detail.totalPln += plnValue;
+        }
+        if (Number.isFinite(paidPln)) {
+          detail.paidPln = Math.min(detail.totalPln, paidPln);
+        }
+      }
+    });
+
+    return {
+      products,
+      totalGrossPln
+    };
+  }
+
+  findProductEntry(products, identifier) {
+    if (!identifier) return null;
+
+    const normalized = String(identifier).trim();
+    if (!normalized) return null;
+
+    if (normalized.startsWith('id:')) {
+      return products.get(normalized) || null;
+    }
+
+    if (normalized.startsWith('key:')) {
+      return products.get(normalized) || null;
+    }
+
+    if (normalized.startsWith('id-')) {
+      const id = parseInt(normalized.slice(3), 10);
+      if (Number.isFinite(id)) {
+        return products.get(`id:${id}`) || null;
+      }
+    }
+
+    if (normalized.startsWith('slug-')) {
+      const slug = normalized.slice(5);
+      return Array.from(products.values()).find((entry) => entry.slug === `slug-${slug}`) || null;
+    }
+
+    if (/^\d+$/.test(normalized)) {
+      return products.get(`id:${parseInt(normalized, 10)}`) || null;
+    }
+
+    const fallbackKey = `key:${normalizeProductName(normalized)}`;
+    return products.get(fallbackKey) || null;
+  }
+}
+
+module.exports = ProductReportService;
+

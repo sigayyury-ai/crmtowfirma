@@ -470,7 +470,8 @@ class InvoiceProcessingService {
           price: product.price,
           count: product.quantity || product.count || 1,
           goodId: product.id || product.goodId || null
-        }
+        },
+        fallbackBuyer: contractor
       });
       
       // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
@@ -1861,7 +1862,8 @@ class InvoiceProcessingService {
       issueDate = new Date(),
       currency = 'PLN',
       totalAmount = null,
-      fallbackProduct = null
+      fallbackProduct = null,
+      fallbackBuyer = null
     } = options;
 
     let proforma = null;
@@ -1895,7 +1897,8 @@ class InvoiceProcessingService {
         paymentsTotalPln: 0,
         paymentsCurrencyExchange: null,
         paymentsCount: 0,
-        products: []
+        products: [],
+        buyer: fallbackBuyer || null
       };
     }
 
@@ -1955,7 +1958,8 @@ class InvoiceProcessingService {
       paymentsTotalPln: proforma.paymentsTotalPln ?? proforma.payments_total_pln ?? null,
       paymentsCurrencyExchange: proforma.paymentsCurrencyExchange ?? proforma.payments_currency_exchange ?? null,
       paymentsCount: proforma.paymentsCount ?? proforma.payments_count ?? 0,
-      products: sanitizedProducts
+      products: sanitizedProducts,
+      buyer: proforma.buyer || fallbackBuyer || null
     };
 
     try {

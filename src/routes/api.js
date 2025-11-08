@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const multer = require('multer');
 const router = express.Router();
 const WfirmaClient = require('../services/wfirma');
 const PipedriveClient = require('../services/pipedrive');
@@ -7,7 +8,9 @@ const UserManagementService = require('../services/userManagement');
 const ProductManagementService = require('../services/productManagement');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
 const SchedulerService = require('../services/scheduler');
+const PaymentService = require('../services/payments/paymentService');
 const { WfirmaLookup } = require('../services/vatMargin/wfirmaLookup');
+const ProductReportService = require('../services/vatMargin/productReportService');
 const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
@@ -17,6 +20,9 @@ const userManagement = new UserManagementService();
 const productManagement = new ProductManagementService();
 const invoiceProcessing = new InvoiceProcessingService();
 const scheduler = new SchedulerService();
+const paymentService = new PaymentService();
+const productReportService = new ProductReportService();
+const upload = multer();
 
 /**
  * POST /api/contractors
@@ -748,6 +754,105 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
 });
 
 /**
+ * GET /api/vat-margin/products/summary
+ * Получить сводку по всем продуктам за весь период
+ */
+router.get('/vat-margin/products/summary', async (req, res) => {
+  try {
+    const summary = await productReportService.getProductSummary();
+
+    res.json({
+      success: true,
+      data: summary
+    });
+  } catch (error) {
+    logger.error('Error getting product summary:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get product summary',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/vat-margin/products/:productIdentifier/detail
+ * Получить детальный отчет по конкретному продукту (весь период)
+ */
+router.get('/vat-margin/products/:productIdentifier/detail', async (req, res) => {
+  try {
+    const { productIdentifier } = req.params;
+    const detail = await productReportService.getProductDetail(productIdentifier);
+
+    if (!detail) {
+      return res.status(404).json({
+        success: false,
+        error: 'Product not found',
+        message: 'Продукт не найден или по нему отсутствуют данные'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: detail
+    });
+  } catch (error) {
+    logger.error('Error getting product detail:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get product detail',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/vat-margin/products/:productIdentifier/status
+ * Обновить статус расчета и плановую дату по продукту
+ */
+router.post('/vat-margin/products/:productIdentifier/status', async (req, res) => {
+  try {
+    const { productIdentifier } = req.params;
+    const { status, dueMonth } = req.body || {};
+
+    const allowedStatuses = ['in_progress', 'calculated'];
+    if (status && !allowedStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status value. Allowed values: in_progress, calculated'
+      });
+    }
+
+    if (typeof dueMonth === 'string' && dueMonth.trim().length > 0) {
+      const monthPattern = /^\d{4}-\d{2}$/;
+      if (!monthPattern.test(dueMonth.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid dueMonth format. Expected YYYY-MM'
+        });
+      }
+    }
+
+    const result = await productReportService.updateProductStatus(productIdentifier, {
+      status,
+      dueMonth
+    });
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    logger.error('Error updating product status:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update product status',
+      message: error.message
+    });
+  }
+});
+
+/**
  * GET /api/vat-margin/proformas
  * Получить проформы за указанный период
  */
@@ -788,44 +893,222 @@ router.get('/vat-margin/proformas', async (req, res) => {
   }
 });
 
-/**
- * Temporary stubs for payments matching UI until backend is implemented.
- */
 router.get('/vat-margin/payments', async (_req, res) => {
-  res.json({
-    success: true,
-    data: [],
-    history: []
-  });
+  try {
+    const { payments, history } = await paymentService.listPayments();
+    res.json({
+      success: true,
+      data: payments,
+      history
+    });
+  } catch (error) {
+    logger.error('Error loading payments:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось загрузить платежи',
+      message: error.message
+    });
+  }
 });
 
-router.post('/vat-margin/payments/upload', async (_req, res) => {
-  res.json({
-    success: true,
-    matched: 0,
-    needs_review: 0,
-    message: 'Обработка CSV ещё не реализована'
-  });
+router.get('/vat-margin/payments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await paymentService.getPaymentDetails(id);
+    res.json({
+      success: true,
+      payment: result.payment,
+      candidates: result.candidates
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error getting payment details:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 404 ? 'Платёж не найден' : 'Не удалось получить детали платежа',
+      message: error.message
+    });
+  }
 });
 
-router.post('/vat-margin/payments/apply', async (_req, res) => {
-  res.json({
-    success: true,
-    message: 'Применение сопоставлений будет реализовано позже'
-  });
+router.post('/vat-margin/payments/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({
+        success: false,
+        error: 'Не найден файл CSV'
+      });
+    }
+
+    const uploadedBy = req.session?.user?.email || req.user?.email || null;
+
+    const stats = await paymentService.ingestCsv(req.file.buffer, {
+      filename: req.file.originalname,
+      uploadedBy
+    });
+
+    res.json({
+      success: true,
+      ...stats,
+      message: 'Файл обработан'
+    });
+  } catch (error) {
+    logger.error('Error uploading bank CSV:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось обработать CSV',
+      message: error.message
+    });
+  }
+});
+
+router.post('/vat-margin/payments/:id/assign', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fullnumber, comment } = req.body || {};
+    const user = req.session?.user?.email || req.user?.email || null;
+
+    const result = await paymentService.assignManualMatch(id, fullnumber, {
+      user,
+      comment
+    });
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      candidates: result.candidates,
+      message: 'Платёж привязан к проформе'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error assigning manual match:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 404 ? 'Платёж или проформа не найдены' : 'Не удалось привязать платеж',
+      message: error.message
+    });
+  }
+});
+
+router.post('/vat-margin/payments/:id/unmatch', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment } = req.body || {};
+    const user = req.session?.user?.email || req.user?.email || null;
+
+    const result = await paymentService.clearManualMatch(id, {
+      user,
+      comment
+    });
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      candidates: result.candidates,
+      message: 'Привязка платежа удалена'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error clearing manual match:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 404 ? 'Платёж не найден' : 'Не удалось сбросить привязку',
+      message: error.message
+    });
+  }
+});
+
+router.post('/vat-margin/payments/apply', async (req, res) => {
+  try {
+    const user = req.session?.user?.email || req.user?.email || null;
+    const result = await paymentService.bulkApproveAutoMatches({ user });
+    res.json({
+      success: true,
+      ...result,
+      message: 'Автоматические совпадения подтверждены'
+    });
+  } catch (error) {
+    logger.error('Error applying automatic payment matches:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось подтвердить автоматические совпадения',
+      message: error.message
+    });
+  }
+});
+
+router.post('/vat-margin/payments/:id/approve', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = req.session?.user?.email || req.user?.email || null;
+    const result = await paymentService.approveAutoMatch(id, { user });
+    res.json({
+      success: true,
+      payment: result.payment,
+      candidates: result.candidates,
+      message: 'Платёж подтверждён'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error approving payment match:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 400 ? 'Нет автоматического совпадения для подтверждения' : 'Не удалось подтвердить платеж',
+      message: error.message
+    });
+  }
+});
+
+router.delete('/vat-margin/payments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await paymentService.deletePayment(id);
+    res.json({
+      success: true,
+      message: 'Платёж удалён'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error deleting payment:', error);
+    res.status(status).json({
+      success: false,
+      error: status === 404 ? 'Платёж не найден' : 'Не удалось удалить платеж',
+      message: error.message
+    });
+  }
 });
 
 router.post('/vat-margin/payments/reset', async (_req, res) => {
-  res.json({
-    success: true,
-    message: 'Сброс сопоставлений будет реализован позже'
-  });
+  try {
+    await paymentService.resetMatches();
+    res.json({
+      success: true,
+      message: 'Все сопоставления сброшены'
+    });
+  } catch (error) {
+    logger.error('Error resetting payment matches:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось сбросить сопоставления',
+      message: error.message
+    });
+  }
 });
 
 router.get('/vat-margin/payments/export', async (_req, res) => {
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="payments-export.csv"');
-  res.send('date,description,amount,currency,payer,matched_proforma,status\n');
+  try {
+    const csv = await paymentService.exportCsv();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="payments-export.csv"');
+    res.send(csv);
+  } catch (error) {
+    logger.error('Error exporting payments CSV:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось сформировать CSV',
+      message: error.message
+    });
+  }
 });
 
 module.exports = router;

@@ -22,6 +22,7 @@
         <div class="tab-container">
             <div class="tab-header">
                 <button class="tab-button active" data-tab="report">📊 Отчёт</button>
+                <button class="tab-button" data-tab="products">🛍 Продукты</button>
                 <button class="tab-button" data-tab="payments">💳 Платежи</button>
             </div>
 
@@ -69,6 +70,24 @@
                 </section>
             </div>
 
+            <div class="tab-content" id="tab-products">
+                <section class="product-report-section">
+                    <div class="section-header">
+                        <div class="section-title">
+                            <h2>🛍 Отчёт по продуктам</h2>
+                            <p class="section-subtitle">Следим за прогрессом расчётов и датами завершения по каждому продукту</p>
+                        </div>
+                        <div class="controls">
+                            <button id="refresh-products" class="btn btn-primary">🔄 Обновить</button>
+                        </div>
+                    </div>
+
+                    <div id="product-summary-table" class="product-summary-table">
+                        <div class="placeholder">Нажмите «Обновить», чтобы загрузить список продуктов.</div>
+                    </div>
+                </section>
+            </div>
+
             <div class="tab-content" id="tab-payments">
                 <section class="payments-section">
                     <div class="section-header">
@@ -78,8 +97,7 @@
                                 <input type="file" id="bank-csv-input" accept=".csv" hidden>
                                 📤 Загрузить CSV
                             </label>
-                            <button id="refresh-payments" class="btn btn-primary">🔄 Обновить</button>
-                            <button id="apply-matches" class="btn btn-success">✔️ Применить</button>
+                            <button id="bulk-approve-matches" class="btn btn-success">✅ Подтвердить авто-совпадения</button>
                             <button id="reset-matches" class="btn btn-danger">❌ Сбросить</button>
                             <button id="export-payments" class="btn btn-secondary">⬇️ Экспорт CSV</button>
                         </div>

@@ -148,7 +148,8 @@ async function migrate() {
         totalAmount: typeof proforma.total === 'number' ? proforma.total : parseFloat(proforma.total) || 0,
         fallbackProduct: (proforma.products && proforma.products.length > 0)
           ? proforma.products[0]
-          : null
+          : null,
+        fallbackBuyer: proforma.buyer || null
       });
       processed += 1;
       if (processed % 25 === 0) {

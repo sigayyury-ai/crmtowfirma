@@ -1,5 +1,6 @@
 const supabase = require('./supabaseClient');
 const logger = require('../utils/logger');
+const { normalizeName } = require('../utils/normalize');
 
 function normalizeWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim();
@@ -28,6 +29,17 @@ class ProformaRepository {
       .replace(/[^\p{L}\p{N}\s\.\-_/]/gu, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  normalizeContactName(name) {
+    return normalizeName(name);
+  }
+
+  truncate(value, max = 255) {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    return value.length > max ? value.slice(0, max) : value;
   }
 
   toNumber(value) {
@@ -122,6 +134,19 @@ class ProformaRepository {
       ? proforma.payments.length
       : this.toNumber(proforma.paymentsCount) ?? 0;
 
+    const buyer = proforma.buyer || {};
+    const buyerNameRaw = buyer.name || buyer.altName || null;
+    const buyerName = buyerNameRaw ? normalizeWhitespace(String(buyerNameRaw)).slice(0, 255) : null;
+    const buyerAltName = buyer.altName ? normalizeWhitespace(String(buyer.altName)).slice(0, 255) : null;
+    const buyerNormalizedName = this.normalizeContactName(buyerNameRaw || buyerAltName);
+    const buyerEmail = buyer.email ? this.truncate(buyer.email.trim(), 255) : null;
+    const buyerPhone = buyer.phone ? this.truncate(buyer.phone.trim(), 255) : null;
+    const buyerStreet = buyer.street ? this.truncate(buyer.street.trim(), 255) : null;
+    const buyerZip = buyer.zip ? this.truncate(buyer.zip.trim(), 64) : null;
+    const buyerCity = buyer.city ? this.truncate(buyer.city.trim(), 255) : null;
+    const buyerCountry = buyer.country ? this.truncate(buyer.country.trim(), 255) : null;
+    const buyerTaxId = buyer.taxId ? this.truncate(buyer.taxId.trim(), 64) : null;
+
     const fullnumber = proforma.fullnumber
       ? normalizeWhitespace(String(proforma.fullnumber)).slice(0, 255)
       : proforma.number
@@ -136,7 +161,17 @@ class ProformaRepository {
       total,
       currency_exchange: currencyExchange,
       payments_total: paymentsTotal,
-      payments_count: paymentsCount
+      payments_count: paymentsCount,
+      buyer_name: buyerName,
+      buyer_alt_name: buyerAltName,
+      buyer_normalized_name: buyerNormalizedName,
+      buyer_email: buyerEmail,
+      buyer_phone: buyerPhone,
+      buyer_street: buyerStreet,
+      buyer_zip: buyerZip,
+      buyer_city: buyerCity,
+      buyer_country: buyerCountry,
+      buyer_tax_id: buyerTaxId
     });
 
     const { error: upsertError } = await this.supabase
@@ -218,6 +253,58 @@ class ProformaRepository {
     }
 
     logger.info(`Proforma ${proformaId} persisted to Supabase with ${rows.length} product rows.`);
+  }
+
+  async findByFullnumbers(fullnumbers = []) {
+    if (!this.isEnabled()) {
+      return [];
+    }
+
+    const sanitized = Array.from(new Set(
+      fullnumbers
+        .filter(Boolean)
+        .map((value) => normalizeWhitespace(String(value)).toUpperCase())
+    ));
+
+    if (!sanitized.length) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('proformas')
+      .select('id, fullnumber, currency, total, payments_total, buyer_name, buyer_normalized_name')
+      .in('fullnumber', sanitized);
+
+    if (error) {
+      logger.error('Supabase error while fetching proformas by fullnumber:', error);
+      throw error;
+    }
+
+    return data || [];
+  }
+
+  async findByBuyerNames(normalizedNames = []) {
+    if (!this.isEnabled()) {
+      return [];
+    }
+
+    const sanitized = Array.from(new Set(normalizedNames.filter(Boolean)));
+
+    if (!sanitized.length) {
+      return [];
+    }
+
+    const { data, error } = await this.supabase
+      .from('proformas')
+      .select('id, fullnumber, currency, total, payments_total, buyer_name, buyer_normalized_name')
+      .in('buyer_normalized_name', sanitized);
+
+    if (error) {
+      logger.error('Supabase error while fetching proformas by buyer names:', error);
+      throw error;
+    }
+
+    return data || [];
   }
 }
 
