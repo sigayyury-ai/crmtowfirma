@@ -137,6 +137,24 @@ node scripts/backfillInvoiceNumbers.js --limit=100 --offset=0
 
 Для запуска необходимы переменные `PIPEDRIVE_API_TOKEN`, а также `SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY`.
 
+### Backfill связей проформа ↔ сделка
+
+Скрипт `scripts/backfillProformaDealIds.js` зеркалит номер сделки (`pipedrive_deal_id`) в таблицу `proformas` по совпадающему номеру проформы:
+
+```bash
+# Сначала убедитесь, что в CRM заполнены Invoice number
+# Затем запустите зеркалирование для проверки
+node scripts/backfillProformaDealIds.js --dry-run --limit=200
+
+# Обновить конкретную проформу по номеру
+node scripts/backfillProformaDealIds.js --invoice="CO-PROF 136/2025"
+
+# Полный прогон (батчами по 500 сделок)
+node scripts/backfillProformaDealIds.js --limit=500 --start=0
+```
+
+Скрипт читает кастомное поле Pipedrive напрямую, поэтому достаточно стандартных переменных `PIPEDRIVE_API_TOKEN`, `SUPABASE_URL` и `SUPABASE_SERVICE_ROLE_KEY`.
+
 ## API Endpoints
 
 - `GET /api/status` - Статус системы
