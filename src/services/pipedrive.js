@@ -254,28 +254,22 @@ class PipedriveClient {
    * @param {Object} taskData - Данные задачи
    * @param {number} taskData.deal_id - ID сделки
    * @param {string} taskData.subject - Название задачи
-   * @param {string} taskData.note - Описание задачи (опционально)
    * @param {string} taskData.due_date - Срок выполнения (YYYY-MM-DD)
-   * @param {string} taskData.type - Тип задачи (опционально, по умолчанию 'task')
-   * @param {number} taskData.assigned_to_user_id - ID пользователя, ответственного за задачу (опционально)
+   * @param {string} [taskData.note] - Описание задачи
+   * @param {string} [taskData.type] - Тип задачи (по умолчанию 'task')
+   * @param {number} [taskData.assigned_to_user_id] - Ответственный пользователь
    * @returns {Promise<Object>} - Результат создания задачи
    */
-  async createTask(taskData) {
+  async createTask(taskData = {}) {
     try {
       logger.info('Creating task in Pipedrive:', {
         dealId: taskData.deal_id,
         subject: taskData.subject,
         dueDate: taskData.due_date,
-        hasApiToken: !!this.apiToken,
-        apiTokenLength: this.apiToken?.length || 0
+        type: taskData.type,
+        assignedUser: taskData.assigned_to_user_id
       });
-      
-      // Параметры для query string (api_token)
-      const queryParams = {
-        api_token: this.apiToken
-      };
 
-      // Данные задачи в теле запроса
       const bodyData = {
         deal_id: taskData.deal_id,
         subject: taskData.subject,
@@ -291,10 +285,8 @@ class PipedriveClient {
         bodyData.assigned_to_user_id = taskData.assigned_to_user_id;
       }
 
-      // Pipedrive API использует POST /activities для создания задач
-      // api_token в query string, остальные данные в теле запроса
       const response = await this.client.post('/activities', bodyData, {
-        params: queryParams
+        params: { api_token: this.apiToken }
       });
 
       if (response.data.success) {
@@ -307,8 +299,9 @@ class PipedriveClient {
 
       throw new Error('Failed to create task');
     } catch (error) {
-      logger.error('Error creating task:', {
+      logger.error('Error creating task in Pipedrive:', {
         dealId: taskData.deal_id,
+        subject: taskData.subject,
         error: error.message,
         details: error.response?.data || null
       });

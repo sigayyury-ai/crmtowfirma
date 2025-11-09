@@ -9,13 +9,22 @@ class WfirmaClient {
     this.secretKey = process.env.WFIRMA_SECRET_KEY?.trim();
     
     // Company ID - обязательный параметр для всех запросов
-    this.companyId = '885512';
+    this.companyId = process.env.WFIRMA_COMPANY_ID?.trim();
     
     if (!this.appKey || !this.accessKey || !this.secretKey) {
       throw new Error('WFIRMA_APP_KEY, WFIRMA_ACCESS_KEY and WFIRMA_SECRET_KEY must be set in environment variables');
     }
+
+    if (!this.companyId) {
+      throw new Error('WFIRMA_COMPANY_ID must be set in environment variables');
+    }
     
     this.baseURL = process.env.WFIRMA_BASE_URL || 'https://api2.wfirma.pl';
+
+    // Optional OAuth credentials for future use
+    this.refreshToken = process.env.WFIRMA_REFRESH_TOKEN?.trim();
+    this.clientId = process.env.WFIRMA_CLIENT_ID?.trim();
+    this.clientSecret = process.env.WFIRMA_CLIENT_SECRET?.trim();
     
     // Создаем axios клиент для API Key
     this.client = axios.create({
@@ -76,9 +85,10 @@ class WfirmaClient {
       return {
         success: true,
         message: 'API Key configured',
-        app_key: this.appKey.substring(0, 10) + '...',
-        access_key: this.accessKey.substring(0, 10) + '...',
-        secret_key: this.secretKey.substring(0, 10) + '...'
+        app_key: this.appKey ? this.appKey.substring(0, 10) + '...' : undefined,
+        access_key: this.accessKey ? this.accessKey.substring(0, 10) + '...' : undefined,
+        secret_key: this.secretKey ? this.secretKey.substring(0, 10) + '...' : undefined,
+        company_id: this.companyId
       };
     } catch (error) {
       logger.error('Error checking connection:', error);
@@ -95,7 +105,7 @@ class WfirmaClient {
    */
   async refreshAccessToken() {
     try {
-      if (!this.refreshToken) {
+      if (!this.refreshToken || !this.clientId || !this.clientSecret) {
         throw new Error('No refresh token available');
       }
 
