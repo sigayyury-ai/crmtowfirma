@@ -3,6 +3,8 @@ const API_BASE = '/api';
 let elements = {};
 let paymentsLoaded = false;
 let productsLoaded = false;
+let paymentReportLoaded = false;
+let activeTab = 'report2';
 
 const paymentsState = {
   items: [],
@@ -18,10 +20,29 @@ const productStatusLabels = {
   calculated: 'Рассчитан'
 };
 
+const paymentReportState = {
+  groups: [],
+  summary: null,
+  filters: null,
+  includeAllStatuses: false
+};
+
+function saveSelectedPeriod() {
+  if (!elements.monthSelect || !elements.yearSelect) return;
+  const monthValue = elements.monthSelect.value;
+  const yearValue = elements.yearSelect.value;
+  if (monthValue) {
+    window.localStorage.setItem('vatMargin.month', monthValue);
+  }
+  if (yearValue) {
+    window.localStorage.setItem('vatMargin.year', yearValue);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   cacheDom();
 
-  if (!elements.vatMarginContainer || !elements.logsContainer) {
+  if (!elements.paymentReportContainer || !elements.logsContainer) {
     console.error('VAT Margin UI: missing core DOM nodes', elements);
     return;
   }
@@ -52,7 +73,11 @@ function cacheDom() {
     resetMatches: document.getElementById('reset-matches'),
     exportPayments: document.getElementById('export-payments'),
     uploadsHistory: document.querySelector('[data-history="list"]'),
-    paymentsTable: document.getElementById('payments-table')
+    paymentsTable: document.getElementById('payments-table'),
+    paymentReportContainer: document.getElementById('payment-report-container'),
+    paymentReportSummary: document.getElementById('payment-report-summary'),
+    togglePaymentStatus: document.getElementById('toggle-payment-status'),
+    exportPaymentReport: document.getElementById('export-payment-report')
   };
 }
 
@@ -67,6 +92,11 @@ function bindEvents() {
   elements.refreshProducts?.addEventListener('click', () => {
     loadProductSummary();
   });
+  elements.togglePaymentStatus?.addEventListener('change', (event) => {
+    paymentReportState.includeAllStatuses = !!event.target.checked;
+    loadPaymentReportData();
+  });
+  elements.exportPaymentReport?.addEventListener('click', exportPaymentReportCsv);
   elements.bulkApproveMatches?.addEventListener('click', bulkApproveMatches);
   elements.resetMatches?.addEventListener('click', resetPaymentMatches);
   elements.exportPayments?.addEventListener('click', exportPaymentsCsv);
@@ -74,21 +104,38 @@ function bindEvents() {
   elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
 
   [elements.monthSelect, elements.yearSelect].forEach((select) => {
-    select?.addEventListener('change', () => loadVatMarginData({ silent: true }));
+    select?.addEventListener('change', () => {
+      saveSelectedPeriod();
+
+      if (activeTab === 'report2') {
+        loadPaymentReportData({ silent: true });
+      }
+    });
   });
 }
 
 function initTabs() {
-  switchTab('report');
+  switchTab('report2');
 }
 
 function switchTab(tabName) {
+  activeTab = tabName;
   elements.tabButtons.forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
   elements.tabContents.forEach((content) => {
     content.classList.toggle('active', content.id === `tab-${tabName}`);
   });
+
+  if (tabName === 'report2') {
+    if (!paymentReportLoaded) {
+      loadPaymentReportData();
+    } else {
+      renderPaymentReportSummary(paymentReportState.summary);
+      renderPaymentReport(paymentReportState.groups);
+    }
+    return;
+  }
 
   if (tabName === 'products') {
     if (!productsLoaded) {
@@ -110,9 +157,11 @@ function initMonthYearSelectors() {
   if (!elements.monthSelect || !elements.yearSelect) return;
 
   const today = new Date();
-  const currentMonth = String(today.getMonth() + 1);
+  const storedMonth = window.localStorage.getItem('vatMargin.month');
+  const storedYear = window.localStorage.getItem('vatMargin.year');
+  const currentMonth = storedMonth || String(today.getMonth() + 1);
   const boundedYear = Math.min(2030, Math.max(2025, today.getFullYear()));
-  const currentYear = String(boundedYear);
+  const currentYear = storedYear || String(boundedYear);
 
   if (!elements.monthSelect.value) {
     elements.monthSelect.value = currentMonth;
@@ -121,6 +170,8 @@ function initMonthYearSelectors() {
   if (!elements.yearSelect.value) {
     elements.yearSelect.value = currentYear;
   }
+
+  saveSelectedPeriod();
 }
 
 function getSelectedPeriod() {
@@ -158,6 +209,7 @@ async function loadVatMarginData({ silent = false } = {}) {
 
   try {
     const { month, year } = getSelectedPeriod();
+    saveSelectedPeriod();
 
     if (!silent) {
       setButtonLoading(elements.loadVatMargin, true, 'Загрузка...');
@@ -280,7 +332,15 @@ function renderVatMarginTable(data) {
       paidPln,
       status,
       dealId: item.pipedrive_deal_id || null,
-      dealUrl: item.pipedrive_deal_url || null
+      dealUrl: item.pipedrive_deal_url || null,
+      buyerName: item.buyer_name || item.buyer_alt_name || null,
+      buyerAltName: item.buyer_alt_name || null,
+      buyerEmail: item.buyer_email || null,
+      buyerPhone: item.buyer_phone || null,
+      buyerStreet: item.buyer_street || null,
+      buyerZip: item.buyer_zip || null,
+      buyerCity: item.buyer_city || null,
+      buyerCountry: item.buyer_country || null
     });
 
     group.totals.count += 1;
@@ -315,6 +375,27 @@ function renderVatMarginTable(data) {
           const dealLinkHtml = row.dealUrl && dealId
             ? `<div class="deal-link-wrapper"><a class="deal-link" href="${row.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
             : '';
+          const buyerPrimary = row.buyerName || row.buyerAltName || null;
+          const buyerMetaParts = [];
+          if (row.buyerCity || row.buyerCountry) {
+            const locationParts = [row.buyerCity, row.buyerCountry].filter(Boolean);
+            if (locationParts.length) {
+              buyerMetaParts.push(locationParts.join(', '));
+            }
+          }
+          if (row.buyerStreet) {
+            buyerMetaParts.push(row.buyerStreet);
+          }
+          const contactParts = [row.buyerEmail, row.buyerPhone].filter(Boolean);
+          if (contactParts.length) {
+            buyerMetaParts.push(contactParts.join(' • '));
+          }
+          const buyerCellHtml = buyerPrimary
+            ? `
+              <div class="buyer-name">${escapeHtml(buyerPrimary)}</div>
+              ${buyerMetaParts.length ? `<div class="buyer-meta">${escapeHtml(buyerMetaParts.join(' | '))}</div>` : ''}
+            `
+            : '—';
 
           return `
           <tr>
@@ -323,6 +404,7 @@ function renderVatMarginTable(data) {
               ${dealLinkHtml}
             </td>
             <td>${formatDate(row.date)}</td>
+            <td class="buyer-cell">${buyerCellHtml}</td>
             <td class="amount">${formatCurrency(row.lineTotal, row.currency)}</td>
             <td class="amount">${row.exchangeRate ? row.exchangeRate.toFixed(4) : '—'}</td>
             <td class="amount">${row.totalPlnValue !== null ? formatCurrency(row.totalPlnValue, 'PLN') : '—'}</td>
@@ -349,6 +431,7 @@ function renderVatMarginTable(data) {
               <tr>
                 <th>Проформа</th>
                 <th>Дата</th>
+                <th>Клиент</th>
                 <th>Сумма</th>
                 <th>Курс</th>
                 <th>Всего в PLN</th>
@@ -589,11 +672,239 @@ function formatDate(value) {
   return date.toLocaleDateString('ru-RU');
 }
 
+function formatPaymentCount(count) {
+  if (!Number.isFinite(count) || count <= 0) return '';
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) {
+    return `${count} платеж`;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) {
+    return `${count} платежа`;
+  }
+  return `${count} платежей`;
+}
+
 async function exportReportCsv() {
   const { month, year } = getSelectedPeriod();
   const url = `${API_BASE}/vat-margin/export?${new URLSearchParams({ month, year }).toString()}`;
   window.open(url, '_blank');
   addLog('info', 'Экспорт отчёта запрошен');
+}
+
+async function loadPaymentReportData({ silent = false } = {}) {
+  if (!elements.paymentReportContainer) return;
+
+  try {
+    const { month, year } = getSelectedPeriod();
+    saveSelectedPeriod();
+    const params = new URLSearchParams();
+    if (Number.isFinite(month)) params.set('month', month);
+    if (Number.isFinite(year)) params.set('year', year);
+    if (paymentReportState.includeAllStatuses) {
+      params.set('status', 'all');
+    }
+
+    if (!silent && elements.loadPaymentReport) {
+      setButtonLoading(elements.loadPaymentReport, true, 'Загрузка...');
+    }
+
+    addLog('info', `Запрашиваю платежный отчёт за ${month}.${year}`);
+    const result = await apiCall(`/vat-margin/payment-report?${params.toString()}`);
+
+    if (!result?.success) {
+      throw new Error(result?.error || 'Ошибка загрузки отчёта');
+    }
+
+    paymentReportState.groups = Array.isArray(result.data) ? result.data : [];
+    paymentReportState.summary = result.summary || null;
+    paymentReportState.filters = result.filters || null;
+    paymentReportLoaded = true;
+
+    renderPaymentReportSummary(paymentReportState.summary);
+    renderPaymentReport(paymentReportState.groups);
+
+    const paymentsCount = paymentReportState.summary?.payments_count
+      ?? paymentReportState.groups.reduce(
+        (acc, group) => acc + (group?.totals?.payments_count || 0),
+        0
+      );
+    addLog('success', `Получено платежей: ${paymentsCount}`);
+  } catch (error) {
+    console.error('Payment report fetch error:', error);
+    addLog('error', `Ошибка загрузки платежного отчёта: ${error.message}`);
+    if (elements.paymentReportContainer) {
+      elements.paymentReportContainer.innerHTML = `<div class="placeholder">Не удалось получить данные. ${escapeHtml(error.message)}</div>`;
+    }
+    if (elements.paymentReportSummary) {
+      elements.paymentReportSummary.innerHTML = '';
+    }
+  } finally {
+    if (!silent && elements.loadPaymentReport) {
+      setButtonLoading(elements.loadPaymentReport, false, '🔄 Обновить');
+    }
+  }
+}
+
+function renderPaymentReportSummary(summary) {
+  if (!elements.paymentReportSummary) return;
+  if (!summary) {
+    elements.paymentReportSummary.innerHTML = '';
+    return;
+  }
+
+  const cardsHtml = `
+    <div class="summary-card">
+      <span class="summary-label">Платежей</span>
+      <span class="summary-value">${(summary.payments_count || 0).toLocaleString('ru-RU')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Продуктов</span>
+      <span class="summary-value">${(summary.products_count || 0).toLocaleString('ru-RU')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Всего (PLN)</span>
+      <span class="summary-value">${formatCurrency(summary.total_pln || 0, 'PLN')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Без привязки</span>
+      <span class="summary-value">${(summary.unmatched_count || 0).toLocaleString('ru-RU')}</span>
+    </div>
+  `;
+
+  elements.paymentReportSummary.innerHTML = cardsHtml;
+}
+
+function renderPaymentReport(groups) {
+  if (!elements.paymentReportContainer) return;
+  if (!Array.isArray(groups) || groups.length === 0) {
+    elements.paymentReportContainer.innerHTML = '<div class="placeholder">Нет данных за выбранный период</div>';
+    return;
+  }
+
+  const html = groups.map((group) => {
+    const currencyTotals = Object.entries(group.totals?.currency_totals || {})
+      .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
+      .map(([cur, amount]) => formatCurrency(amount, cur))
+      .join(' + ') || '—';
+
+    const plnTotal = formatCurrency(group.totals?.pln_total || 0, 'PLN');
+    const proformaCount = group.totals?.proforma_count || 0;
+    const paymentsCount = group.totals?.payments_count || 0;
+
+    const rows = (group.entries || []).map((entry) => {
+      const paymentCount = entry.totals?.payment_count || 0;
+      const entryCurrencyTotals = Object.entries(entry.totals?.currency_totals || {})
+        .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
+        .map(([cur, amount]) => formatCurrency(amount, cur))
+        .join(' + ') || '—';
+      const entryPlnTotal = formatCurrency(entry.totals?.pln_total || 0, 'PLN');
+
+      const proforma = entry.proforma || null;
+      const buyer = proforma?.buyer?.name || proforma?.buyer?.alt_name || '—';
+      const buyerMetaParts = [];
+      if (proforma?.buyer?.city) {
+        buyerMetaParts.push(proforma.buyer.city);
+      }
+      if (proforma?.buyer?.country) {
+        buyerMetaParts.push(proforma.buyer.country);
+      }
+      const buyerMeta = buyerMetaParts.length ? ` (${buyerMetaParts.join(', ')})` : '';
+
+      const proformaLabel = proforma?.fullnumber
+        ? escapeHtml(proforma.fullnumber)
+        : '—';
+      const buyerLine = buyer && buyer !== '—'
+        ? `<div class="buyer-meta">${escapeHtml(buyer)}${escapeHtml(buyerMeta)}</div>`
+        : '';
+
+      const dealLink = proforma?.pipedrive_deal_url && proforma?.pipedrive_deal_id
+        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${proforma.pipedrive_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a></div>`
+        : '';
+
+      const proformaCell = proforma
+        ? `
+          <div class="proforma-info">
+            <div>${proformaLabel}</div>
+            ${buyerLine}
+            ${dealLink}
+          </div>
+        `
+        : '—';
+
+      const firstDate = entry.first_payment_date ? formatDate(entry.first_payment_date) : null;
+      const lastDate = entry.last_payment_date ? formatDate(entry.last_payment_date) : null;
+      let dateLabel = firstDate || '—';
+      if (firstDate && lastDate && firstDate !== lastDate) {
+        dateLabel = `${firstDate} → ${lastDate}`;
+      }
+
+      const payerLabel = entry.payer_names && entry.payer_names.length > 0
+        ? escapeHtml(entry.payer_names.join(', '))
+        : '—';
+
+      const paymentCountLabel = formatPaymentCount(paymentCount);
+      const paymentsBadge = paymentCount > 1 ? `<div class="payments-count-badge">${paymentCountLabel}</div>` : '';
+
+      return `
+        <tr>
+          <td>
+            <div>${dateLabel}</div>
+            ${paymentsBadge}
+          </td>
+          <td>${payerLabel}</td>
+          <td class="amount">${entryCurrencyTotals}</td>
+          <td class="amount">${entryPlnTotal}</td>
+          <td>${proformaCell}</td>
+          <td>
+            <span class="status ${entry.status?.className || 'auto'}">${escapeHtml(entry.status?.label || '—')}</span>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="product-group">
+        <div class="product-group-header">
+          <div class="product-title">
+            <div class="product-name">${escapeHtml(group.name || 'Без названия')}</div>
+            <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${paymentsCount.toLocaleString('ru-RU')} платеж(ей)</div>
+          </div>
+          <div class="product-summary">
+            <span>${plnTotal}</span>
+            <span class="currency-breakdown">${currencyTotals}</span>
+          </div>
+        </div>
+        <table class="payments-table group-table">
+          <thead>
+            <tr>
+              <th>Дата</th>
+              <th>Плательщик</th>
+              <th>Сумма</th>
+              <th>Сумма (PLN)</th>
+              <th>Проформа</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  elements.paymentReportContainer.innerHTML = html;
+}
+
+function exportPaymentReportCsv() {
+  const { month, year } = getSelectedPeriod();
+  const params = new URLSearchParams();
+  if (Number.isFinite(month)) params.set('month', month);
+  if (Number.isFinite(year)) params.set('year', year);
+  if (paymentReportState.includeAllStatuses) {
+    params.set('status', 'all');
+  }
+  window.open(`${API_BASE}/vat-margin/payment-report/export?${params.toString()}`, '_blank');
+  addLog('info', 'Экспорт платежного отчёта запрошен');
 }
 
 async function loadPaymentsData({ silent = false } = {}) {
@@ -1336,5 +1647,9 @@ function applyInitialHashSelection() {
   const hash = window.location.hash?.replace('#', '').trim();
   if (hash === 'tab-products') {
     switchTab('products');
+    return;
+  }
+  if (hash === 'tab-deleted') {
+    switchTab('deleted');
   }
 }

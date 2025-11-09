@@ -1129,16 +1129,23 @@ class WfirmaClient {
     try {
       logger.info('Deleting invoice in wFirma', { invoiceId });
 
-      const response = await this.client.post(
-        `/invoices/delete/${invoiceId}`,
-        null,
-        {
-          params: {
-            outputFormat: 'json'
-          }
-        }
-      );
+      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>\n<api>\n  <invoices>\n    <invoice>\n      <id>${invoiceId}</id>\n    </invoice>\n  </invoices>\n</api>`;
 
+      const endpoint = `/invoices/delete/${invoiceId}?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
+
+      const xmlClient = axios.create({
+        baseURL: this.baseURL,
+        headers: {
+          'Content-Type': 'application/xml',
+          Accept: 'application/xml',
+          accessKey: this.accessKey,
+          secretKey: this.secretKey,
+          appKey: this.appKey
+        },
+        timeout: 15000
+      });
+
+      const response = await xmlClient.post(endpoint, xmlPayload);
       const { data } = response;
 
       if (!data) {
@@ -1151,25 +1158,62 @@ class WfirmaClient {
           return { success: true };
         }
 
+        if (data.includes('<code>NOT FOUND</code>') || data.includes('<code>INPUT ERROR</code>')) {
+          const messageMatch = data.match(/<message>([\s\S]*?)<\/message>/);
+          const message = messageMatch ? messageMatch[1].trim() : 'Invoice already removed or invalid ID';
+
+          logger.warn('Invoice not present in wFirma during deletion', {
+            invoiceId,
+            message
+          });
+
+          return { success: true, notFound: true, message };
+        }
+
         if (data.includes('<code>ERROR</code>')) {
-          const errorMatch = data.match(/<message>(.*?)<\/message>/);
-          const message = errorMatch ? errorMatch[1] : 'Unknown wFirma error';
+          const messageMatch = data.match(/<message>([\s\S]*?)<\/message>/);
+          const message = messageMatch ? messageMatch[1].trim() : 'Unknown wFirma error';
+          logger.error('wFirma returned error while deleting invoice', { invoiceId, message });
           return { success: false, error: message };
         }
 
+        logger.warn('Unexpected XML response when deleting invoice', { invoiceId, response: data });
         return { success: false, error: 'Unexpected response format from wFirma API', details: data };
       }
 
-      if (
-        data.success === true
-        || data.status?.code === 'OK'
-        || data.status?.success === true
-      ) {
-        return { success: true };
+      if (typeof data === 'object') {
+        const statusCode = data.status?.code || data.code || data.status;
+        const statusMessage = data.status?.message || data.message || null;
+        logger.debug('Parsed wFirma delete response', {
+          invoiceId,
+          statusCode,
+          statusMessage,
+          raw: data
+        });
+        if (statusCode === 'OK' || data.success === true) {
+          return { success: true };
+        }
+
+        if (statusCode === 'NOT FOUND' || statusCode === 'INPUT ERROR') {
+          logger.warn('Invoice not present in wFirma during deletion', {
+            invoiceId,
+            statusCode,
+            statusMessage
+          });
+          return { success: true, notFound: true, message: statusMessage || 'Invoice already removed or invalid ID' };
+        }
+
+        if (statusCode === 'ERROR') {
+          const message = statusMessage || data.error || 'Failed to delete invoice in wFirma';
+          logger.error('wFirma returned error while deleting invoice', { invoiceId, statusCode, message });
+          return { success: false, error: message, details: data };
+        }
+
+        logger.warn('Unexpected JSON response when deleting invoice', { invoiceId, response: data });
+        return { success: false, error: 'Unexpected response format from wFirma API', details: data };
       }
 
-      const message = data.status?.message || data.error || 'Failed to delete invoice in wFirma';
-      return { success: false, error: message, details: data };
+      return { success: false, error: 'Unsupported response format from wFirma API' };
     } catch (error) {
       if (error.response?.status === 404) {
         logger.warn('Invoice not found in wFirma during deletion', {

@@ -182,12 +182,22 @@ class WfirmaLookup {
           payments_total,
           payments_total_pln,
           payments_currency_exchange,
-          pipedrive_deal_id
+          pipedrive_deal_id,
+          buyer_name,
+          buyer_alt_name,
+          buyer_email,
+          buyer_phone,
+          buyer_street,
+          buyer_zip,
+          buyer_city,
+          buyer_country,
+          status
         ),
         products ( id, name, normalized_name )
       `)
       .gte('proformas.issued_at', dateFromStr)
       .lte('proformas.issued_at', dateToStr)
+      .eq('proformas.status', 'active')
       .order('proforma_id', { ascending: true });
 
     if (error) {
@@ -262,7 +272,15 @@ class WfirmaLookup {
         payments_total: Number.isFinite(paymentsTotal) ? paymentsTotal : 0,
         payments_currency_exchange: paymentsExchange,
         pipedrive_deal_id: dealId || null,
-        pipedrive_deal_url: dealUrl
+        pipedrive_deal_url: dealUrl,
+        buyer_name: proforma.buyer_name || proforma.buyer_alt_name || null,
+        buyer_alt_name: proforma.buyer_alt_name || null,
+        buyer_email: proforma.buyer_email || null,
+        buyer_phone: proforma.buyer_phone || null,
+        buyer_street: proforma.buyer_street || null,
+        buyer_zip: proforma.buyer_zip || null,
+        buyer_city: proforma.buyer_city || null,
+        buyer_country: proforma.buyer_country || null
       });
     }
 

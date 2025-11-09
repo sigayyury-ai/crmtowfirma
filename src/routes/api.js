@@ -11,6 +11,7 @@ const SchedulerService = require('../services/scheduler');
 const PaymentService = require('../services/payments/paymentService');
 const { WfirmaLookup } = require('../services/vatMargin/wfirmaLookup');
 const ProductReportService = require('../services/vatMargin/productReportService');
+const DeletedProformaReportService = require('../services/deletedProformaReportService');
 const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
@@ -22,6 +23,9 @@ const invoiceProcessing = new InvoiceProcessingService();
 const scheduler = new SchedulerService();
 const paymentService = new PaymentService();
 const productReportService = new ProductReportService();
+const PaymentRevenueReportService = require('../services/vatMargin/paymentRevenueReportService');
+const paymentRevenueReportService = new PaymentRevenueReportService();
+const deletedProformaReportService = new DeletedProformaReportService();
 const upload = multer();
 
 /**
@@ -422,13 +426,28 @@ router.post('/invoice-processing/deal/:id', async (req, res) => {
  */
 router.get('/invoice-processing/pending', async (req, res) => {
   try {
-    const result = await invoiceProcessing.getPendingInvoiceDeals();
-    
-    if (result.success) {
-      res.json(result);
-    } else {
-      res.status(500).json(result);
+    const creationResult = await invoiceProcessing.getPendingInvoiceDeals();
+    if (!creationResult.success) {
+      return res.status(500).json(creationResult);
     }
+
+    const deletionResult = await invoiceProcessing.getDealsMarkedForDeletion();
+    if (!deletionResult.success) {
+      return res.status(500).json(deletionResult);
+    }
+
+    const creationDeals = creationResult.deals || [];
+    const deletionDeals = Array.isArray(deletionResult.deals) ? deletionResult.deals : [];
+
+    res.json({
+      success: true,
+      creationDeals,
+      deletionDeals,
+      stats: {
+        creationCount: creationDeals.length,
+        deletionCount: deletionDeals.length
+      }
+    });
   } catch (error) {
     logger.error('Error getting pending deals:', error);
     res.status(500).json({
@@ -901,6 +920,72 @@ router.get('/vat-margin/proformas', async (req, res) => {
   }
 });
 
+router.get('/vat-margin/payment-report', async (req, res) => {
+  try {
+    const {
+      dateFrom,
+      dateTo,
+      month,
+      year,
+      status = 'approved'
+    } = req.query;
+
+    const report = await paymentRevenueReportService.getReport({
+      dateFrom,
+      dateTo,
+      month: month ? parseInt(month, 10) : undefined,
+      year: year ? parseInt(year, 10) : undefined,
+      status
+    });
+
+    res.json({
+      success: true,
+      data: report.products,
+      summary: report.summary,
+      filters: report.filters
+    });
+  } catch (error) {
+    logger.error('Error building payment revenue report:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось сформировать отчёт по платежам',
+      message: error.message
+    });
+  }
+});
+
+router.get('/vat-margin/payment-report/export', async (req, res) => {
+  try {
+    const {
+      dateFrom,
+      dateTo,
+      month,
+      year,
+      status = 'approved'
+    } = req.query;
+
+    const csv = await paymentRevenueReportService.exportCsv({
+      dateFrom,
+      dateTo,
+      month: month ? parseInt(month, 10) : undefined,
+      year: year ? parseInt(year, 10) : undefined,
+      status
+    });
+
+    const now = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="payment-report-${now}.csv"`);
+    res.status(200).send(csv);
+  } catch (error) {
+    logger.error('Error exporting payment revenue report:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось экспортировать отчёт по платежам',
+      message: error.message
+    });
+  }
+});
+
 router.get('/vat-margin/payments', async (_req, res) => {
   try {
     const { payments, history } = await paymentService.listPayments();
@@ -1114,6 +1199,61 @@ router.get('/vat-margin/payments/export', async (_req, res) => {
     res.status(500).json({
       success: false,
       error: 'Не удалось сформировать CSV',
+      message: error.message
+    });
+  }
+});
+
+router.get('/vat-margin/deleted-proformas', async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      status,
+      buyer,
+      search,
+      page,
+      pageSize,
+      sort,
+      order
+    } = req.query;
+
+    let statusFilter;
+    if (status) {
+      const parts = String(status)
+        .split(',')
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+
+      if (parts.length === 1) {
+        statusFilter = parts[0];
+      } else if (parts.length > 1) {
+        statusFilter = parts;
+      }
+    }
+
+    const result = await deletedProformaReportService.fetchDeletedProformas({
+      startDate,
+      endDate,
+      status: statusFilter,
+      buyer,
+      search,
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      sort,
+      order
+    });
+
+    if (!result.success) {
+      return res.status(500).json(result);
+    }
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Error fetching deleted proforma report:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось получить отчёт по удалённым проформам',
       message: error.message
     });
   }

@@ -152,20 +152,22 @@ async function runManualPolling() {
 async function getPendingDeals() {
     try {
         setButtonLoading(elements.getPending, true);
-        addLog('info', 'Получение ожидающих сделок...');
+        addLog('info', 'Получение ожидающих задач...');
         
         const result = await apiCall('/invoice-processing/pending');
         
         if (result.success) {
-            addLog('success', `Найдено ${result.deals.length} сделок для обработки`);
-            showPendingDeals(result.deals);
+            const creationCount = result.stats?.creationCount || (result.creationDeals?.length || 0);
+            const deletionCount = result.stats?.deletionCount || (result.deletionDeals?.length || 0);
+            addLog('success', `Найдено ${creationCount} задач на создание и ${deletionCount} задач на удаление`);
+            showPendingDeals(result);
         } else {
-            addLog('error', `Ошибка получения сделок: ${result.error}`);
-            showResult('error', 'Ошибка получения сделок', result);
+            addLog('error', `Ошибка получения задач: ${result.error}`);
+            showResult('error', 'Ошибка получения задач', result);
         }
     } catch (error) {
-        addLog('error', `Ошибка получения сделок: ${error.message}`);
-        showResult('error', 'Ошибка получения сделок', { error: error.message });
+        addLog('error', `Ошибка получения задач: ${error.message}`);
+        showResult('error', 'Ошибка получения задач', { error: error.message });
     } finally {
         setButtonLoading(elements.getPending, false);
     }
@@ -290,31 +292,36 @@ function showPollingResults(result) {
     elements.resultsContainer.appendChild(resultItem);
 }
 
-function showPendingDeals(deals) {
-    const resultItem = document.createElement('div');
-    resultItem.className = 'result-item';
-    
+function showPendingDeals(payload) {
+    const creationDeals = Array.isArray(payload?.creationDeals) ? payload.creationDeals : [];
+    const deletionDeals = Array.isArray(payload?.deletionDeals) ? payload.deletionDeals : [];
     const timestamp = new Date().toLocaleTimeString();
-    
-    let dealsHtml = '';
-    if (deals.length > 0) {
-        dealsHtml = '<h5>Ожидающие сделки:</h5><ul>';
-        deals.forEach(deal => {
+
+    const creationList = creationDeals.length > 0
+        ? `<h5>Создание проформ:</h5><ul>${creationDeals.map(deal => {
             const invoiceType = deal['ad67729ecfe0345287b71a3b00910e8ba5b3b496'] || 'Не указан';
-            dealsHtml += `<li>Deal ${deal.id}: ${deal.title} - ${invoiceType} (${deal.value} ${deal.currency})</li>`;
-        });
-        dealsHtml += '</ul>';
-    } else {
-        dealsHtml = '<p>Нет сделок для обработки</p>';
-    }
-    
+            return `<li>Deal ${deal.id}: ${deal.title} - ${invoiceType} (${deal.value} ${deal.currency})</li>`;
+        }).join('')}</ul>`
+        : '<p>Нет сделок для создания проформ</p>';
+
+    const deletionList = deletionDeals.length > 0
+        ? `<h5>Удаление проформ:</h5><ul>${deletionDeals.map(deal => {
+            const valueLabel = [deal.value, deal.currency].filter(Boolean).join(' ');
+            return `<li>Deal ${deal.id}: ${deal.title}${valueLabel ? ` (${valueLabel})` : ''}</li>`;
+        }).join('')}</ul>`
+        : '<p>Нет сделок на удаление проформ</p>';
+
+    const resultItem = document.createElement('div');
+    resultItem.className = 'result-item info';
     resultItem.innerHTML = `
-        <h4>Ожидающие сделки</h4>
+        <h4>Задачи по проформам</h4>
         <p><strong>Время:</strong> ${timestamp}</p>
-        <p><strong>Количество:</strong> ${deals.length}</p>
-        ${dealsHtml}
+        <p><strong>На создание:</strong> ${creationDeals.length}</p>
+        <p><strong>На удаление:</strong> ${deletionDeals.length}</p>
+        <div class="pending-section">${creationList}</div>
+        <div class="pending-section">${deletionList}</div>
     `;
-    
+
     elements.resultsContainer.innerHTML = '';
     elements.resultsContainer.appendChild(resultItem);
 }

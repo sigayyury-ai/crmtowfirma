@@ -139,6 +139,7 @@ class ProformaRepository {
       : null;
 
     const buyer = proforma.buyer || {};
+    logger.info('Upserting proforma buyer payload', { proformaId, buyer });
     const buyerNameRaw = buyer.name || buyer.altName || null;
     const buyerName = buyerNameRaw ? normalizeWhitespace(String(buyerNameRaw)).slice(0, 255) : null;
     const buyerAltName = buyer.altName ? normalizeWhitespace(String(buyer.altName)).slice(0, 255) : null;
@@ -176,8 +177,12 @@ class ProformaRepository {
       buyer_city: buyerCity,
       buyer_country: buyerCountry,
       buyer_tax_id: buyerTaxId,
-      pipedrive_deal_id: pipedriveDealId || undefined
+      pipedrive_deal_id: pipedriveDealId || undefined,
+      status: 'active',
+      deleted_at: null
     });
+
+    logger.info('Upserting proforma record', { proformaId, proformaRecord });
 
     const { error: upsertError } = await this.supabase
       .from('proformas')
@@ -328,8 +333,27 @@ class ProformaRepository {
 
     const { data, error } = await this.supabase
       .from('proformas')
-      .select('id, fullnumber, currency, total, pipedrive_deal_id, issued_at')
-      .eq('pipedrive_deal_id', sanitized);
+      .select(`
+        id,
+        fullnumber,
+        currency,
+        total,
+        payments_total,
+        payments_total_pln,
+        payments_currency_exchange,
+        payments_count,
+        buyer_name,
+        buyer_email,
+        buyer_phone,
+        buyer_city,
+        buyer_country,
+        pipedrive_deal_id,
+        issued_at,
+        status,
+        deleted_at
+      `)
+      .eq('pipedrive_deal_id', sanitized)
+      .eq('status', 'active');
 
     if (error) {
       logger.error('Supabase error while fetching proformas by deal id:', error);
@@ -357,8 +381,27 @@ class ProformaRepository {
 
     const { data, error } = await this.supabase
       .from('proformas')
-      .select('id, fullnumber, currency, total, pipedrive_deal_id, issued_at')
-      .in('id', sanitized);
+      .select(`
+        id,
+        fullnumber,
+        currency,
+        total,
+        payments_total,
+        payments_total_pln,
+        payments_currency_exchange,
+        payments_count,
+        buyer_name,
+        buyer_email,
+        buyer_phone,
+        buyer_city,
+        buyer_country,
+        pipedrive_deal_id,
+        issued_at,
+        status,
+        deleted_at
+      `)
+      .in('id', sanitized)
+      .eq('status', 'active');
 
     if (error) {
       logger.error('Supabase error while fetching proformas by ids:', error);
@@ -368,7 +411,7 @@ class ProformaRepository {
     return data || [];
   }
 
-  async deleteProformaCascade(proformaId) {
+  async markProformaDeleted(proformaId, options = {}) {
     if (!this.isEnabled()) {
       return { success: false, error: 'Supabase client not configured' };
     }
@@ -378,38 +421,23 @@ class ProformaRepository {
     }
 
     const id = String(proformaId);
+    const deletedAt = (options.deletedAt || new Date()).toISOString();
+    const payload = this.compactRecord({
+      status: 'deleted',
+      deleted_at: deletedAt
+    });
 
-    const { error: paymentsError } = await this.supabase
-      .from('payments')
-      .delete()
-      .or(`manual_proforma_id.eq.${id},proforma_id.eq.${id}`);
-
-    if (paymentsError) {
-      logger.error('Supabase error while deleting payments for proforma:', paymentsError);
-      return { success: false, error: paymentsError.message, stage: 'payments' };
-    }
-
-    const { error: productsError } = await this.supabase
-      .from('proforma_products')
-      .delete()
-      .eq('proforma_id', id);
-
-    if (productsError) {
-      logger.error('Supabase error while deleting proforma products:', productsError);
-      return { success: false, error: productsError.message, stage: 'products' };
-    }
-
-    const { error: proformaError } = await this.supabase
+    const { error: updateError } = await this.supabase
       .from('proformas')
-      .delete()
+      .update(payload)
       .eq('id', id);
 
-    if (proformaError) {
-      logger.error('Supabase error while deleting proforma:', proformaError);
-      return { success: false, error: proformaError.message, stage: 'proformas' };
+    if (updateError) {
+      logger.error('Supabase error while marking proforma deleted:', updateError);
+      return { success: false, error: updateError.message, stage: 'proformas' };
     }
 
-    return { success: true };
+    return { success: true, deletedAt };
   }
 
   async recordDeletionLog(entry = {}) {
@@ -418,6 +446,10 @@ class ProformaRepository {
     }
 
     try {
+      const snapshot = entry.snapshot || {};
+      const buyerSnapshot = snapshot.buyer || {};
+      const paymentsSnapshot = snapshot.payments || {};
+
       const payload = this.compactRecord({
         proforma_id: entry.proformaId ? String(entry.proformaId) : null,
         deal_id: entry.dealId ? String(entry.dealId) : null,
@@ -426,6 +458,17 @@ class ProformaRepository {
         supabase_status: entry.supabaseStatus || null,
         message: entry.message || null,
         deleted_by: entry.deletedBy || 'crm-delete-trigger',
+        proforma_number: snapshot.proformaNumber || snapshot.fullnumber || null,
+        buyer_name: buyerSnapshot.name || snapshot.buyerName || null,
+        buyer_email: buyerSnapshot.email || snapshot.buyerEmail || null,
+        buyer_country: buyerSnapshot.country || snapshot.buyerCountry || null,
+        buyer_city: buyerSnapshot.city || snapshot.buyerCity || null,
+        currency: snapshot.currency || null,
+        total: snapshot.total ?? null,
+        payments_total: paymentsSnapshot.total ?? snapshot.paymentsTotal ?? null,
+        payments_total_pln: paymentsSnapshot.totalPln ?? snapshot.paymentsTotalPln ?? null,
+        payments_count: paymentsSnapshot.count ?? snapshot.paymentsCount ?? null,
+        issued_at: snapshot.issuedAt || null,
         metadata: entry.metadata ? JSON.stringify(entry.metadata) : null,
         deleted_at: (entry.deletedAt || new Date()).toISOString()
       });

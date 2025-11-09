@@ -71,7 +71,7 @@ class InvoiceProcessingService {
     this.WFIRMA_INVOICE_ID_FIELD_KEY = 'd89358b2be5826fc748a0600a9db7bcdf8d924c7';
     this.INVOICE_NUMBER_FIELD_KEY = '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
     this.DELETE_TRIGGER_FIELD_KEY = this.INVOICE_TYPE_FIELD_KEY;
-    this.DELETE_TRIGGER_VALUE = 'delete';
+    this.DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
     
     // Типы фактур с ID опций из Pipedrive (пока только Pro forma)
     this.INVOICE_TYPES = {
@@ -342,20 +342,22 @@ class InvoiceProcessingService {
       const dealsResult = await this.pipedriveClient.getDeals({
         limit: 500,
         start: 0,
-        status: 'all_not_deleted'
+        status: 'open'
       });
 
       if (!dealsResult.success) {
         return dealsResult;
       }
 
-      const deletionDeals = dealsResult.deals.filter((deal) => {
+      const sourceDeals = Array.isArray(dealsResult.deals) ? dealsResult.deals : [];
+
+      const deletionDeals = sourceDeals.filter((deal) => {
         const rawValue = deal[this.DELETE_TRIGGER_FIELD_KEY];
         if (rawValue === undefined || rawValue === null) {
           return false;
         }
         const normalized = String(rawValue).trim().toLowerCase();
-        return normalized === this.DELETE_TRIGGER_VALUE;
+        return this.DELETE_TRIGGER_VALUES.has(normalized);
       });
 
       return {
@@ -376,6 +378,11 @@ class InvoiceProcessingService {
     if (!dealId) {
       return { success: false, error: 'Deal id is missing' };
     }
+
+    const originalInvoiceFieldValue = this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null;
+    const expectedNumbers = this.parseInvoiceNumbers(
+      this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null
+    );
 
     const proformaMap = new Map();
     try {
@@ -444,11 +451,52 @@ class InvoiceProcessingService {
       return { success: false, error: 'No linked proformas found' };
     }
 
+    let candidates = Array.from(proformaMap.values());
+
+    if (expectedNumbers.size > 0) {
+      candidates = candidates.filter((proforma) => {
+        const normalizedNumber = this.normalizeInvoiceNumber(proforma?.fullnumber || proforma?.number);
+        if (normalizedNumber && expectedNumbers.has(normalizedNumber)) {
+          return true;
+        }
+
+        const normalizedId = this.normalizeInvoiceNumber(proforma?.id);
+        return normalizedId && expectedNumbers.has(normalizedId);
+      });
+
+      if (!candidates.length) {
+        logger.warn('No proformas matched expected invoice numbers for deletion', {
+          dealId,
+          expectedNumbers: Array.from(expectedNumbers)
+        });
+        await this.proformaRepository.recordDeletionLog({
+          proformaId: null,
+          dealId,
+          status: 'number-mismatch',
+          wfirmaStatus: null,
+          supabaseStatus: null,
+          message: 'No proformas matched expected invoice numbers',
+          metadata: {
+            expectedNumbers: Array.from(expectedNumbers)
+          }
+        });
+        return { success: false, error: 'No matching proformas found for requested number' };
+      }
+    }
+
+    const candidateMap = new Map();
+    candidates.forEach((proforma) => {
+      candidateMap.set(String(proforma.id), proforma);
+    });
+
+    const expectedNumberList = Array.from(expectedNumbers);
+    const removedNumbers = new Set();
     let allSuccess = true;
     let processed = 0;
 
-    for (const proforma of proformaMap.values()) {
+    for (const proforma of candidateMap.values()) {
       const proformaId = String(proforma.id);
+      const snapshot = this.buildDeletionSnapshot(proforma);
 
       try {
         const deleteResult = await this.wfirmaClient.deleteInvoice(proformaId);
@@ -460,8 +508,10 @@ class InvoiceProcessingService {
             dealId,
             status: 'wfirma-error',
             wfirmaStatus: deleteResult.error || 'unknown',
+            snapshot,
             metadata: {
-              fullnumber: proforma.fullnumber || null
+              expectedNumbers: expectedNumberList,
+              snapshot
             }
           });
           logger.error('Failed to delete proforma in wFirma', {
@@ -472,7 +522,9 @@ class InvoiceProcessingService {
           continue;
         }
 
-        const supabaseResult = await this.proformaRepository.deleteProformaCascade(proformaId);
+        const supabaseResult = await this.proformaRepository.markProformaDeleted(proformaId, {
+          deletedAt: new Date()
+        });
         if (!supabaseResult.success) {
           allSuccess = false;
           await this.proformaRepository.recordDeletionLog({
@@ -480,9 +532,11 @@ class InvoiceProcessingService {
             dealId,
             status: 'supabase-error',
             wfirmaStatus: 'deleted',
+            snapshot,
             supabaseStatus: supabaseResult.error || supabaseResult.stage || 'unknown',
             metadata: {
-              fullnumber: proforma.fullnumber || null
+              expectedNumbers: expectedNumberList,
+              snapshot
             }
           });
           logger.error('Failed to delete proforma from Supabase', {
@@ -496,16 +550,26 @@ class InvoiceProcessingService {
 
         processed += 1;
 
+        const normalizedNumber = this.normalizeInvoiceNumber(proforma?.fullnumber || proforma?.number);
+        if (normalizedNumber) {
+          removedNumbers.add(normalizedNumber);
+        }
+        const normalizedId = this.normalizeInvoiceNumber(proforma?.id);
+        if (normalizedId) {
+          removedNumbers.add(normalizedId);
+        }
+
         await this.proformaRepository.recordDeletionLog({
           proformaId,
           dealId,
           status: 'deleted',
           wfirmaStatus: 'deleted',
           supabaseStatus: 'deleted',
+          snapshot,
           metadata: {
-            fullnumber: proforma.fullnumber || null,
-            currency: proforma.currency || null,
-            total: proforma.total || null
+            expectedNumbers: expectedNumberList,
+            snapshot,
+            removedNumbers: Array.from(removedNumbers)
           }
         });
 
@@ -527,13 +591,27 @@ class InvoiceProcessingService {
           status: 'unexpected-error',
           wfirmaStatus: 'unknown',
           supabaseStatus: 'unknown',
-          message: error.message
+          snapshot,
+          message: error.message,
+          metadata: {
+            expectedNumbers: expectedNumberList,
+            snapshot,
+            error: error.message
+          }
         });
       }
     }
 
+    let invoiceFieldUpdatePayload = {};
+    if (this.INVOICE_NUMBER_FIELD_KEY) {
+      const { changed, value } = this.computeRemainingInvoiceNumbers(originalInvoiceFieldValue, removedNumbers);
+      if (changed) {
+        invoiceFieldUpdatePayload[this.INVOICE_NUMBER_FIELD_KEY] = value;
+      }
+    }
+
     if (allSuccess) {
-      const clearResult = await this.clearDeleteTrigger(dealId);
+      const clearResult = await this.clearDeleteTrigger(dealId, invoiceFieldUpdatePayload);
       if (!clearResult.success) {
         allSuccess = false;
         await this.proformaRepository.recordDeletionLog({
@@ -556,39 +634,169 @@ class InvoiceProcessingService {
     return { success: allSuccess, processed, error: allSuccess ? null : 'One or more deletions failed' };
   }
 
-  async clearDeleteTrigger(dealId) {
-    if (!this.DELETE_TRIGGER_FIELD_KEY) {
+  normalizeInvoiceNumber(value) {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const trimmed = String(value).trim();
+    if (!trimmed.length) {
+      return null;
+    }
+    return trimmed.toLowerCase();
+  }
+
+  parseInvoiceNumbers(rawValue) {
+    const numbers = new Set();
+
+    if (Array.isArray(rawValue)) {
+      rawValue.forEach((item) => {
+        const normalized = this.normalizeInvoiceNumber(item);
+        if (normalized) {
+          numbers.add(normalized);
+        }
+      });
+      return numbers;
+    }
+
+    if (!rawValue && rawValue !== 0) {
+      return numbers;
+    }
+
+    String(rawValue)
+      .split(/[\n,;]+/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .forEach((value) => {
+        const normalized = this.normalizeInvoiceNumber(value);
+        if (normalized) {
+          numbers.add(normalized);
+        }
+      });
+
+    return numbers;
+  }
+
+  buildDeletionSnapshot(proforma = {}) {
+    const toNumber = (value) => {
+      if (value === null || value === undefined || value === '') {
+        return null;
+      }
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
+
+    const issuedAt = proforma.issued_at || proforma.issuedAt || null;
+
+    return {
+      proformaNumber: proforma.fullnumber || proforma.number || null,
+      currency: proforma.currency || null,
+      total: toNumber(proforma.total),
+      issuedAt,
+      issuedMonth: typeof issuedAt === 'string' ? issuedAt.slice(0, 7) : null,
+      buyer: {
+        name: proforma.buyer_name || null,
+        email: proforma.buyer_email || null,
+        country: proforma.buyer_country || null,
+        city: proforma.buyer_city || null,
+        phone: proforma.buyer_phone || null
+      },
+      payments: {
+        total: toNumber(proforma.payments_total),
+        totalPln: toNumber(proforma.payments_total_pln),
+        currencyExchange: toNumber(proforma.payments_currency_exchange),
+        count: toNumber(proforma.payments_count)
+      }
+    };
+  }
+
+  computeRemainingInvoiceNumbers(rawValue, removedSet = new Set()) {
+    if (!this.INVOICE_NUMBER_FIELD_KEY || rawValue === undefined) {
+      return { changed: false, value: rawValue ?? null };
+    }
+
+    const normalizeValues = (list) =>
+      list
+        .map((value) => String(value).trim())
+        .filter((value) => value.length > 0);
+
+    if (Array.isArray(rawValue)) {
+      const normalizedInput = normalizeValues(rawValue);
+      const remaining = normalizedInput.filter((value) => !removedSet.has(this.normalizeInvoiceNumber(value)));
+      const changed = remaining.length !== normalizedInput.length;
+      return {
+        changed,
+        value: changed ? (remaining.length ? remaining : null) : rawValue
+      };
+    }
+
+    if (rawValue === null) {
+      return { changed: false, value: null };
+    }
+
+    const normalizedInput = normalizeValues(String(rawValue).split(/[\n,;]+/));
+    const remaining = normalizedInput.filter((value) => !removedSet.has(this.normalizeInvoiceNumber(value)));
+
+    if (remaining.length === normalizedInput.length) {
+      return { changed: false, value: rawValue };
+    }
+
+    if (!remaining.length) {
+      return { changed: true, value: null };
+    }
+
+    return {
+      changed: true,
+      value: remaining.join('\n')
+    };
+  }
+
+  async clearDeleteTrigger(dealId, extraPayload = {}) {
+    if (!this.DELETE_TRIGGER_FIELD_KEY && (!extraPayload || Object.keys(extraPayload).length === 0)) {
+      return { success: true };
+    }
+
+    if (!dealId) {
+      return { success: false, error: 'Deal id is required' };
+    }
+
+    const payload = {
+      ...extraPayload
+    };
+
+    if (this.DELETE_TRIGGER_FIELD_KEY) {
+      payload[`${this.DELETE_TRIGGER_FIELD_KEY}`] = null;
+    }
+
+    const payloadKeys = Object.keys(payload);
+    if (payloadKeys.length === 0) {
+      return { success: true };
+    }
+
+    const sanitizedPayload = payloadKeys.reduce((acc, key) => {
+      if (payload[key] !== undefined) {
+        acc[key] = payload[key];
+      }
+      return acc;
+    }, {});
+
+    if (Object.keys(sanitizedPayload).length === 0) {
+      logger.warn('Attempted to clear delete trigger with empty payload', { dealId });
       return { success: true };
     }
 
     try {
-      const payload = {
-        [`${this.DELETE_TRIGGER_FIELD_KEY}`]: null
-      };
-
-      if (this.WFIRMA_INVOICE_ID_FIELD_KEY) {
-        payload[this.WFIRMA_INVOICE_ID_FIELD_KEY] = null;
-      }
-
-      const updateResult = await this.pipedriveClient.updateDeal(dealId, payload);
-
+      const updateResult = await this.pipedriveClient.updateDeal(dealId, sanitizedPayload);
       if (!updateResult.success) {
-        return {
-          success: false,
-          error: updateResult.error || 'Failed to clear delete trigger in Pipedrive'
-        };
+        return updateResult;
       }
 
       return { success: true };
     } catch (error) {
-      logger.error('Error clearing delete trigger in Pipedrive:', {
+      logger.error('Failed to clear delete trigger in Pipedrive', {
         dealId,
         error: error.message
       });
-      return {
-        success: false,
-        error: error.message
-      };
+      return { success: false, error: error.message };
     }
   }
 
@@ -620,7 +828,7 @@ class InvoiceProcessingService {
         const normalizedValue = String(invoiceTypeValue).trim().toLowerCase();
 
         // Пропускаем сделки, помеченные триггером на удаление
-        if (normalizedValue === this.DELETE_TRIGGER_VALUE) {
+        if (this.DELETE_TRIGGER_VALUES.has(normalizedValue)) {
           return false;
         }
 
@@ -809,6 +1017,13 @@ class InvoiceProcessingService {
       
       logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
       
+      const fallbackBuyerData = this.buildBuyerFallback(fullPerson, fullOrganization, contractor);
+      logger.info('Prepared fallback buyer data for persistence', {
+        dealId: fullDeal.id,
+        invoiceId: invoiceResult.invoiceId,
+        fallbackBuyer: fallbackBuyerData
+      });
+
       await this.persistProformaToDatabase(invoiceResult.invoiceId, {
         invoiceNumber: invoiceResult.invoiceNumber,
         issueDate: new Date(),
@@ -820,7 +1035,7 @@ class InvoiceProcessingService {
           count: product.quantity || product.count || 1,
           goodId: product.id || product.goodId || null
         },
-        fallbackBuyer: contractor,
+        fallbackBuyer: fallbackBuyerData,
         dealId: fullDeal.id
       });
 
@@ -1672,14 +1887,17 @@ class InvoiceProcessingService {
     }
 
     try {
+      const invoiceNumberForMessage = invoiceNumber || invoiceId;
+
       // Базовая часть сообщения
-      let message = `Привет! Тебе был отправлен инвойс по email.\n\n` +
-                   `Номер инвойса: ${invoiceNumber || invoiceId}\n` +
-                   `Пожалуйста, проверь почту и внимательно посмотри сроки оплаты и график платежей.\n`;
+      let message = `Привет! Тебе был отправлен инвойс на почту.\n\n` +
+                    `Обязательно укажи номер инвойса в назначении платежа: ${invoiceNumberForMessage}\n\n`;
+
+      message += 'Твой график платежей:\n';
       
       // Добавляем график платежей
       if (paymentSchedule && paymentSchedule.type) {
-        message += `\nГрафик платежей:\n`;
+        message += '\n';
         
         const formatAmount = (amount) => parseFloat(amount).toFixed(2);
         const formatDate = (dateStr) => {
@@ -1702,12 +1920,14 @@ class InvoiceProcessingService {
         }
         
         message += `Итого: ${formatAmount(paymentSchedule.totalAmount)} ${paymentSchedule.currency}\n`;
+      } else {
+        message += '\n• Детали графика в письме с инвойсом.\n';
       }
       
       // Добавляем IBAN
       if (bankAccount && bankAccount.number) {
-        message += `\nРеквизиты для оплаты:\n` +
-                   `IBAN: ${bankAccount.number}`;
+        message += `\nРеквизиты для оплаты:\n\n` +
+                   `${bankAccount.number}`;
       }
       
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
@@ -1932,6 +2152,104 @@ class InvoiceProcessingService {
       business_id: '',
       type: 'person'
     };
+  }
+
+  buildBuyerFallback(person, organization, contractor) {
+    const normalizeString = (value) => {
+      if (!value) return null;
+      const trimmed = String(value).trim();
+      return trimmed.length ? trimmed : null;
+    };
+
+    const pickEmail = () => {
+      if (person?.primary_email) {
+        return normalizeString(person.primary_email);
+      }
+      const personEmail = person?.email?.[0]?.value;
+      if (personEmail) {
+        return normalizeString(personEmail);
+      }
+      if (organization?.primary_email) {
+        return normalizeString(organization.primary_email);
+      }
+      const orgEmail = organization?.email?.[0]?.value;
+      if (orgEmail) {
+        return normalizeString(orgEmail);
+      }
+      return normalizeString(contractor?.email);
+    };
+
+    const pickPhone = () => {
+      const personPhone = person?.phone?.[0]?.value;
+      if (personPhone) {
+        return normalizeString(personPhone);
+      }
+      const orgPhone = organization?.phone?.[0]?.value;
+      if (orgPhone) {
+        return normalizeString(orgPhone);
+      }
+      return normalizeString(contractor?.phone);
+    };
+
+    const pickName = () => {
+      if (organization?.name) {
+        return normalizeString(organization.name);
+      }
+      if (person?.name) {
+        return normalizeString(person.name);
+      }
+      if (person?.first_name || person?.last_name) {
+        return normalizeString(`${person.first_name || ''} ${person.last_name || ''}`.trim());
+      }
+      return normalizeString(contractor?.name);
+    };
+
+    const street = normalizeString(
+      organization?.address ||
+      person?.postal_address ||
+      person?.postal_address_route
+    );
+
+    const zip = normalizeString(
+      organization?.postal_code ||
+      person?.postal_address_postal_code
+    );
+
+    const city = normalizeString(
+      organization?.city ||
+      person?.postal_address_locality
+    );
+
+    const countryRaw = normalizeString(
+      organization?.country ||
+      person?.postal_address_country ||
+      contractor?.country
+    );
+
+    const country = countryRaw ? this.normalizeCountryCode(countryRaw) : null;
+
+    const taxId = normalizeString(
+      organization?.value?.tax_id ||
+      organization?.tax_id ||
+      contractor?.taxId
+    );
+
+    const result = {
+      name: pickName(),
+      altName: normalizeString(contractor?.name),
+      email: pickEmail(),
+      phone: pickPhone(),
+      street,
+      zip,
+      city,
+      country,
+      taxId
+    };
+
+    // Remove null/undefined to keep payload compact
+    return Object.fromEntries(
+      Object.entries(result).filter(([, value]) => value !== null && value !== undefined)
+    );
   }
 
   /**
@@ -2497,6 +2815,130 @@ class InvoiceProcessingService {
 
     const effectiveDealId = dealId ?? proforma.pipedriveDealId ?? proforma.dealId ?? proforma.pipedrive_deal_id ?? null;
 
+    const toCleanString = (value) => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      if (typeof value === 'string' || typeof value === 'number') {
+        const trimmed = String(value).trim();
+        return trimmed.length ? trimmed : null;
+      }
+
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const candidate = toCleanString(item);
+          if (candidate) {
+            return candidate;
+          }
+        }
+        return null;
+      }
+
+      if (typeof value === 'object') {
+        const preferredKeys = ['value', 'text', '_text', '#text', '$'];
+        for (const key of preferredKeys) {
+          if (key in value) {
+            const candidate = toCleanString(value[key]);
+            if (candidate) {
+              return candidate;
+            }
+          }
+        }
+
+        // some wFirma responses use { name: '...', value: '...' }
+        if (Object.keys(value).length === 1 && 'name' in value) {
+          return toCleanString(value.name);
+        }
+      }
+
+      return null;
+    };
+
+    const extractBuyerFields = (source) => {
+      if (!source || typeof source !== 'object') {
+        return {};
+      }
+
+      const result = {};
+
+      const trySet = (targetKey, ...candidateKeys) => {
+        for (const candidateKey of candidateKeys) {
+          if (candidateKey in source) {
+            const value = toCleanString(source[candidateKey]);
+            if (value) {
+              result[targetKey] = targetKey === 'country'
+                ? this.normalizeCountryCode(value)
+                : value;
+              return;
+            }
+          }
+        }
+      };
+
+      trySet('name', 'name', 'fullName', 'full_name', 'buyer_name');
+      trySet('altName', 'altName', 'alt_name', 'buyer_alt_name');
+      trySet('email', 'email', 'buyer_email');
+      trySet('phone', 'phone', 'telephone', 'mobile', 'mobile_phone', 'buyer_phone');
+      trySet('street', 'street', 'address', 'address_line', 'address_line1', 'address_line_1', 'buyer_street', 'postal_address');
+      trySet('zip', 'zip', 'postal_code', 'postcode', 'postalCode', 'buyer_zip', 'postal_address_postal_code');
+      trySet('city', 'city', 'locality', 'town', 'buyer_city', 'postal_address_locality');
+      trySet('country', 'country', 'country_code', 'buyer_country', 'postal_address_country');
+      trySet('taxId', 'taxId', 'tax_id', 'nip', 'buyer_tax_id');
+
+      if (!result.street) {
+        const fallbackStreet = toCleanString(source.postal_address || source.billing_address || source.address1);
+        if (fallbackStreet) {
+          result.street = fallbackStreet;
+        }
+      }
+
+      if (!result.zip) {
+        const fallbackZip = toCleanString(source.zip_code || source.postcode || source.postal);
+        if (fallbackZip) {
+          result.zip = fallbackZip;
+        }
+      }
+
+      if (!result.city) {
+        const fallbackCity = toCleanString(source.postal_address_city || source.city_name);
+        if (fallbackCity) {
+          result.city = fallbackCity;
+        }
+      }
+
+      if (!result.country && source.country) {
+        const countryValue = toCleanString(source.country);
+        if (countryValue) {
+          result.country = this.normalizeCountryCode(countryValue);
+        }
+      }
+
+      return result;
+    };
+
+    const buyerFromProforma = extractBuyerFields(
+      proforma.buyer && typeof proforma.buyer === 'object'
+        ? proforma.buyer
+        : {}
+    );
+
+    const fallbackBuyerSanitized = extractBuyerFields(
+      fallbackBuyer && typeof fallbackBuyer === 'object'
+        ? fallbackBuyer
+        : {}
+    );
+
+    const mergedBuyer = { ...fallbackBuyerSanitized };
+
+    for (const [key, value] of Object.entries(buyerFromProforma)) {
+      if (value && (typeof value !== 'string' || value.trim().length > 0)) {
+        mergedBuyer[key] = value;
+      }
+    }
+
+    const finalBuyer = Object.keys(mergedBuyer).length ? mergedBuyer : null;
+
     const repositoryPayload = {
       id: proforma.id || invoiceId,
       fullnumber: proforma.fullnumber || invoiceNumber || null,
@@ -2509,7 +2951,7 @@ class InvoiceProcessingService {
       paymentsCurrencyExchange: proforma.paymentsCurrencyExchange ?? proforma.payments_currency_exchange ?? null,
       paymentsCount: proforma.paymentsCount ?? proforma.payments_count ?? 0,
       products: sanitizedProducts,
-      buyer: proforma.buyer || fallbackBuyer || null,
+      buyer: finalBuyer,
       pipedriveDealId: effectiveDealId !== null && effectiveDealId !== undefined
         ? String(effectiveDealId).trim()
         : undefined

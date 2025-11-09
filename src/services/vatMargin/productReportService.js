@@ -138,7 +138,15 @@ class ProductReportService {
           paidPln: Number(detail.paidPln.toFixed(2)),
           paymentStatus: status,
           dealId: detail.dealId || null,
-          dealUrl: detail.dealUrl || null
+          dealUrl: detail.dealUrl || null,
+          buyerName: detail.buyerName || detail.buyerAltName || null,
+          buyerAltName: detail.buyerAltName || null,
+          buyerEmail: detail.buyerEmail || null,
+          buyerPhone: detail.buyerPhone || null,
+          buyerStreet: detail.buyerStreet || null,
+          buyerZip: detail.buyerZip || null,
+          buyerCity: detail.buyerCity || null,
+          buyerCountry: detail.buyerCountry || null
         };
       })
       .sort((a, b) => {
@@ -317,7 +325,16 @@ class ProductReportService {
           payments_total,
           payments_total_pln,
           payments_currency_exchange,
-          pipedrive_deal_id
+          pipedrive_deal_id,
+          buyer_name,
+          buyer_alt_name,
+          buyer_email,
+          buyer_phone,
+          buyer_street,
+          buyer_zip,
+          buyer_city,
+          buyer_country,
+          status
         ),
         products (${productFields})
       `
@@ -337,7 +354,16 @@ class ProductReportService {
           payments_total,
           payments_total_pln,
           payments_currency_exchange,
-          pipedrive_deal_id
+          pipedrive_deal_id,
+          buyer_name,
+          buyer_alt_name,
+          buyer_email,
+          buyer_phone,
+          buyer_street,
+          buyer_zip,
+          buyer_city,
+          buyer_country,
+          status
         ),
         products (${productFields})
       `;
@@ -345,6 +371,7 @@ class ProductReportService {
     return supabase
       .from('proforma_products')
       .select(selectedColumns)
+      .eq('proformas.status', 'active')
       .order('proforma_id', { ascending: true })
       .range(rangeStart, rangeEnd);
   }
@@ -477,13 +504,45 @@ class ProductReportService {
             totalPln: 0,
             paidPln: 0,
             dealId: proformaDealId || null,
-            dealUrl: proformaDealUrl
+            dealUrl: proformaDealUrl,
+            buyerName: proforma.buyer_name || proforma.buyer_alt_name || null,
+            buyerAltName: proforma.buyer_alt_name || null,
+            buyerEmail: proforma.buyer_email || null,
+            buyerPhone: proforma.buyer_phone || null,
+            buyerStreet: proforma.buyer_street || null,
+            buyerZip: proforma.buyer_zip || null,
+            buyerCity: proforma.buyer_city || null,
+            buyerCountry: proforma.buyer_country || null
           });
         }
         const detail = entry.proformaDetails.get(proformaId);
         if (!detail.dealId && proformaDealId) {
           detail.dealId = proformaDealId;
           detail.dealUrl = proformaDealUrl;
+        }
+        if (!detail.buyerName && (proforma.buyer_name || proforma.buyer_alt_name)) {
+          detail.buyerName = proforma.buyer_name || proforma.buyer_alt_name;
+        }
+        if (!detail.buyerAltName && proforma.buyer_alt_name) {
+          detail.buyerAltName = proforma.buyer_alt_name;
+        }
+        if (!detail.buyerEmail && proforma.buyer_email) {
+          detail.buyerEmail = proforma.buyer_email;
+        }
+        if (!detail.buyerPhone && proforma.buyer_phone) {
+          detail.buyerPhone = proforma.buyer_phone;
+        }
+        if (!detail.buyerStreet && proforma.buyer_street) {
+          detail.buyerStreet = proforma.buyer_street;
+        }
+        if (!detail.buyerZip && proforma.buyer_zip) {
+          detail.buyerZip = proforma.buyer_zip;
+        }
+        if (!detail.buyerCity && proforma.buyer_city) {
+          detail.buyerCity = proforma.buyer_city;
+        }
+        if (!detail.buyerCountry && proforma.buyer_country) {
+          detail.buyerCountry = proforma.buyer_country;
         }
         if (Number.isFinite(lineTotal)) {
           detail.currencyTotals[currency] = (detail.currencyTotals[currency] || 0) + lineTotal;

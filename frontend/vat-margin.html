@@ -21,15 +21,30 @@
 
         <div class="tab-container">
             <div class="tab-header">
-                <button class="tab-button active" data-tab="report">📊 Отчёт</button>
+                <button class="tab-button active" data-tab="report2">💳 Отчёт по платежам</button>
                 <button class="tab-button" data-tab="products">🛍 Продукты</button>
                 <button class="tab-button" data-tab="payments">💳 Платежи</button>
+                <button class="tab-button" data-tab="deleted">🧾 Удалённые проформы</button>
             </div>
 
-            <div class="tab-content active" id="tab-report">
+            <div class="tab-content" id="tab-deleted">
+                <section class="deleted-proformas-section">
+                    <div class="section-header">
+                        <h2>🧾 Удалённые проформы</h2>
+                        <div class="controls">
+                            <a class="btn btn-secondary" href="/deleted-proformas.html" target="_blank" rel="noopener noreferrer">Открыть полный отчёт</a>
+                        </div>
+                    </div>
+                    <div class="placeholder">
+                        Отчёт об удалённых проформах открывается в новой вкладке. Используйте кнопку выше.
+                    </div>
+                </section>
+            </div>
+
+            <div class="tab-content active" id="tab-report2">
                 <section class="vat-margin-section">
                     <div class="section-header">
-                        <h2>📊 Данные по проформам</h2>
+                        <h2>💳 Отчёт по платежам</h2>
                         <div class="controls">
                             <div class="month-year-select">
                                 <label for="month-select">Месяц</label>
@@ -59,13 +74,17 @@
                                     <option value="2030">2030</option>
                                 </select>
                             </div>
-                            <button id="load-vat-margin" class="btn btn-primary">🔄 Обновить</button>
-                            <button id="export-report" class="btn btn-secondary">⬇️ Экспорт CSV</button>
+                            <label class="toggle">
+                                <input type="checkbox" id="toggle-payment-status">
+                                <span>Показать все статусы</span>
+                            </label>
+                            <button id="export-payment-report" class="btn btn-secondary">⬇️ Экспорт CSV</button>
                         </div>
                     </div>
 
-                    <div id="vat-margin-container" class="vat-margin-container">
-                        <div class="placeholder">Выберите месяц и нажмите «Обновить», чтобы загрузить данные</div>
+                    <div id="payment-report-summary" class="product-summary-cards"></div>
+                    <div id="payment-report-container" class="vat-margin-container">
+                        <div class="placeholder">Выберите период и нажмите «Обновить», чтобы увидеть платежи</div>
                     </div>
                 </section>
             </div>

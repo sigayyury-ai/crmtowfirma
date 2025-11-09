@@ -12,6 +12,13 @@ const paymentStatusLabels = {
   unknown: '—'
 };
 
+const paymentStatusClasses = {
+  paid: 'status-complete',
+  partial: 'status-warning',
+  unpaid: 'status-error',
+  unknown: 'status-auto'
+};
+
 let elements = {};
 let productSlug = null;
 let productDetail = null;
@@ -240,24 +247,23 @@ function renderProformasTable(items) {
 
   const rows = items
     .map((item) => {
-      const dealId = item.dealId ? String(item.dealId) : null;
-      const dealLinkHtml = item.dealUrl && dealId
-        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${item.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
-        : '';
+      const buyerName = item.buyerName || item.buyerAltName || '—';
+      const proformaLabel = escapeHtml(item.fullnumber || '—');
+      const proformaCell = item.dealUrl
+        ? `<a class="deal-link" href="${item.dealUrl}" target="_blank" rel="noopener noreferrer">${proformaLabel}</a>`
+        : proformaLabel;
 
       return `
-      <tr>
-        <td>
-          <div>${escapeHtml(item.fullnumber || '—')}</div>
-          ${dealLinkHtml}
-        </td>
-        <td>${escapeHtml(formatDate(item.date))}</td>
-        <td>${formatCurrencyMap(item.currencyTotals || {})}</td>
-        <td class="numeric">${formatCurrency(item.totalPln || 0, 'PLN')}</td>
-        <td class="numeric">${formatCurrency(item.paidPln || 0, 'PLN')}</td>
-        <td>${escapeHtml(paymentStatusLabels[item.paymentStatus] || paymentStatusLabels.unknown)}</td>
-      </tr>
-    `;
+        <tr>
+          <td>${proformaCell}</td>
+          <td>${escapeHtml(buyerName)}</td>
+          <td>${escapeHtml(formatDate(item.date))}</td>
+          <td>${formatCurrencyMap(item.currencyTotals || {})}</td>
+          <td class="numeric">${formatCurrency(item.totalPln || 0, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(item.paidPln || 0, 'PLN')}</td>
+          <td>${renderPaymentStatusBadge(item.paymentStatus)}</td>
+        </tr>
+      `;
     })
     .join('');
 
@@ -266,6 +272,7 @@ function renderProformasTable(items) {
       <thead>
         <tr>
           <th>Проформа</th>
+          <th>Контрагент</th>
           <th>Дата</th>
           <th>Сумма (оригинал)</th>
           <th>Сумма (PLN)</th>
@@ -276,6 +283,13 @@ function renderProformasTable(items) {
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+function renderPaymentStatusBadge(status) {
+  const normalized = status && paymentStatusLabels[status] ? status : 'unknown';
+  const label = paymentStatusLabels[normalized];
+  const className = paymentStatusClasses[normalized] || paymentStatusClasses.unknown;
+  return `<span class="status-badge ${className}">${escapeHtml(label)}</span>`;
 }
 
 async function saveProductStatus() {

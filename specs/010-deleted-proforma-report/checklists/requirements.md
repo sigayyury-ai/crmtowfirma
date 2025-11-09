@@ -1,8 +1,8 @@
-# Specification Quality Checklist: VAT Margin Tracker Product Report Tab
+# Specification Quality Checklist: Deleted Proforma Report
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2025-11-07
-**Feature**: [spec.md](../spec.md)
+**Created**: 2025-11-08
+**Feature**: specs/010-deleted-proforma-report/spec.md
 
 ## Content Quality
 
@@ -31,7 +31,5 @@
 
 ## Notes
 
-- Проверка спецификации выполнена, несоответствий не выявлено.
-
-
+- All checklist items verified and ready for `/speckit.plan`.
 
