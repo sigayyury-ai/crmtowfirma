@@ -1,9 +1,22 @@
 const winston = require('winston');
+const {
+  sanitizeInfo,
+  getIncidentStats,
+  hasWarningLevel
+} = require('./logSanitizer');
+
+const ENABLE_SANITIZER = process.env.LOG_SANITIZER_DISABLED !== 'true';
+
+const sanitizeFormat = winston.format((info) => {
+  if (!ENABLE_SANITIZER) return info;
+  return sanitizeInfo(info);
+});
 
 // Создаем logger с конфигурацией
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: winston.format.combine(
+    sanitizeFormat(),
     winston.format.timestamp({
       format: 'YYYY-MM-DD HH:mm:ss'
     }),
@@ -38,6 +51,9 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 module.exports = logger;
+
+module.exports.getLogSanitizerStats = getIncidentStats;
+module.exports.isLogSanitizerInWarningState = hasWarningLevel;
 
 
 

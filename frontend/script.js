@@ -1,6 +1,48 @@
 // API Base URL
 const API_BASE = '/api';
 
+// Sanitization helpers
+const SANITIZE_PATTERNS = [
+    { regex: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, replacement: '***masked-email***' },
+    { regex: /(?:\+?\d[\s-]?){6,15}/g, replacement: '***masked-phone***' },
+    { regex: /[A-Za-z0-9\-_]{20,}/g, replacement: '***masked-token***' },
+    { regex: /CO-PROF\s?\d{1,3}\/\d{4}/gi, replacement: (match) => `CO-PROF ***/${match.slice(-4)}` },
+    {
+        regex: /\b\d{1,3}(?:[\s\u00A0]?)?(?:\d{3}(?:[\s\u00A0]?))*([.,]\d{1,2})?\s?(PLN|USD|EUR)?\b/gi,
+        replacement: '~[amount-masked]'
+    }
+];
+
+function sanitizeText(value) {
+    if (typeof value !== 'string') return value;
+    return SANITIZE_PATTERNS.reduce((acc, pattern) => {
+        const replacement = typeof pattern.replacement === 'function' ? pattern.replacement : () => pattern.replacement;
+        return acc.replace(pattern.regex, (match) => replacement(match));
+    }, value);
+}
+
+function sanitizeValue(value) {
+    if (typeof value === 'string') return sanitizeText(value);
+    if (Array.isArray(value)) return value.map((item) => sanitizeValue(item));
+    if (value && typeof value === 'object') {
+        return Object.keys(value).reduce((acc, key) => {
+            acc[key] = sanitizeValue(value[key]);
+            return acc;
+        }, Array.isArray(value) ? [] : {});
+    }
+    return value;
+}
+
+function sanitizeError(error) {
+    const message = sanitizeText(error?.message || String(error));
+    if (error instanceof Error) {
+        const sanitized = new Error(message);
+        sanitized.stack = error.stack;
+        return sanitized;
+    }
+    return new Error(message);
+}
+
 // DOM Elements
 const elements = {
     schedulerStatus: document.getElementById('scheduler-status'),
@@ -54,7 +96,7 @@ async function apiCall(endpoint, method = 'GET', data = null) {
         }
         
         const response = await fetch(`${API_BASE}${endpoint}`, options);
-        const result = await response.json();
+        const result = sanitizeValue(await response.json());
         
         if (!response.ok) {
             throw new Error(result.error || `HTTP ${response.status}`);
@@ -62,8 +104,9 @@ async function apiCall(endpoint, method = 'GET', data = null) {
         
         return result;
     } catch (error) {
-        console.error('API Error:', error);
-        throw error;
+        const safeError = sanitizeError(error);
+        console.error('API Error:', safeError.message);
+        throw safeError;
     }
 }
 

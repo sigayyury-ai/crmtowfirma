@@ -2708,7 +2708,7 @@ class InvoiceProcessingService {
       
       // Логируем весь XML
       logger.info('📄 FULL XML PAYLOAD:');
-      console.log('XML PAYLOAD:\n' + xmlPayload);
+      logger.debug('XML payload prepared for wFirma');
 
       // Используем правильный XML endpoint для Proforma
       const endpoint = `/invoices/add?outputFormat=xml&inputFormat=xml&company_id=${this.wfirmaClient.companyId}`;
