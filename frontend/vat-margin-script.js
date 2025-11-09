@@ -5,6 +5,8 @@ let paymentsLoaded = false;
 let productsLoaded = false;
 let paymentReportLoaded = false;
 let activeTab = 'report2';
+let deletedTabInitialized = false;
+let deletedTabAutoLoaded = false;
 
 const paymentsState = {
   items: [],
@@ -25,6 +27,11 @@ const paymentReportState = {
   summary: null,
   filters: null,
   includeAllStatuses: false
+};
+
+const deletedProformasState = {
+  isLoading: false,
+  lastResult: null
 };
 
 function saveSelectedPeriod() {
@@ -77,7 +84,17 @@ function cacheDom() {
     paymentReportContainer: document.getElementById('payment-report-container'),
     paymentReportSummary: document.getElementById('payment-report-summary'),
     togglePaymentStatus: document.getElementById('toggle-payment-status'),
-    exportPaymentReport: document.getElementById('export-payment-report')
+    exportPaymentReport: document.getElementById('export-payment-report'),
+    refreshDeleted: document.getElementById('refresh-deleted'),
+    exportDeleted: document.getElementById('export-deleted'),
+    deletedClearLog: document.getElementById('deleted-clear-log'),
+    deletedDateFrom: document.getElementById('deleted-date-from'),
+    deletedDateTo: document.getElementById('deleted-date-to'),
+    deletedStatus: document.getElementById('deleted-status'),
+    deletedSearch: document.getElementById('deleted-search'),
+    deletedTable: document.getElementById('deleted-table'),
+    deletedCount: document.getElementById('deleted-count'),
+    deletedLog: document.getElementById('deleted-log')
   };
 }
 
@@ -102,6 +119,8 @@ function bindEvents() {
   elements.exportPayments?.addEventListener('click', exportPaymentsCsv);
   elements.bankCsvInput?.addEventListener('change', handleCsvUpload);
   elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
+
+  initDeletedTab();
 
   [elements.monthSelect, elements.yearSelect].forEach((select) => {
     select?.addEventListener('change', () => {
@@ -147,11 +166,231 @@ function switchTab(tabName) {
     return;
   }
 
+  if (tabName === 'deleted') {
+    initDeletedTab();
+    if (!deletedTabAutoLoaded) {
+      deletedTabAutoLoaded = true;
+      loadDeletedProformas();
+    }
+    return;
+  }
+
   if (tabName === 'payments' && !paymentsLoaded) {
     loadPaymentsData();
     paymentsLoaded = true;
   }
 }
+
+function initDeletedTab() {
+  if (deletedTabInitialized) return;
+
+  const hasRequiredElements = elements.refreshDeleted
+    && elements.deletedTable
+    && elements.deletedLog;
+
+  if (!hasRequiredElements) {
+    return;
+  }
+
+  setDeletedDefaultDates();
+
+  elements.refreshDeleted?.addEventListener('click', () => loadDeletedProformas());
+  elements.deletedClearLog?.addEventListener('click', clearDeletedLog);
+  elements.deletedStatus?.addEventListener('change', handleDeletedFilterChange);
+  elements.deletedDateFrom?.addEventListener('change', handleDeletedFilterChange);
+  elements.deletedDateTo?.addEventListener('change', handleDeletedFilterChange);
+  elements.deletedSearch?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      loadDeletedProformas();
+    }
+  });
+
+  addDeletedLog('info', 'Готово к загрузке данных');
+  deletedTabInitialized = true;
+}
+
+function setDeletedDefaultDates() {
+  if (!elements.deletedDateFrom || !elements.deletedDateTo) return;
+
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const format = (date) => date.toISOString().slice(0, 10);
+
+  elements.deletedDateFrom.value = format(start);
+  elements.deletedDateTo.value = format(now);
+}
+
+function handleDeletedFilterChange() {
+  if (deletedProformasState.isLoading) return;
+  loadDeletedProformas();
+}
+
+function buildDeletedQueryParams() {
+  const params = new URLSearchParams();
+  params.set('page', '1');
+  params.set('pageSize', '100');
+
+  const dateFrom = elements.deletedDateFrom?.value;
+  const dateTo = elements.deletedDateTo?.value;
+  const status = elements.deletedStatus?.value;
+  const search = elements.deletedSearch?.value?.trim();
+
+  if (dateFrom) params.set('startDate', dateFrom);
+  if (dateTo) params.set('endDate', dateTo);
+  if (status && status !== 'all') params.set('status', status);
+  if (search) params.set('search', search);
+
+  return params;
+}
+
+async function loadDeletedProformas() {
+  const hasDom = elements.deletedTable
+    && elements.deletedLog
+    && elements.refreshDeleted;
+
+  if (!hasDom) {
+    return;
+  }
+
+  if (deletedProformasState.isLoading) {
+    return;
+  }
+
+  try {
+    deletedProformasState.isLoading = true;
+    setButtonLoading(elements.refreshDeleted, true, 'Загрузка...');
+    addDeletedLog('info', 'Загружаем список удалённых проформ...');
+    elements.exportDeleted && (elements.exportDeleted.disabled = true);
+
+    const params = buildDeletedQueryParams();
+    const response = await fetch(`${API_BASE}/vat-margin/deleted-proformas?${params.toString()}`);
+    const result = await response.json();
+
+    if (!response.ok || !result?.success) {
+      throw new Error(result?.error || `HTTP ${response.status}`);
+    }
+
+    deletedProformasState.lastResult = result;
+    renderDeletedTable(Array.isArray(result.data) ? result.data : []);
+    if (elements.deletedCount) {
+      const total = Number.isFinite(result.total) ? result.total : 0;
+      elements.deletedCount.textContent = `${total} записей`;
+    }
+    addDeletedLog('success', `Загружено ${result.total ?? 0} записей`);
+    if (elements.exportDeleted) {
+      elements.exportDeleted.disabled = !(result.total > 0);
+    }
+  } catch (error) {
+    console.error('Failed to load deleted proformas', error);
+    renderDeletedError(error.message);
+    addDeletedLog('error', `Ошибка загрузки: ${error.message}`);
+  } finally {
+    deletedProformasState.isLoading = false;
+    setButtonLoading(elements.refreshDeleted, false);
+  }
+}
+
+function renderDeletedTable(rows = []) {
+  if (!elements.deletedTable) return;
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    elements.deletedTable.innerHTML = '<div class="placeholder">По заданным фильтрам ничего не найдено</div>';
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'data-table';
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Номер</th>
+        <th>Покупатель</th>
+        <th>Сумма</th>
+        <th>Платежи</th>
+        <th>Баланс</th>
+        <th>Валюта</th>
+        <th>Удалена</th>
+        <th>Выставлена</th>
+        <th>Сделка</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(renderDeletedRow).join('')}
+    </tbody>
+  `;
+
+  elements.deletedTable.innerHTML = '';
+  elements.deletedTable.appendChild(table);
+}
+
+function renderDeletedRow(row) {
+  const currency = row.currency || 'PLN';
+  const formatter = new Intl.NumberFormat('ru-RU', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2
+  });
+
+  const formatNumber = (value) => {
+    if (value === null || value === undefined) {
+      return '—';
+    }
+    return formatter.format(value);
+  };
+
+  const deletedAt = row.deletedAt ? formatDateTime(row.deletedAt) : '—';
+  const issuedAt = row.issuedAt ? formatDate(row.issuedAt) : '—';
+  const buyerName = row.buyerName ? escapeHtml(row.buyerName) : '';
+  const buyerEmail = row.buyerEmail ? escapeHtml(row.buyerEmail) : '';
+  const buyer = [buyerName, buyerEmail].filter(Boolean).join('<br>');
+  const number = escapeHtml(row.proformaNumber || row.fullnumber || '—');
+  const dealIdRaw = row.dealId !== undefined && row.dealId !== null ? String(row.dealId) : '';
+  const dealId = dealIdRaw.trim();
+  const dealLink = dealId
+    ? `<a href="https://comoon.pipedrive.com/deal/${encodeURIComponent(dealId)}" target="_blank" rel="noopener">Deal ${escapeHtml(dealId)}</a>`
+    : '—';
+
+  return `
+    <tr>
+      <td>${number}</td>
+      <td>${buyer || '—'}</td>
+      <td>${formatNumber(row.total)}</td>
+      <td>${formatNumber(row.paymentsTotal)}</td>
+      <td>${formatNumber(row.balance)}</td>
+      <td>${escapeHtml(currency)}</td>
+      <td>${deletedAt}</td>
+      <td>${issuedAt}</td>
+      <td>${dealLink}</td>
+    </tr>
+  `;
+}
+
+function renderDeletedError(message) {
+  const safeMessage = escapeHtml(message || 'Неизвестная ошибка');
+  elements.deletedTable && (elements.deletedTable.innerHTML = `<div class="error-box">${safeMessage}</div>`);
+  if (elements.deletedCount) {
+    elements.deletedCount.textContent = '0 записей';
+  }
+}
+
+function addDeletedLog(type, message) {
+  if (!elements.deletedLog) return;
+
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${type}`;
+  const timestamp = new Date().toLocaleTimeString();
+  entry.innerHTML = `<span class="timestamp">[${timestamp}]</span>${message}`;
+  elements.deletedLog.appendChild(entry);
+  elements.deletedLog.scrollTop = elements.deletedLog.scrollHeight;
+}
+
+function clearDeletedLog() {
+  if (!elements.deletedLog) return;
+  elements.deletedLog.innerHTML = '';
+  addDeletedLog('info', 'Лог очищен');
+}
+
 
 function initMonthYearSelectors() {
   if (!elements.monthSelect || !elements.yearSelect) return;
@@ -159,16 +398,34 @@ function initMonthYearSelectors() {
   const today = new Date();
   const storedMonth = window.localStorage.getItem('vatMargin.month');
   const storedYear = window.localStorage.getItem('vatMargin.year');
-  const currentMonth = storedMonth || String(today.getMonth() + 1);
-  const boundedYear = Math.min(2030, Math.max(2025, today.getFullYear()));
-  const currentYear = storedYear || String(boundedYear);
 
-  if (!elements.monthSelect.value) {
-    elements.monthSelect.value = currentMonth;
+  const monthOptions = Array.from(elements.monthSelect.options ?? []).map((option) => option.value);
+  const yearOptions = Array.from(elements.yearSelect.options ?? []).map((option) => option.value);
+
+  const defaultMonth = String(today.getMonth() + 1);
+  const initialMonth = monthOptions.includes(storedMonth) ? storedMonth : defaultMonth;
+  const selectedMonth = monthOptions.includes(initialMonth) ? initialMonth : (monthOptions[0] || '');
+
+  const yearFallback = (() => {
+    const numericYears = yearOptions.map(Number).filter(Number.isFinite);
+    if (numericYears.length === 0) {
+      return String(today.getFullYear());
+    }
+    const minYear = Math.min(...numericYears);
+    const maxYear = Math.max(...numericYears);
+    const bounded = Math.min(maxYear, Math.max(minYear, today.getFullYear()));
+    return String(bounded);
+  })();
+
+  const initialYear = yearOptions.includes(storedYear) ? storedYear : yearFallback;
+  const selectedYear = yearOptions.includes(initialYear) ? initialYear : (yearOptions[0] || '');
+
+  if (selectedMonth) {
+    elements.monthSelect.value = selectedMonth;
   }
 
-  if (!elements.yearSelect.value) {
-    elements.yearSelect.value = currentYear;
+  if (selectedYear) {
+    elements.yearSelect.value = selectedYear;
   }
 
   saveSelectedPeriod();
@@ -670,6 +927,13 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '—';
   return date.toLocaleDateString('ru-RU');
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU');
 }
 
 function formatPaymentCount(count) {

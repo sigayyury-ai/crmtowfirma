@@ -11,8 +11,8 @@
 <body>
     <div class="container">
         <nav class="main-nav">
-            <a href="/" class="nav-link">🔗 Pipedrive ↔ wFirma</a>
-            <a href="/vat-margin.html" class="nav-link active">📊 VAT Margin Tracker</a>
+            <a href="/vat-margin.html" class="nav-link active">Отчеты</a>
+            <a href="/" class="nav-link">Автоматизация и интеграции</a>
         </nav>
         <header>
             <h1>📊 VAT Margin Tracker</h1>
@@ -32,12 +32,52 @@
                     <div class="section-header">
                         <h2>🧾 Удалённые проформы</h2>
                         <div class="controls">
-                            <a class="btn btn-secondary" href="/deleted-proformas.html" target="_blank" rel="noopener noreferrer">Открыть полный отчёт</a>
+                            <button id="refresh-deleted" class="btn btn-primary">🔄 Обновить</button>
+                            <button id="export-deleted" class="btn btn-secondary" disabled>⬇️ Экспорт CSV</button>
                         </div>
                     </div>
-                    <div class="placeholder">
-                        Отчёт об удалённых проформах открывается в новой вкладке. Используйте кнопку выше.
+
+                    <div class="filters-grid deleted-filters">
+                        <div class="filter-field">
+                            <label for="deleted-date-from">Дата удаления с</label>
+                            <input type="date" id="deleted-date-from">
+                        </div>
+                        <div class="filter-field">
+                            <label for="deleted-date-to">Дата удаления по</label>
+                            <input type="date" id="deleted-date-to">
+                        </div>
+                        <div class="filter-field">
+                            <label for="deleted-status">Статус</label>
+                            <select id="deleted-status">
+                                <option value="all">Все</option>
+                                <option value="deleted" selected>Удалено</option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label for="deleted-search">Поиск (номер, покупатель, deal id)</label>
+                            <input type="text" id="deleted-search" placeholder="CO-PROF..., имя, email или deal id">
+                        </div>
                     </div>
+
+                    <section class="table-section deleted-table-section">
+                        <div class="section-header">
+                            <h3>📋 Список удалённых проформ</h3>
+                            <span id="deleted-count" class="section-subtitle">0 записей</span>
+                        </div>
+                        <div id="deleted-table" class="table-wrapper">
+                            <div class="placeholder">Данные ещё не загружены</div>
+                        </div>
+                    </section>
+
+                    <section class="logs-section deleted-logs">
+                        <div class="section-header">
+                            <h3>📝 Логи загрузки</h3>
+                            <button id="deleted-clear-log" class="btn btn-link">Очистить</button>
+                        </div>
+                        <div id="deleted-log" class="logs-container">
+                            <div class="log-entry info">Готов к загрузке данных</div>
+                        </div>
+                    </section>
                 </section>
             </div>
 

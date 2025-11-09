@@ -409,6 +409,10 @@ h2 {
     gap: 16px;
 }
 
+.deleted-proformas-section .deleted-filters {
+    margin-bottom: 24px;
+}
+
 .filter-field {
     display: flex;
     flex-direction: column;
