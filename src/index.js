@@ -7,6 +7,17 @@ const passport = require('passport');
 const logger = require('./utils/logger');
 const googleOAuthConfig = require('./config/googleOAuth');
 
+// Диагностическое логирование для рендера
+console.log('🚀 Starting application...');
+console.log('Environment check:');
+console.log('NODE_ENV:', process.env.NODE_ENV || 'not set');
+console.log('PORT:', process.env.PORT || 'not set');
+console.log('PIPEDRIVE_API_TOKEN:', process.env.PIPEDRIVE_API_TOKEN ? 'SET' : 'NOT SET');
+console.log('WFIRMA_APP_KEY:', process.env.WFIRMA_APP_KEY ? 'SET' : 'NOT SET');
+console.log('WFIRMA_COMPANY_ID:', process.env.WFIRMA_COMPANY_ID ? 'SET' : 'NOT SET');
+console.log('WFIRMA_ACCESS_KEY:', process.env.WFIRMA_ACCESS_KEY ? 'SET' : 'NOT SET');
+console.log('WFIRMA_SECRET_KEY:', process.env.WFIRMA_SECRET_KEY ? 'SET' : 'NOT SET');
+
 // Импортируем роуты и сервисы
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
@@ -17,7 +28,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Создаем экземпляр планировщика
+console.log('📋 Initializing scheduler...');
 const scheduler = new SchedulerService();
+console.log('✅ Scheduler initialized successfully');
 
 // Настройка session
 app.use(session(googleOAuthConfig.session));
@@ -111,10 +124,13 @@ app.listen(PORT, () => {
   });
   
   // Автоматически запускаем планировщик обработки счетов
+  console.log('🔄 Starting invoice processing scheduler...');
   try {
     scheduler.start();
+    console.log('✅ Invoice processing scheduler started successfully');
     logger.info('Invoice processing scheduler started automatically');
   } catch (error) {
+    console.log('❌ Failed to start invoice processing scheduler:', error.message);
     logger.error('Failed to start invoice processing scheduler:', error);
   }
 });

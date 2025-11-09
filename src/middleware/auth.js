@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const config = require('../config/googleOAuth');
@@ -156,9 +157,72 @@ const requireAuthJSON = (req, res, next) => {
   });
 };
 
+/**
+ * Облегченный middleware авторизации для прототипа VAT Margin
+ * Использует заголовок x-user-email и проверку домена
+ * Поддерживает обход через x-debug-bypass для отладки
+ */
+const requireVatAuth = (req, res, next) => {
+  const allowedDomain = process.env.VAT_MARGIN_ALLOW_DOMAIN?.trim();
+  const debugBypassToken = process.env.VAT_MARGIN_DEBUG_BYPASS_TOKEN?.trim();
+
+  if (!allowedDomain) {
+    logger.error('VAT Margin auth not configured: VAT_MARGIN_ALLOW_DOMAIN is missing');
+    return res.status(500).json({
+      success: false,
+      error: 'VAT margin auth not configured'
+    });
+  }
+
+  if (debugBypassToken && req.headers['x-debug-bypass'] === debugBypassToken) {
+    logger.warn('VAT Margin auth bypassed via debug token header');
+    return next();
+  }
+
+  const userEmail = req.headers['x-user-email'];
+
+  if (!userEmail || !userEmail.toLowerCase().endsWith(`@${allowedDomain}`)) {
+    logger.warn('VAT Margin auth forbidden', {
+      userEmail,
+      requiredDomain: allowedDomain
+    });
+
+    return res.status(403).json({
+      success: false,
+      error: 'Forbidden',
+      message: `Only ${allowedDomain} domain users are allowed`
+    });
+  }
+
+  return next();
+};
+
 module.exports = {
   passport,
   requireAuth,
-  requireAuthJSON
+  requireAuthJSON,
+  requireVatAuth
 };
+=======
+const allowedDomain = process.env.VAT_MARGIN_ALLOW_DOMAIN;
+const debugBypassToken = process.env.VAT_MARGIN_DEBUG_BYPASS_TOKEN;
+
+module.exports = function vatAuth(req, res, next) {
+  if (!allowedDomain) {
+    return res.status(500).json({ success: false, error: 'Auth not configured' });
+  }
+
+  if (debugBypassToken && req.headers['x-debug-bypass'] === debugBypassToken) {
+    return next();
+  }
+
+  const userEmail = req.headers['x-user-email'];
+  if (!userEmail || !userEmail.endsWith(`@${allowedDomain}`)) {
+    return res.status(403).json({ success: false, error: 'Forbidden' });
+  }
+
+  return next();
+};
+
+>>>>>>> 003-vat-margin-tracker
 
