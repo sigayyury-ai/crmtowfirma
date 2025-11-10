@@ -43,6 +43,56 @@ function sanitizeError(error) {
     return new Error(message);
 }
 
+const DATE_LOCALE = 'ru-RU';
+
+function formatDateTime(iso) {
+    if (!iso) return '—';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleString(DATE_LOCALE, {
+        hour12: false
+    });
+}
+
+function formatRelativeTime(iso) {
+    if (!iso) return '—';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '—';
+
+    const diffMs = date.getTime() - Date.now();
+    const absMs = Math.abs(diffMs);
+    const totalSeconds = Math.round(absMs / 1000);
+
+    let label;
+    if (totalSeconds < 60) {
+        label = '<1 мин';
+    } else {
+        const totalMinutes = Math.floor(totalSeconds / 60);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        const parts = [];
+        if (hours > 0) {
+            parts.push(`${hours} ч`);
+        }
+        if (minutes > 0) {
+            parts.push(`${minutes} мин`);
+        }
+        label = parts.join(' ') || '<1 мин';
+    }
+
+    return diffMs >= 0 ? `через ${label}` : `${label} назад`;
+}
+
+function formatRelativeStart(iso) {
+    if (!iso) return '—';
+    const dateText = formatDateTime(iso);
+    const relative = formatRelativeTime(iso);
+    if (relative === '—') {
+        return dateText;
+    }
+    return `${dateText} (${relative})`;
+}
+
 // DOM Elements
 const elements = {
     schedulerStatus: document.getElementById('scheduler-status'),
@@ -53,8 +103,6 @@ const elements = {
     logsContainer: document.getElementById('logs-container'),
     
     // Buttons
-    startScheduler: document.getElementById('start-scheduler'),
-    stopScheduler: document.getElementById('stop-scheduler'),
     refreshStatus: document.getElementById('refresh-status'),
     runPolling: document.getElementById('run-polling'),
     getPending: document.getElementById('get-pending'),
@@ -73,18 +121,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Event Listeners
 function initializeEventListeners() {
-    elements.startScheduler.addEventListener('click', startScheduler);
-    elements.stopScheduler.addEventListener('click', stopScheduler);
-    elements.refreshStatus.addEventListener('click', refreshSystemStatus);
-    elements.runPolling.addEventListener('click', runManualPolling);
-    elements.getPending.addEventListener('click', getPendingDeals);
-    elements.testApis.addEventListener('click', testAllApis);
+    elements.refreshStatus?.addEventListener('click', refreshSystemStatus);
+    elements.runPolling?.addEventListener('click', runManualPolling);
+    elements.getPending?.addEventListener('click', getPendingDeals);
+    elements.testApis?.addEventListener('click', testAllApis);
 }
 
 // API Functions
-async function apiCall(endpoint, method = 'GET', data = null) {
+async function apiCall(endpoint, method = 'GET', data = null, apiOptions = {}) {
     try {
-        const options = {
+        const { sanitize = true } = apiOptions;
+        const requestOptions = {
             method,
             headers: {
                 'Content-Type': 'application/json',
@@ -92,11 +139,12 @@ async function apiCall(endpoint, method = 'GET', data = null) {
         };
         
         if (data) {
-            options.body = JSON.stringify(data);
+            requestOptions.body = JSON.stringify(data);
         }
         
-        const response = await fetch(`${API_BASE}${endpoint}`, options);
-        const result = sanitizeValue(await response.json());
+        const response = await fetch(`${API_BASE}${endpoint}`, requestOptions);
+        const payload = await response.json();
+        const result = sanitize ? sanitizeValue(payload) : payload;
         
         if (!response.ok) {
             throw new Error(result.error || `HTTP ${response.status}`);
@@ -110,49 +158,12 @@ async function apiCall(endpoint, method = 'GET', data = null) {
     }
 }
 
-// Scheduler Functions
-async function startScheduler() {
-    try {
-        setButtonLoading(elements.startScheduler, true);
-        addLog('info', 'Запуск планировщика...');
-        
-        const result = await apiCall('/invoice-processing/start', 'POST');
-        
-        addLog('success', 'Планировщик запущен успешно');
-        refreshSystemStatus();
-        showResult('success', 'Планировщик запущен', result);
-    } catch (error) {
-        addLog('error', `Ошибка запуска планировщика: ${error.message}`);
-        showResult('error', 'Ошибка запуска планировщика', { error: error.message });
-    } finally {
-        setButtonLoading(elements.startScheduler, false);
-    }
-}
-
-async function stopScheduler() {
-    try {
-        setButtonLoading(elements.stopScheduler, true);
-        addLog('info', 'Остановка планировщика...');
-        
-        const result = await apiCall('/invoice-processing/stop', 'POST');
-        
-        addLog('success', 'Планировщик остановлен');
-        refreshSystemStatus();
-        showResult('success', 'Планировщик остановлен', result);
-    } catch (error) {
-        addLog('error', `Ошибка остановки планировщика: ${error.message}`);
-        showResult('error', 'Ошибка остановки планировщика', { error: error.message });
-    } finally {
-        setButtonLoading(elements.stopScheduler, false);
-    }
-}
-
 async function refreshSystemStatus() {
     try {
         setButtonLoading(elements.refreshStatus, true);
         
         // Get scheduler status
-        const schedulerResult = await apiCall('/invoice-processing/status');
+        const schedulerResult = await apiCall('/invoice-processing/status', 'GET', null, { sanitize: false });
         updateSchedulerStatus(schedulerResult.status);
         
         // Test APIs
@@ -273,21 +284,54 @@ async function testWfirmaApi() {
 
 // UI Update Functions
 function updateSchedulerStatus(status) {
-    if (status.isRunning) {
-        elements.schedulerStatus.textContent = '🟢 Запущен';
-        elements.schedulerStatus.className = 'status-indicator running';
-        elements.schedulerInfo.innerHTML = `
-            <div>Задач: ${status.jobsCount}</div>
-            <div>Следующий запуск: ${status.nextRuns[0]?.time || 'N/A'}</div>
-        `;
-    } else {
-        elements.schedulerStatus.textContent = '🔴 Остановлен';
-        elements.schedulerStatus.className = 'status-indicator stopped';
-        elements.schedulerInfo.innerHTML = `
-            <div>Задач: ${status.jobsCount}</div>
-            <div>Расписание: 9:00, 13:00, 18:00</div>
-        `;
+    if (!status) {
+        return;
     }
+
+    const isScheduled = Boolean(status.isScheduled);
+    const isProcessing = Boolean(status.isProcessing);
+    const indicator = elements.schedulerStatus;
+    const info = elements.schedulerInfo;
+
+    if (!indicator || !info) {
+        return;
+    }
+
+    if (isProcessing) {
+        indicator.textContent = '🟡 Выполняется';
+        indicator.className = 'status-indicator running';
+    } else if (isScheduled) {
+        indicator.textContent = '🟢 Автозапуск включен';
+        indicator.className = 'status-indicator running';
+    } else {
+        indicator.textContent = '⚠️ Автозапуск выключен';
+        indicator.className = 'status-indicator stopped';
+    }
+
+    const lastRun = formatDateTime(status.lastRunAt);
+    const nextRun = formatDateTime(status.nextRun);
+    const details = [];
+
+    if (status.currentRun) {
+        details.push(`Текущий запуск: ${formatRelativeStart(status.currentRun.startedAt)}`);
+    } else if (status.lastRunAt) {
+        details.push(`Последний запуск: ${lastRun}`);
+    } else {
+        details.push('Последний запуск: —');
+    }
+
+    details.push(`Следующий запуск: ${nextRun}`);
+
+    if (status.retryScheduled) {
+        details.push(`Повтор: ${formatDateTime(status.nextRetryAt)} (${formatRelativeTime(status.nextRetryAt)})`);
+    }
+
+    info.innerHTML = '';
+    details.forEach((line) => {
+        const row = document.createElement('div');
+        row.textContent = line;
+        info.appendChild(row);
+    });
 }
 
 function showResult(type, title, data) {
@@ -381,6 +425,7 @@ function addLog(type, message) {
 }
 
 function setButtonLoading(button, loading) {
+    if (!button) return;
     if (loading) {
         button.disabled = true;
         button.innerHTML = '<div class="loading"></div> Загрузка...';
@@ -388,8 +433,6 @@ function setButtonLoading(button, loading) {
         button.disabled = false;
         // Restore original text based on button ID
         const originalTexts = {
-            'start-scheduler': '▶️ Запустить',
-            'stop-scheduler': '⏹️ Остановить',
             'refresh-status': '🔄 Обновить статус',
             'run-polling': '🔍 Запустить Polling',
             'get-pending': '📋 Показать ожидающие',

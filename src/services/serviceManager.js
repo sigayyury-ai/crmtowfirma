@@ -3,7 +3,7 @@ const PipedriveClient = require('./pipedrive');
 const UserManagementService = require('./userManagement');
 const ProductManagementService = require('./productManagement');
 const InvoiceProcessingService = require('./invoiceProcessing');
-const SchedulerService = require('./scheduler');
+const { getScheduler } = require('./scheduler');
 const logger = require('../utils/logger');
 
 // Singleton instances
@@ -99,7 +99,7 @@ function getSchedulerService() {
   if (!wfirmaClient || !pipedriveClient) return null;
   
   try {
-    return new SchedulerService();
+    return getScheduler();
   } catch (error) {
     console.log('❌ Failed to create SchedulerService:', error.message);
     return null;

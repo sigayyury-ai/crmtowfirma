@@ -39,26 +39,25 @@
         </div>
 
         <div class="controls-section">
-            <h2>🎮 Управление</h2>
+            <h2>⚙️ Операции</h2>
             <div class="controls-grid">
                 <div class="control-group">
-                    <h3>Планировщик</h3>
+                    <h3>Состояние</h3>
                     <div class="button-group">
-                        <button id="start-scheduler" class="btn btn-success">▶️ Запустить</button>
-                        <button id="stop-scheduler" class="btn btn-danger">⏹️ Остановить</button>
                         <button id="refresh-status" class="btn btn-info">🔄 Обновить статус</button>
+                        <button id="test-apis" class="btn btn-warning">🧪 Тест API</button>
                     </div>
                 </div>
-                
+
                 <div class="control-group">
                     <h3>Ручная обработка</h3>
                     <div class="button-group">
                         <button id="run-polling" class="btn btn-primary">🔍 Запустить Polling</button>
                         <button id="get-pending" class="btn btn-secondary">📋 Показать ожидающие</button>
-                        <button id="test-apis" class="btn btn-warning">🧪 Тест API</button>
                     </div>
                 </div>
             </div>
+            <p class="controls-hint">Планировщик запускается автоматически каждый час. Используйте ручной polling только для оперативных расследований.</p>
         </div>
 
         <div class="results-section">

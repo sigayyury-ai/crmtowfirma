@@ -7,7 +7,7 @@ const PipedriveClient = require('../services/pipedrive');
 const UserManagementService = require('../services/userManagement');
 const ProductManagementService = require('../services/productManagement');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
-const SchedulerService = require('../services/scheduler');
+const { getScheduler } = require('../services/scheduler');
 const PaymentService = require('../services/payments/paymentService');
 const { WfirmaLookup } = require('../services/vatMargin/wfirmaLookup');
 const ProductReportService = require('../services/vatMargin/productReportService');
@@ -20,7 +20,7 @@ const pipedriveClient = new PipedriveClient();
 const userManagement = new UserManagementService();
 const productManagement = new ProductManagementService();
 const invoiceProcessing = new InvoiceProcessingService();
-const scheduler = new SchedulerService();
+const scheduler = getScheduler();
 const paymentService = new PaymentService();
 const productReportService = new ProductReportService();
 const PaymentRevenueReportService = require('../services/vatMargin/paymentRevenueReportService');
@@ -304,7 +304,22 @@ router.get('/pipedrive/persons/:id', async (req, res) => {
 router.get('/invoice-processing/status', (req, res) => {
   try {
     const status = scheduler.getStatus();
-    res.json({ success: true, status });
+    res.json({
+      success: true,
+      status: {
+        isScheduled: status.isScheduled,
+        isProcessing: status.isProcessing,
+        lastRunAt: status.lastRunAt,
+        nextRun: status.nextRun,
+        retryScheduled: status.retryScheduled,
+        nextRetryAt: status.nextRetryAt,
+        currentRun: status.currentRun,
+        lastResult: status.lastResult,
+        historySize: status.historySize,
+        timezone: status.timezone,
+        cronExpression: status.cronExpression
+      }
+    });
   } catch (error) {
     logger.error('Error getting scheduler status:', error);
     res.status(500).json({
@@ -316,41 +331,18 @@ router.get('/invoice-processing/status', (req, res) => {
 });
 
 /**
- * POST /api/invoice-processing/start
- * Запустить планировщик обработки счетов
+ * GET /api/invoice-processing/scheduler-history
+ * Получить историю запусков планировщика
  */
-router.post('/invoice-processing/start', (req, res) => {
+router.get('/invoice-processing/scheduler-history', (req, res) => {
   try {
-    scheduler.start();
+    const history = scheduler.getRunHistory();
     res.json({
       success: true,
-      message: 'Invoice processing scheduler started',
-      status: scheduler.getStatus()
+      history
     });
   } catch (error) {
-    logger.error('Error starting scheduler:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-      message: error.message
-    });
-  }
-});
-
-/**
- * POST /api/invoice-processing/stop
- * Остановить планировщик обработки счетов
- */
-router.post('/invoice-processing/stop', (req, res) => {
-  try {
-    scheduler.stop();
-    res.json({
-      success: true,
-      message: 'Invoice processing scheduler stopped',
-      status: scheduler.getStatus()
-    });
-  } catch (error) {
-    logger.error('Error stopping scheduler:', error);
+    logger.error('Error getting scheduler history:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',
@@ -370,12 +362,20 @@ router.post('/invoice-processing/run', async (req, res) => {
     logger.info(`Manual invoice processing triggered with period: ${period}`);
     
     const result = await scheduler.runManualProcessing(period);
-    
-    if (result && result.success) {
-      res.json(result);
-    } else {
-      res.status(500).json(result || { success: false, error: 'Unknown error' });
+
+    if (result?.skipped) {
+      return res.status(409).json({
+        success: false,
+        error: 'Processing already in progress',
+        reason: result.reason || 'processing_in_progress'
+      });
     }
+
+    if (result && result.success) {
+      return res.json(result);
+    }
+
+    res.status(500).json(result || { success: false, error: 'Unknown error' });
   } catch (error) {
     logger.error('Error running manual invoice processing:', error);
     res.status(500).json({
@@ -486,14 +486,18 @@ router.get('/invoice-processing/queue', async (req, res) => {
         success: true,
         summary: {
           totalPending: queue.length,
-          nextScheduledRun: schedulerStatus.nextRuns?.[0] || null,
-          schedulerRunning: schedulerStatus.isRunning
+          nextScheduledRun: schedulerStatus.nextRun || null,
+          schedulerProcessing: schedulerStatus.isProcessing,
+          retryScheduled: schedulerStatus.retryScheduled ? schedulerStatus.nextRetryAt : null
         },
         queue: queue,
         scheduler: {
-          status: schedulerStatus.isRunning ? 'running' : 'stopped',
-          schedule: schedulerStatus.schedule,
-          nextRuns: schedulerStatus.nextRuns
+          status: schedulerStatus.isScheduled ? 'scheduled' : 'stopped',
+          lastRunAt: schedulerStatus.lastRunAt,
+          nextRun: schedulerStatus.nextRun,
+          timezone: schedulerStatus.timezone,
+          cronExpression: schedulerStatus.cronExpression,
+          historySize: schedulerStatus.historySize
         }
       });
     } else {

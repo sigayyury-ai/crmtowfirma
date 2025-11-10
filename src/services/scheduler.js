@@ -1,187 +1,346 @@
 const cron = require('node-cron');
+const { randomUUID } = require('crypto');
 const InvoiceProcessingService = require('./invoiceProcessing');
 const logger = require('../utils/logger');
 
+const DEFAULT_TIMEZONE = 'Europe/Warsaw';
+const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке hh:00
+const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
+const RETRY_DELAY_MINUTES = 15;
+
 class SchedulerService {
-  constructor() {
-    this.invoiceProcessing = new InvoiceProcessingService();
-    this.isRunning = false;
-    this.jobs = [];
-    
-    logger.info('SchedulerService initialized');
+  constructor(options = {}) {
+    this.invoiceProcessing = options.invoiceProcessingService || new InvoiceProcessingService();
+    this.timezone = options.timezone || DEFAULT_TIMEZONE;
+    this.cronExpression = options.cronExpression || CRON_EXPRESSION;
+    this.retryDelayMinutes = options.retryDelayMinutes || RETRY_DELAY_MINUTES;
+    this.historyLimit = options.historyLimit || HISTORY_LIMIT;
+
+    this.isCronScheduled = false;
+    this.isProcessing = false;
+    this.currentRun = null;
+    this.runHistory = [];
+    this.cronJob = null;
+    this.retryTimeout = null;
+    this.retryScheduled = false;
+    this.nextRetryAt = null;
+    this.lastRunAt = null;
+    this.lastResult = null;
+
+    logger.info('SchedulerService initialized', {
+      timezone: this.timezone,
+      cronExpression: this.cronExpression,
+      retryDelayMinutes: this.retryDelayMinutes
+    });
+
+    if (options.autoStart !== false) {
+      this.start();
+    }
   }
 
-  /**
-   * Запустить планировщик задач
-   */
   start() {
-    if (this.isRunning) {
-      logger.warn('Scheduler is already running');
+    if (this.isCronScheduled) {
+      logger.warn('Scheduler is already scheduled; skipping start');
       return;
     }
 
-    logger.info('Starting invoice processing scheduler...');
-
-    // Задача 1: 9:00 утра (Europe/Warsaw)
-    const job1 = cron.schedule('0 9 * * *', async () => {
-      await this.runInvoiceProcessing('morning');
-    }, {
-      scheduled: false,
-      timezone: 'Europe/Warsaw'
-    });
-
-    // Задача 2: 13:00 (Europe/Warsaw)
-    const job2 = cron.schedule('0 13 * * *', async () => {
-      await this.runInvoiceProcessing('afternoon');
-    }, {
-      scheduled: false,
-      timezone: 'Europe/Warsaw'
-    });
-
-    // Задача 3: 18:00 (Europe/Warsaw)
-    const job3 = cron.schedule('0 18 * * *', async () => {
-      await this.runInvoiceProcessing('evening');
-    }, {
-      scheduled: false,
-      timezone: 'Europe/Warsaw'
-    });
-
-    // Сохраняем ссылки на задачи
-    this.jobs = [job1, job2, job3];
-
-    // Запускаем все задачи
-    this.jobs.forEach((job, index) => {
-      job.start();
-      logger.info(`Cron job ${index + 1} started`);
-    });
-
-    this.isRunning = true;
-    logger.info('Invoice processing scheduler started successfully');
-    logger.info('Schedule: 9:00, 13:00, 18:00 (Europe/Warsaw timezone)');
-  }
-
-  /**
-   * Остановить планировщик задач
-   */
-  stop() {
-    if (!this.isRunning) {
-      logger.warn('Scheduler is not running');
-      return;
-    }
-
-    logger.info('Stopping invoice processing scheduler...');
-
-    this.jobs.forEach((job, index) => {
-      job.stop();
-      logger.info(`Cron job ${index + 1} stopped`);
-    });
-
-    this.jobs = [];
-    this.isRunning = false;
-    logger.info('Invoice processing scheduler stopped');
-  }
-
-  /**
-   * Запустить обработку счетов
-   * @param {string} period - Период выполнения (morning/afternoon/evening)
-   */
-  async runInvoiceProcessing(period) {
-    const startTime = new Date();
-    logger.info(`Starting ${period} invoice processing at ${startTime.toISOString()}`);
-
-    try {
-      const result = await this.invoiceProcessing.processPendingInvoices();
-
-      const endTime = new Date();
-      const duration = endTime - startTime;
-
-      if (result.success) {
-        logger.info(`${period} invoice processing completed successfully in ${duration}ms`);
-        logger.info(`Summary: ${result.summary.successful} successful, ${result.summary.errors} errors`);
-        
-        // Логируем детали результатов
-        result.results.forEach(r => {
-          if (r.success) {
-            logger.info(`✅ Deal ${r.dealId}: ${r.message}`);
-          } else {
-            logger.error(`❌ Deal ${r.dealId}: ${r.error}`);
-          }
+    logger.info('Configuring hourly cron job for invoice processing');
+    this.cronJob = cron.schedule(
+      this.cronExpression,
+      () => {
+        this.runCycle({ trigger: 'cron', retryAttempt: 0 }).catch((error) => {
+          logger.error('Unexpected error in cron cycle:', error);
         });
-        
-        return result;
-      } else {
-        logger.error(`${period} invoice processing failed: ${result.error}`);
-        return result;
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
       }
+    );
 
-    } catch (error) {
-      const endTime = new Date();
-      const duration = endTime - startTime;
-      logger.error(`${period} invoice processing crashed after ${duration}ms:`, error);
+    this.isCronScheduled = true;
+    logger.info('Hourly cron job scheduled successfully', {
+      cronExpression: this.cronExpression,
+      timezone: this.timezone
+    });
+
+    // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
+    setImmediate(() => {
+      this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
+        logger.error('Startup invoice processing failed:', error);
+      });
+    });
+  }
+
+  stop() {
+    if (this.cronJob) {
+      this.cronJob.stop();
+      this.cronJob = null;
+    }
+
+    if (this.retryTimeout) {
+      clearTimeout(this.retryTimeout);
+      this.retryTimeout = null;
+    }
+
+    this.isCronScheduled = false;
+    this.retryScheduled = false;
+    this.nextRetryAt = null;
+
+    logger.info('Scheduler stopped');
+  }
+
+  async runCycle({ trigger = 'manual', retryAttempt = 0 }) {
+    if (this.isProcessing) {
+      logger.warn('Invoice processing already in progress. Skipping new run.', { trigger });
+      this.recordHistoryEntry({
+        status: 'skipped',
+        trigger,
+        retryAttempt,
+        message: 'Skipped due to ongoing processing'
+      });
       return {
         success: false,
-        error: error.message,
+        skipped: true,
+        reason: 'processing_in_progress'
+      };
+    }
+
+    this.isProcessing = true;
+    this.retryScheduled = false;
+    this.nextRetryAt = null;
+
+    const startedAt = new Date();
+    const runId = randomUUID();
+    logger.info('Invoice processing run started', { trigger, retryAttempt, runId });
+
+    const entry = {
+      id: runId,
+      trigger,
+      retryAttempt,
+      startedAt: startedAt.toISOString(),
+      finishedAt: null,
+      durationMs: null,
+      status: 'running',
+      processed: {
+        total: 0,
+        successful: 0,
+        errors: 0,
+        deletions: 0
+      },
+      errors: [],
+      message: null
+    };
+    this.currentRun = entry;
+
+    let result;
+
+    try {
+      result = await this.invoiceProcessing.processPendingInvoices();
+      const finishedAt = new Date();
+      const durationMs = finishedAt - startedAt;
+
+      entry.finishedAt = finishedAt.toISOString();
+      entry.durationMs = durationMs;
+      entry.status = result.success ? 'success' : 'error';
+      entry.processed = {
+        total: result.summary?.total ?? result.summary?.successful + result.summary?.errors ?? 0,
+        successful: result.summary?.successful ?? 0,
+        errors: result.summary?.errors ?? 0,
+        deletions: result.summary?.deletions ?? 0
+      };
+      entry.message = result.success
+        ? `Processed ${entry.processed.successful} deals`
+        : result.error || 'Processing failed';
+
+      if (Array.isArray(result.results)) {
+        entry.errors = result.results
+          .filter((item) => !item.success)
+          .map((item) => item.error || item.message || 'Unknown error');
+      }
+
+      this.lastResult = result;
+      this.lastRunAt = finishedAt.toISOString();
+
+      if (!result.success && trigger === 'cron' && retryAttempt === 0) {
+        this.scheduleRetry();
+      }
+
+      if (!result.success) {
+        logger.error('Invoice processing finished with errors', {
+          trigger,
+          retryAttempt,
+          runId,
+          durationMs,
+          error: entry.message
+        });
+      } else {
+        logger.info('Invoice processing finished successfully', {
+          trigger,
+          retryAttempt,
+          runId,
+          durationMs
+        });
+      }
+
+      return result;
+    } catch (error) {
+      const finishedAt = new Date();
+      const durationMs = finishedAt - startedAt;
+
+      entry.finishedAt = finishedAt.toISOString();
+      entry.durationMs = durationMs;
+      entry.status = 'error';
+      entry.message = error.message || 'Unexpected error during invoice processing';
+      entry.errors = [error.message || 'Unexpected error'];
+
+      this.lastResult = {
+        success: false,
+        error: entry.message,
         summary: { successful: 0, errors: 1 },
         results: []
       };
+      this.lastRunAt = finishedAt.toISOString();
+
+      logger.error('Invoice processing crashed', {
+        trigger,
+        retryAttempt,
+        runId,
+        durationMs,
+        error: error.message
+      });
+
+      if (trigger === 'cron' && retryAttempt === 0) {
+        this.scheduleRetry();
+      }
+
+      return this.lastResult;
+    } finally {
+      this.currentRun = null;
+      this.isProcessing = false;
+      this.recordHistoryEntry(entry);
     }
   }
 
-  /**
-   * Получить статус планировщика
-   * @returns {Object} - Статус планировщика
-   */
+  scheduleRetry() {
+    if (this.retryScheduled || this.retryTimeout) {
+      logger.warn('Retry already scheduled, skipping duplicate retry setup');
+      return;
+    }
+
+    const delayMs = this.retryDelayMinutes * 60 * 1000;
+    const nextRetryAt = new Date(Date.now() + delayMs);
+    this.retryScheduled = true;
+    this.nextRetryAt = nextRetryAt.toISOString();
+
+    logger.warn('Scheduling retry for invoice processing', {
+      delayMinutes: this.retryDelayMinutes,
+      nextRetryAt: this.nextRetryAt
+    });
+
+    this.retryTimeout = setTimeout(() => {
+      this.retryTimeout = null;
+      this.runCycle({ trigger: 'retry', retryAttempt: 1 }).catch((error) => {
+        logger.error('Retry invoice processing failed with unexpected error:', error);
+      });
+    }, delayMs);
+  }
+
+  recordHistoryEntry(entry) {
+    const snapshot = { ...entry };
+
+    if (!snapshot.id) {
+      snapshot.id = randomUUID();
+    }
+
+    if (!snapshot.startedAt) {
+      snapshot.startedAt = new Date().toISOString();
+    }
+
+    if (!snapshot.finishedAt && snapshot.status !== 'running') {
+      snapshot.finishedAt = new Date().toISOString();
+    }
+
+    if (
+      typeof snapshot.durationMs !== 'number' &&
+      snapshot.finishedAt &&
+      snapshot.startedAt
+    ) {
+      snapshot.durationMs =
+        new Date(snapshot.finishedAt).getTime() - new Date(snapshot.startedAt).getTime();
+    }
+
+    this.runHistory.push(snapshot);
+    while (this.runHistory.length > this.historyLimit) {
+      this.runHistory.shift();
+    }
+  }
+
   getStatus() {
+    const nextRuns = [];
+
+    if (this.cronJob && typeof this.cronJob.nextDates === 'function') {
+      try {
+        const nextDate = this.cronJob.nextDates();
+        if (nextDate) {
+          const nextRunDate = Array.isArray(nextDate) ? nextDate[0].toDate() : nextDate.toDate();
+          nextRuns.push({
+            nextRun: nextRunDate.toISOString()
+          });
+        }
+      } catch (error) {
+        logger.debug('Unable to compute next cron run via nextDates:', error.message);
+      }
+    }
+
+    if (!nextRuns.length) {
+      const manualNext = this.computeNextRunFallback();
+      if (manualNext) {
+        nextRuns.push({ nextRun: manualNext.toISOString() });
+      }
+    }
+
     return {
-      isRunning: this.isRunning,
-      jobsCount: this.jobs.length,
-      schedule: [
-        { time: '09:00', period: 'morning', timezone: 'Europe/Warsaw' },
-        { time: '13:00', period: 'afternoon', timezone: 'Europe/Warsaw' },
-        { time: '18:00', period: 'evening', timezone: 'Europe/Warsaw' }
-      ],
-      nextRuns: this.getNextRunTimes()
+      isScheduled: this.isCronScheduled,
+      isProcessing: this.isProcessing,
+      lastRunAt: this.lastRunAt,
+      nextRun: nextRuns[0]?.nextRun || null,
+      retryScheduled: this.retryScheduled,
+      nextRetryAt: this.nextRetryAt,
+      currentRun: this.currentRun,
+      lastResult: this.lastResult,
+      historySize: this.runHistory.length,
+      timezone: this.timezone,
+      cronExpression: this.cronExpression
     };
   }
 
-  /**
-   * Получить время следующих запусков
-   * @returns {Array} - Массив времени следующих запусков
-   */
-  getNextRunTimes() {
-    const now = new Date();
-    const times = ['09:00', '13:00', '18:00'];
-    const nextRuns = [];
-
-    times.forEach(time => {
-      const [hours, minutes] = time.split(':').map(Number);
-      const nextRun = new Date(now);
-      nextRun.setHours(hours, minutes, 0, 0);
-
-      // Если время уже прошло сегодня, планируем на завтра
-      if (nextRun <= now) {
-        nextRun.setDate(nextRun.getDate() + 1);
-      }
-
-      nextRuns.push({
-        time: time,
-        nextRun: nextRun.toISOString(),
-        inHours: Math.round((nextRun - now) / (1000 * 60 * 60) * 100) / 100
-      });
-    });
-
-    return nextRuns.sort((a, b) => new Date(a.nextRun) - new Date(b.nextRun));
+  getRunHistory() {
+    return [...this.runHistory].reverse();
   }
 
-  /**
-   * Запустить обработку счетов вручную (для тестирования)
-   * @param {string} period - Период выполнения
-   * @returns {Promise<Object>} - Результат обработки
-   */
-  async runManualProcessing(period = 'manual') {
-    logger.info(`Starting manual ${period} invoice processing...`);
-    return await this.runInvoiceProcessing(period);
+  computeNextRunFallback() {
+    const now = new Date();
+    const next = new Date(now);
+    next.setUTCMinutes(0, 0, 0);
+    next.setUTCHours(next.getUTCHours() + 1);
+    return next;
+  }
+
+  async runManualProcessing(label = 'manual') {
+    logger.info('Manual invoice processing requested', { label });
+    return this.runCycle({ trigger: label, retryAttempt: 0 });
   }
 }
 
+let sharedScheduler = null;
+
+function getScheduler(options) {
+  if (!sharedScheduler) {
+    sharedScheduler = new SchedulerService(options);
+  }
+  return sharedScheduler;
+}
+
 module.exports = SchedulerService;
+module.exports.getScheduler = getScheduler;

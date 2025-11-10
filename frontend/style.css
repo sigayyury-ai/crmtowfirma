@@ -166,6 +166,12 @@ h2 {
     gap: 10px;
 }
 
+.controls-hint {
+    margin-top: 18px;
+    font-size: 0.9rem;
+    color: #718096;
+}
+
 /* Buttons */
 .btn {
     padding: 12px 20px;

@@ -22,16 +22,16 @@ console.log('WFIRMA_SECRET_KEY:', process.env.WFIRMA_SECRET_KEY ? 'SET' : 'NOT S
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
 const { requireAuth } = require('./middleware/auth');
-const SchedulerService = require('./services/scheduler');
+const { getScheduler } = require('./services/scheduler');
 
 const app = express();
 // Доверяем цепочке прокси (Cloudflare → Render), чтобы secure-cookie сессии корректно работал в production.
 app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 
-// Создаем экземпляр планировщика
+// Создаем/получаем singleton планировщика
 console.log('📋 Initializing scheduler...');
-const scheduler = new SchedulerService();
+const scheduler = getScheduler();
 console.log('✅ Scheduler initialized successfully');
 
 // Настройка session
@@ -125,16 +125,10 @@ app.listen(PORT, () => {
     GOOGLE_CALLBACK_URL: process.env.GOOGLE_CALLBACK_URL || 'not set'
   });
   
-  // Автоматически запускаем планировщик обработки счетов
-  console.log('🔄 Starting invoice processing scheduler...');
-  try {
-    scheduler.start();
-    console.log('✅ Invoice processing scheduler started successfully');
-    logger.info('Invoice processing scheduler started automatically');
-  } catch (error) {
-    console.log('❌ Failed to start invoice processing scheduler:', error.message);
-    logger.error('Failed to start invoice processing scheduler:', error);
-  }
+  logger.info('Invoice processing scheduler is configured for automatic hourly runs', {
+    timezone: scheduler.timezone,
+    cronExpression: scheduler.cronExpression
+  });
 });
 
 // Graceful shutdown
