@@ -25,8 +25,8 @@ const { requireAuth } = require('./middleware/auth');
 const SchedulerService = require('./services/scheduler');
 
 const app = express();
-// Доверяем первому прокси (Render) — иначе secure-cookie сессии не устанавливается в production.
-app.set('trust proxy', 1);
+// Доверяем цепочке прокси (Cloudflare → Render), чтобы secure-cookie сессии корректно работал в production.
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 
 // Создаем экземпляр планировщика
