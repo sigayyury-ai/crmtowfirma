@@ -267,7 +267,8 @@ class PipedriveClient {
         subject: taskData.subject,
         dueDate: taskData.due_date,
         type: taskData.type,
-        assignedUser: taskData.assigned_to_user_id
+        assignedUser: taskData.assigned_to_user_id,
+        personId: taskData.person_id || null
       });
 
       const bodyData = {
@@ -283,6 +284,14 @@ class PipedriveClient {
 
       if (taskData.assigned_to_user_id) {
         bodyData.assigned_to_user_id = taskData.assigned_to_user_id;
+      }
+
+      if (taskData.person_id) {
+        bodyData.person_id = taskData.person_id;
+      }
+
+      if (taskData.public_description) {
+        bodyData.public_description = taskData.public_description;
       }
 
       const response = await this.client.post('/activities', bodyData, {

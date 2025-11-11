@@ -1706,7 +1706,7 @@ class InvoiceProcessingService {
           : `Проформа: ${deal.title || ''}. Проверить поступление оплаты до ${dueDateStr}.`
       };
 
-      const result = await this.pipedriveClient.createActivity(activityData);
+      const result = await this.pipedriveClient.createTask(activityData);
 
       if (!result.success) {
         return {
@@ -1718,7 +1718,7 @@ class InvoiceProcessingService {
       const logLabel = activitySuffix === 'second' ? 'Second payment check activity created' : 'Payment check activity created';
       logger.info(logLabel, {
         dealId: deal.id,
-        activityId: result.activity?.id,
+        activityId: result.task?.id,
         dueDate: dueDateStr,
         type: activitySuffix,
         secondPaymentDate: secondPaymentDateStr || null
@@ -1726,7 +1726,7 @@ class InvoiceProcessingService {
 
       return {
         success: true,
-        activity: result.activity,
+        activity: result.task,
         schedule: activitySuffix === 'first'
           ? {
               dueDate: dueDateStr,
