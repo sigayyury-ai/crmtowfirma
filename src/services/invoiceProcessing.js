@@ -1215,6 +1215,7 @@ class InvoiceProcessingService {
       
       // 10. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
+      let tasksResult = null;
       try {
         logger.info('Checking Telegram notification requirements:', {
           dealId: fullDeal.id,
@@ -1275,8 +1276,92 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
       
-      // 11. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
-      let tasksResult = null;
+      // 11. Отправляем документ по email через wFirma API
+      // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
+      const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
+      
+      // Используем номер проформы (PRO-...) вместо ID, если он доступен
+      const invoiceNumberForEmail = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
+      
+      const emailResult = await this.sendInvoiceByEmail(
+        invoiceResult.invoiceId,
+        customerEmail,
+        {
+          subject: 'COMOON /  INVOICE  / Комьюнити для удаленщиков',
+          body: `Привет. Внимательно посмотри, пожалуйста, сроки оплаты и график платежей. А также обязательно в назначении платежа укажи номер инвойса - ${invoiceNumberForEmail}.`
+        }
+      );
+      
+      if (!emailResult.success) {
+        logger.warn(`Invoice created but email sending failed: ${emailResult.error}`);
+        // Не считаем это критической ошибкой - проформа уже создана
+      } else {
+        logger.info(`Invoice ${invoiceResult.invoiceId} sent successfully by email${customerEmail ? ` to ${customerEmail}` : ''}`);
+      }
+
+      // 12. Создаем (если нужно) этикетку по названию сделки без дублирования
+      const labelResult = await this.ensureLabelForDeal(fullDeal, product);
+      if (!labelResult.success) {
+        logger.info('Label creation skipped or failed', {
+          dealId: fullDeal.id,
+          invoiceId: invoiceResult.invoiceId,
+          error: labelResult.error
+        });
+      } else {
+        logger.info('Label ensured for deal', {
+          dealId: fullDeal.id,
+          labelId: labelResult.labelId,
+          labelCreated: labelResult.created
+        });
+      }
+      
+      // КРИТИЧНО: Снимаем триггер в CRM ТОЛЬКО после успешного создания проформы в wFirma
+      // Проверяем еще раз, что invoiceId существует перед установкой "Done"
+      if (invoiceResult.invoiceId) {
+        logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
+        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId);
+        if (!clearTriggerResult.success) {
+          logger.warn('Failed to clear invoice trigger in Pipedrive', {
+            dealId: fullDeal.id,
+            invoiceId: invoiceResult.invoiceId,
+            error: clearTriggerResult.error
+          });
+          // Не считаем это критической ошибкой - проформа уже создана
+        } else {
+          logger.info(`Invoice trigger cleared successfully for deal ${fullDeal.id} (invoice ID: ${invoiceResult.invoiceId})`);
+        }
+      } else {
+        logger.error(`Cannot clear invoice trigger: invoiceId is missing for deal ${fullDeal.id}`);
+        // Не устанавливаем "Done", так как проформа не создана
+      }
+
+      // Создаем задачи на проверку оплат
+      // 13. Создаем активности в Pipedrive для контроля оплат
+      const activityResult = await this.createPaymentCheckActivity(fullDeal, contractor);
+      if (!activityResult.success) {
+        logger.warn('Failed to create payment check activity', {
+          dealId: fullDeal.id,
+          error: activityResult.error
+        });
+      }
+
+      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
+        const secondActivityResult = await this.createPaymentCheckActivity(
+          fullDeal,
+          contractor,
+          activityResult.schedule.secondPaymentDate,
+          'second'
+        );
+
+        if (!secondActivityResult.success) {
+          logger.warn('Failed to create second payment check activity', {
+            dealId: fullDeal.id,
+            error: secondActivityResult.error
+          });
+        }
+      }
+
+      // 14. Создаем задачи в Pipedrive для проверки платежей (перенесено в конец)
       try {
         logger.info('Checking task creation requirements:', {
           dealId: fullDeal.id,
@@ -1284,7 +1369,7 @@ class InvoiceProcessingService {
           paymentScheduleType: invoiceResult.paymentSchedule?.type,
           invoiceId: invoiceResult.invoiceId
         });
-        
+
         if (invoiceResult.paymentSchedule) {
           const invoiceNumberForTasks = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
           tasksResult = await this.createPaymentVerificationTasks(
@@ -1292,7 +1377,7 @@ class InvoiceProcessingService {
             invoiceNumberForTasks,
             fullDeal.id
           );
-          
+
           if (!tasksResult.success || tasksResult.tasksFailed > 0) {
             logger.error('Payment verification tasks creation failed or partially failed (non-critical):', {
               dealId: fullDeal.id,
@@ -1326,46 +1411,7 @@ class InvoiceProcessingService {
         });
         // Не критичная ошибка - продолжаем процесс
       }
-      
-      // 12. Отправляем документ по email через wFirma API
-      // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
-      const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
-      
-      // Используем номер проформы (PRO-...) вместо ID, если он доступен
-      const invoiceNumberForEmail = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
-      
-      const emailResult = await this.sendInvoiceByEmail(
-        invoiceResult.invoiceId,
-        customerEmail,
-        {
-          subject: 'COMOON /  INVOICE  / Комьюнити для удаленщиков',
-          body: `Привет. Внимательно посмотри, пожалуйста, сроки оплаты и график платежей. А также обязательно в назначении платежа укажи номер инвойса - ${invoiceNumberForEmail}.`
-        }
-      );
-      
-      if (!emailResult.success) {
-        logger.warn(`Invoice created but email sending failed: ${emailResult.error}`);
-        // Не считаем это критической ошибкой - проформа уже создана
-      } else {
-        logger.info(`Invoice ${invoiceResult.invoiceId} sent successfully by email${customerEmail ? ` to ${customerEmail}` : ''}`);
-      }
 
-      // 11. Создаем (если нужно) этикетку по названию сделки без дублирования
-      const labelResult = await this.ensureLabelForDeal(fullDeal, product);
-      if (!labelResult.success) {
-        logger.info('Label creation skipped or failed', {
-          dealId: fullDeal.id,
-          invoiceId: invoiceResult.invoiceId,
-          error: labelResult.error
-        });
-      } else {
-        logger.info('Label ensured for deal', {
-          dealId: fullDeal.id,
-          labelId: labelResult.labelId,
-          labelCreated: labelResult.created
-        });
-      }
-      
       const result = {
         success: true,
         message: `Invoice ${invoiceType} created and sent successfully`,
@@ -1380,67 +1426,6 @@ class InvoiceProcessingService {
         telegramNotification: telegramResult,
         emailSent: emailResult?.success || false
       };
-
-      // КРИТИЧНО: Снимаем триггер в CRM ТОЛЬКО после успешного создания проформы в wFirma
-      // Проверяем еще раз, что invoiceId существует перед установкой "Done"
-      if (invoiceResult.invoiceId) {
-        logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
-        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId);
-        if (!clearTriggerResult.success) {
-          logger.warn('Failed to clear invoice trigger in Pipedrive', {
-            dealId: fullDeal.id,
-            invoiceId: invoiceResult.invoiceId,
-            error: clearTriggerResult.error
-          });
-          // Не считаем это критической ошибкой - проформа уже создана
-        } else {
-          logger.info(`Invoice trigger cleared successfully for deal ${fullDeal.id} (invoice ID: ${invoiceResult.invoiceId})`);
-        }
-      } else {
-        logger.error(`Cannot clear invoice trigger: invoiceId is missing for deal ${fullDeal.id}`);
-        // Не устанавливаем "Done", так как проформа не создана
-      }
-
-      // Создаем задачи на проверку оплат
-      const activityResult = await this.createPaymentCheckActivity(fullDeal, contractor);
-      if (!activityResult.success) {
-        logger.warn('Failed to create payment check activity', {
-          dealId: fullDeal.id,
-          error: activityResult.error
-        });
-      }
-
-      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
-        const secondActivityResult = await this.createPaymentCheckActivity(
-          fullDeal,
-          contractor,
-          activityResult.schedule.secondPaymentDate,
-          'second'
-        );
-
-        if (!secondActivityResult.success) {
-          logger.warn('Failed to create second payment check activity', {
-            dealId: fullDeal.id,
-            error: secondActivityResult.error
-          });
-        }
-      }
-
-      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
-        const secondActivityResult = await this.createPaymentCheckActivity(
-          fullDeal,
-          contractor,
-          activityResult.schedule.secondPaymentDate,
-          'second'
-        );
-
-        if (!secondActivityResult.success) {
-          logger.warn('Failed to create second payment check activity', {
-            dealId: fullDeal.id,
-            error: secondActivityResult.error
-          });
-        }
-      }
 
       return result;
       
