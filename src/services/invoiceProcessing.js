@@ -68,10 +68,13 @@ class InvoiceProcessingService {
     // Ключ поля: "Sendpulse ID" (статический, одинаковый для всех пользователей)
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
 
-    this.WFIRMA_INVOICE_ID_FIELD_KEY = 'd89358b2be5826fc748a0600a9db7bcdf8d924c7';
+    this.WFIRMA_INVOICE_ID_FIELD_KEY = process.env.PIPEDRIVE_WFIRMA_INVOICE_ID_FIELD_KEY?.trim() || null;
     this.INVOICE_NUMBER_FIELD_KEY = '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
     this.DELETE_TRIGGER_FIELD_KEY = this.INVOICE_TYPE_FIELD_KEY;
     this.DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
+    if (!this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+      logger.warn('WFIRMA invoice id field key is not configured. Invoice IDs will not be synced to Pipedrive.');
+    }
     
     // Типы фактур с ID опций из Pipedrive (пока только Pro forma)
     this.INVOICE_TYPES = {
@@ -702,7 +705,8 @@ class InvoiceProcessingService {
       found: false,
       invoiceId: null,
       invoiceNumber: null,
-      source: null
+      source: null,
+      staleInvoiceIds: []
     };
 
     const invoiceIdCandidates = this.WFIRMA_INVOICE_ID_FIELD_KEY
@@ -712,10 +716,25 @@ class InvoiceProcessingService {
       ? this.extractFieldValues(deal[this.INVOICE_NUMBER_FIELD_KEY])
       : [];
 
+    // 1. Проверяем значения из поля WFIRMA invoice id, но не доверяем им вслепую
     if (invoiceIdCandidates.length > 0) {
-      result.invoiceId = invoiceIdCandidates[invoiceIdCandidates.length - 1];
-      result.found = true;
-      result.source = 'pipedrive_field';
+      for (let i = invoiceIdCandidates.length - 1; i >= 0; i -= 1) {
+        const candidate = invoiceIdCandidates[i];
+        const resolution = await this.resolveExistingProformaById(candidate);
+        if (resolution.found) {
+          result.found = true;
+          result.invoiceId = resolution.invoiceId;
+          if (resolution.invoiceNumber) {
+            result.invoiceNumber = resolution.invoiceNumber;
+          }
+          result.source = resolution.source || 'pipedrive_field';
+          break;
+        }
+      }
+
+      if (!result.found) {
+        result.staleInvoiceIds = invoiceIdCandidates;
+      }
     }
 
     let repositoryProformas = null;
@@ -760,6 +779,26 @@ class InvoiceProcessingService {
       }
     }
 
+    if (!result.found && invoiceNumberCandidates.length > 0 && this.proformaRepository?.isEnabled()) {
+      try {
+        const matches = await this.proformaRepository.findByFullnumbers(invoiceNumberCandidates);
+        if (Array.isArray(matches) && matches.length > 0) {
+          const match = matches.find((item) => item?.status !== 'deleted') || matches[0];
+          if (match) {
+            result.found = true;
+            result.invoiceId = match.id ? String(match.id) : result.invoiceId;
+            result.invoiceNumber = match.fullnumber || match.number || result.invoiceNumber;
+            result.source = result.source || 'repository';
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to fetch proformas by fullnumber while checking duplicates', {
+          dealId: deal.id,
+          error: error.message
+        });
+      }
+    }
+
     if (!result.invoiceNumber && invoiceNumberCandidates.length > 0) {
       const candidate = invoiceNumberCandidates[invoiceNumberCandidates.length - 1];
       if (candidate) {
@@ -792,6 +831,63 @@ class InvoiceProcessingService {
     }
 
     return result;
+  }
+
+  async resolveExistingProformaById(invoiceId) {
+    const normalizedId = typeof invoiceId === 'number' || typeof invoiceId === 'string'
+      ? String(invoiceId).trim()
+      : '';
+
+    if (!normalizedId) {
+      return { found: false };
+    }
+
+    if (this.proformaRepository && this.proformaRepository.isEnabled()) {
+      try {
+        const matches = await this.proformaRepository.findByIds([normalizedId]);
+        if (Array.isArray(matches) && matches.length > 0) {
+          const match = matches.find((item) => (item?.status || 'active') !== 'deleted') || matches[0];
+          if (match) {
+            const fullnumber = match.fullnumber || match.number || null;
+            return {
+              found: true,
+              invoiceId: normalizedId,
+              invoiceNumber: typeof fullnumber === 'string' ? fullnumber.trim() : null,
+              source: 'repository'
+            };
+          }
+        }
+      } catch (error) {
+        logger.error('Failed to resolve existing proforma by id via repository', {
+          invoiceId: normalizedId,
+          error: error.message
+        });
+      }
+    }
+
+    if (this.wfirmaLookup) {
+      try {
+        const wfirmaProforma = await this.wfirmaLookup.getFullProformaById(normalizedId);
+        if (wfirmaProforma) {
+          const fullnumber = typeof wfirmaProforma.fullnumber === 'string'
+            ? wfirmaProforma.fullnumber.trim()
+            : null;
+          return {
+            found: true,
+            invoiceId: normalizedId,
+            invoiceNumber: fullnumber,
+            source: 'wfirma_lookup'
+          };
+        }
+      } catch (error) {
+        logger.warn('Failed to resolve existing proforma by id via wFirma lookup', {
+          invoiceId: normalizedId,
+          error: error.message
+        });
+      }
+    }
+
+    return { found: false, invoiceId: normalizedId };
   }
 
   buildDeletionSnapshot(proforma = {}) {
@@ -1068,6 +1164,23 @@ class InvoiceProcessingService {
         return validationResult;
       }
       
+      if (!existingProforma?.found && Array.isArray(existingProforma?.staleInvoiceIds) && existingProforma.staleInvoiceIds.length > 0) {
+        if (this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+          try {
+            await this.ensureInvoiceId(fullDeal.id, null, {
+              currentValue: fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY],
+              reason: 'stale_reference'
+            });
+            fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY] = null;
+          } catch (error) {
+            logger.warn('Failed to clear stale WFIRMA invoice id reference before processing', {
+              dealId: fullDeal.id,
+              error: error.message
+            });
+          }
+        }
+      }
+
       // 5. Извлекаем email клиента
       const email = this.getCustomerEmail(fullPerson, fullOrganization);
       if (!email) {
@@ -1216,6 +1329,7 @@ class InvoiceProcessingService {
       // 10. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
       let tasksResult = null;
+      let invoiceIdSyncResult = null;
       try {
         logger.info('Checking Telegram notification requirements:', {
           dealId: fullDeal.id,
@@ -1412,6 +1526,25 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
 
+      if (invoiceResult.invoiceId && this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+        try {
+          invoiceIdSyncResult = await this.ensureInvoiceId(fullDeal.id, invoiceResult.invoiceId, {
+            currentValue: fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY],
+            reason: 'post_processing_sync'
+          });
+          if (invoiceIdSyncResult?.success && !invoiceIdSyncResult?.skipped) {
+            fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY] = invoiceIdSyncResult.value ?? fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY];
+          }
+        } catch (error) {
+          logger.error('Error syncing invoice id to Pipedrive after processing (non-critical):', {
+            dealId: fullDeal.id,
+            invoiceId: invoiceResult.invoiceId,
+            error: error.message,
+            stack: error.stack
+          });
+        }
+      }
+
       const result = {
         success: true,
         message: `Invoice ${invoiceType} created and sent successfully`,
@@ -1424,7 +1557,8 @@ class InvoiceProcessingService {
         dealId: fullDeal.id,
         tasks: tasksResult,
         telegramNotification: telegramResult,
-        emailSent: emailResult?.success || false
+        emailSent: emailResult?.success || false,
+        invoiceIdSync: invoiceIdSyncResult
       };
 
       return result;
@@ -1728,6 +1862,61 @@ class InvoiceProcessingService {
       logger.error('Failed to sync invoice number in Pipedrive', {
         dealId: deal.id,
         invoiceNumber: normalizedInvoiceNumber,
+        error: error.message
+      });
+      return { success: false, skipped: false, error: error.message };
+    }
+  }
+
+  async ensureInvoiceId(dealId, invoiceId, options = {}) {
+    if (!this.WFIRMA_INVOICE_ID_FIELD_KEY) {
+      return { success: false, skipped: true, reason: 'invoice_id_field_not_configured' };
+    }
+
+    if (!dealId) {
+      logger.warn('Cannot sync invoice id: dealId is missing.', {
+        invoiceId
+      });
+      return { success: false, skipped: true, reason: 'missing_deal_id' };
+    }
+
+    const normalizedInvoiceId = invoiceId === null || invoiceId === undefined
+      ? null
+      : String(invoiceId).trim();
+
+    const currentValue = options.currentValue;
+    const normalizedCurrent = currentValue === null || currentValue === undefined
+      ? null
+      : String(currentValue).trim();
+
+    if (normalizedInvoiceId === normalizedCurrent) {
+      logger.info('WFIRMA invoice id already synchronized in Pipedrive', {
+        dealId,
+        invoiceId: normalizedInvoiceId
+      });
+      return { success: true, skipped: true, reason: 'already_synced', value: normalizedInvoiceId };
+    }
+
+    const payload = {
+      [this.WFIRMA_INVOICE_ID_FIELD_KEY]: normalizedInvoiceId || null
+    };
+
+    try {
+      const result = await this.pipedriveClient.updateDeal(dealId, payload);
+      if (!result.success) {
+        throw new Error(result.error || 'Pipedrive update failed');
+      }
+
+      logger.info('WFIRMA invoice id synced to Pipedrive', {
+        dealId,
+        invoiceId: normalizedInvoiceId
+      });
+
+      return { success: true, skipped: false, value: normalizedInvoiceId, deal: result.deal };
+    } catch (error) {
+      logger.error('Failed to sync WFIRMA invoice id in Pipedrive', {
+        dealId,
+        invoiceId: normalizedInvoiceId,
         error: error.message
       });
       return { success: false, skipped: false, error: error.message };
