@@ -12,6 +12,9 @@ const PaymentService = require('../services/payments/paymentService');
 const { WfirmaLookup } = require('../services/vatMargin/wfirmaLookup');
 const ProductReportService = require('../services/vatMargin/productReportService');
 const DeletedProformaReportService = require('../services/deletedProformaReportService');
+const stripeRouter = require('./stripe');
+const stripeEventReportRouter = require('./stripeEventReport');
+const { requireStripeAccess } = require('../middleware/auth');
 const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
@@ -140,6 +143,9 @@ router.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development'
   });
 });
+
+router.use('/stripe', stripeRouter);
+router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
 
 // ==================== PIPEDRIVE ENDPOINTS ====================
 

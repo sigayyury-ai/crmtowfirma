@@ -22,6 +22,7 @@
         <div class="tab-container">
             <div class="tab-header">
                 <button class="tab-button active" data-tab="report2">💳 Отчёт по платежам</button>
+                <button class="tab-button" data-tab="stripe">🎟 Отчёт по мероприятиям</button>
                 <button class="tab-button" data-tab="products">🛍 Продукты</button>
                 <button class="tab-button" data-tab="payments">💳 Платежи</button>
                 <button class="tab-button" data-tab="deleted">🧾 Удалённые проформы</button>
@@ -126,6 +127,31 @@
                     <div id="payment-report-container" class="vat-margin-container">
                         <div class="placeholder">Выберите период и нажмите «Обновить», чтобы увидеть платежи</div>
                     </div>
+                </section>
+            </div>
+
+            <div class="tab-content" id="tab-stripe">
+                <section class="vat-margin-section">
+                    <div class="section-header">
+                        <div class="section-title">
+                            <h2>🎟 Отчёт по мероприятиям</h2>
+                            <p class="section-subtitle">Агрегируем успешные платежи по названию мероприятия</p>
+                        </div>
+                        <div class="controls">
+                            <span id="stripe-status-indicator" class="status-pill status-idle">Проверка...</span>
+                            <button id="stripe-refresh-events" class="btn btn-secondary">🔄 Обновить</button>
+                        </div>
+                    </div>
+
+                    <section class="table-section">
+                        <div class="section-header">
+                            <h3>Список мероприятий</h3>
+                            <span id="stripe-events-count" class="section-subtitle">0 мероприятий</span>
+                        </div>
+                        <div class="table-wrapper" id="stripe-summary-table">
+                            <div class="placeholder">Здесь появится агрегированный список мероприятий после загрузки</div>
+                        </div>
+                    </section>
                 </section>
             </div>
 

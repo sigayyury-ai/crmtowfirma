@@ -676,6 +676,124 @@ class InvoiceProcessingService {
     return numbers;
   }
 
+  extractFieldValues(rawValue) {
+    if (rawValue === undefined || rawValue === null) {
+      return [];
+    }
+
+    if (Array.isArray(rawValue)) {
+      return rawValue
+        .map((value) => String(value).trim())
+        .filter((value) => value.length > 0);
+    }
+
+    return String(rawValue)
+      .split(/[\n,;]+/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+  }
+
+  async findExistingProformaForDeal(deal) {
+    if (!deal || !deal.id) {
+      return { found: false };
+    }
+
+    const result = {
+      found: false,
+      invoiceId: null,
+      invoiceNumber: null,
+      source: null
+    };
+
+    const invoiceIdCandidates = this.WFIRMA_INVOICE_ID_FIELD_KEY
+      ? this.extractFieldValues(deal[this.WFIRMA_INVOICE_ID_FIELD_KEY])
+      : [];
+    const invoiceNumberCandidates = this.INVOICE_NUMBER_FIELD_KEY
+      ? this.extractFieldValues(deal[this.INVOICE_NUMBER_FIELD_KEY])
+      : [];
+
+    if (invoiceIdCandidates.length > 0) {
+      result.invoiceId = invoiceIdCandidates[invoiceIdCandidates.length - 1];
+      result.found = true;
+      result.source = 'pipedrive_field';
+    }
+
+    let repositoryProformas = null;
+
+    if (this.proformaRepository && this.proformaRepository.isEnabled()) {
+      try {
+        repositoryProformas = await this.proformaRepository.findByDealId(deal.id);
+      } catch (error) {
+        logger.error('Failed to fetch proformas while checking for duplicates', {
+          dealId: deal.id,
+          error: error.message
+        });
+      }
+    }
+
+    if (Array.isArray(repositoryProformas) && repositoryProformas.length > 0) {
+      const normalizedInvoiceId = result.invoiceId ? String(result.invoiceId) : null;
+      const matchById = normalizedInvoiceId
+        ? repositoryProformas.find((item) => String(item.id) === normalizedInvoiceId)
+        : null;
+
+      const activeProforma = matchById
+        || repositoryProformas.find((item) => (item?.status || 'active') !== 'deleted');
+
+      if (activeProforma) {
+        if (activeProforma.id !== undefined && activeProforma.id !== null) {
+          result.invoiceId = String(activeProforma.id);
+        }
+
+        const rawNumber = activeProforma.fullnumber ?? activeProforma.number ?? null;
+        if (rawNumber !== null && rawNumber !== undefined) {
+          const normalizedNumber = typeof rawNumber === 'string'
+            ? rawNumber.trim()
+            : String(rawNumber).trim();
+          if (normalizedNumber.length > 0) {
+            result.invoiceNumber = normalizedNumber;
+          }
+        }
+
+        result.found = true;
+        result.source = result.source || 'repository';
+      }
+    }
+
+    if (!result.invoiceNumber && invoiceNumberCandidates.length > 0) {
+      const candidate = invoiceNumberCandidates[invoiceNumberCandidates.length - 1];
+      if (candidate) {
+        result.invoiceNumber = candidate;
+        if (!result.found) {
+          result.found = true;
+          result.source = result.source || 'pipedrive_field';
+        }
+      }
+    }
+
+    if (result.found && result.invoiceId && !result.invoiceNumber && this.wfirmaLookup) {
+      try {
+        const wfirmaProforma = await this.wfirmaLookup.getFullProformaById(result.invoiceId);
+        const fetchedNumber = typeof wfirmaProforma?.fullnumber === 'string'
+          ? wfirmaProforma.fullnumber.trim()
+          : null;
+
+        if (fetchedNumber) {
+          result.invoiceNumber = fetchedNumber;
+          result.source = result.source || 'wfirma_lookup';
+        }
+      } catch (error) {
+        logger.warn('Failed to fetch proforma from wFirma while checking duplicates', {
+          dealId: deal.id,
+          invoiceId: result.invoiceId,
+          error: error.message
+        });
+      }
+    }
+
+    return result;
+  }
+
   buildDeletionSnapshot(proforma = {}) {
     const toNumber = (value) => {
       if (value === null || value === undefined || value === '') {
@@ -894,14 +1012,7 @@ class InvoiceProcessingService {
         fullOrganization = organization;
       }
       
-      // 2. Валидация данных сделки
-      const validationResult = await this.validateDealForInvoice(fullDeal, fullPerson, fullOrganization);
-      
-      if (!validationResult.success) {
-        return validationResult;
-      }
-      
-      // 3. Определяем тип счета из кастомного поля
+      // 2. Определяем тип счета из кастомного поля
       const invoiceType = this.getInvoiceTypeFromDeal(fullDeal);
       
       if (!invoiceType) {
@@ -911,7 +1022,53 @@ class InvoiceProcessingService {
         };
       }
       
-      // 4. Извлекаем email клиента
+      // 3. Проверяем, что проформа еще не создана для этой сделки
+      const existingProforma = await this.findExistingProformaForDeal(fullDeal);
+      if (existingProforma?.found) {
+        logger.warn('Proforma already exists for deal, skipping duplicate creation', {
+          dealId: fullDeal.id,
+          invoiceId: existingProforma.invoiceId || null,
+          invoiceNumber: existingProforma.invoiceNumber || null,
+          source: existingProforma.source || null
+        });
+
+        if (existingProforma.invoiceNumber) {
+          await this.ensureInvoiceNumber(fullDeal, existingProforma.invoiceNumber, {
+            attempts: 1,
+            backoffBaseMs: 200
+          });
+        }
+
+        const clearResult = await this.clearInvoiceTrigger(
+          fullDeal.id,
+          existingProforma.invoiceId || null
+        );
+        if (!clearResult.success) {
+          logger.warn('Failed to clear invoice trigger while skipping duplicate creation', {
+            dealId: fullDeal.id,
+            invoiceId: existingProforma.invoiceId || null,
+            error: clearResult.error
+          });
+        }
+
+        return {
+          success: true,
+          skipped: true,
+          invoiceType,
+          invoiceId: existingProforma.invoiceId || null,
+          invoiceNumber: existingProforma.invoiceNumber || null,
+          message: 'Proforma already exists for this deal, skipping duplicate creation'
+        };
+      }
+      
+      // 4. Валидация данных сделки
+      const validationResult = await this.validateDealForInvoice(fullDeal, fullPerson, fullOrganization);
+      
+      if (!validationResult.success) {
+        return validationResult;
+      }
+      
+      // 5. Извлекаем email клиента
       const email = this.getCustomerEmail(fullPerson, fullOrganization);
       if (!email) {
         return {
@@ -920,10 +1077,10 @@ class InvoiceProcessingService {
         };
       }
       
-      // 5. Подготавливаем данные контрагента
+      // 6. Подготавливаем данные контрагента
       const contractorData = this.prepareContractorData(fullPerson, fullOrganization, email);
 
-      // 6. Ищем или создаем контрагента в wFirma
+      // 7. Ищем или создаем контрагента в wFirma
       const contractorResult = await this.userManagement.findOrCreateContractor(contractorData);
       if (!contractorResult.success) {
         return {
@@ -935,7 +1092,7 @@ class InvoiceProcessingService {
       const contractor = contractorResult.contractor;
       logger.info(`Using contractor: ${contractor.name} (ID: ${contractor.id})`);
 
-      // 6. Получаем продукты из сделки Pipedrive
+      // 8. Получаем продукты из сделки Pipedrive
       const dealProducts = await this.getDealProducts(fullDeal.id);
       let product;
       const defaultProductName = fullDeal.title || 'Camp / Tourist service';
@@ -994,7 +1151,7 @@ class InvoiceProcessingService {
         });
       }
 
-      // 7. Создаем документ в wFirma с существующим контрагентом и продуктом
+      // 9. Создаем документ в wFirma с существующим контрагентом и продуктом
       const invoiceResult = await this.createInvoiceInWfirma(
         fullDeal,
         contractor,
@@ -1056,7 +1213,7 @@ class InvoiceProcessingService {
         });
       }
       
-      // 8. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
+      // 10. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
       try {
         logger.info('Checking Telegram notification requirements:', {
@@ -1118,7 +1275,7 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
       
-      // 9. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
+      // 11. Создаем задачи в Pipedrive для проверки платежей (если есть график платежей)
       let tasksResult = null;
       try {
         logger.info('Checking task creation requirements:', {
@@ -1170,7 +1327,7 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
       
-      // 10. Отправляем документ по email через wFirma API
+      // 12. Отправляем документ по email через wFirma API
       // Используем email клиента, если он доступен, иначе wFirma использует email из проформы
       const customerEmail = this.getCustomerEmail(fullPerson, fullOrganization);
       

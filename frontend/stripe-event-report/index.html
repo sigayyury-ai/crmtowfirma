@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Мероприятие — Stripe отчёт</title>
+  <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+  <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <div class="container">
+    <nav class="main-nav">
+      <a href="/vat-margin.html#tab-stripe-events" class="nav-link">Отчеты</a>
+      <a href="/" class="nav-link">Автоматизация и интеграции</a>
+      <span class="nav-link active">Мероприятие</span>
+    </nav>
+
+    <header>
+      <h1 id="event-title">Мероприятие</h1>
+      <p id="event-subtitle">Загружаем данные...</p>
+    </header>
+
+    <div id="event-error" class="product-alert alert-error hidden"></div>
+    <div id="event-warning" class="product-alert alert-warning hidden"></div>
+
+    <section class="product-summary-section">
+      <div class="section-header">
+        <div class="section-title">
+          <h2>Итоги</h2>
+          <p class="section-subtitle" id="event-generated-at"></p>
+        </div>
+        <div class="controls">
+          <button id="event-export" class="btn btn-primary" disabled>⬇️ Экспорт CSV</button>
+          <a href="/vat-margin.html#tab-stripe-events" class="btn btn-link">← Назад к списку</a>
+        </div>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-card">
+          <h3>Сумма мероприятия</h3>
+          <p id="event-total-original" class="summary-total">—</p>
+          <p id="event-currency-meta" class="summary-status"></p>
+        </div>
+        <div class="summary-card">
+          <h3>Платежей</h3>
+          <p id="event-payments-total" class="summary-total">—</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="table-section">
+      <div class="section-header">
+        <h2>Участники</h2>
+        <span id="event-participants-count" class="section-subtitle">0 участников</span>
+      </div>
+      <div class="table-wrapper" id="event-participants-table">
+        <div class="placeholder">Подготавливаем таблицу участников...</div>
+      </div>
+    </section>
+  </div>
+
+  <script src="script.js" type="module"></script>
+</body>
+</html>
+

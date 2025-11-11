@@ -196,9 +196,63 @@ const requireVatAuth = (req, res, next) => {
   return next();
 };
 
+const parseAllowedEmails = () =>
+  (process.env.STRIPE_ALLOWED_EMAILS || '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+const STRIPE_ALLOWED_DOMAIN = process.env.STRIPE_ALLOWED_DOMAIN?.trim().toLowerCase() || null;
+const STRIPE_HEALTH_BYPASS = process.env.STRIPE_HEALTH_BYPASS === 'true';
+
+const requireStripeAccess = (req, res, next) => {
+  if (STRIPE_HEALTH_BYPASS && req.path === '/stripe-health') {
+    logger.info('Stripe health check bypassed via STRIPE_HEALTH_BYPASS');
+    return next();
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return next();
+  }
+
+  const allowedEmails = parseAllowedEmails();
+  const hasRestrictions = allowedEmails.length > 0 || STRIPE_ALLOWED_DOMAIN;
+
+  if (!hasRestrictions) {
+    return next();
+  }
+
+  const userEmail = req.user?.email?.toLowerCase();
+
+  if (!userEmail) {
+    logger.warn('Stripe access denied: user email missing');
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized',
+      message: 'Authentication required for Stripe reports'
+    });
+  }
+
+  if (allowedEmails.includes(userEmail)) {
+    return next();
+  }
+
+  if (STRIPE_ALLOWED_DOMAIN && userEmail.endsWith(`@${STRIPE_ALLOWED_DOMAIN}`)) {
+    return next();
+  }
+
+  logger.warn('Stripe access denied: user not in allowlist', { userEmail });
+  return res.status(403).json({
+    success: false,
+    error: 'Forbidden',
+    message: 'Access to Stripe reports is restricted'
+  });
+};
+
 module.exports = {
   passport,
   requireAuth,
   requireAuthJSON,
-  requireVatAuth
+  requireVatAuth,
+  requireStripeAccess
 };

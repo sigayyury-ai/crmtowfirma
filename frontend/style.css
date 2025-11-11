@@ -272,6 +272,10 @@ h2 {
     padding: 40px;
 }
 
+.product-summary-section {
+  margin-bottom: 32px;
+}
+
 .result-item {
     background: white;
     border-radius: 8px;

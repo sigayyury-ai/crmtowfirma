@@ -34,6 +34,13 @@ const deletedProformasState = {
   lastResult: null
 };
 
+const stripeEventsState = {
+  items: [],
+  isLoaded: false,
+  isLoading: false,
+  error: null
+};
+
 function saveSelectedPeriod() {
   if (!elements.monthSelect || !elements.yearSelect) return;
   const monthValue = elements.monthSelect.value;
@@ -94,7 +101,11 @@ function cacheDom() {
     deletedSearch: document.getElementById('deleted-search'),
     deletedTable: document.getElementById('deleted-table'),
     deletedCount: document.getElementById('deleted-count'),
-    deletedLog: document.getElementById('deleted-log')
+    deletedLog: document.getElementById('deleted-log'),
+    stripeSummaryTable: document.getElementById('stripe-summary-table'),
+    stripeEventsCount: document.getElementById('stripe-events-count'),
+    stripeStatusIndicator: document.getElementById('stripe-status-indicator'),
+    stripeRefreshEvents: document.getElementById('stripe-refresh-events')
   };
 }
 
@@ -119,6 +130,7 @@ function bindEvents() {
   elements.exportPayments?.addEventListener('click', exportPaymentsCsv);
   elements.bankCsvInput?.addEventListener('change', handleCsvUpload);
   elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
+  elements.stripeRefreshEvents?.addEventListener('click', () => loadStripeEvents({ force: true }));
 
   initDeletedTab();
 
@@ -162,6 +174,15 @@ function switchTab(tabName) {
       productsLoaded = true;
     } else {
       renderProductSummaryTable(productSummaryData);
+    }
+    return;
+  }
+
+  if (tabName === 'stripe') {
+    if (!stripeEventsState.isLoaded) {
+      loadStripeEvents();
+    } else {
+      renderStripeTransactions(stripeEventsState.items);
     }
     return;
   }
@@ -372,6 +393,133 @@ function renderDeletedError(message) {
   if (elements.deletedCount) {
     elements.deletedCount.textContent = '0 записей';
   }
+}
+
+async function loadStripeEvents({ force = false } = {}) {
+  if (!elements.stripeSummaryTable) return;
+  if (stripeEventsState.isLoading) return;
+
+  if (force) {
+    stripeEventsState.items = [];
+    stripeEventsState.isLoaded = false;
+  }
+
+  stripeEventsState.isLoading = true;
+  stripeEventsState.error = null;
+  updateStripeStatus('loading', 'Загружаем мероприятия...');
+  elements.stripeSummaryTable.innerHTML = '<div class="placeholder">Загружаем мероприятия Stripe...</div>';
+  if (elements.stripeEventsCount) {
+    elements.stripeEventsCount.textContent = '0 мероприятий';
+  }
+  setButtonLoading(elements.stripeRefreshEvents, true, 'Загрузка...');
+
+  try {
+    const response = await fetch('/api/reports/stripe-events/summary?limit=100');
+    const result = await response.json();
+    if (!response.ok || result?.success === false) {
+      throw new Error(result?.message || 'Не удалось получить мероприятия Stripe');
+    }
+
+    const items = Array.isArray(result?.data?.items) ? result.data.items : [];
+    stripeEventsState.items = items;
+    stripeEventsState.isLoaded = true;
+    renderStripeEvents(items);
+    const countText = formatEventsCount(items.length);
+    if (elements.stripeEventsCount) {
+      elements.stripeEventsCount.textContent = countText;
+    }
+    updateStripeStatus('success', `Подключено • ${countText}`);
+  } catch (error) {
+    console.error('Failed to load Stripe events summary', error);
+    stripeEventsState.error = error.message;
+    elements.stripeSummaryTable.innerHTML = `<div class="error-box">${escapeHtml(error.message || 'Не удалось загрузить мероприятия Stripe')}</div>`;
+    if (elements.stripeEventsCount) {
+      elements.stripeEventsCount.textContent = '0 мероприятий';
+    }
+    updateStripeStatus('error', 'Ошибка загрузки Stripe');
+  } finally {
+    stripeEventsState.isLoading = false;
+    setButtonLoading(elements.stripeRefreshEvents, false);
+  }
+}
+
+function renderStripeEvents(items = []) {
+  if (!elements.stripeSummaryTable) return;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    elements.stripeSummaryTable.innerHTML = '<div class="placeholder">Нет мероприятий Stripe</div>';
+    return;
+  }
+
+  const tableHtml = `
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Мероприятие</th>
+          <th class="numeric-col">Валюта</th>
+          <th class="numeric-col">Сумма</th>
+          <th class="numeric-col">Платежей</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(renderStripeEventRow).join('')}
+      </tbody>
+    </table>
+  `;
+
+  elements.stripeSummaryTable.innerHTML = tableHtml;
+}
+
+function renderStripeEventRow(event) {
+  const eventKey = event?.eventKey || '';
+  const label = escapeHtml(event?.eventLabel || eventKey || 'Без названия');
+  const currencyCode = escapeHtml(event?.currency || 'PLN');
+  const totalValue = Number(event?.grossRevenue);
+  const amount = Number.isFinite(totalValue)
+    ? formatCurrency(totalValue, event?.currency || 'PLN')
+    : '—';
+  const payments = Number.isFinite(Number(event?.paymentsCount)) ? Number(event.paymentsCount) : 0;
+  const detailUrl = eventKey ? `/stripe-event-report?eventKey=${encodeURIComponent(eventKey)}` : null;
+  const titleLink = detailUrl ? `<a href="${detailUrl}">${label}</a>` : label;
+
+  return `
+    <tr data-event-key="${escapeHtml(eventKey)}">
+      <td>${titleLink}</td>
+      <td class="numeric-col">${currencyCode}</td>
+      <td class="numeric-col">${amount}</td>
+      <td class="numeric-col">${payments}</td>
+    </tr>
+  `;
+}
+
+function updateStripeStatus(status, message) {
+  if (!elements.stripeStatusIndicator) return;
+  const classMap = {
+    idle: 'status-idle',
+    loading: 'status-loading',
+    success: 'status-success',
+    error: 'status-error'
+  };
+
+  elements.stripeStatusIndicator.textContent = message || '';
+  elements.stripeStatusIndicator.classList.remove(
+    'status-idle',
+    'status-loading',
+    'status-success',
+    'status-error'
+  );
+  elements.stripeStatusIndicator.classList.add(classMap[status] || 'status-idle');
+}
+
+function formatEventsCount(count) {
+  if (!Number.isFinite(count) || count <= 0) {
+    return '0 мероприятий';
+  }
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} мероприятие`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${count} мероприятия`;
+  return `${count} мероприятий`;
 }
 
 function addDeletedLog(type, message) {
@@ -630,7 +778,7 @@ function renderVatMarginTable(data) {
         .map((row) => {
           const dealId = row.dealId ? String(row.dealId) : null;
           const dealLinkHtml = row.dealUrl && dealId
-            ? `<div class="deal-link-wrapper"><a class="deal-link" href="${row.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
+            ? `<div class="deal-link-wrapper"><a class="deal-link" href="${row.dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(dealId)}</a></div>`
             : '';
           const buyerPrimary = row.buyerName || row.buyerAltName || null;
           const buyerMetaParts = [];
@@ -680,7 +828,7 @@ function renderVatMarginTable(data) {
               <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${group.totals.quantity.toLocaleString('ru-RU')} позиций</div>
             </div>
             <div class="product-summary">
-              <span>${paidPlnFormatted !== '—' ? paidPlnFormatted : '0,00 PLN'}</span>
+              <span>${paidPlnFormatted !== '—' ? paidPlnFormatted : '0,00 PLN'}</span>
             </div>
           </div>
           <table class="payments-table group-table">
@@ -1083,7 +1231,7 @@ function renderPaymentReport(groups) {
         : '';
 
       const dealLink = proforma?.pipedrive_deal_url && proforma?.pipedrive_deal_id
-        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${proforma.pipedrive_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a></div>`
+        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${proforma.pipedrive_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a></div>`
         : '';
 
       const proformaCell = proforma
