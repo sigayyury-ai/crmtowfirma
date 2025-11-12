@@ -383,6 +383,10 @@ class ProductReportService {
     let missingDealIdCount = 0;
 
     rows.forEach((row) => {
+      // Пропускаем строки где proformas не загрузилась (удаленные проформы)
+      if (!row.proformas || !row.proformas.id) {
+        return;
+      }
       const productRecord = row.products || {};
       const productId = productRecord.id || row.product_id || null;
       const productName = productRecord.name || row.name || 'Без названия';
