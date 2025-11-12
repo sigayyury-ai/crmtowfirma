@@ -1308,28 +1308,10 @@ class InvoiceProcessingService {
         fallbackBuyer: fallbackBuyerData,
         dealId: fullDeal.id
       });
-
-      const invoiceNumberForCrm = await this.determineInvoiceNumber(invoiceResult);
-      if (invoiceNumberForCrm) {
-        const syncResult = await this.ensureInvoiceNumber(fullDeal, invoiceNumberForCrm);
-        if (!syncResult?.success && !syncResult?.skipped) {
-          logger.error('Failed to sync invoice number to Pipedrive', {
-            dealId: fullDeal.id,
-            invoiceNumber: invoiceNumberForCrm,
-            error: syncResult?.error || 'unknown error'
-          });
-        }
-      } else {
-        logger.warn('Unable to determine invoice number for CRM sync', {
-          dealId: fullDeal.id,
-          invoiceId: invoiceResult.invoiceId
-        });
-      }
       
       // 10. Отправляем Telegram уведомление через SendPulse (если SendPulse ID есть)
       let telegramResult = null;
       let tasksResult = null;
-      let invoiceIdSyncResult = null;
       try {
         logger.info('Checking Telegram notification requirements:', {
           dealId: fullDeal.id,
@@ -1433,7 +1415,17 @@ class InvoiceProcessingService {
       // Проверяем еще раз, что invoiceId существует перед установкой "Done"
       if (invoiceResult.invoiceId) {
         logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
-        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId);
+        
+        // Подготавливаем все поля для одновременного обновления
+        const additionalFields = {};
+        
+        // Добавляем invoice number, если доступен
+        const invoiceNumberForCrm = await this.determineInvoiceNumber(invoiceResult);
+        if (invoiceNumberForCrm && this.INVOICE_NUMBER_FIELD_KEY) {
+          additionalFields[this.INVOICE_NUMBER_FIELD_KEY] = invoiceNumberForCrm;
+        }
+        
+        const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId, additionalFields);
         if (!clearTriggerResult.success) {
           logger.warn('Failed to clear invoice trigger in Pipedrive', {
             dealId: fullDeal.id,
@@ -1526,24 +1518,7 @@ class InvoiceProcessingService {
         // Не критичная ошибка - продолжаем процесс
       }
 
-      if (invoiceResult.invoiceId && this.WFIRMA_INVOICE_ID_FIELD_KEY) {
-        try {
-          invoiceIdSyncResult = await this.ensureInvoiceId(fullDeal.id, invoiceResult.invoiceId, {
-            currentValue: fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY],
-            reason: 'post_processing_sync'
-          });
-          if (invoiceIdSyncResult?.success && !invoiceIdSyncResult?.skipped) {
-            fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY] = invoiceIdSyncResult.value ?? fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY];
-          }
-        } catch (error) {
-          logger.error('Error syncing invoice id to Pipedrive after processing (non-critical):', {
-            dealId: fullDeal.id,
-            invoiceId: invoiceResult.invoiceId,
-            error: error.message,
-            stack: error.stack
-          });
-        }
-      }
+      // Invoice ID уже синхронизирован в clearInvoiceTrigger, дополнительная синхронизация не требуется
 
       const result = {
         success: true,
@@ -1557,8 +1532,7 @@ class InvoiceProcessingService {
         dealId: fullDeal.id,
         tasks: tasksResult,
         telegramNotification: telegramResult,
-        emailSent: emailResult?.success || false,
-        invoiceIdSync: invoiceIdSyncResult
+        emailSent: emailResult?.success || false
       };
 
       return result;
@@ -1746,9 +1720,11 @@ class InvoiceProcessingService {
   /**
    * Сбросить поле Invoice type после обработки
    * @param {number} dealId - ID сделки
+   * @param {string|number} invoiceId - ID проформы в wFirma (опционально)
+   * @param {Object} additionalFields - Дополнительные поля для обновления (опционально)
    * @returns {Promise<Object>} - Результат обновления
    */
-  async clearInvoiceTrigger(dealId, invoiceId = null) {
+  async clearInvoiceTrigger(dealId, invoiceId = null, additionalFields = {}) {
     try {
       const payload = {
         [`${this.INVOICE_TYPE_FIELD_KEY}`]: this.INVOICE_DONE_VALUE
@@ -1757,6 +1733,9 @@ class InvoiceProcessingService {
       if (this.WFIRMA_INVOICE_ID_FIELD_KEY && invoiceId) {
         payload[this.WFIRMA_INVOICE_ID_FIELD_KEY] = String(invoiceId);
       }
+
+      // Добавляем дополнительные поля в payload
+      Object.assign(payload, additionalFields);
 
       const updateResult = await this.pipedriveClient.updateDeal(dealId, payload);
 
@@ -1767,7 +1746,10 @@ class InvoiceProcessingService {
         };
       }
 
-      logger.info(`Invoice trigger cleared for deal ${dealId}`);
+      logger.info(`Invoice trigger cleared for deal ${dealId}`, {
+        invoiceId: invoiceId || null,
+        additionalFieldsCount: Object.keys(additionalFields).length
+      });
       return {
         success: true,
         deal: updateResult.deal
