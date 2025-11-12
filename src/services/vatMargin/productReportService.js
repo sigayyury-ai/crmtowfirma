@@ -117,15 +117,6 @@ class ProductReportService {
       return null;
     }
 
-    const monthlyBreakdown = Array.from(entry.monthly.values())
-      .map((item) => ({
-        month: item.month,
-        proformaCount: item.proformaIds.size,
-        grossPln: Number(item.grossPln.toFixed(2)),
-        currencyTotals: roundCurrencyMap(item.originalTotals)
-      }))
-      .sort((a, b) => b.month.localeCompare(a.month));
-
     const proformas = Array.from(entry.proformaDetails.values())
       .map((detail) => {
         const status = determinePaymentStatus(detail.totalPln, detail.paidPln);
@@ -175,7 +166,6 @@ class ProductReportService {
         currencyTotals: roundCurrencyMap(entry.totals.originalTotals)
       },
       revenueShare,
-      monthlyBreakdown,
       proformas
     };
   }
@@ -413,7 +403,6 @@ class ProductReportService {
             paidPln: 0,
             originalTotals: {}
           },
-          monthly: new Map(),
           proformaDetails: new Map()
         });
       }
@@ -476,26 +465,6 @@ class ProductReportService {
 
       if (Number.isFinite(plnValue)) {
         entry.totals.paidPln += Math.min(paidPln, plnValue);
-      }
-
-      const monthKey = issuedAt ? issuedAt.slice(0, 7) : 'unknown';
-      if (!entry.monthly.has(monthKey)) {
-        entry.monthly.set(monthKey, {
-          month: monthKey,
-          proformaIds: new Set(),
-          grossPln: 0,
-          originalTotals: {}
-        });
-      }
-      const monthEntry = entry.monthly.get(monthKey);
-      if (proformaId) {
-        monthEntry.proformaIds.add(proformaId);
-      }
-      if (Number.isFinite(plnValue)) {
-        monthEntry.grossPln += plnValue;
-      }
-      if (Number.isFinite(lineTotal)) {
-        monthEntry.originalTotals[currency] = (monthEntry.originalTotals[currency] || 0) + lineTotal;
       }
 
       if (proformaId) {

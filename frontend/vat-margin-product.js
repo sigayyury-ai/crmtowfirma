@@ -39,7 +39,6 @@ function cacheDom() {
     dueMonthInput: document.getElementById('detail-due-month'),
     saveButton: document.getElementById('product-save-status'),
     summaryContainer: document.getElementById('product-summary'),
-    monthlyContainer: document.getElementById('product-monthly'),
     proformasContainer: document.getElementById('product-proformas'),
     alertBox: document.getElementById('product-alert')
   };
@@ -121,7 +120,6 @@ async function loadProductDetail() {
     elements.title.textContent = 'Загрузка...';
     elements.subtitle.textContent = 'Получаем данные по продукту';
     elements.summaryContainer.innerHTML = '<div class="placeholder">Загрузка...</div>';
-    elements.monthlyContainer.innerHTML = '<div class="placeholder">Загрузка...</div>';
     elements.proformasContainer.innerHTML = '<div class="placeholder">Загрузка...</div>';
 
     const result = await apiCall(`/vat-margin/products/${encodeURIComponent(productSlug)}/detail`);
@@ -135,7 +133,6 @@ async function loadProductDetail() {
   } catch (error) {
     showAlert('error', error.message);
     elements.summaryContainer.innerHTML = `<div class="placeholder">Не удалось загрузить данные: ${escapeHtml(error.message)}</div>`;
-    elements.monthlyContainer.innerHTML = '<div class="placeholder">Данные отсутствуют</div>';
     elements.proformasContainer.innerHTML = '<div class="placeholder">Данные отсутствуют</div>';
   }
 }
@@ -163,7 +160,6 @@ function renderProductDetail() {
   }
 
   renderSummaryCards(productDetail);
-  renderMonthlyTable(productDetail.monthlyBreakdown || []);
   renderProformasTable(productDetail.proformas || []);
 }
 
@@ -201,40 +197,6 @@ function renderSummaryCards(detail) {
       </div>
     `)
     .join('');
-}
-
-function renderMonthlyTable(items) {
-  if (!elements.monthlyContainer) return;
-
-  if (!Array.isArray(items) || items.length === 0) {
-    elements.monthlyContainer.innerHTML = '<div class="placeholder">Данные отсутствуют</div>';
-    return;
-  }
-
-  const rows = items
-    .map((item) => `
-      <tr>
-        <td>${escapeHtml(formatMonthLabel(item.month))}</td>
-        <td class="numeric">${item.proformaCount?.toLocaleString('ru-RU') || '0'}</td>
-        <td class="numeric">${formatCurrency(item.grossPln || 0, 'PLN')}</td>
-        <td>${formatCurrencyMap(item.currencyTotals || {})}</td>
-      </tr>
-    `)
-    .join('');
-
-  elements.monthlyContainer.innerHTML = `
-    <table class="detail-table">
-      <thead>
-        <tr>
-          <th>Месяц</th>
-          <th>Проф.</th>
-          <th>Выручка (PLN)</th>
-          <th>Выручка (оригинал)</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
 }
 
 function renderProformasTable(items) {
