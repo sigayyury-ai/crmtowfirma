@@ -9,7 +9,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "test:supabase": "node scripts/testSupabaseConnection.js",
     "migrate:proformas": "node scripts/migrateProformasToSupabase.js",
-    "serve:vat": "npx http-server frontend/vat-margin -p 4173"
+    "serve:vat": "npx http-server frontend/vat-margin -p 4173",
+    "run:stripe-processor": "node scripts/runStripeProcessor.js"
   },
   "keywords": [
     "pipedrive",
@@ -36,7 +37,8 @@
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.13.0",
     "stripe": "^14.25.0",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "yargs": "^18.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

@@ -155,6 +155,47 @@ class PipedriveClient {
   }
 
   /**
+   * Получить продукты, привязанные к сделке
+   * @param {number} dealId - ID сделки
+   * @returns {Promise<Object>} - Результат с массивом продуктов
+   */
+  async getDealProducts(dealId) {
+    try {
+      const response = await this.client.get(`/deals/${dealId}/products`, {
+        params: {
+          api_token: this.apiToken
+        }
+      });
+
+      if (response.data?.success && Array.isArray(response.data?.data)) {
+        return {
+          success: true,
+          products: response.data.data,
+          additionalData: response.data.additional_data || null
+        };
+      }
+
+      return {
+        success: true,
+        products: [],
+        additionalData: response.data?.additional_data || null
+      };
+    } catch (error) {
+      logger.error('Error getting deal products:', {
+        dealId,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null,
+        products: []
+      };
+    }
+  }
+
+  /**
    * Получить организацию по ID
    * @param {number} orgId - ID организации
    * @returns {Promise<Object>} - Данные организации
@@ -390,6 +431,102 @@ class PipedriveClient {
       }
     } catch (error) {
       logger.error('Error testing Pipedrive connection:', error);
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  async updateDealStage(dealId, stageId) {
+    if (!dealId || !stageId) {
+      throw new Error('dealId and stageId are required to update stage');
+    }
+
+    const response = await this.client.put(`/deals/${dealId}`, {
+      stage_id: stageId
+    }, {
+      params: { api_token: this.apiToken }
+    });
+
+    if (!response?.data?.success) {
+      throw new Error(`Failed to update deal stage: ${JSON.stringify(response?.data)}`);
+    }
+
+    return response.data;
+  }
+
+  /**
+   * Add a note to a deal
+   * @param {number} dealId - Deal ID
+   * @param {string} content - Note content
+   * @returns {Promise<Object>} - Result of adding note
+   */
+  async getDealNotes(dealId) {
+    try {
+      const response = await this.client.get(`/notes`, {
+        params: {
+          api_token: this.apiToken,
+          deal_id: dealId,
+          limit: 500 // Get all notes for the deal
+        }
+      });
+
+      if (response.data && response.data.success !== false) {
+        return {
+          success: true,
+          notes: response.data.data || []
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Unknown error',
+        notes: []
+      };
+    } catch (error) {
+      logger.error('Failed to get deal notes', {
+        dealId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        notes: []
+      };
+    }
+  }
+
+  async addNoteToDeal(dealId, content) {
+    if (!dealId || !content) {
+      throw new Error('dealId and content are required to add note');
+    }
+
+    try {
+      const response = await this.client.post('/notes', {
+        content,
+        deal_id: dealId
+      }, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          note: response.data.data,
+          message: 'Note added successfully'
+        };
+      }
+
+      throw new Error('Failed to add note');
+    } catch (error) {
+      logger.error('Error adding note to deal:', {
+        dealId,
+        error: error.message,
+        details: error.response?.data || null
+      });
       return {
         success: false,
         error: error.message,

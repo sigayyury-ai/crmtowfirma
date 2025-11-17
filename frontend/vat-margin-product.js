@@ -40,6 +40,7 @@ function cacheDom() {
     saveButton: document.getElementById('product-save-status'),
     summaryContainer: document.getElementById('product-summary'),
     proformasContainer: document.getElementById('product-proformas'),
+    stripePaymentsContainer: document.getElementById('product-stripe-payments'),
     alertBox: document.getElementById('product-alert')
   };
 }
@@ -145,10 +146,21 @@ function renderProductDetail() {
   }
 
   if (elements.subtitle) {
-    const dateText = productDetail.lastSaleDate
-      ? `последняя продажа ${formatDate(productDetail.lastSaleDate)}`
-      : 'история продаж отсутствует';
-    elements.subtitle.textContent = `${productDetail.proformaCount || 0} проф., ${dateText}`;
+    const proformaLabel = `${(productDetail.proformaCount || 0).toLocaleString('ru-RU')} проф.`;
+    const stripeLabel = productDetail.stripeTotals?.paymentsCount
+      ? `${formatPaymentCount(productDetail.stripeTotals.paymentsCount)} Stripe`
+      : 'Stripe платежей нет';
+    const dateParts = [];
+    if (productDetail.lastSaleDate) {
+      dateParts.push(`последняя продажа ${formatDate(productDetail.lastSaleDate)}`);
+    }
+    if (productDetail.stripeTotals?.lastPaymentAt) {
+      dateParts.push(`последний Stripe ${formatDate(productDetail.stripeTotals.lastPaymentAt)}`);
+    }
+    if (dateParts.length === 0) {
+      dateParts.push('история продаж отсутствует');
+    }
+    elements.subtitle.textContent = `${proformaLabel}, ${stripeLabel} • ${dateParts.join(' • ')}`;
   }
 
   if (elements.statusSelect) {
@@ -161,6 +173,7 @@ function renderProductDetail() {
 
   renderSummaryCards(productDetail);
   renderProformasTable(productDetail.proformas || []);
+  renderStripePaymentsTable(productDetail.stripePayments || []);
 }
 
 function renderSummaryCards(detail) {
@@ -188,6 +201,34 @@ function renderSummaryCards(detail) {
       value: formatCurrency(amount, currency)
     });
   });
+
+  if (detail.stripeTotals) {
+    const stripe = detail.stripeTotals;
+    cards.push({
+      label: 'Stripe выручка (PLN)',
+      value: formatCurrency(stripe.grossPln || 0, 'PLN')
+    });
+    cards.push({
+      label: 'Stripe VAT (PLN)',
+      value: formatCurrency(stripe.grossTaxPln || 0, 'PLN')
+    });
+    cards.push({
+      label: 'Stripe платежей',
+      value: formatPaymentCount(stripe.paymentsCount) || '0 платежей'
+    });
+    if (stripe.missingVatCount) {
+      cards.push({
+        label: 'Stripe без VAT',
+        value: stripe.missingVatCount.toLocaleString('ru-RU')
+      });
+    }
+    if (stripe.invalidAddressCount) {
+      cards.push({
+        label: 'Stripe без адреса',
+        value: stripe.invalidAddressCount.toLocaleString('ru-RU')
+      });
+    }
+  }
 
   elements.summaryContainer.innerHTML = cards
     .map((card) => `
@@ -247,6 +288,61 @@ function renderProformasTable(items) {
   `;
 }
 
+function renderStripePaymentsTable(items) {
+  if (!elements.stripePaymentsContainer) return;
+
+  if (!Array.isArray(items) || items.length === 0) {
+    elements.stripePaymentsContainer.innerHTML = '<div class="placeholder">Stripe платежей нет</div>';
+    return;
+  }
+
+  const rows = items
+    .map((payment) => {
+      const sessionCell = payment.sessionId
+        ? buildStripePaymentLink(payment.sessionId, payment.paymentMode)
+        : '—';
+      const paymentType = payment.paymentType ? escapeHtml(payment.paymentType) : '—';
+      const amountPln = formatCurrency(payment.amountPln || 0, 'PLN');
+      const amountOriginal = formatCurrency(payment.amount || 0, payment.currency || 'PLN');
+      const taxPln = formatCurrency(payment.taxAmountPln || 0, 'PLN');
+      const customerInfo = renderStripeCustomer(payment);
+      const flags = renderStripeFlags(payment);
+      const createdAt = formatDateTime(payment.createdAt);
+
+      return `
+        <tr>
+          <td>${sessionCell}</td>
+          <td>${paymentType}</td>
+          <td>${customerInfo}</td>
+          <td class="numeric">${amountPln}</td>
+          <td>${amountOriginal}</td>
+          <td class="numeric">${taxPln}</td>
+          <td>${flags}</td>
+          <td>${createdAt}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  elements.stripePaymentsContainer.innerHTML = `
+    <table class="detail-table">
+      <thead>
+        <tr>
+          <th>Платёж</th>
+          <th>Тип</th>
+          <th>Клиент</th>
+          <th>Сумма (PLN)</th>
+          <th>Сумма</th>
+          <th>VAT (PLN)</th>
+          <th>Статусы</th>
+          <th>Дата</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
 function renderPaymentStatusBadge(status) {
   const normalized = status && paymentStatusLabels[status] ? status : 'unknown';
   const label = paymentStatusLabels[normalized];
@@ -298,6 +394,67 @@ function formatCurrencyMap(totals) {
   return entries
     .map(([currency, amount]) => formatCurrency(amount, currency))
     .join(' + ');
+}
+
+function buildStripePaymentLink(sessionId, mode) {
+  const prefix = mode === 'test' ? 'test/' : '';
+  const url = `https://dashboard.stripe.com/${prefix}payments/${encodeURIComponent(sessionId)}`;
+  return `<a class="deal-link" href="${url}" target="_blank" rel="noopener noreferrer">Session ${escapeHtml(sessionId)}</a>`;
+}
+
+function renderStripeCustomer(payment) {
+  const parts = [];
+  if (payment.customerType === 'organization') {
+    if (payment.companyName) {
+      parts.push(escapeHtml(payment.companyName));
+    }
+    if (payment.companyTaxId) {
+      parts.push(`NIP ${escapeHtml(payment.companyTaxId)}`);
+    }
+  }
+  const contact = payment.customerName || payment.customerEmail;
+  if (contact) {
+    parts.push(escapeHtml(contact));
+  }
+  return parts.length ? parts.join('<br>') : '—';
+}
+
+function renderStripeFlags(payment) {
+  const badges = [];
+  const customerTypeLabel = payment.customerType === 'organization' ? 'B2B' : 'B2C';
+  badges.push(renderStripeBadge(customerTypeLabel, payment.customerType === 'organization' ? 'status-complete' : 'status-auto'));
+
+  if (payment.expectedVat) {
+    badges.push(renderStripeBadge('VAT обязателен', 'status-pending'));
+    if (!(payment.taxAmountPln > 0)) {
+      badges.push(renderStripeBadge('Нет VAT', 'status-warning'));
+    }
+    if (payment.addressValidated === false) {
+      badges.push(renderStripeBadge('Нет адреса', 'status-error'));
+    }
+  }
+
+  return badges.length ? badges.join(' ') : '—';
+}
+
+function renderStripeBadge(label, className = 'status-auto') {
+  return `<span class="status-badge ${className}">${escapeHtml(label)}</span>`;
+}
+
+function formatPaymentCount(count) {
+  if (!Number.isFinite(count) || count <= 0) return '';
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} платеж`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return `${count} платежа`;
+  return `${count} платежей`;
+}
+
+function formatDateTime(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU');
 }
 
 function formatDate(value) {

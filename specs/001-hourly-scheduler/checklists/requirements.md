@@ -32,3 +32,8 @@
 ## Notes
 
 - Checklist completed on initial review; specification ready for `/speckit.plan`.
+
+
+
+
+

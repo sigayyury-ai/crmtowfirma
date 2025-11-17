@@ -21,6 +21,7 @@ console.log('WFIRMA_SECRET_KEY:', process.env.WFIRMA_SECRET_KEY ? 'SET' : 'NOT S
 // Импортируем роуты и сервисы
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');
+const pipedriveWebhookRoutes = require('./routes/pipedriveWebhook');
 const { requireAuth } = require('./middleware/auth');
 const { getScheduler } = require('./services/scheduler');
 
@@ -59,6 +60,13 @@ app.use((req, res, next) => {
 
 // Auth роуты (должны быть доступны без авторизации)
 app.use('/auth', authRoutes);
+
+// Pipedrive webhook (должен быть доступен без авторизации для Pipedrive)
+app.use('/api', pipedriveWebhookRoutes);
+
+// Stripe webhook (должен быть доступен без авторизации для Stripe)
+const stripeWebhookRoutes = require('./routes/stripeWebhook');
+app.use('/api', stripeWebhookRoutes);
 
 // robots.txt to disallow indexing (доступен без авторизации)
 app.get('/robots.txt', (req, res) => {

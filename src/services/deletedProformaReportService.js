@@ -180,6 +180,7 @@ class DeletedProformaReportService {
     const { field, ascending } = this.normalizeSort(options.sort, options.order);
 
     try {
+      // Load deleted proformas
       const dataQuery = filters(
         this.supabase
           .from('proformas')
@@ -210,28 +211,100 @@ class DeletedProformaReportService {
         return { success: false, error: error.message };
       }
 
-      const items = (data || []).map((row) => this.hydrateRow(row));
+      // Load Stripe refunds (deletions) and convert them to proforma-like format
+      const StripeRepository = require('./stripe/repository');
+      const stripeRepo = new StripeRepository();
+      let stripeDeletions = [];
+      
+      try {
+        // Build filters for Stripe deletions (match proforma filters)
+        const deletionFilters = {};
+        if (options.startDate) {
+          deletionFilters.dateFrom = options.startDate;
+        }
+        if (options.endDate) {
+          deletionFilters.dateTo = options.endDate;
+        }
+        
+        const allDeletions = await stripeRepo.listDeletions(deletionFilters);
+        
+        // Convert Stripe deletions to proforma-like format
+        stripeDeletions = allDeletions.map((deletion) => {
+          const metadata = deletion.metadata || {};
+          const rawPayload = deletion.raw_payload || {};
+          const payment = rawPayload.payment || {};
+          
+          return {
+            id: `stripe_${deletion.payment_id}`,
+            fullnumber: `REFUND-${deletion.payment_id?.substring(0, 8) || 'N/A'}`,
+            pipedrive_deal_id: deletion.deal_id || metadata.deal_id || null,
+            buyer_name: payment.customer_name || metadata.customer_name || 'Stripe Refund',
+            buyer_email: payment.customer_email || metadata.customer_email || null,
+            buyer_phone: null,
+            buyer_country: null,
+            buyer_city: null,
+            currency: deletion.currency || 'PLN',
+            total: Math.abs(deletion.amount || 0), // Refund amount is negative, convert to positive
+            payments_total: Math.abs(deletion.amount || 0),
+            payments_total_pln: Math.abs(deletion.amount_pln || 0),
+            payments_count: 1,
+            status: 'deleted',
+            deleted_at: deletion.logged_at || deletion.created_at,
+            issued_at: payment.created_at || deletion.logged_at,
+            source: 'stripe_refund'
+          };
+        });
+      } catch (stripeError) {
+        logger.warn('Failed to load Stripe refunds for deleted proforma report', {
+          error: stripeError.message
+        });
+      }
+
+      // Combine proformas and Stripe refunds
+      const allItems = [
+        ...(data || []).map((row) => ({ ...this.hydrateRow(row), source: 'proforma' })),
+        ...stripeDeletions.map((row) => this.hydrateRow(row))
+      ];
+      
+      // Sort combined items
+      const sortField = field === 'deleted_at' ? 'deletedAt' : 
+                       field === 'issued_at' ? 'issuedAt' : 
+                       field === 'fullnumber' ? 'proformaNumber' : field;
+      allItems.sort((a, b) => {
+        const aVal = a[sortField];
+        const bVal = b[sortField];
+        if (aVal === null || aVal === undefined) return 1;
+        if (bVal === null || bVal === undefined) return -1;
+        if (ascending) {
+          return aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+        } else {
+          return aVal < bVal ? 1 : aVal > bVal ? -1 : 0;
+        }
+      });
+      
+      // Apply pagination to combined results
+      const paginatedItems = allItems.slice(offset, offset + pageSize);
+      const items = paginatedItems;
+      
       let summary;
 
       try {
-        const { data: summaryRows } = await filters(
-          this.supabase.from('proformas').select('currency,total,payments_total,payments_total_pln,status')
-        );
-        summary = this.buildSummary(summaryRows || []);
-        summary.totalCount = summaryRows ? summaryRows.length : count ?? items.length;
+        // Build summary from all items (proformas + Stripe refunds)
+        summary = this.buildSummary(allItems);
+        summary.totalCount = allItems.length;
       } catch (summaryError) {
         logger.warn('Falling back to page-level summary for deleted proforma report', {
           error: summaryError.message
         });
         summary = this.buildSummary(items);
-        summary.totalCount = count ?? items.length;
+        summary.totalCount = allItems.length;
       }
 
       return {
         success: true,
         page,
         pageSize,
-        total: count ?? items.length,
+        total: allItems.length,
         summary,
         data: items
       };

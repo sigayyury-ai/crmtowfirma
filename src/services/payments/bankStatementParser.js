@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const { normalizeWhitespace, normalizeName } = require('../../utils/normalize');
 
 const HEADER_MARKER = '#Data operacji;#Opis operacji;#Rachunek;#Kategoria;#Kwota;';
-const PROFORMA_REGEX = /(CO-?PROF\s*\d+\/?\d{4})/i;
+// Улучшенное регулярное выражение для поиска номеров проформ
+// Поддерживает: CO-PROF 123/2025, CO PROF 123/2025, CO-PROF123/2025 и т.д.
+const PROFORMA_REGEX = /(CO-?\s*PROF\s*\d+\s*\/\s*\d{4})/i;
 
 function splitCsvLine(line) {
   const result = [];
