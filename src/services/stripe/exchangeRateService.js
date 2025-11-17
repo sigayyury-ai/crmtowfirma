@@ -1,58 +1,70 @@
-const { getStripeClient } = require('./client');
-const logger = require('../../utils/logging/stripe').stripeRequestLogger;
+const axios = require('axios');
+const logger = require('../../utils/logger');
 
 const CACHE = new Map();
-const DEFAULT_TTL_SECONDS = parseInt(process.env.STRIPE_RATE_TTL_SEC || '3600', 10);
+const DEFAULT_TARGET = (process.env.CURRENCY_TARGET || 'PLN').toUpperCase();
+const BASE_URL = process.env.CURRENCY_API_URL || 'https://open.er-api.com/v6/latest';
+const CACHE_TTL_MS = parseInt(process.env.CURRENCY_CACHE_TTL_MS || '3600000', 10);
+const REQUEST_TIMEOUT_MS = parseInt(process.env.CURRENCY_API_TIMEOUT_MS || '8000', 10);
 
-function getCacheKey(currency, targetCurrency) {
-  return `${currency.toUpperCase()}_${targetCurrency.toUpperCase()}`;
-}
-
-function isCacheValid(entry) {
-  if (!entry) return false;
-  const ttl = Number.isFinite(entry.ttl) ? entry.ttl : DEFAULT_TTL_SECONDS;
-  return Date.now() - entry.fetchedAt < ttl * 1000;
-}
-
-async function fetchExchangeRate(baseCurrency, targetCurrency) {
-  const stripe = getStripeClient();
-  const response = await stripe.exchangeRates.retrieve(baseCurrency.toLowerCase());
-  const rate =
-    response?.rates?.[targetCurrency.toLowerCase()] ??
-    response?.rates?.[targetCurrency.toUpperCase()];
-  if (!rate) {
-    throw new Error(`Stripe exchange rate for ${baseCurrency}->${targetCurrency} not available`);
+function getCacheEntry(currency) {
+  const entry = CACHE.get(currency);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > (entry.ttl || CACHE_TTL_MS)) {
+    return null;
   }
-  return Number(rate);
+  return entry;
 }
 
-async function getRate(baseCurrency, targetCurrency = 'PLN', { ttlSeconds } = {}) {
-  const from = baseCurrency.toUpperCase();
-  const to = targetCurrency.toUpperCase();
+function storeCache(currency, rates, ttl = CACHE_TTL_MS) {
+  CACHE.set(currency, {
+    rates,
+    timestamp: Date.now(),
+    ttl
+  });
+}
+
+async function fetchRates(currency) {
+  const url = `${BASE_URL}/${currency}`;
+  const { data } = await axios.get(url, { timeout: REQUEST_TIMEOUT_MS });
+  if (data?.result !== 'success' || !data?.rates) {
+    throw new Error(`Exchange API returned invalid payload for ${currency}`);
+  }
+  return data.rates;
+}
+
+async function getRate(baseCurrency, targetCurrency = DEFAULT_TARGET) {
+  const from = baseCurrency?.toUpperCase();
+  const to = targetCurrency?.toUpperCase();
+  if (!from || !to) {
+    throw new Error('Both baseCurrency and targetCurrency are required');
+  }
   if (from === to) return 1;
 
-  const cacheKey = getCacheKey(from, to);
-  const cacheEntry = CACHE.get(cacheKey);
-  if (isCacheValid(cacheEntry)) {
-    return cacheEntry.rate;
+  const cached = getCacheEntry(from);
+  if (cached?.rates?.[to]) {
+    return cached.rates[to];
   }
 
   try {
-    const rate = await fetchExchangeRate(from, to);
-    CACHE.set(cacheKey, {
-      rate,
-      fetchedAt: Date.now(),
-      ttl: ttlSeconds || DEFAULT_TTL_SECONDS
-    });
-    logger.info('Fetched Stripe FX rate', { from, to, rate });
-    return rate;
+    const rates = await fetchRates(from);
+    if (!Number.isFinite(rates[to])) {
+      throw new Error(`Rate ${from}->${to} not found`);
+    }
+    storeCache(from, rates);
+    logger.info('Fetched FX rate', { from, to });
+    return rates[to];
   } catch (error) {
-    logger.warn('Failed to fetch Stripe FX rate', {
-      from,
-      to,
-      error: error.message
-    });
-    return null;
+    if (cached?.rates?.[to]) {
+      logger.warn('Using stale FX rate due to fetch failure', {
+        from,
+        to,
+        error: error.message
+      });
+      return cached.rates[to];
+    }
+    logger.error('Failed to fetch FX rate', { from, to, error: error.message });
+    throw error;
   }
 }
 

@@ -1,8 +1,27 @@
 const express = require('express');
 const logger = require('../utils/logger');
 const stripeService = require('../services/stripe/service');
+const StripeProcessorService = require('../services/stripe/processor');
+const StripeAnalyticsService = require('../services/stripe/analyticsService');
+
+const stripeProcessor = new StripeProcessorService();
 
 const router = express.Router();
+
+function parseDateParam(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function buildCsvValue(value) {
+  if (value === null || value === undefined) return '';
+  const stringValue = String(value);
+  if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+    return `"${stringValue.replace(/"/g, '""')}"`;
+  }
+  return stringValue;
+}
 
 router.get('/health', async (req, res) => {
   try {
@@ -16,6 +35,155 @@ router.get('/health', async (req, res) => {
     res.status(error.statusCode || 500).json({
       success: false,
       error: 'StripeError',
+      message: error.message
+    });
+  }
+});
+
+router.get('/payments', async (req, res) => {
+  try {
+    const {
+      from,
+      to,
+      productId,
+      productIds,
+      dealId,
+      limit
+    } = req.query || {};
+
+    const filters = {
+      dateFrom: parseDateParam(from),
+      dateTo: parseDateParam(to)
+    };
+
+    if (productId) {
+      filters.productIds = [productId];
+    } else if (productIds) {
+      const ids = String(productIds)
+        .split(',')
+        .map((id) => id.trim())
+        .filter(Boolean);
+      if (ids.length) {
+        filters.productIds = ids;
+      }
+    }
+
+    if (dealId) {
+      filters.dealId = dealId;
+    }
+
+    if (limit) {
+      filters.limit = limit;
+    }
+
+    const analytics = await StripeAnalyticsService.listPayments(filters);
+    res.json({
+      success: true,
+      data: analytics.items,
+      summary: analytics.summary,
+      filters: {
+        from: filters.dateFrom,
+        to: filters.dateTo,
+        productIds: filters.productIds || null,
+        dealId: filters.dealId || null,
+        limit: analytics.items.length
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to list stored Stripe payments', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'StripeRepositoryError',
+      message: error.message
+    });
+  }
+});
+
+router.get('/payments/export', async (req, res) => {
+  try {
+    const analytics = await StripeAnalyticsService.listPayments({
+      dateFrom: parseDateParam(req.query.from),
+      dateTo: parseDateParam(req.query.to),
+      productIds: req.query.productId
+        ? [req.query.productId]
+        : req.query.productIds
+          ? String(req.query.productIds)
+            .split(',')
+            .map((id) => id.trim())
+            .filter(Boolean)
+          : undefined,
+      dealId: req.query.dealId
+    });
+
+    const header = [
+      'Session ID',
+      'Deal ID',
+      'Product ID',
+      'Product Name',
+      'CRM Product ID',
+      'Stripe Product ID',
+      'Camp Product ID',
+      'Payment Type',
+      'Customer Type',
+      'Customer Name',
+      'Customer Email',
+      'Customer Country',
+      'Company Name',
+      'Company Tax ID',
+      'Company Country',
+      'Currency',
+      'Amount',
+      'Amount (PLN)',
+      'VAT',
+      'VAT (PLN)',
+      'Expected VAT',
+      'Address Validated',
+      'Exchange Rate',
+      'Created At',
+      'Processed At'
+    ];
+
+    const rows = analytics.items.map((item) => [
+      item.sessionId || '',
+      item.dealId || '',
+      item.productId || '',
+      item.productName || '',
+      item.crmProductId || '',
+      item.stripeProductId || '',
+      item.campProductId || '',
+      item.paymentType || '',
+      item.customerType || '',
+      item.customerName || '',
+      item.customerEmail || '',
+      item.customerCountry || '',
+      item.companyName || '',
+      item.companyTaxId || '',
+      item.companyCountry || '',
+      item.currency || '',
+      item.amount,
+      item.amountPln,
+      item.amountTax,
+      item.amountTaxPln,
+      item.expectedVat ? 'yes' : 'no',
+      item.addressValidated ? 'yes' : 'no',
+      item.exchangeRate ?? '',
+      item.createdAt || '',
+      item.processedAt || ''
+    ]);
+
+    const csv = [
+      header.map(buildCsvValue).join(','),
+      ...rows.map((row) => row.map(buildCsvValue).join(','))
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="stripe-payments.csv"');
+    res.send(csv);
+  } catch (error) {
+    logger.error('Failed to export stored Stripe payments', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'StripeRepositoryError',
       message: error.message
     });
   }
@@ -69,5 +237,64 @@ router.get('/checkout-sessions/:sessionId', async (req, res) => {
   }
 });
 
+router.post('/processors/runs', async (req, res) => {
+  try {
+    const { from, to, mode } = req.body || {};
+    if (mode) {
+      process.env.STRIPE_MODE = mode;
+    }
+    const runId = `api-${Date.now()}`;
+    const result = await stripeProcessor.processPendingPayments({
+      trigger: 'api',
+      runId,
+      from,
+      to
+    });
+    res.status(202).json({
+      success: true,
+      runId,
+      result
+    });
+  } catch (error) {
+    logger.error('Failed to trigger Stripe processor run', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'StripeProcessorError',
+      message: error.message
+    });
+  }
+});
+
+router.post('/processors/refunds/lost-deals', async (req, res) => {
+  try {
+    const { mode } = req.body || {};
+    if (mode) {
+      process.env.STRIPE_MODE = mode;
+    }
+    const runId = `api-refund-${Date.now()}`;
+    const result = await stripeProcessor.processLostDealRefunds({
+      trigger: 'api',
+      runId
+    });
+    res.status(202).json({
+      success: true,
+      runId,
+      result
+    });
+  } catch (error) {
+    logger.error('Failed to process lost deal refunds', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'StripeRefundError',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
+
+
+
+
+
 

@@ -15,6 +15,8 @@ const DeletedProformaReportService = require('../services/deletedProformaReportS
 const stripeRouter = require('./stripe');
 const stripeEventReportRouter = require('./stripeEventReport');
 const { requireStripeAccess } = require('../middleware/auth');
+const stripeService = require('../services/stripe/service');
+const stripeAnalyticsService = require('../services/stripe/analyticsService');
 const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
@@ -144,7 +146,30 @@ router.get('/health', (req, res) => {
   });
 });
 
-router.use('/stripe', stripeRouter);
+/**
+ * GET /api/stripe-health
+ * Проверка подключения к Stripe (используется в dev/test)
+ */
+router.get('/stripe-health', async (req, res) => {
+  try {
+    const data = await stripeService.checkHealth();
+    res.json({
+      success: true,
+      data
+    });
+  } catch (error) {
+    logger.error('Stripe health check failed via /api/stripe-health', {
+      message: error.message
+    });
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: 'StripeError',
+      message: error.message
+    });
+  }
+});
+
+router.use('/stripe', requireStripeAccess, stripeRouter);
 router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
 
 // ==================== PIPEDRIVE ENDPOINTS ====================
@@ -757,8 +782,15 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
     }
 
     const lookup = new WfirmaLookup();
-    const data = await lookup.getMonthlyProformasByProduct(options);
+    const range = lookup.resolveDateRange(options);
+    const resolvedDateFrom = range.dateFrom;
+    const resolvedDateTo = range.dateTo;
+    const data = await lookup.getMonthlyProformasByProduct({ ...options, dateFrom: resolvedDateFrom, dateTo: resolvedDateTo });
     const summary = computeSummary(data);
+    const stripeData = await stripeAnalyticsService.getMonthlyStripeSummary({
+      dateFrom: resolvedDateFrom,
+      dateTo: resolvedDateTo
+    });
 
     if (Array.isArray(data) && data.length > 0) {
       const missingDealCount = data.filter((item) => !item.pipedrive_deal_id).length;
@@ -773,11 +805,12 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
       data,
       count: data.length,
       summary,
+      stripe: stripeData,
       period: {
         month: options.month || null,
         year: options.year || null,
-        dateFrom: options.dateFrom || null,
-        dateTo: options.dateTo || null
+        dateFrom: resolvedDateFrom,
+        dateTo: resolvedDateTo
       }
     });
   } catch (error) {

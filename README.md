@@ -73,7 +73,19 @@ WFIRMA_BASE_URL=https://api2.wfirma.pl
 # Server Configuration
 PORT=3000
 NODE_ENV=development
+
+# Stripe (test mode)
+STRIPE_API_KEY=sk_test_your_stripe_test_key
+STRIPE_MODE=test
+STRIPE_EVENTS_CACHE_TTL_MS=600000
 ```
+
+### Быстрый старт Stripe-процессора
+
+1. Установите зависимости и запустите `npm run dev`.
+2. Выполните health-check: `curl http://localhost:3000/api/stripe-health`.
+3. Запустите тестовый триггер: `node scripts/runStripeProcessor.js --deal <dealId> --mode test`.
+4. Проверьте, что Stripe Checkout Session появилась в dashboard и оплата отражается в отчётах (см. `specs/001-stripe-payment-processor/quickstart.md` для полного сценария).
 
 ### Банковские счета
 

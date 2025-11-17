@@ -1002,7 +1002,8 @@ h2 {
     border-radius: 14px;
     background: #f8fbff;
     min-height: 220px;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: visible;
 }
 
 .payments-section .placeholder,
@@ -1094,32 +1095,39 @@ h2 {
 
 .payments-table th:nth-child(1),
 .payments-table td:nth-child(1) {
-    width: 120px;
+    width: 10%;
 }
 
 .payments-table th:nth-child(2),
 .payments-table td:nth-child(2) {
-    width: 220px;
+    width: 20%;
 }
 
 .payments-table th:nth-child(3),
 .payments-table td:nth-child(3) {
-    width: 140px;
+    width: 12%;
 }
 
 .payments-table th:nth-child(4),
 .payments-table td:nth-child(4) {
-    width: 140px;
+    width: 12%;
 }
 
 .payments-table th:nth-child(5),
 .payments-table td:nth-child(5) {
-    width: 220px;
+    width: 18%;
 }
 
 .payments-table th:nth-child(6),
 .payments-table td:nth-child(6) {
-    width: 200px;
+    width: 18%;
+}
+
+.payments-table th:nth-child(7),
+.payments-table td:nth-child(7) {
+    width: 10%;
+    min-width: 100px;
+    max-width: 120px;
 }
 
 .payments-table tbody tr:hover {
@@ -1343,6 +1351,8 @@ h2 {
     gap: 8px;
     align-items: center;
     justify-content: flex-start;
+    white-space: nowrap;
+    overflow: visible;
 }
 
 .actions-cell .action-btn {
@@ -1890,6 +1900,10 @@ h2 {
     font-size: 0.82rem;
     color: #94a3b8;
     margin-top: 4px;
+}
+
+.product-table-note.warning {
+    color: #b91c1c;
 }
 
 @media (max-width: 768px) {

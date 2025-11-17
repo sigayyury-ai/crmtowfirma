@@ -906,9 +906,38 @@ function renderProductSummaryTable(products) {
         details.push(`рассчитать до ${formatMonthLabel(product.calculationDueMonth)}`);
       }
 
-      const detailHtml = details.length
+      let detailHtml = details.length
         ? `<div class="product-table-note">${escapeHtml(details.join(' • '))}</div>`
         : '';
+
+      const stripeTotals = product.stripeTotals || null;
+      const stripeWarnings = [];
+      if (stripeTotals?.paymentsCount) {
+        const stripeParts = [
+          formatPaymentCount(stripeTotals.paymentsCount),
+          formatCurrency(stripeTotals.grossPln || 0, 'PLN')
+        ];
+        if (stripeTotals.taxPln) {
+          stripeParts.push(`VAT ${formatCurrency(stripeTotals.taxPln, 'PLN')}`);
+        }
+        details.push(`Stripe: ${stripeParts.filter(Boolean).join(' • ')}`);
+        if (stripeTotals.missingVatCount) {
+          stripeWarnings.push(`без VAT: ${stripeTotals.missingVatCount}`);
+        }
+        if (stripeTotals.invalidAddressCount) {
+          stripeWarnings.push(`нет адреса: ${stripeTotals.invalidAddressCount}`);
+        }
+      }
+
+      detailHtml = details.length
+        ? `<div class="product-table-note">${escapeHtml(details.join(' • '))}</div>`
+        : '';
+
+      const stripeNote = stripeWarnings.length
+        ? `<div class="product-table-note warning">${escapeHtml(`⚠️ ${stripeWarnings.join(', ')}`)}</div>`
+        : '';
+
+      const combinedNotes = [detailHtml, stripeNote].filter(Boolean).join('');
 
       const slug = encodeURIComponent(product.productSlug || product.productKey || product.productId || 'unknown');
       const detailUrl = `/vat-margin-product.html?product=${slug}`;
@@ -917,8 +946,9 @@ function renderProductSummaryTable(products) {
         <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
           <td>
             <a class="product-link" href="${detailUrl}" data-product-link-id="${escapeHtml(product.productSlug || '')}">${escapeHtml(product.productName || 'Без названия')}</a>
-            ${detailHtml}
+            ${combinedNotes}
           </td>
+          <td class="numeric">${(product.proformaCount || 0).toLocaleString('ru-RU')}</td>
           <td>
             <select class="status-select" data-product-slug="${escapeHtml(product.productSlug || '')}">
               <option value="in_progress"${product.calculationStatus === 'in_progress' ? ' selected' : ''}>В процессе</option>
@@ -944,6 +974,7 @@ function renderProductSummaryTable(products) {
       <thead>
         <tr>
           <th>Продукт</th>
+          <th>Проформ</th>
           <th>Статус</th>
           <th>Месяц расчёта</th>
         </tr>
@@ -1343,7 +1374,6 @@ async function loadPaymentsData({ silent = false } = {}) {
       }
     });
 
-    renderUploadsHistory(paymentsState.history);
     renderPaymentsTable(paymentsState.items);
 
     if (previousSelectedId && paymentsState.items.some((item) => String(item.id) === String(previousSelectedId))) {
@@ -1722,19 +1752,23 @@ function renderPaymentDetail(data, target = paymentsState.detailCellEl) {
       const isSelected = candidate.proforma_fullnumber === payment.matched_proforma;
       const candidateCurrency = candidate.proforma_currency || payment.currency || 'PLN';
       const amountDiff = Number.isFinite(candidate.amount_diff) ? formatCurrency(candidate.amount_diff, candidateCurrency) : '—';
+      const isNotFound = !candidate.proforma_id; // Проформа не найдена в базе
+      const cardClass = `candidate-card${isSelected ? ' selected' : ''}${isNotFound ? ' disabled' : ''}`;
+      
       return `
         <li
-          class="candidate-card${isSelected ? ' selected' : ''}"
+          class="${cardClass}"
           data-fullnumber="${escapeHtml(candidate.proforma_fullnumber || '')}"
           data-proforma-id="${escapeHtml(String(candidate.proforma_id || ''))}"
         >
           <div class="candidate-title">${escapeHtml(candidate.proforma_fullnumber || '—')}</div>
           <div class="candidate-meta">
-            <span>👤 ${escapeHtml(candidate.buyer_name || '—')}</span>
-            <span>💰 ${formatCurrency(candidate.proforma_total || 0, candidateCurrency)}</span>
-            <span>⚖️ Остаток ${formatCurrency(candidate.remaining || 0, candidateCurrency)}</span>
+            ${isNotFound ? '' : `<span>👤 ${escapeHtml(candidate.buyer_name || '—')}</span>`}
+            ${isNotFound ? '' : `<span>💰 ${formatCurrency(candidate.proforma_total || 0, candidateCurrency)}</span>`}
+            ${isNotFound ? '' : `<span>⚖️ Остаток ${formatCurrency(candidate.remaining || 0, candidateCurrency)}</span>`}
             <span>⭐ ${candidate.score !== undefined ? escapeHtml(String(candidate.score)) : '—'}</span>
-            <span>Δ ${amountDiff}</span>
+            ${isNotFound ? '' : `<span>Δ ${amountDiff}</span>`}
+            ${candidate.reason ? `<span class="candidate-reason">${escapeHtml(candidate.reason)}</span>` : ''}
           </div>
         </li>
       `;

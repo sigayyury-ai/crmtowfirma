@@ -422,13 +422,27 @@ class PaymentService {
 
   createMatchingCandidates(payment, context) {
     const candidates = [];
+    const paymentAmount = Number(payment.amount) || 0;
+    const paymentCurrency = (payment.currency || 'PLN').toUpperCase();
+    const usedProformaIds = new Set(); // Чтобы избежать дубликатов
 
-    const normalizedNumber = this.normalizeProformaNumber(payment.proforma_fullnumber);
+    // 1. Поиск по номеру проформы
+    // Сначала проверяем поле proforma_fullnumber (если было извлечено парсером)
+    let normalizedNumber = this.normalizeProformaNumber(payment.proforma_fullnumber);
+    
+    // Если не было извлечено парсером, пытаемся извлечь из описания
+    if (!normalizedNumber && payment.description) {
+      const extracted = this.extractProformaNumberFromDescription(payment.description);
+      if (extracted) {
+        normalizedNumber = this.normalizeProformaNumber(extracted);
+      }
+    }
+    
     if (normalizedNumber) {
       const candidate = context.proformasByNumber.get(normalizedNumber);
       if (candidate) {
         const remaining = this.calculateRemaining(candidate);
-        const amountDiff = Math.abs((Number(payment.amount) || 0) - remaining);
+        const amountDiff = Math.abs(paymentAmount - remaining);
         const matched = amountDiff <= AMOUNT_TOLERANCE;
 
         candidates.push({
@@ -444,14 +458,42 @@ class PaymentService {
           amountDiff,
           remaining
         });
+        usedProformaIds.add(String(candidate.id));
+      } else {
+        // Если номер проформы найден, но проформа не найдена в базе,
+        // это может означать, что проформа удалена, еще не синхронизирована или номер неверный
+        logger.debug('Proforma number found but proforma not in database', {
+          paymentId: payment.id,
+          proformaNumber: normalizedNumber,
+          description: payment.description?.substring(0, 100)
+        });
+        
+        // Добавляем кандидата с низким приоритетом, чтобы пользователь видел,
+        // что номер проформы был найден, но проформа отсутствует в базе
+        // Это поможет понять, что проформа была удалена или еще не синхронизирована
+        candidates.push({
+          proforma: null,
+          proformaId: null,
+          proformaFullnumber: normalizedNumber,
+          proformaCurrency: paymentCurrency,
+          proformaTotal: 0,
+          paymentsTotal: 0,
+          buyerName: null,
+          score: 30,
+          reason: `Проформа ${normalizedNumber} не найдена в базе (возможно, удалена)`,
+          amountDiff: 0,
+          remaining: 0
+        });
       }
     }
 
-    if (!candidates.length && payment.payer_normalized_name) {
+    // 2. Поиск по имени клиента
+    if (payment.payer_normalized_name) {
       const list = context.proformasByBuyer.get(payment.payer_normalized_name) || [];
       for (const proforma of list) {
+        if (usedProformaIds.has(String(proforma.id))) continue;
+
         const remaining = this.calculateRemaining(proforma);
-        const paymentAmount = Number(payment.amount) || 0;
         const amountDiff = Math.abs(paymentAmount - remaining);
         let score = 50;
         let reason = 'По имени клиента';
@@ -481,6 +523,70 @@ class PaymentService {
           amountDiff,
           remaining
         });
+        usedProformaIds.add(String(proforma.id));
+      }
+    }
+
+    // 3. Поиск по сумме (точное совпадение или половина для модели 50/50)
+    // Это особенно важно, когда в описании платежа нет опознавательных знаков
+    // Важно: сравниваем только проформы в той же валюте, что и платеж
+    if (paymentAmount > 0 && Array.isArray(context.proformasByAmount)) {
+      for (const proforma of context.proformasByAmount) {
+        if (usedProformaIds.has(String(proforma.id))) continue;
+
+        const proformaTotal = Number(proforma.total) || 0;
+        const proformaPaymentsTotal = Number(proforma.payments_total) || 0;
+        const remaining = this.calculateRemaining(proforma);
+        
+        // Пропускаем полностью оплаченные проформы
+        if (remaining <= 0.01) continue;
+
+        const proformaCurrency = (proforma.currency || 'PLN').toUpperCase();
+        
+        // Сравниваем только проформы в той же валюте, что и платеж
+        if (proformaCurrency !== paymentCurrency) {
+          continue;
+        }
+
+        // Проверяем точное совпадение суммы с остатком к оплате
+        const exactDiff = Math.abs(paymentAmount - remaining);
+        if (exactDiff <= AMOUNT_TOLERANCE) {
+          candidates.push({
+            proforma,
+            proformaId: proforma.id,
+            proformaFullnumber: proforma.fullnumber,
+            proformaCurrency: proforma.currency,
+            proformaTotal: proformaTotal,
+            paymentsTotal: proformaPaymentsTotal,
+            buyerName: proforma.buyer_name || null,
+            score: 60,
+            reason: 'По сумме (совпадение с остатком)',
+            amountDiff: exactDiff,
+            remaining
+          });
+          usedProformaIds.add(String(proforma.id));
+          continue;
+        }
+
+        // Проверяем половину полной суммы проформы (модель 50/50, первый платеж)
+        const halfTotal = proformaTotal / 2;
+        const halfDiff = Math.abs(paymentAmount - halfTotal);
+        if (halfDiff <= AMOUNT_TOLERANCE) {
+          candidates.push({
+            proforma,
+            proformaId: proforma.id,
+            proformaFullnumber: proforma.fullnumber,
+            proformaCurrency: proforma.currency,
+            proformaTotal: proformaTotal,
+            paymentsTotal: proformaPaymentsTotal,
+            buyerName: proforma.buyer_name || null,
+            score: 55,
+            reason: 'По сумме (половина проформы, модель 50/50)',
+            amountDiff: halfDiff,
+            remaining
+          });
+          usedProformaIds.add(String(proforma.id));
+        }
       }
     }
 
@@ -489,7 +595,42 @@ class PaymentService {
 
   normalizeProformaNumber(value) {
     if (!value) return null;
-    return normalizeWhitespace(String(value)).toUpperCase();
+    let normalized = normalizeWhitespace(String(value)).toUpperCase();
+    // Стандартизируем формат: CO PROF -> CO-PROF
+    normalized = normalized.replace(/CO\s+PROF/g, 'CO-PROF');
+    // Убираем лишние пробелы вокруг слэша
+    normalized = normalized.replace(/\s*\/\s*/g, '/');
+    return normalized;
+  }
+
+  extractProformaNumberFromDescription(description) {
+    if (!description) return null;
+    
+    // Улучшенное регулярное выражение для поиска номеров проформ в описании
+    // Поддерживает: CO-PROF 123/2025, CO PROF 123/2025, CO-PROF123/2025 и т.д.
+    // Также ищем варианты с пробелами вокруг слэша
+    const PROFORMA_REGEX = /(CO-?\s*PROF\s*\d+\s*\/\s*\d{4})/i;
+    const match = description.match(PROFORMA_REGEX);
+    
+    if (match && match[1]) {
+      // Нормализуем формат: убираем лишние пробелы, стандартизируем дефис
+      let normalized = match[1]
+        .replace(/\s+/g, ' ')
+        .replace(/CO\s+PROF/gi, 'CO-PROF')
+        .replace(/\s*\/\s*/g, '/')
+        .trim()
+        .toUpperCase();
+      
+      // Убеждаемся, что формат правильный: CO-PROF XXX/YYYY
+      // Если между CO и PROF нет дефиса, добавляем его
+      if (!normalized.includes('CO-PROF')) {
+        normalized = normalized.replace(/CO\s*PROF/i, 'CO-PROF');
+      }
+      
+      return normalized;
+    }
+    
+    return null;
   }
 
   async fetchPaymentRaw(paymentId) {
@@ -524,6 +665,15 @@ class PaymentService {
 
   async getPaymentDetails(paymentId) {
     const paymentRaw = await this.fetchPaymentRaw(paymentId);
+    
+    // Если номер проформы не был извлечен парсером, пытаемся извлечь из описания
+    if (!paymentRaw.proforma_fullnumber && paymentRaw.description) {
+      const extracted = this.extractProformaNumberFromDescription(paymentRaw.description);
+      if (extracted) {
+        paymentRaw.proforma_fullnumber = extracted;
+      }
+    }
+    
     const resolved = this.resolvePaymentRecord(paymentRaw);
 
     let candidates = [];
@@ -809,18 +959,36 @@ class PaymentService {
   async buildMatchingContext(payments) {
     const context = {
       proformasByNumber: new Map(),
-      proformasByBuyer: new Map()
+      proformasByBuyer: new Map(),
+      proformasByAmount: [] // Для поиска по сумме
     };
 
     if (!payments.length) {
       return context;
     }
 
-    const numbers = Array.from(new Set(
-      payments
-        .map((item) => this.normalizeProformaNumber(item.proforma_fullnumber))
-        .filter(Boolean)
-    ));
+    // Извлекаем номера проформ из поля proforma_fullnumber и из описания
+    const numbers = new Set();
+    for (const payment of payments) {
+      // Из поля proforma_fullnumber (если было извлечено парсером)
+      if (payment.proforma_fullnumber) {
+        const normalized = this.normalizeProformaNumber(payment.proforma_fullnumber);
+        if (normalized) {
+          numbers.add(normalized);
+        }
+      }
+      
+      // Также пытаемся извлечь из описания, если не было извлечено парсером
+      if (payment.description && !payment.proforma_fullnumber) {
+        const extracted = this.extractProformaNumberFromDescription(payment.description);
+        if (extracted) {
+          const normalized = this.normalizeProformaNumber(extracted);
+          if (normalized) {
+            numbers.add(normalized);
+          }
+        }
+      }
+    }
 
     const buyerNames = Array.from(new Set(
       payments
@@ -828,11 +996,28 @@ class PaymentService {
         .filter(Boolean)
     ));
 
-    if (numbers.length > 0) {
-      const proformas = await this.proformaRepository.findByFullnumbers(numbers);
+    if (numbers.size > 0) {
+      const numbersArray = Array.from(numbers);
+      logger.debug('Searching proformas by numbers', {
+        count: numbersArray.length,
+        numbers: numbersArray.slice(0, 5)
+      });
+      
+      const proformas = await this.proformaRepository.findByFullnumbers(numbersArray);
+      logger.debug('Found proformas by numbers', {
+        requested: numbersArray.length,
+        found: proformas.length,
+        foundNumbers: proformas.map(p => p.fullnumber).slice(0, 5)
+      });
+      
       for (const proforma of proformas) {
         if (proforma.fullnumber) {
-          context.proformasByNumber.set(this.normalizeProformaNumber(proforma.fullnumber), proforma);
+          // Пропускаем полностью оплаченные проформы
+          const remaining = this.calculateRemaining(proforma);
+          if (remaining <= 0.01) continue;
+          
+          const normalized = this.normalizeProformaNumber(proforma.fullnumber);
+          context.proformasByNumber.set(normalized, proforma);
         }
       }
     }
@@ -840,6 +1025,10 @@ class PaymentService {
     if (buyerNames.length > 0) {
       const proformas = await this.proformaRepository.findByBuyerNames(buyerNames);
       for (const proforma of proformas) {
+        // Пропускаем полностью оплаченные проформы
+        const remaining = this.calculateRemaining(proforma);
+        if (remaining <= 0.01) continue;
+        
         const key = proforma.buyer_normalized_name;
         if (!key) continue;
         if (!context.proformasByBuyer.has(key)) {
@@ -847,6 +1036,28 @@ class PaymentService {
         }
         context.proformasByBuyer.get(key).push(proforma);
       }
+    }
+
+    // Загружаем активные проформы для поиска по сумме
+    // Ограничиваем последними 6 месяцами для производительности
+    try {
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      
+      if (supabase) {
+        const { data: activeProformas, error } = await supabase
+          .from('proformas')
+          .select('id, fullnumber, currency, total, payments_total, payments_total_pln, currency_exchange, buyer_name, buyer_normalized_name')
+          .eq('status', 'active')
+          .gte('issued_at', sixMonthsAgo.toISOString())
+          .limit(1000); // Ограничиваем для производительности
+
+        if (!error && activeProformas) {
+          context.proformasByAmount = activeProformas;
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to load proformas for amount matching:', error);
     }
 
     return context;

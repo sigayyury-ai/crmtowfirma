@@ -1,0 +1,343 @@
+const supabase = require('../supabaseClient');
+const logger = require('../../utils/logger');
+
+function compact(record = {}) {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
+}
+
+function isTableMissing(error) {
+  return error?.code === 'PGRST205';
+}
+
+class StripeRepository {
+  constructor() {
+    this.supabase = supabase;
+    if (!this.supabase) {
+      logger.warn('Supabase client is not configured. StripeRepository will be disabled.');
+    }
+  }
+
+  isEnabled() {
+    return !!this.supabase;
+  }
+
+  /**
+   * Ensure we always have a stable product link between CRM ↔ Stripe ↔ internal id.
+   */
+  async upsertProductLink({
+    crmProductId,
+    crmProductName,
+    stripeProductId,
+    campProductId,
+    status = 'active'
+  }) {
+    if (!this.isEnabled()) return null;
+
+    if (!crmProductId && !stripeProductId) {
+      logger.warn('Cannot upsert product link without CRM or Stripe product id');
+      return null;
+    }
+
+    const payload = compact({
+      crm_product_id: crmProductId ? String(crmProductId) : undefined,
+      crm_product_name: crmProductName || undefined,
+      stripe_product_id: stripeProductId || undefined,
+      camp_product_id: campProductId || undefined,
+      status,
+      updated_at: new Date().toISOString()
+    });
+
+    let data, error;
+    const result = await this.supabase
+      .from('product_links')
+      .upsert(payload, { onConflict: 'crm_product_id,stripe_product_id' })
+      .select()
+      .maybeSingle();
+    data = result.data;
+    error = result.error;
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table product_links is missing; skipping product link upsert');
+        return null;
+      }
+      // If constraint doesn't exist (42P10), try simple insert
+      if (error.code === '42P10') {
+        logger.warn('Unique constraint not found, attempting insert instead', { error: error.message });
+        const insertResult = await this.supabase
+          .from('product_links')
+          .insert(payload)
+          .select()
+          .maybeSingle();
+        if (insertResult.error) {
+          logger.error('Failed to insert product link', { error: insertResult.error });
+          return null;
+        }
+        return insertResult.data;
+      }
+      logger.error('Failed to upsert product link', { error });
+      // Don't throw - allow processor to continue without product link
+      return null;
+    }
+
+    return data;
+  }
+
+  async findProductLinkByCrmId(crmProductId) {
+    if (!this.isEnabled() || !crmProductId) return null;
+    const { data, error } = await this.supabase
+      .from('product_links')
+      .select()
+      .eq('crm_product_id', String(crmProductId))
+      .maybeSingle();
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table product_links is missing; cannot fetch by CRM id');
+        return null;
+      }
+      logger.error('Failed to load product link by CRM id', { error });
+      throw error;
+    }
+    return data;
+  }
+
+  async findProductLinkByStripeId(stripeProductId) {
+    if (!this.isEnabled() || !stripeProductId) return null;
+    const { data, error } = await this.supabase
+      .from('product_links')
+      .select()
+      .eq('stripe_product_id', stripeProductId)
+      .maybeSingle();
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table product_links is missing; cannot fetch by Stripe id');
+        return null;
+      }
+      logger.error('Failed to load product link by Stripe id', { error });
+      throw error;
+    }
+    return data;
+  }
+
+  async findProductLinkById(productLinkId) {
+    if (!this.isEnabled() || !productLinkId) return null;
+    const { data, error } = await this.supabase
+      .from('product_links')
+      .select()
+      .eq('id', productLinkId)
+      .maybeSingle();
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table product_links is missing; cannot fetch by id');
+        return null;
+      }
+      logger.error('Failed to load product link by internal id', { error });
+      throw error;
+    }
+    return data;
+  }
+
+  /**
+   * Persist Stripe payment row (idempotent on session_id)
+   */
+  async savePayment(payment) {
+    if (!this.isEnabled()) return null;
+    if (!payment?.session_id) {
+      logger.warn('Cannot save Stripe payment without session_id');
+      return null;
+    }
+
+    const { error } = await this.supabase
+      .from('stripe_payments')
+      .upsert(compact(payment), { onConflict: 'session_id' });
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payments is missing; skipping payment persistence', {
+          sessionId: payment.session_id
+        });
+        return null;
+      }
+      logger.error('Failed to upsert stripe payment', { error, sessionId: payment.session_id });
+      throw error;
+    }
+    return payment.session_id;
+  }
+
+  async findPaymentBySessionId(sessionId) {
+    if (!this.isEnabled() || !sessionId) return null;
+    const { data, error } = await this.supabase
+      .from('stripe_payments')
+      .select('*')
+      .eq('session_id', sessionId)
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payments is missing; cannot fetch payment by session id');
+        return null;
+      }
+      logger.error('Failed to load stripe payment by session id', { error, sessionId });
+      throw error;
+    }
+
+    return data;
+  }
+
+  async listProductLinksByIds(ids = []) {
+    if (!this.isEnabled() || !Array.isArray(ids) || ids.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await this.supabase
+      .from('product_links')
+      .select()
+      .in('id', ids);
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table product_links is missing; cannot list by ids');
+        return new Map();
+      }
+      logger.error('Failed to load product links by ids', { error });
+      throw error;
+    }
+
+    const map = new Map();
+    (data || []).forEach((row) => {
+      if (row?.id) {
+        map.set(row.id, row);
+      }
+    });
+    return map;
+  }
+
+  async listPayments(filters = {}) {
+    if (!this.isEnabled()) return [];
+
+    let query = this.supabase
+      .from('stripe_payments')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    // Filter by processed_at (payment date) if available, fallback to created_at
+    if (filters.dateFrom) {
+      // Use processed_at for filtering payment date, but also check created_at for sessions without processed_at
+      query = query.or(`processed_at.gte.${filters.dateFrom},and(processed_at.is.null,created_at.gte.${filters.dateFrom})`);
+    }
+    if (filters.dateTo) {
+      query = query.or(`processed_at.lte.${filters.dateTo},and(processed_at.is.null,created_at.lte.${filters.dateTo})`);
+    }
+    if (filters.productIds?.length) {
+      query = query.in('product_id', filters.productIds);
+    }
+    if (filters.dealId) {
+      query = query.eq('deal_id', String(filters.dealId));
+    }
+    if (filters.status) {
+      query = query.eq('status', filters.status);
+    }
+    if (filters.limit) {
+      query = query.limit(filters.limit);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payments is missing; returning empty payment list');
+        return [];
+      }
+      logger.error('Failed to list stripe payments', { error });
+      throw error;
+    }
+
+    return data || [];
+  }
+
+  async saveDocuments(documents = []) {
+    if (!this.isEnabled() || !documents.length) return;
+    const rows = documents
+      .filter((doc) => doc && doc.payment_id && doc.document_type)
+      .map((doc) => compact(doc));
+    if (!rows.length) return;
+
+    const { error } = await this.supabase
+      .from('stripe_documents')
+      .upsert(rows, { onConflict: 'payment_id,document_type' });
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_documents is missing; skipping document persistence');
+        return;
+      }
+      logger.error('Failed to upsert stripe documents', { error });
+      throw error;
+    }
+  }
+
+  async logDeletion(entry) {
+    if (!this.isEnabled() || !entry?.payment_id) return;
+    const payload = compact({
+      ...entry,
+      logged_at: entry.logged_at || new Date().toISOString()
+    });
+
+    const { error } = await this.supabase
+      .from('stripe_payment_deletions')
+      .insert(payload);
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payment_deletions is missing; skipping deletion log');
+        return;
+      }
+      logger.error('Failed to insert stripe deletion log', { error });
+      throw error;
+    }
+  }
+
+  async listDeletions(filters = {}) {
+    if (!this.isEnabled()) return [];
+
+    let query = this.supabase
+      .from('stripe_payment_deletions')
+      .select('*')
+      .order('logged_at', { ascending: false });
+
+    if (filters.paymentId) {
+      query = query.eq('payment_id', String(filters.paymentId));
+    }
+    if (filters.dealId) {
+      query = query.eq('deal_id', String(filters.dealId));
+    }
+    if (filters.reason) {
+      query = query.eq('reason', filters.reason);
+    }
+    if (filters.dateFrom) {
+      query = query.gte('logged_at', new Date(filters.dateFrom).toISOString());
+    }
+    if (filters.dateTo) {
+      query = query.lte('logged_at', new Date(filters.dateTo).toISOString());
+    }
+    if (filters.limit) {
+      query = query.limit(filters.limit);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payment_deletions is missing; returning empty deletion list');
+        return [];
+      }
+      logger.error('Failed to list stripe payment deletions', { error });
+      throw error;
+    }
+
+    return data || [];
+  }
+}
+
+module.exports = StripeRepository;
+

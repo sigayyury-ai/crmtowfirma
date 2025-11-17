@@ -134,13 +134,15 @@ class SendPulseClient {
       };
 
       // Формат payload согласно документации SendPulse:
-      // { "contact_id": "...", "message": { "type": "text", "text": "..." } }
+      // { "contact_id": "...", "message": { "type": "text", "text": "...", "parse_mode": "Markdown" } }
       // contact_id должен быть строкой согласно API (ошибка: "The contact id must be a string")
+      // Используем Markdown для форматирования (жирный текст, ссылки)
       payload = {
         contact_id: String(sendpulseId),
         message: {
           type: 'text',
-          text: message
+          text: message,
+          parse_mode: 'Markdown' // Включаем Markdown форматирование для Telegram
         }
       };
 

@@ -1,5 +1,6 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
+const StripeAnalyticsService = require('../stripe/analyticsService');
 
 const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
 
@@ -75,6 +76,41 @@ function roundCurrencyMap(map) {
   return result;
 }
 
+function createEmptyEntry({ mapKey, productId, productName, productKey, slug }) {
+  const resolvedProductName = productName || 'Без названия';
+  const resolvedProductKey = productKey
+    || normalizeProductName(resolvedProductName)
+    || 'без названия';
+  const resolvedSlug = slug
+    || (productId ? `id-${productId}` : `slug-${resolvedProductKey}`);
+
+  return {
+    mapKey: mapKey || null,
+    productId: productId || null,
+    productKey: resolvedProductKey,
+    slug: resolvedSlug,
+    productName: resolvedProductName,
+    calculationStatus: STATUS_DEFAULT,
+    calculationDueMonth: null,
+    proformaIds: new Set(),
+    lastSaleDate: null,
+    totals: {
+      grossPln: 0,
+      paidPln: 0,
+      originalTotals: {}
+    },
+    proformaDetails: new Map(),
+    stripeTotals: null,
+    stripePayments: []
+  };
+}
+
+function toFixedNumber(value, digits = 2) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Number(num.toFixed(digits));
+}
+
 class ProductReportService {
   constructor() {
     if (!supabase) {
@@ -83,27 +119,62 @@ class ProductReportService {
   }
 
   async getProductSummary() {
-    const { products } = await this.loadAggregatedData();
+    const { products, totalGrossPln } = await this.loadAggregatedData();
 
     const summary = Array.from(products.values())
-      .map((entry) => ({
-        productId: entry.productId,
-        productKey: entry.productKey,
-        productSlug: entry.slug,
-        productName: entry.productName,
-        calculationStatus: entry.calculationStatus,
-        calculationDueMonth: entry.calculationDueMonth,
-        proformaCount: entry.proformaIds.size,
-        lastSaleDate: entry.lastSaleDate,
-        totals: {
-          grossPln: Number(entry.totals.grossPln.toFixed(2)),
-          paidPln: Number(entry.totals.paidPln.toFixed(2))
-        }
-      }))
+      .map((entry) => {
+        const proformaCount = entry.proformaIds.size;
+        const grossPln = Number(entry.totals.grossPln.toFixed(2));
+        const paidPln = Number(entry.totals.paidPln.toFixed(2));
+        // Для проформ VAT = 0, поэтому net = gross
+        const netPln = grossPln;
+        // Margin = net - cost, но cost неизвестен, поэтому margin = net (или можно оставить 0)
+        const marginPln = netPln;
+        const averageDealSize = proformaCount > 0 ? Number((grossPln / proformaCount).toFixed(2)) : 0;
+        const revenueShare = totalGrossPln > 0 ? Number((grossPln / totalGrossPln).toFixed(4)) : 0;
+        const stripeGrossPln = entry.stripeTotals?.grossRevenuePln || 0;
+        const combinedGrossPln = Number((grossPln + stripeGrossPln).toFixed(2));
+
+        return {
+          productId: entry.productId,
+          productKey: entry.productKey,
+          productSlug: entry.slug,
+          productName: entry.productName,
+          calculationStatus: entry.calculationStatus,
+          calculationDueMonth: entry.calculationDueMonth,
+          proformaCount,
+          lastSaleDate: entry.lastSaleDate,
+          totals: {
+            grossPln,
+            paidPln,
+            netPln,
+            marginPln,
+            averageDealSize,
+            revenueShare
+          },
+          stripeTotals: entry.stripeTotals
+            ? {
+                paymentsCount: entry.stripeTotals.paymentsCount,
+                grossPln: toFixedNumber(entry.stripeTotals.grossRevenuePln),
+                taxPln: toFixedNumber(entry.stripeTotals.grossTaxPln),
+                expectedVatCount: entry.stripeTotals.expectedVatCount,
+                missingVatCount: entry.stripeTotals.missingVatCount,
+                invalidAddressCount: entry.stripeTotals.invalidAddressCount,
+                b2bCount: entry.stripeTotals.b2bCount,
+                b2cCount: entry.stripeTotals.b2cCount,
+                lastPaymentAt: entry.stripeTotals.lastPaymentAt
+              }
+            : null,
+          combinedTotals: {
+            grossPln: combinedGrossPln
+          }
+        };
+      })
       .sort((a, b) => {
         const statusDiff = (STATUS_ORDER[a.calculationStatus] ?? 99) - (STATUS_ORDER[b.calculationStatus] ?? 99);
         if (statusDiff !== 0) return statusDiff;
-        return a.productName.localeCompare(b.productName, 'ru');
+        // Сортировка по выручке в рамках каждой группы статуса
+        return b.totals.grossPln - a.totals.grossPln;
       });
 
     return summary;
@@ -127,6 +198,8 @@ class ProductReportService {
           currencyTotals: roundCurrencyMap(detail.currencyTotals),
           totalPln: Number(detail.totalPln.toFixed(2)),
           paidPln: Number(detail.paidPln.toFixed(2)),
+          netPln: Number(detail.totalPln.toFixed(2)), // net = gross для проформ без VAT
+          vatPln: 0, // VAT = 0 для проформ
           paymentStatus: status,
           dealId: detail.dealId || null,
           dealUrl: detail.dealUrl || null,
@@ -151,6 +224,50 @@ class ProductReportService {
       ? Number((entry.totals.grossPln / totalGrossPln).toFixed(4))
       : 0;
 
+    const stripeTotals = entry.stripeTotals
+      ? {
+          paymentsCount: entry.stripeTotals.paymentsCount,
+          grossPln: toFixedNumber(entry.stripeTotals.grossRevenuePln),
+          grossTaxPln: toFixedNumber(entry.stripeTotals.grossTaxPln),
+          originalTotals: roundCurrencyMap(entry.stripeTotals.originalTotals),
+          expectedVatCount: entry.stripeTotals.expectedVatCount,
+          missingVatCount: entry.stripeTotals.missingVatCount,
+          invalidAddressCount: entry.stripeTotals.invalidAddressCount,
+          b2bCount: entry.stripeTotals.b2bCount,
+          b2cCount: entry.stripeTotals.b2cCount,
+          lastPaymentAt: entry.stripeTotals.lastPaymentAt
+        }
+      : null;
+
+    const stripePayments = Array.isArray(entry.stripePayments)
+      ? entry.stripePayments.map((payment) => ({
+        sessionId: payment.sessionId || null,
+        paymentType: payment.paymentType || null,
+        customerType: payment.customerType || 'person',
+        customerName: payment.customerName || null,
+        customerEmail: payment.customerEmail || null,
+        companyName: payment.companyName || null,
+        companyTaxId: payment.companyTaxId || null,
+        companyCountry: payment.companyCountry || null,
+        currency: payment.currency || 'PLN',
+        amount: toFixedNumber(payment.amount),
+        amountPln: toFixedNumber(payment.amountPln),
+        taxAmount: toFixedNumber(payment.taxAmount),
+        taxAmountPln: toFixedNumber(payment.taxAmountPln),
+        expectedVat: Boolean(payment.expectedVat),
+        addressValidated: payment.addressValidated !== false,
+        paymentMode: payment.paymentMode || null,
+        createdAt: payment.createdAt || null,
+        processedAt: payment.processedAt || null
+      }))
+      : [];
+
+    const grossPln = Number(entry.totals.grossPln.toFixed(2));
+    const netPln = grossPln; // net = gross для проформ без VAT
+    const marginPln = netPln; // margin = net для проформ
+    const proformaCount = entry.proformaIds.size;
+    const averageDealSize = proformaCount > 0 ? Number((grossPln / proformaCount).toFixed(2)) : 0;
+
     return {
       productId: entry.productId,
       productKey: entry.productKey,
@@ -159,14 +276,19 @@ class ProductReportService {
       calculationStatus: entry.calculationStatus,
       calculationDueMonth: entry.calculationDueMonth,
       lastSaleDate: entry.lastSaleDate,
-      proformaCount: entry.proformaIds.size,
+      proformaCount,
       totals: {
-        grossPln: Number(entry.totals.grossPln.toFixed(2)),
+        grossPln,
         paidPln: Number(entry.totals.paidPln.toFixed(2)),
+        netPln,
+        marginPln,
+        averageDealSize,
         currencyTotals: roundCurrencyMap(entry.totals.originalTotals)
       },
       revenueShare,
-      proformas
+      proformas,
+      stripeTotals,
+      stripePayments
     };
   }
 
@@ -236,7 +358,20 @@ class ProductReportService {
     }
 
     const rows = await this.fetchAllProductRows();
-    return this.aggregateRows(rows);
+    const aggregation = this.aggregateRows(rows);
+
+    try {
+      const stripeData = await StripeAnalyticsService.listPayments();
+      this.mergeStripeData(aggregation.products, stripeData.items || []);
+      aggregation.stripeSummary = stripeData.summary || null;
+    } catch (error) {
+      logger.error('Failed to merge Stripe payments into product report', {
+        error: error.message
+      });
+      aggregation.stripeSummary = null;
+    }
+
+    return aggregation;
   }
 
   async fetchAllProductRows() {
@@ -366,6 +501,203 @@ class ProductReportService {
       .range(rangeStart, rangeEnd);
   }
 
+  mergeStripeData(products, stripePayments = []) {
+    if (!Array.isArray(stripePayments) || stripePayments.length === 0) {
+      return;
+    }
+
+    // Build a lookup map of existing products by normalized name for faster matching
+    const productsByName = new Map();
+    products.forEach((entry, key) => {
+      if (entry.productKey) {
+        const normalizedKey = entry.productKey.toLowerCase().trim();
+        if (!productsByName.has(normalizedKey)) {
+          productsByName.set(normalizedKey, entry);
+        }
+      }
+    });
+
+    stripePayments.forEach((payment) => {
+      // Try to find existing product by campProductId first
+      let mapKey = null;
+      let matchedEntry = null;
+      
+      if (payment.campProductId) {
+        mapKey = `id:${payment.campProductId}`;
+        matchedEntry = products.get(mapKey);
+        if (!matchedEntry) {
+          mapKey = null; // Reset if not found
+        }
+      }
+
+      // If not found by campProductId, try to find by normalized product name
+      if (!mapKey && payment.productName) {
+        const normalizedName = normalizeProductName(payment.productName);
+        if (normalizedName) {
+          // Try exact match first
+          const nameKey = `key:${normalizedName}`;
+          matchedEntry = products.get(nameKey);
+          if (matchedEntry) {
+            mapKey = nameKey;
+          } else {
+            // Try fuzzy match by normalized name in lookup map
+            const lookupKey = normalizedName.toLowerCase().trim();
+            matchedEntry = productsByName.get(lookupKey);
+            if (matchedEntry) {
+              mapKey = matchedEntry.mapKey;
+            }
+          }
+        }
+      }
+
+      // If still not found, use resolveStripeMapKey (creates new entry)
+      if (!mapKey) {
+        mapKey = this.resolveStripeMapKey(payment);
+        if (!mapKey) return;
+
+        if (!products.has(mapKey)) {
+          const entry = createEmptyEntry({
+            mapKey,
+            productId: payment.campProductId || null,
+            productName: payment.productName || payment.crmProductId || 'Без названия',
+            productKey: normalizeProductName(payment.productName || payment.crmProductId || ''),
+            slug: this.buildStripeSlug(payment)
+          });
+          products.set(mapKey, entry);
+          matchedEntry = entry;
+        } else {
+          matchedEntry = products.get(mapKey);
+        }
+      } else {
+        matchedEntry = products.get(mapKey);
+      }
+
+      const entry = matchedEntry;
+      if (!entry) return;
+
+      if (!entry.stripeTotals) {
+        entry.stripeTotals = {
+          paymentsCount: 0,
+          grossRevenue: 0,
+          grossRevenuePln: 0,
+          grossTax: 0,
+          grossTaxPln: 0,
+          expectedVatCount: 0,
+          missingVatCount: 0,
+          invalidAddressCount: 0,
+          b2bCount: 0,
+          b2cCount: 0,
+          originalTotals: {},
+          lastPaymentAt: null
+        };
+      }
+      if (!Array.isArray(entry.stripePayments)) {
+        entry.stripePayments = [];
+      }
+
+      const totals = entry.stripeTotals;
+      const currency = (payment.currency || 'PLN').toUpperCase();
+      const amount = toNumber(payment.amount) || 0;
+      const amountPln = toNumber(payment.amountPln) || 0;
+      const amountTax = toNumber(payment.amountTax) || 0;
+      const amountTaxPln = toNumber(payment.amountTaxPln) || 0;
+      const createdAt = payment.createdAt || payment.processedAt || null;
+
+      totals.paymentsCount += 1;
+      totals.grossRevenue += amount;
+      totals.grossRevenuePln += amountPln;
+      totals.grossTax += amountTax;
+      totals.grossTaxPln += amountTaxPln;
+      totals.originalTotals[currency] = (totals.originalTotals[currency] || 0) + amount;
+
+      if (payment.expectedVat) {
+        totals.expectedVatCount += 1;
+        if (!(amountTax > 0 || amountTaxPln > 0)) {
+          totals.missingVatCount += 1;
+        }
+        if (payment.addressValidated === false) {
+          totals.invalidAddressCount += 1;
+        }
+      }
+
+      if (payment.customerType === 'organization') {
+        totals.b2bCount += 1;
+      } else {
+        totals.b2cCount += 1;
+      }
+
+      if (createdAt && (!totals.lastPaymentAt || createdAt > totals.lastPaymentAt)) {
+        totals.lastPaymentAt = createdAt;
+      }
+      if (createdAt && (!entry.lastSaleDate || createdAt > entry.lastSaleDate)) {
+        entry.lastSaleDate = createdAt;
+      }
+
+      entry.stripePayments.push({
+        sessionId: payment.sessionId || null,
+        paymentType: payment.paymentType || null,
+        customerType: payment.customerType || 'person',
+        customerName: payment.customerName || null,
+        customerEmail: payment.customerEmail || null,
+        companyName: payment.companyName || null,
+        companyTaxId: payment.companyTaxId || null,
+        companyCountry: payment.companyCountry || null,
+        currency,
+        amount,
+        amountPln,
+        taxAmount: amountTax,
+        taxAmountPln: amountTaxPln,
+        expectedVat: Boolean(payment.expectedVat),
+        addressValidated: payment.addressValidated !== false,
+        paymentMode: payment.paymentMode || null,
+        createdAt,
+        processedAt: payment.processedAt || null
+      });
+    });
+
+    products.forEach((entry) => {
+      if (Array.isArray(entry.stripePayments) && entry.stripePayments.length > 1) {
+        entry.stripePayments.sort((a, b) => {
+          const aDate = a.createdAt || '';
+          const bDate = b.createdAt || '';
+          return bDate.localeCompare(aDate);
+        });
+      }
+    });
+  }
+
+  resolveStripeMapKey(payment) {
+    if (!payment) return null;
+    if (payment.campProductId) {
+      return `id:${payment.campProductId}`;
+    }
+    if (payment.productId) {
+      return `stripe:${payment.productId}`;
+    }
+    const normalizedName = normalizeProductName(payment.productName);
+    if (normalizedName) {
+      return `stripe-name:${normalizedName}`;
+    }
+    if (payment.sessionId) {
+      return `stripe-session:${payment.sessionId}`;
+    }
+    return null;
+  }
+
+  buildStripeSlug(payment) {
+    if (payment.campProductId) {
+      return `id-${payment.campProductId}`;
+    }
+    if (payment.productId) {
+      return `stripe-${payment.productId}`;
+    }
+    const normalizedName = normalizeProductName(payment.productName);
+    if (normalizedName) {
+      return `stripe-${normalizedName}`;
+    }
+    return `stripe-${payment.sessionId || Date.now()}`;
+  }
+
   aggregateRows(rows) {
     const products = new Map();
     let totalGrossPln = 0;
@@ -388,26 +720,25 @@ class ProductReportService {
       const mapKey = productId ? `id:${productId}` : `key:${productKey}`;
 
       if (!products.has(mapKey)) {
-        products.set(mapKey, {
+        const entry = createEmptyEntry({
           mapKey,
           productId,
-          productKey,
-          slug,
           productName,
-          calculationStatus: productRecord.calculation_status || STATUS_DEFAULT,
-          calculationDueMonth: productRecord.calculation_due_month || null,
-          proformaIds: new Set(),
-          lastSaleDate: null,
-          totals: {
-            grossPln: 0,
-            paidPln: 0,
-            originalTotals: {}
-          },
-          proformaDetails: new Map()
+          productKey,
+          slug
         });
+        entry.calculationStatus = productRecord.calculation_status || STATUS_DEFAULT;
+        entry.calculationDueMonth = productRecord.calculation_due_month || null;
+        products.set(mapKey, entry);
       }
 
       const entry = products.get(mapKey);
+      if (!entry.calculationStatus) {
+        entry.calculationStatus = productRecord.calculation_status || STATUS_DEFAULT;
+      }
+      if (entry.calculationDueMonth === undefined) {
+        entry.calculationDueMonth = productRecord.calculation_due_month || null;
+      }
       const proforma = row.proformas || {};
       const proformaId = proforma.id || row.proforma_id || null;
       const issuedAt = proforma.issued_at || null;
@@ -566,6 +897,10 @@ class ProductReportService {
     if (normalized.startsWith('slug-')) {
       const slug = normalized.slice(5);
       return Array.from(products.values()).find((entry) => entry.slug === `slug-${slug}`) || null;
+    }
+
+    if (normalized.startsWith('stripe-')) {
+      return Array.from(products.values()).find((entry) => entry.slug === normalized) || null;
     }
 
     if (/^\d+$/.test(normalized)) {

@@ -1,5 +1,6 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
+const StripeRepository = require('../stripe/repository');
 
 const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
 const DEFAULT_STATUS_SCOPE = 'approved';
@@ -129,6 +130,7 @@ class PaymentRevenueReportService {
       logger.warn('Supabase client is not configured. Payment revenue report will be unavailable.');
     }
     this.supabase = supabase;
+    this.stripeRepository = new StripeRepository();
   }
 
   resolveDateRange({ dateFrom, dateTo, month, year } = {}) {
@@ -253,9 +255,18 @@ class PaymentRevenueReportService {
     const proformaCurrency = proforma?.currency || null;
     const exchangeRate = proforma?.currency_exchange ?? null;
 
-    let amountPln = convertToPln(amount, currency, exchangeRate);
-    if (!Number.isFinite(amountPln) && proformaCurrency && proformaCurrency !== currency) {
-      amountPln = convertToPln(amount, proformaCurrency, exchangeRate);
+    // For Stripe payments, use pre-calculated PLN amount if available
+    let amountPln = null;
+    if (payment.source === 'stripe' && payment.stripe_amount_pln !== null && payment.stripe_amount_pln !== undefined) {
+      amountPln = toNumber(payment.stripe_amount_pln);
+    }
+
+    // Fallback to conversion if no pre-calculated amount
+    if (!Number.isFinite(amountPln)) {
+      amountPln = convertToPln(amount, currency, exchangeRate);
+      if (!Number.isFinite(amountPln) && proformaCurrency && proformaCurrency !== currency) {
+        amountPln = convertToPln(amount, proformaCurrency, exchangeRate);
+      }
     }
 
     const paymentSummary = proforma
@@ -275,6 +286,9 @@ class PaymentRevenueReportService {
       status = determinePaymentStatus(paymentSummary.total_pln, paymentSummary.paid_pln);
     } else if (payment.manual_status === 'rejected') {
       status = { code: 'rejected', label: 'Отклонено', className: 'unmatched manual' };
+    } else if (payment.source === 'stripe' && payment.stripe_payment_status === 'paid') {
+      // Stripe payments that are paid but not linked to proforma should show as "paid"
+      status = { code: 'paid', label: 'Оплачено', className: 'matched' };
     }
 
     return {
@@ -289,6 +303,8 @@ class PaymentRevenueReportService {
       manual_status: payment.manual_status || null,
       match_status: payment.match_status || null,
       status,
+      source: payment.source || null, // 'stripe' or 'bank'
+      stripe_payment_status: payment.stripe_payment_status || null, // 'paid', 'pending', etc.
       proforma: proforma
         ? {
             id: proforma.id,
@@ -310,7 +326,7 @@ class PaymentRevenueReportService {
     };
   }
 
-  aggregateProducts(payments, proformaMap) {
+  aggregateProducts(payments, proformaMap, productLinksMap = new Map()) {
     const productMap = new Map();
     const summary = {
       payments_count: 0,
@@ -338,11 +354,76 @@ class PaymentRevenueReportService {
       let productName = 'Без привязки';
       let productId = null;
 
-      if (proformaInfo?.product) {
+      // For Stripe payments, use product_links to find product by ID (not by name!)
+      // payment.stripe_product_id is actually product_link.id (UUID) from stripe_payments table
+      if (payment.source === 'stripe' && payment.stripe_product_id) {
+        // Try to find product_link by its ID (UUID)
+        const productLink = productLinksMap.get(payment.stripe_product_id);
+        if (productLink) {
+          productName = productLink.crm_product_name || 'Без названия';
+          
+          // Priority 1: Use camp_product_id from product_links if available
+          // Convert to number if it's a string (Supabase returns strings)
+          productId = productLink.camp_product_id 
+            ? (typeof productLink.camp_product_id === 'string' 
+                ? parseInt(productLink.camp_product_id, 10) 
+                : productLink.camp_product_id)
+            : null;
+          if (productId && !Number.isNaN(productId)) {
+            productKey = `id:${productId}`;
+          } else {
+            // Priority 2: Find product in proformaMap by matching product ID from proformas
+            // Look for proformas that have products matching this crm_product_id
+            // We need to find the camp_product_id by looking at proforma products
+            for (const [proformaId, proforma] of proformaMap.entries()) {
+              if (proforma.product && proforma.product.id) {
+                // Check if this proforma's product matches by name (temporary until camp_product_id is set)
+                // But prefer to find by ID if we can match crm_product_id somehow
+                const proformaProductName = normalizeProductKey(proforma.product.name);
+                const linkProductName = normalizeProductKey(productName);
+                if (proformaProductName === linkProductName) {
+                  productId = proforma.product.id;
+                  productKey = proforma.product.key;
+                  break;
+                }
+              }
+            }
+            
+            // Priority 3: Check if productMap already has a product with matching ID
+            if (productKey === 'unmatched' && productId) {
+              if (productMap.has(`id:${productId}`)) {
+                productKey = `id:${productId}`;
+              }
+            }
+            
+            // Priority 4: Check if productMap has a product with matching name (fallback)
+            if (productKey === 'unmatched') {
+              const normalizedName = normalizeProductKey(productName);
+              for (const [existingKey, existingProduct] of productMap.entries()) {
+                if (normalizeProductKey(existingProduct.name) === normalizedName) {
+                  productKey = existingKey;
+                  productId = existingProduct.product_id;
+                  break;
+                }
+              }
+            }
+            
+            // Last resort: create key by normalized name (should not happen if data is correct)
+            if (productKey === 'unmatched') {
+              productKey = `key:${normalizeProductKey(productName)}`;
+            }
+          }
+        }
+      }
+
+      // Fallback to proforma product if no Stripe product found
+      if (productKey === 'unmatched' && proformaInfo?.product) {
         productKey = proformaInfo.product.key;
         productName = proformaInfo.product.name || 'Без названия';
         productId = proformaInfo.product.id || null;
-      } else if (paymentEntry.status.code === 'unmatched') {
+      }
+
+      if (productKey === 'unmatched' && paymentEntry.status.code === 'unmatched') {
         summary.unmatched_count += 1;
       }
 
@@ -515,7 +596,116 @@ class PaymentRevenueReportService {
       throw new Error('Не удалось получить платежи из базы');
     }
 
-    return Array.isArray(data) ? data : [];
+    const bankPayments = Array.isArray(data) ? data : [];
+
+    // Load Stripe payments
+    let stripePayments = [];
+    try {
+      if (this.stripeRepository.isEnabled()) {
+        const stripeData = await this.stripeRepository.listPayments({
+          dateFrom: fromIso || null,
+          dateTo: toIso || null,
+          status: 'processed'
+        });
+
+        // Get list of refunded payments to exclude them from reports
+        let refundedPaymentIds = new Set();
+        try {
+          const refunds = await this.stripeRepository.listDeletions({
+            dateFrom: fromIso || null,
+            dateTo: toIso || null,
+            reason: 'deal_lost' // Also include 'stripe_refund' if needed
+          });
+          refunds.forEach((refund) => {
+            if (refund.payment_id) {
+              refundedPaymentIds.add(String(refund.payment_id));
+            }
+          });
+          
+          // Also get refunds with reason 'stripe_refund' (from Stripe API)
+          const stripeRefunds = await this.stripeRepository.listDeletions({
+            dateFrom: fromIso || null,
+            dateTo: toIso || null,
+            reason: 'stripe_refund'
+          });
+          stripeRefunds.forEach((refund) => {
+            if (refund.payment_id) {
+              refundedPaymentIds.add(String(refund.payment_id));
+            }
+          });
+        } catch (refundError) {
+          logger.warn('Failed to load refunds for payment report', {
+            error: refundError.message
+          });
+        }
+
+        // Convert Stripe payments to payment report format and filter out refunded payments
+        stripePayments = (stripeData || [])
+          .filter((sp) => {
+            // Exclude payments that have been refunded
+            if (sp.session_id && refundedPaymentIds.has(String(sp.session_id))) {
+              return false;
+            }
+            // Exclude payments without deal_id (event payments that shouldn't be in monthly report)
+            if (!sp.deal_id) {
+              return false;
+            }
+            return true;
+          })
+          .map((sp) => {
+            // Use processed_at as payment date, fallback to created_at
+            const paymentDate = sp.processed_at || sp.created_at || null;
+            
+            // Use original_amount if available (before conversion), otherwise use amount_pln converted back
+            const amount = sp.original_amount !== null && sp.original_amount !== undefined
+              ? sp.original_amount
+              : (sp.amount_pln || 0);
+            
+            // Determine document number: invoice_number for B2B, receipt_number for B2C
+            // These fields may not exist in older database schemas, so check safely
+            const documentNumber = (sp.invoice_number !== undefined && sp.invoice_number !== null) 
+              ? sp.invoice_number 
+              : ((sp.receipt_number !== undefined && sp.receipt_number !== null) 
+                ? sp.receipt_number 
+                : null);
+            
+            return {
+              id: `stripe_${sp.session_id || sp.id}`,
+              operation_date: paymentDate,
+              description: `Stripe payment: ${sp.session_id || 'unknown'}`,
+              amount: amount,
+              currency: sp.currency || 'PLN',
+              direction: 'in',
+              payer_name: sp.customer_name || sp.company_name || null,
+              payer_normalized_name: null,
+              manual_status: 'approved',
+              manual_proforma_id: null,
+              manual_proforma_fullnumber: documentNumber, // Use invoice/receipt number instead of null
+              proforma_id: null,
+              proforma_fullnumber: documentNumber, // Use invoice/receipt number for identification
+              match_status: 'matched',
+              match_confidence: 1.0,
+              match_reason: 'stripe',
+              source: 'stripe',
+              // Stripe-specific fields
+              stripe_session_id: sp.session_id,
+              stripe_product_id: sp.product_id, // This is product_link.id (UUID), not stripe_product_id from Stripe
+              stripe_deal_id: sp.deal_id,
+              stripe_amount_pln: sp.amount_pln || null,
+              stripe_payment_status: sp.payment_status || null, // 'paid', 'pending', etc.
+              stripe_invoice_number: sp.invoice_number || null,
+              stripe_receipt_number: sp.receipt_number || null
+            };
+          });
+      }
+    } catch (error) {
+      logger.warn('Failed to load Stripe payments for payment report', {
+        error: error.message
+      });
+    }
+
+    // Combine bank and Stripe payments
+    return [...bankPayments, ...stripePayments];
   }
 
   async loadProformas(ids = []) {
@@ -582,7 +772,37 @@ class PaymentRevenueReportService {
     const proformas = await this.loadProformas(proformaIds);
     const proformaMap = this.mapProformas(proformas);
 
-    const aggregation = this.aggregateProducts(payments, proformaMap);
+    // Load product links for Stripe payments
+    // Stripe payments have product_id which is product_link.id (UUID), not stripe_product_id
+    const stripeProductLinkIds = Array.from(new Set(
+      payments
+        .filter((p) => p.source === 'stripe' && p.stripe_product_id)
+        .map((p) => p.stripe_product_id)
+    ));
+    
+    // Also get product_link IDs directly from stripe_payments.product_id
+    const directProductLinkIds = Array.from(new Set(
+      payments
+        .filter((p) => p.source === 'stripe' && p.stripe_product_id && typeof p.stripe_product_id === 'string' && p.stripe_product_id.length > 30)
+        .map((p) => p.stripe_product_id)
+    ));
+    
+    const allProductLinkIds = [...stripeProductLinkIds, ...directProductLinkIds];
+    const productLinksMap = new Map();
+    if (allProductLinkIds.length > 0 && this.stripeRepository.isEnabled()) {
+      try {
+        const productLinks = await this.stripeRepository.listProductLinksByIds(allProductLinkIds);
+        productLinks.forEach((link, id) => {
+          productLinksMap.set(id, link);
+        });
+      } catch (error) {
+        logger.warn('Failed to load product links for Stripe payments', {
+          error: error.message
+        });
+      }
+    }
+
+    const aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap);
 
     return {
       products: aggregation.products,

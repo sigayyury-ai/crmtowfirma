@@ -1,14 +1,9 @@
-const axios = require('axios');
-
 const MINOR_UNIT_CURRENCIES = new Set([
   'BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF'
 ]);
 
 const DEFAULT_TARGET_CURRENCY = process.env.CURRENCY_TARGET || 'PLN';
-const EXCHANGE_API_URL = process.env.CURRENCY_API_URL || 'https://open.er-api.com/v6/latest';
-const CACHE_TTL_MS = parseInt(process.env.CURRENCY_CACHE_TTL_MS || '3600000', 10);
-const requestTimeoutMs = parseInt(process.env.CURRENCY_API_TIMEOUT_MS || '8000', 10);
-const rateCache = new Map();
+const { getRate } = require('../services/stripe/exchangeRateService');
 
 /**
  * Convert Stripe-style integer amount to decimal representation.
@@ -63,32 +58,6 @@ function normaliseCurrency(currency) {
   return typeof currency === 'string' ? currency.trim().toUpperCase() : 'PLN';
 }
 
-async function getExchangeRate(baseCurrency, targetCurrency) {
-  const cacheKey = baseCurrency;
-  const cached = rateCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    return cached.rates[targetCurrency];
-  }
-
-  try {
-    const { data } = await axios.get(`${EXCHANGE_API_URL}/${baseCurrency}`, {
-      timeout: requestTimeoutMs
-    });
-
-    if (data?.result === 'success' && data?.rates) {
-      rateCache.set(cacheKey, {
-        rates: data.rates,
-        timestamp: Date.now()
-      });
-      return data.rates[targetCurrency];
-    }
-  } catch (error) {
-    // swallow, conversion will fallback
-  }
-
-  return undefined;
-}
-
 async function convertCurrency(amount, fromCurrency, toCurrency = DEFAULT_TARGET_CURRENCY) {
   if (!Number.isFinite(amount)) return 0;
   const source = normaliseCurrency(fromCurrency);
@@ -96,12 +65,15 @@ async function convertCurrency(amount, fromCurrency, toCurrency = DEFAULT_TARGET
 
   if (source === target) return roundBankers(amount);
 
-  const rate = await getExchangeRate(source, target);
-  if (!Number.isFinite(rate) || rate <= 0) {
+  try {
+    const rate = await getRate(source, target);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      return 0;
+    }
+    return roundBankers(amount * rate);
+  } catch (error) {
     return 0;
   }
-
-  return roundBankers(amount * rate);
 }
 
 module.exports = {

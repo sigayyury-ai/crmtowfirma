@@ -6,6 +6,8 @@ const {
   convertCurrency
 } = require('../../utils/currency');
 const { logStripeError } = require('../../utils/logging/stripe');
+const StripeRepository = require('./repository');
+const logger = require('../../utils/logger');
 
 const MAX_ITERATIONS = 20;
 const DEFAULT_SUMMARY_LIMIT = 20;
@@ -55,7 +57,33 @@ function buildCsvValue(value) {
 
 class StripeEventReportService {
   constructor() {
-    this.stripe = getStripeClient();
+    // Use separate API key for events if provided, otherwise use default Stripe client
+    const eventsApiKey = process.env.STRIPE_EVENTS_API_KEY;
+    if (eventsApiKey && eventsApiKey.trim()) {
+      // Validate that it's a secret key (starts with sk_)
+      if (!eventsApiKey.startsWith('sk_')) {
+        logger.warn('STRIPE_EVENTS_API_KEY should be a secret key (sk_...), not a publishable key (pk_...)');
+      }
+      // Create separate Stripe client for events with different API key
+      const Stripe = require('stripe');
+      this.stripe = new Stripe(eventsApiKey.trim(), {
+        apiVersion: process.env.STRIPE_API_VERSION || '2024-04-10',
+        timeout: parseInt(process.env.STRIPE_TIMEOUT_MS || '12000', 10),
+        maxNetworkRetries: parseInt(process.env.STRIPE_MAX_NETWORK_RETRIES || '1', 10),
+        appInfo: {
+          name: 'pipedrive-wfirma-integration-events',
+          version: require('../../../package.json').version || '0.0.0'
+        }
+      });
+      logger.info('Stripe Events client initialized with separate API key', {
+        keyPrefix: eventsApiKey.substring(0, 7) + '...'
+      });
+    } else {
+      // Use default Stripe client
+      this.stripe = getStripeClient();
+      logger.info('Stripe Events client using default Stripe API key');
+    }
+    this.repository = new StripeRepository();
     this.summaryCache = new Map();
     this.summaryCacheTtlMs = parseInt(process.env.STRIPE_EVENTS_CACHE_TTL_MS || '600000', 10);
   }
@@ -99,6 +127,8 @@ class StripeEventReportService {
     }
 
     try {
+      // Load events directly from Stripe API
+      // Event report groups payments by line_item.description (eventKey), not by deal_id or CRM products
       while (hasMore && iterations < MAX_ITERATIONS && eventMap.size < summaryLimit) {
         const params = {
           limit: 100,
