@@ -83,6 +83,7 @@ function cacheDom() {
     refreshProducts: document.getElementById('refresh-products'),
     productSummaryTable: document.getElementById('product-summary-table'),
     bankCsvInput: document.getElementById('bank-csv-input'),
+    expensesCsvInput: document.getElementById('expenses-csv-input'),
     bulkApproveMatches: document.getElementById('bulk-approve-matches'),
     resetMatches: document.getElementById('reset-matches'),
     exportPayments: document.getElementById('export-payments'),
@@ -129,6 +130,7 @@ function bindEvents() {
   elements.resetMatches?.addEventListener('click', resetPaymentMatches);
   elements.exportPayments?.addEventListener('click', exportPaymentsCsv);
   elements.bankCsvInput?.addEventListener('change', handleCsvUpload);
+  elements.expensesCsvInput?.addEventListener('change', handleExpensesCsvUpload);
   elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
   elements.stripeRefreshEvents?.addEventListener('click', () => loadStripeEvents({ force: true }));
 
@@ -1244,22 +1246,10 @@ function renderPaymentReport(groups) {
       const entryPlnTotal = formatCurrency(entry.totals?.pln_total || 0, 'PLN');
 
       const proforma = entry.proforma || null;
-      const buyer = proforma?.buyer?.name || proforma?.buyer?.alt_name || '—';
-      const buyerMetaParts = [];
-      if (proforma?.buyer?.city) {
-        buyerMetaParts.push(proforma.buyer.city);
-      }
-      if (proforma?.buyer?.country) {
-        buyerMetaParts.push(proforma.buyer.country);
-      }
-      const buyerMeta = buyerMetaParts.length ? ` (${buyerMetaParts.join(', ')})` : '';
 
       const proformaLabel = proforma?.fullnumber
         ? escapeHtml(proforma.fullnumber)
         : '—';
-      const buyerLine = buyer && buyer !== '—'
-        ? `<div class="buyer-meta">${escapeHtml(buyer)}${escapeHtml(buyerMeta)}</div>`
-        : '';
 
       const dealLink = proforma?.pipedrive_deal_url && proforma?.pipedrive_deal_id
         ? `<div class="deal-link-wrapper"><a class="deal-link" href="${proforma.pipedrive_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a></div>`
@@ -1269,7 +1259,6 @@ function renderPaymentReport(groups) {
         ? `
           <div class="proforma-info">
             <div>${proformaLabel}</div>
-            ${buyerLine}
             ${dealLink}
           </div>
         `
@@ -1944,6 +1933,43 @@ async function handleCsvUpload(event) {
     await loadPaymentsData({ silent: true });
   } catch (error) {
     addLog('error', `Ошибка загрузки CSV: ${error.message}`);
+  }
+}
+
+async function handleExpensesCsvUpload(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  if (!file.name.endsWith('.csv')) {
+    addLog('warning', 'Поддерживаются только CSV файлы');
+    return;
+  }
+
+  addLog('info', `Загрузка файла расходов ${file.name}...`);
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const response = await fetch(`${API_BASE}/payments/import-expenses`, {
+      method: 'POST',
+      body: formData
+    });
+
+    const payload = await response.json();
+
+    if (!response.ok || !payload.success) {
+      throw new Error(payload.error || payload.message || 'Не удалось загрузить файл расходов');
+    }
+
+    const stats = payload.data || {};
+    addLog('success', `Файл расходов ${file.name} загружен. Обработано: ${stats.processed || 0}, категоризировано: ${stats.categorized || 0}, без категории: ${stats.uncategorized || 0}`);
+    elements.expensesCsvInput.value = '';
+    // Reload PNL report if it's open
+    if (typeof loadPnlReport === 'function') {
+      loadPnlReport();
+    }
+  } catch (error) {
+    addLog('error', `Ошибка загрузки CSV расходов: ${error.message}`);
   }
 }
 

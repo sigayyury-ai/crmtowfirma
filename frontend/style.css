@@ -19,6 +19,11 @@ body {
     padding: 20px;
 }
 
+.pnl-container-fullwidth {
+    max-width: 100%;
+    padding: 20px 40px;
+}
+
 /* Navigation */
 .main-nav {
     display: flex;
@@ -72,7 +77,8 @@ header p {
 .controls-section,
 .vat-margin-section,
 .results-section,
-.logs-section {
+.logs-section,
+.pnl-report-section {
     background: white;
     border-radius: 12px;
     padding: 25px;
@@ -248,6 +254,11 @@ h2 {
 
 .btn-secondary:hover {
     background: #718096;
+}
+
+.btn-sm {
+    padding: 8px 16px;
+    font-size: 0.875rem;
 }
 
 .btn:disabled {
@@ -1906,6 +1917,610 @@ h2 {
     color: #b91c1c;
 }
 
+/* PNL Report Styles */
+.pnl-summary {
+    margin-bottom: 24px;
+    padding: 20px;
+    background: #f8fbff;
+    border-radius: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.pnl-summary h3 {
+    margin: 0 0 16px 0;
+    font-size: 1.3rem;
+    color: #1f2937;
+}
+
+.summary-stats {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+}
+
+.stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.stat-label {
+    font-size: 0.875rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1f2937;
+}
+
+.pnl-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    table-layout: auto;
+    min-width: 100%;
+}
+
+.pnl-table-wrapper {
+    overflow-x: auto;
+    margin-top: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.pnl-table thead {
+    background: #f1f5f9;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.pnl-table th {
+    padding: 12px 16px;
+    text-align: left;
+    font-weight: 600;
+    color: #475569;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 2px solid #e2e8f0;
+}
+
+.pnl-table td {
+    padding: 14px 16px;
+    border-bottom: 1px solid #e2e8f0;
+    color: #1e293b;
+}
+
+.pnl-table tbody tr:hover {
+    background: #f8fafc;
+}
+
+.pnl-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.pnl-table .amount-cell {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: #059669;
+}
+
+.pnl-table .row-header,
+.pnl-table .row-label {
+    font-weight: 600;
+    color: #1e293b;
+    text-align: left;
+    padding-right: 24px;
+    min-width: 150px;
+    position: sticky;
+    left: 0;
+    background: white;
+    z-index: 5;
+}
+
+.pnl-table thead .row-header {
+    background: #f1f5f9;
+    z-index: 15;
+}
+
+.pnl-table tbody .row-label {
+    background: white;
+}
+
+.pnl-table tbody tr:hover .row-label {
+    background: #f8fafc;
+}
+
+.pnl-table .total-header,
+.pnl-table .total-cell {
+    background: #f1f5f9;
+    font-weight: 700;
+    border-left: 2px solid #cbd5e1;
+    min-width: 120px;
+}
+
+.pnl-table .total-cell {
+    background: #f1f5f9;
+}
+
+.pnl-table .category-header-row {
+    border-top: 2px solid #cbd5e1;
+    background: #f8fafc;
+}
+
+.pnl-table .category-header-row .row-label {
+    font-weight: 700;
+    background: #f8fafc;
+}
+
+.pnl-table .category-header-row td {
+    background: #f8fafc;
+    font-weight: 600;
+}
+
+.pnl-table .expense-header-row {
+    border-top: 2px solid #cbd5e1;
+    background: #f8fafc;
+}
+
+.pnl-table .expense-header-row .row-label {
+    font-weight: 700;
+    background: #f8fafc;
+}
+
+.pnl-table .expense-header-row td {
+    background: #f8fafc;
+    font-weight: 600;
+}
+
+.pnl-table .expense-row {
+    background: transparent;
+}
+
+.pnl-table .expense-row:hover {
+    background: #f8fafc;
+}
+
+.pnl-table .category-total-row {
+    border-top: 2px solid #cbd5e1;
+    background: #f1f5f9;
+}
+
+.pnl-table .category-total-row .row-label {
+    font-weight: 700;
+    background: #f1f5f9;
+}
+
+.pnl-table .category-total-row td {
+    background: #f1f5f9;
+    font-weight: 600;
+}
+
+.pnl-table .category-indent {
+    padding-left: 32px;
+    color: #475569;
+}
+
+.pnl-table th {
+    min-width: 100px;
+    white-space: nowrap;
+}
+
+/* PNL Tabs - используем стили из VAT Margin Tracker */
+/* Стили .tab-container, .tab-header, .tab-button и .tab-content уже определены выше */
+
+/* PNL Settings Section */
+.pnl-settings-section {
+    background: white;
+    border-radius: 12px;
+    padding: 25px;
+    margin-bottom: 25px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+}
+
+.categories-list {
+    margin-top: 20px;
+}
+
+.category-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    background: #f8fafc;
+    transition: all 0.2s ease;
+}
+
+.category-item:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+.category-order-controls {
+    display: flex;
+    flex-direction: row;
+    gap: 2px;
+    align-items: center;
+}
+
+.category-order-controls .btn-link {
+    padding: 2px 4px;
+    min-width: 24px;
+    height: 24px;
+    font-size: 0.875rem;
+    line-height: 1;
+    color: #64748b;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: color 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.category-order-controls .btn-link:hover:not(:disabled) {
+    color: #2563eb;
+    background: rgba(37, 99, 235, 0.1);
+    border-radius: 4px;
+}
+
+.category-order-controls .btn-link:disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+}
+
+.category-info {
+    flex: 1;
+}
+
+.category-name {
+    font-weight: 600;
+    font-size: 1rem;
+    color: #1e293b;
+    margin-bottom: 4px;
+}
+
+.category-description {
+    font-size: 0.875rem;
+    color: #64748b;
+    font-style: italic;
+}
+
+.category-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.category-form {
+    background: white;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 8px;
+    font-size: 0.875rem;
+}
+
+.form-group input,
+.form-group textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-family: inherit;
+    transition: border-color 0.2s ease;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.form-group textarea {
+    resize: vertical;
+    min-height: 80px;
+}
+
+.form-group select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 14px;
+    background: white;
+    color: #1e293b;
+}
+
+.form-group select:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.form-group small {
+    display: block;
+    margin-top: 5px;
+    font-size: 12px;
+    color: #64748b;
+}
+
+.form-control {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 14px;
+}
+
+/* Modal styles */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+}
+
+.modal-content {
+    background-color: white;
+    margin: 5% auto;
+    padding: 0;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    max-width: 600px;
+    animation: modalSlideIn 0.3s ease-out;
+}
+
+@keyframes modalSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-50px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.modal-header {
+    padding: 20px 25px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px 12px 0 0;
+}
+
+.modal-header h2,
+.modal-header h3 {
+    margin: 0;
+    color: white;
+    border: none;
+    padding: 0;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 28px;
+    font-weight: bold;
+    color: white;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+}
+
+.modal-close:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+.modal-body {
+    padding: 25px;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.modal-footer {
+    padding: 20px 25px;
+    border-top: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    background: #f8fafc;
+    border-radius: 0 0 12px 12px;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-weight: normal;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: auto;
+    cursor: pointer;
+    margin: 0;
+}
+
+.form-hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 0.75rem;
+    color: #64748b;
+    font-style: italic;
+}
+
+.category-manual-badge {
+    margin-left: 8px;
+    font-size: 0.875rem;
+    opacity: 0.7;
+}
+
+.form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.loading-indicator {
+    text-align: center;
+    padding: 20px;
+    color: #64748b;
+    font-size: 1rem;
+}
+
+.error-message {
+    padding: 16px;
+    background: rgba(248, 113, 113, 0.18);
+    color: #b91c1c;
+    border-radius: 8px;
+    margin-bottom: 20px;
+    font-weight: 600;
+}
+
+/* Year Selector Styles */
+.year-selector-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: 15px;
+}
+
+.year-label {
+    font-weight: 600;
+    color: #475569;
+    font-size: 0.95rem;
+}
+
+.year-select {
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: white;
+    font-size: 0.95rem;
+    color: #1e293b;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.year-select:hover {
+    border-color: #94a3b8;
+}
+
+.year-select:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.currency-breakdown {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-weight: normal;
+    white-space: nowrap;
+}
+
+.pnl-table .amount-cell {
+    white-space: nowrap;
+}
+
+.pnl-table .amount-cell.editable {
+    cursor: pointer;
+    position: relative;
+}
+
+.pnl-table .amount-cell.editable:hover {
+    background-color: #f1f5f9;
+    border: 1px dashed #94a3b8;
+}
+
+.pnl-table .amount-cell.editing {
+    padding: 0;
+}
+
+.pnl-table .amount-cell.editing input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 2px solid #2563eb;
+    border-radius: 4px;
+    font-size: inherit;
+    font-weight: inherit;
+    text-align: right;
+    background: white;
+    font-variant-numeric: tabular-nums;
+}
+
+.pnl-table .amount-cell.editing input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.pnl-table .amount-cell.saving {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.pnl-table .amount-cell.error {
+    border: 1px solid #ef4444;
+    background-color: rgba(248, 113, 113, 0.1);
+}
+
+/* Accessibility improvements */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+}
+
+/* Responsive design improvements */
 @media (max-width: 768px) {
     .product-detail-controls {
         flex-direction: column;
@@ -1915,5 +2530,45 @@ h2 {
     .control-actions {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .summary-stats {
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .pnl-table {
+        font-size: 0.875rem;
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+
+    .pnl-table th,
+    .pnl-table td {
+        padding: 10px 12px;
+    }
+    
+    .year-selector-group {
+        flex-direction: column;
+        align-items: flex-start;
+        margin-bottom: 10px;
+    }
+    
+    .year-select {
+        width: 100%;
+        max-width: 200px;
+    }
+    
+    .controls {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .section-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 15px;
     }
 }
