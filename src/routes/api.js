@@ -22,7 +22,20 @@ const logger = require('../utils/logger');
 
 // Создаем экземпляры сервисов
 const wfirmaClient = new WfirmaClient();
-const pipedriveClient = new PipedriveClient();
+let pipedriveClient;
+try {
+  pipedriveClient = new PipedriveClient();
+} catch (error) {
+  logger.error('Failed to initialize PipedriveClient:', error);
+  // Create a dummy client that will return errors
+  pipedriveClient = {
+    testConnection: async () => ({
+      success: false,
+      error: 'PipedriveClient not initialized',
+      message: error.message || 'PIPEDRIVE_API_TOKEN is not set'
+    })
+  };
+}
 const userManagement = new UserManagementService();
 const productManagement = new ProductManagementService();
 const invoiceProcessing = new InvoiceProcessingService();
@@ -191,6 +204,16 @@ router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRoute
  */
 router.get('/pipedrive/test', async (req, res) => {
   try {
+    // Check if pipedriveClient is available
+    if (!pipedriveClient) {
+      logger.error('PipedriveClient not initialized');
+      return res.status(500).json({
+        success: false,
+        error: 'PipedriveClient not initialized',
+        message: 'PIPEDRIVE_API_TOKEN may be missing'
+      });
+    }
+
     const result = await pipedriveClient.testConnection();
     
     if (result.success) {
@@ -199,11 +222,25 @@ router.get('/pipedrive/test', async (req, res) => {
       res.status(500).json(result);
     }
   } catch (error) {
-    logger.error('Error testing Pipedrive connection:', error);
+    logger.error('Error testing Pipedrive connection:', {
+      error: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    
+    // Check if it's a configuration error
+    if (error.message && error.message.includes('PIPEDRIVE_API_TOKEN')) {
+      return res.status(500).json({
+        success: false,
+        error: 'Configuration error',
+        message: 'PIPEDRIVE_API_TOKEN is not set in environment variables'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message
+      message: error.message || 'Unknown error occurred'
     });
   }
 });

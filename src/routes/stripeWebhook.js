@@ -53,8 +53,18 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
         await handleCheckoutSessionCompleted(event.data.object);
         break;
       
+      case 'checkout.session.async_payment_succeeded':
+        // Handle async payments (e.g., bank transfers that complete later)
+        await handleCheckoutSessionCompleted(event.data.object);
+        break;
+      
       case 'payment_intent.succeeded':
         await handlePaymentIntentSucceeded(event.data.object);
+        break;
+      
+      case 'charge.refunded':
+        // Handle refunds immediately via webhook
+        await handleChargeRefunded(event.data.object);
         break;
       
       default:
@@ -190,6 +200,98 @@ async function handlePaymentIntentSucceeded(paymentIntent) {
   } catch (error) {
     logger.error('Failed to process payment_intent from webhook', {
       paymentIntentId: paymentIntent.id,
+      error: error.message
+    });
+    throw error; // Re-throw to trigger error task creation
+  }
+}
+
+/**
+ * Handle charge.refunded event
+ * Processes refunds immediately when they occur
+ */
+async function handleChargeRefunded(charge) {
+  logger.info('Processing charge.refunded webhook', {
+    chargeId: charge.id,
+    paymentIntentId: charge.payment_intent,
+    dealId: charge.metadata?.deal_id
+  });
+
+  try {
+    // Get refund details from charge
+    const refunds = charge.refunds?.data || [];
+    if (refunds.length === 0) {
+      logger.debug('No refunds found in charge', {
+        chargeId: charge.id
+      });
+      return;
+    }
+
+    // Process each refund
+    for (const refund of refunds) {
+      // Check if refund was already processed
+      const existingDeletions = await stripeRepository.listDeletions({ 
+        paymentId: refund.payment_intent || refund.charge || refund.id 
+      });
+      const existingDeletion = existingDeletions?.find(d => 
+        d.metadata?.refund_id === refund.id || d.raw_payload?.id === refund.id
+      );
+      if (existingDeletion) {
+        logger.debug('Refund already processed, skipping', {
+          refundId: refund.id,
+          chargeId: charge.id
+        });
+        continue;
+      }
+
+      // Get payment intent to find session
+      let sessionId = null;
+      if (charge.payment_intent) {
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(charge.payment_intent);
+          if (paymentIntent.metadata?.session_id) {
+            sessionId = paymentIntent.metadata.session_id;
+          } else {
+            // Try to find session by payment_intent
+            const sessions = await stripe.checkout.sessions.list({
+              payment_intent: charge.payment_intent,
+              limit: 1
+            });
+            if (sessions.data.length > 0) {
+              sessionId = sessions.data[0].id;
+            }
+          }
+        } catch (err) {
+          logger.warn('Failed to retrieve payment intent for refund', {
+            chargeId: charge.id,
+            paymentIntentId: charge.payment_intent,
+            error: err.message
+          });
+        }
+      }
+
+      // Process refund using processor
+      await stripeProcessor.persistRefund(refund);
+
+      // Update payment plan if session found
+      if (sessionId) {
+        const payment = await stripeRepository.findPaymentBySessionId(sessionId);
+        if (payment) {
+          const refundAmounts = await stripeProcessor.convertRefundAmounts(refund);
+          await stripeProcessor.paymentPlanService.applyRefund(refund, refundAmounts);
+          await stripeProcessor.crmSyncService.handleRefund(refund);
+        }
+      }
+
+      logger.info('Successfully processed refund via webhook', {
+        refundId: refund.id,
+        chargeId: charge.id,
+        dealId: charge.metadata?.deal_id || refund.metadata?.deal_id
+      });
+    }
+  } catch (error) {
+    logger.error('Failed to process refund from webhook', {
+      chargeId: charge.id,
       error: error.message
     });
     throw error; // Re-throw to trigger error task creation

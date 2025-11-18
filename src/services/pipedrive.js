@@ -418,6 +418,15 @@ class PipedriveClient {
    */
   async testConnection() {
     try {
+      // Check if API token is available
+      if (!this.apiToken) {
+        return {
+          success: false,
+          error: 'PIPEDRIVE_API_TOKEN is not set',
+          message: 'PIPEDRIVE_API_TOKEN must be configured in environment variables'
+        };
+      }
+
       const result = await this.getUserInfo();
       
       if (result.success) {
@@ -427,14 +436,27 @@ class PipedriveClient {
           user: result.user
         };
       } else {
-        throw new Error(result.error);
+        return {
+          success: false,
+          error: result.error || 'Failed to connect to Pipedrive API',
+          details: result.details || null,
+          message: result.error || 'Failed to retrieve user info from Pipedrive'
+        };
       }
     } catch (error) {
-      logger.error('Error testing Pipedrive connection:', error);
+      logger.error('Error testing Pipedrive connection:', {
+        error: error.message,
+        stack: error.stack,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
       return {
         success: false,
-        error: error.message,
-        details: error.response?.data || null
+        error: error.message || 'Unknown error occurred',
+        details: error.response?.data || null,
+        status: error.response?.status || null,
+        message: error.response?.data?.error || error.message || 'Failed to connect to Pipedrive API'
       };
     }
   }
