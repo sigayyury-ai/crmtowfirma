@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PNL Отчет - Pipedrive ↔ wFirma</title>
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+    <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container pnl-container-fullwidth">
+        <nav class="main-nav">
+            <a href="/vat-margin.html" class="nav-link">Отчеты</a>
+            <a href="/pnl-report.html" class="nav-link active">PNL Отчет</a>
+            <a href="/expenses.html" class="nav-link">Расходы</a>
+            <a href="/" class="nav-link">Автоматизация и интеграции</a>
+        </nav>
+        <header>
+            <h1>📊 PNL Отчет</h1>
+            <p>Месячные приходы от клиентов (без возвратов)</p>
+        </header>
+
+        <!-- Tabs Navigation -->
+        <div class="tab-container">
+            <div class="tab-header">
+                <button class="tab-button active" data-tab="report">Отчет</button>
+                <button class="tab-button" data-tab="settings">Настройки</button>
+            </div>
+        </div>
+
+        <!-- Report Tab -->
+        <div class="tab-content active" id="tab-report">
+        <div class="pnl-report-section">
+            <div class="section-header">
+                <h2>Месячные приходы</h2>
+                <div class="controls">
+                    <div class="year-selector-group">
+                        <label for="year-select" class="year-label">Год:</label>
+                        <select id="year-select" class="year-select" aria-label="Выберите год для отчета">
+                            <option value="2025">2025</option>
+                            <option value="2026">2026</option>
+                            <option value="2027">2027</option>
+                            <option value="2028">2028</option>
+                        </select>
+                    </div>
+                    <button id="refresh-pnl" class="btn btn-primary">🔄 Обновить</button>
+                </div>
+            </div>
+
+            <div id="pnl-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                <span class="sr-only">Загрузка данных...</span>
+                Загрузка данных...
+            </div>
+
+            <div id="pnl-error" class="error-message" style="display: none;" role="alert" aria-live="assertive"></div>
+
+            <div id="pnl-report-container">
+                <div class="placeholder">Нажмите "Обновить" для загрузки данных...</div>
+            </div>
+        </div>
+        </div>
+
+        <!-- Settings Tab -->
+        <div class="tab-content" id="tab-settings">
+            <div class="pnl-settings-section">
+                <div class="section-header">
+                    <h2>Категории расходов</h2>
+                    <div class="controls">
+                        <label class="upload-btn">
+                            <input type="file" id="expenses-csv-input" accept=".csv" hidden>
+                            📤 Загрузить CSV (расходы)
+                        </label>
+                        <button id="add-expense-category-btn" class="btn btn-primary">+ Добавить категорию</button>
+                    </div>
+                </div>
+
+                <div id="expense-categories-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                    <span class="sr-only">Загрузка категорий расходов...</span>
+                    Загрузка категорий расходов...
+                </div>
+
+                <div id="expense-categories-error" class="error-message" style="display: none;" role="alert" aria-live="assertive"></div>
+
+                <div id="expense-categories-container">
+                    <div class="placeholder">Загрузка категорий расходов...</div>
+                </div>
+            </div>
+
+            <div class="pnl-settings-section" style="margin-top: 40px;">
+                <div class="section-header">
+                    <h2>Правила категоризации расходов</h2>
+                    <button id="add-mapping-btn" class="btn btn-primary">+ Добавить правило</button>
+                </div>
+
+                <div id="mappings-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                    <span class="sr-only">Загрузка правил...</span>
+                    Загрузка правил...
+                </div>
+
+                <div id="mappings-error" class="error-message" style="display: none;" role="alert" aria-live="assertive"></div>
+
+                <div id="mappings-container">
+                    <div class="placeholder">Загрузка правил категоризации...</div>
+                </div>
+            </div>
+
+            <div class="pnl-settings-section" style="margin-top: 40px;">
+                <div class="section-header">
+                    <h2>Категории приходов</h2>
+                    <button id="add-category-btn" class="btn btn-primary">+ Добавить категорию</button>
+                </div>
+
+                <div id="categories-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                    <span class="sr-only">Загрузка категорий...</span>
+                    Загрузка категорий...
+                </div>
+
+                <div id="categories-error" class="error-message" style="display: none;" role="alert" aria-live="assertive"></div>
+
+                <div id="categories-container">
+                    <div class="placeholder">Загрузка категорий...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="logs-section">
+            <div class="section-header">
+                <h2>📝 Логи</h2>
+                <button id="clear-logs" class="btn btn-link">Очистить</button>
+            </div>
+            <div id="logs-container" class="logs-container">
+                <div class="log-entry info">Система готова к работе</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for uncategorized expenses with suggestions -->
+    <div id="expense-suggestions-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2>Расходы без категории</h2>
+                <button class="modal-close" onclick="closeExpenseSuggestionsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="expense-suggestions-summary"></p>
+                <div id="expense-suggestions-list" style="max-height: 600px; overflow-y: auto; margin-top: 20px;">
+                    <!-- Suggestions will be rendered here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeExpenseSuggestionsModal()">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="pnl-report-script.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,266 @@
+openapi: 3.0.0
+info:
+  title: PNL Income Categories API
+  description: API endpoints for managing income categories in PNL report
+  version: 1.0.0
+
+paths:
+  /api/pnl/categories:
+    get:
+      summary: List all income categories
+      description: Returns a list of all income categories
+      operationId: listCategories
+      tags:
+        - Categories
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Category'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    post:
+      summary: Create a new income category
+      description: Creates a new income category with the provided name and optional description
+      operationId: createCategory
+      tags:
+        - Categories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryInput'
+      responses:
+        '201':
+          description: Category created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Category with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /api/pnl/categories/{id}:
+    get:
+      summary: Get a specific category
+      description: Returns a single income category by ID
+      operationId: getCategory
+      tags:
+        - Categories
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Category'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    put:
+      summary: Update a category
+      description: Updates an existing income category
+      operationId: updateCategory
+      tags:
+        - Categories
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryInput'
+      responses:
+        '200':
+          description: Category updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Category'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '409':
+          description: Category with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    delete:
+      summary: Delete a category
+      description: Deletes an income category. Fails if category has associated payments.
+      operationId: deleteCategory
+      tags:
+        - Categories
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      responses:
+        '200':
+          description: Category deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: Category deleted successfully
+        '400':
+          description: Cannot delete category with associated payments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  schemas:
+    Category:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Camp Payments
+        description:
+          type: string
+          nullable: true
+          example: Revenue from camp registrations
+        created_at:
+          type: string
+          format: date-time
+          example: '2025-11-18T10:00:00Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2025-11-18T10:00:00Z'
+
+    CategoryInput:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Camp Payments
+        description:
+          type: string
+          maxLength: 5000
+          nullable: true
+          example: Revenue from camp registrations
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: Error message
+        message:
+          type: string
+          example: Detailed error message
+
+  parameters:
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      description: Category ID
+      schema:
+        type: integer
+        example: 1
+
+  responses:
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: Validation failed
+            message: Category name is required
+
+    NotFoundError:
+      description: Category not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: Category not found
+            message: Category with ID 999 does not exist
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: Internal server error
+            message: Failed to process request
+
+

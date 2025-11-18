@@ -1,0 +1,167 @@
+openapi: 3.0.0
+info:
+  title: PNL Report API
+  description: API endpoints for PNL (Profit and Loss) monthly revenue reports
+  version: 1.0.0
+
+paths:
+  /api/pnl/report:
+    get:
+      summary: Get monthly revenue report for a selected year
+      description: Returns aggregated monthly revenue data excluding refunds, with all amounts converted to PLN
+      operationId: getMonthlyRevenueReport
+      tags:
+        - PNL Report
+      parameters:
+        - name: year
+          in: query
+          required: false
+          description: Year for the report (2025, 2026, etc.). Optional in MVP, defaults to current year. Required in Phase 2.
+          schema:
+            type: integer
+            minimum: 2020
+            maximum: 2030
+            example: 2025
+        - name: includeBreakdown
+          in: query
+          required: false
+          description: Include currency breakdown in response
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Successful response with monthly revenue data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MonthlyRevenueReport'
+              example:
+                success: true
+                year: 2025
+                months:
+                  - month: 1
+                    monthName: "Январь"
+                    amountPln: 12500.50
+                    paymentCount: 15
+                    currencyBreakdown:
+                      EUR: 2500.00
+                      PLN: 10000.50
+                  - month: 2
+                    monthName: "Февраль"
+                    amountPln: 0
+                    paymentCount: 0
+                    currencyBreakdown: {}
+                total:
+                  amountPln: 150000.00
+                  paymentCount: 180
+        '400':
+          description: Invalid year parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    MonthlyRevenueReport:
+      type: object
+      required:
+        - success
+        - year
+        - months
+        - total
+      properties:
+        success:
+          type: boolean
+          description: Indicates if the request was successful
+          example: true
+        year:
+          type: integer
+          description: Year of the report
+          example: 2025
+        months:
+          type: array
+          description: Array of 12 monthly revenue entries (one per month)
+          items:
+            $ref: '#/components/schemas/MonthlyRevenueEntry'
+        total:
+          $ref: '#/components/schemas/RevenueTotal'
+
+    MonthlyRevenueEntry:
+      type: object
+      required:
+        - month
+        - monthName
+        - amountPln
+        - paymentCount
+      properties:
+        month:
+          type: integer
+          description: Month number (1-12)
+          minimum: 1
+          maximum: 12
+          example: 1
+        monthName:
+          type: string
+          description: Localized month name
+          example: "Январь"
+        amountPln:
+          type: number
+          description: Total revenue in PLN for this month (excludes refunds)
+          minimum: 0
+          format: float
+          example: 12500.50
+        paymentCount:
+          type: integer
+          description: Number of payments contributing to revenue this month
+          minimum: 0
+          example: 15
+        currencyBreakdown:
+          type: object
+          description: Original currency amounts before conversion (optional, included if includeBreakdown=true)
+          additionalProperties:
+            type: number
+            format: float
+          example:
+            EUR: 2500.00
+            PLN: 10000.50
+
+    RevenueTotal:
+      type: object
+      required:
+        - amountPln
+        - paymentCount
+      properties:
+        amountPln:
+          type: number
+          description: Total revenue in PLN for the entire year
+          minimum: 0
+          format: float
+          example: 150000.00
+        paymentCount:
+          type: integer
+          description: Total number of payments for the entire year
+          minimum: 0
+          example: 180
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+          example: "Invalid year parameter. Year must be between 2020 and 2030."
+
