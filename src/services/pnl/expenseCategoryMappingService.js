@@ -481,7 +481,23 @@ class ExpenseCategoryMappingService {
       // If no suggestions found from rules, try OpenAI (if enabled)
       if (uniqueSuggestions.length === 0 && openAIService.enabled) {
         try {
-          const categories = await expenseCategoryService.listCategories();
+          // Get categories - handle errors gracefully
+          let categories = [];
+          try {
+            categories = await expenseCategoryService.listCategories();
+          } catch (categoriesError) {
+            logger.warn('Failed to get categories for OpenAI, skipping AI suggestions', {
+              error: categoriesError.message
+            });
+            // Skip AI categorization if we can't get categories
+            return uniqueSuggestions.slice(0, limit);
+          }
+
+          if (!categories || categories.length === 0) {
+            logger.warn('No categories available for OpenAI suggestions');
+            return uniqueSuggestions.slice(0, limit);
+          }
+
           const validCategoryIds = new Set(categories.map(cat => cat.id));
           
           const aiResult = await openAIService.categorizeExpense(
@@ -497,7 +513,7 @@ class ExpenseCategoryMappingService {
           );
 
           // Double-check: ensure categoryId exists in database (even though openAIService validates)
-          if (aiResult.categoryId && 
+          if (aiResult && aiResult.categoryId && 
               aiResult.confidence > 50 && 
               validCategoryIds.has(aiResult.categoryId)) {
             logger.info('OpenAI suggested category', {
@@ -514,7 +530,7 @@ class ExpenseCategoryMappingService {
               priority: 0,
               matchDetails: `AI предложение: ${aiResult.reasoning || 'На основе анализа описания'}`
             });
-          } else if (aiResult.categoryId && !validCategoryIds.has(aiResult.categoryId)) {
+          } else if (aiResult && aiResult.categoryId && !validCategoryIds.has(aiResult.categoryId)) {
             logger.warn('OpenAI returned invalid categoryId, ignoring', {
               invalidCategoryId: aiResult.categoryId,
               validCategoryIds: Array.from(validCategoryIds),
@@ -523,8 +539,10 @@ class ExpenseCategoryMappingService {
           }
         } catch (aiError) {
           logger.warn('OpenAI categorization failed, continuing with rule-based suggestions', {
-            error: aiError.message
+            error: aiError.message,
+            stack: aiError.stack
           });
+          // Continue with rule-based suggestions - don't throw
         }
       }
 

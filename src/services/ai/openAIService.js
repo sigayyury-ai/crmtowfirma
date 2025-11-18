@@ -149,17 +149,36 @@ CRITICAL RULES:
       };
 
     } catch (error) {
-      logger.error('OpenAI API error', {
-        error: error.message,
-        expenseId: expense.id,
-        stack: error.stack
-      });
+      // Handle different types of errors
+      const statusCode = error.response?.status;
+      const errorMessage = error.response?.data?.error?.message || error.message;
+      
+      if (statusCode === 401) {
+        logger.warn('OpenAI API authentication failed - check API key', {
+          expenseId: expense.id
+        });
+        // Disable OpenAI service if API key is invalid
+        this.enabled = false;
+      } else if (statusCode === 429) {
+        logger.warn('OpenAI API rate limit exceeded', {
+          expenseId: expense.id
+        });
+      } else {
+        logger.error('OpenAI API error', {
+          error: errorMessage,
+          statusCode: statusCode,
+          expenseId: expense.id,
+          stack: error.stack
+        });
+      }
 
-      // Return neutral result on error
+      // Return neutral result on error (don't throw)
       return {
         categoryId: null,
         confidence: 0,
-        reasoning: `OpenAI error: ${error.message}`
+        reasoning: statusCode === 401 
+          ? 'OpenAI API key invalid or missing' 
+          : `OpenAI error: ${errorMessage}`
       };
     }
   }

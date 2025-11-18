@@ -121,7 +121,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Event Listeners
 function initializeEventListeners() {
-    elements.refreshStatus?.addEventListener('click', refreshSystemStatus);
+    elements.refreshStatus?.addEventListener('click', (e) => refreshSystemStatus(e));
     elements.runPolling?.addEventListener('click', runManualPolling);
     elements.getPending?.addEventListener('click', getPendingDeals);
     elements.testApis?.addEventListener('click', testAllApis);
@@ -143,22 +143,43 @@ async function apiCall(endpoint, method = 'GET', data = null, apiOptions = {}) {
         }
         
         const response = await fetch(`${API_BASE}${endpoint}`, requestOptions);
-        const payload = await response.json();
+        
+        // Handle non-JSON responses
+        let payload;
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            payload = await response.json();
+        } else {
+            const text = await response.text();
+            payload = { error: text || `HTTP ${response.status}` };
+        }
+        
         const result = sanitize ? sanitizeValue(payload) : payload;
         
         if (!response.ok) {
-            throw new Error(result.error || `HTTP ${response.status}`);
+            // Don't throw for 500 errors on test endpoints - return error object instead
+            if (response.status === 500 && (endpoint.includes('/test') || endpoint.includes('/pipedrive/test'))) {
+                return {
+                    success: false,
+                    error: result.error || 'Internal server error',
+                    message: result.message || result.error || 'API test failed'
+                };
+            }
+            throw new Error(result.error || result.message || `HTTP ${response.status}`);
         }
         
         return result;
     } catch (error) {
         const safeError = sanitizeError(error);
-        console.error('API Error:', safeError.message);
+        // Only log non-test endpoint errors to avoid console spam
+        if (!endpoint.includes('/test') && !endpoint.includes('/pipedrive/test')) {
+            console.error('API Error:', safeError.message);
+        }
         throw safeError;
     }
 }
 
-async function refreshSystemStatus() {
+async function refreshSystemStatus(event) {
     try {
         setButtonLoading(elements.refreshStatus, true);
         
@@ -166,9 +187,13 @@ async function refreshSystemStatus() {
         const schedulerResult = await apiCall('/invoice-processing/status', 'GET', null, { sanitize: false });
         updateSchedulerStatus(schedulerResult.status);
         
-        // Test APIs
-        await testPipedriveApi();
-        await testWfirmaApi();
+        // Test APIs only when manually triggered (not on page load)
+        // This prevents 500 errors in console if APIs are not configured
+        const isManualRefresh = event && event.type === 'click';
+        if (isManualRefresh) {
+            await testPipedriveApi();
+            await testWfirmaApi();
+        }
         
         addLog('info', 'Статус системы обновлен');
     } catch (error) {
@@ -250,16 +275,24 @@ async function testPipedriveApi() {
         if (result.success) {
             elements.pipedriveStatus.textContent = '✅ Подключен';
             elements.pipedriveStatus.className = 'status-indicator healthy';
-            addLog('success', `Pipedrive API: ${result.user} (${result.company})`);
+            addLog('success', `Pipedrive API: ${result.user?.name || 'Connected'}`);
         } else {
             elements.pipedriveStatus.textContent = '❌ Ошибка';
             elements.pipedriveStatus.className = 'status-indicator error';
-            addLog('error', `Pipedrive API: ${result.error}`);
+            addLog('warn', `Pipedrive API: ${result.message || result.error || 'Not configured'}`);
         }
     } catch (error) {
-        elements.pipedriveStatus.textContent = '❌ Недоступен';
-        elements.pipedriveStatus.className = 'status-indicator error';
-        addLog('error', `Pipedrive API: ${error.message}`);
+        // Handle errors gracefully - don't show 500 errors
+        const errorMessage = error.message || 'Unknown error';
+        if (errorMessage.includes('500') || errorMessage.includes('Internal Server Error')) {
+            elements.pipedriveStatus.textContent = '⚠️ Не настроен';
+            elements.pipedriveStatus.className = 'status-indicator warning';
+            addLog('warn', 'Pipedrive API не настроен или недоступен');
+        } else {
+            elements.pipedriveStatus.textContent = '❌ Недоступен';
+            elements.pipedriveStatus.className = 'status-indicator error';
+            addLog('warn', `Pipedrive API: ${errorMessage}`);
+        }
     }
 }
 

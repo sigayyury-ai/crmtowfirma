@@ -2461,12 +2461,23 @@ router.get('/payments/:id/expense-category-suggestions', async (req, res) => {
       });
     }
 
-    // Get suggestions
-    const suggestions = await expenseCategoryMappingService.findCategorySuggestions({
-      category: payment.category,
-      description: payment.description,
-      payer_name: payment.payer_name
-    }, 5);
+    // Get suggestions (OpenAI errors are handled internally)
+    let suggestions = [];
+    try {
+      suggestions = await expenseCategoryMappingService.findCategorySuggestions({
+        category: payment.category,
+        description: payment.description,
+        payer_name: payment.payer_name
+      }, 5);
+    } catch (suggestionsError) {
+      logger.error('Error getting category suggestions:', {
+        error: suggestionsError.message,
+        paymentId: paymentId,
+        stack: suggestionsError.stack
+      });
+      // Continue with empty suggestions instead of failing
+      suggestions = [];
+    }
 
     // Enrich with category names
     const enrichedSuggestions = await Promise.all(
@@ -2478,6 +2489,10 @@ router.get('/payments/:id/expense-category-suggestions', async (req, res) => {
             categoryName: category?.name || 'Unknown'
           };
         } catch (error) {
+          logger.warn('Error getting category name for suggestion', {
+            categoryId: suggestion.categoryId,
+            error: error.message
+          });
           return {
             ...suggestion,
             categoryName: 'Unknown'
@@ -2491,11 +2506,15 @@ router.get('/payments/:id/expense-category-suggestions', async (req, res) => {
       data: enrichedSuggestions
     });
   } catch (error) {
-    logger.error('Error getting expense category suggestions:', error);
+    logger.error('Error getting expense category suggestions:', {
+      error: error.message,
+      stack: error.stack,
+      paymentId: req.params.id
+    });
     res.status(500).json({
       success: false,
       error: 'Failed to get suggestions',
-      message: error.message
+      message: error.message || 'Unknown error occurred'
     });
   }
 });
