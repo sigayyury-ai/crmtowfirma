@@ -1069,10 +1069,27 @@ class InvoiceProcessingService {
       };
       
     } catch (error) {
-      logger.error('Error getting pending invoice deals:', error);
+      logger.error('Error getting pending invoice deals - exception caught', {
+        error: error.message,
+        stack: error.stack,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Check if it's a rate limit error
+      const isRateLimit = error.response?.status === 429 || 
+                         error.message?.includes('429') ||
+                         error.message?.includes('Too Many Requests');
+      
       return {
         success: false,
-        error: error.message
+        error: isRateLimit 
+          ? 'Pipedrive API rate limit exceeded (429 Too Many Requests)'
+          : error.message || 'Unknown error occurred',
+        message: isRateLimit
+          ? 'Превышен лимит запросов к Pipedrive API. Попробуйте позже.'
+          : error.message || 'Failed to get pending invoice deals'
       };
     }
   }

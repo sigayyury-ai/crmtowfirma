@@ -246,12 +246,40 @@ async function getPendingDeals() {
             addLog('success', `Найдено ${creationCount} задач на создание и ${deletionCount} задач на удаление`);
             showPendingDeals(result);
         } else {
-            addLog('error', `Ошибка получения задач: ${result.error}`);
-            showResult('error', 'Ошибка получения задач', result);
+            // Check if it's a rate limit error
+            const isRateLimit = result.error?.includes('rate limit') || 
+                               result.error?.includes('429') ||
+                               result.message?.includes('rate limit') ||
+                               result.message?.includes('429') ||
+                               result.message?.includes('Превышен лимит');
+            
+            if (isRateLimit) {
+                addLog('warn', '⚠️ Превышен лимит запросов к Pipedrive API. Подождите несколько минут и попробуйте снова.');
+                showResult('warning', 'Превышен лимит запросов', {
+                    error: 'Pipedrive API rate limit exceeded',
+                    message: 'Превышен лимит запросов к Pipedrive API. Подождите несколько минут и попробуйте снова.'
+                });
+            } else {
+                addLog('error', `Ошибка получения задач: ${result.error || result.message || 'Unknown error'}`);
+                showResult('error', 'Ошибка получения задач', result);
+            }
         }
     } catch (error) {
-        addLog('error', `Ошибка получения задач: ${error.message}`);
-        showResult('error', 'Ошибка получения задач', { error: error.message });
+        // Check if it's a rate limit error
+        const isRateLimit = error.message?.includes('429') || 
+                           error.message?.includes('rate limit') ||
+                           error.message?.includes('Too Many Requests');
+        
+        if (isRateLimit) {
+            addLog('warn', '⚠️ Превышен лимит запросов к Pipedrive API. Подождите несколько минут и попробуйте снова.');
+            showResult('warning', 'Превышен лимит запросов', {
+                error: 'Pipedrive API rate limit exceeded',
+                message: 'Превышен лимит запросов к Pipedrive API. Подождите несколько минут и попробуйте снова.'
+            });
+        } else {
+            addLog('error', `Ошибка получения задач: ${error.message}`);
+            showResult('error', 'Ошибка получения задач', { error: error.message });
+        }
     } finally {
         setButtonLoading(elements.getPending, false);
     }

@@ -578,18 +578,74 @@ router.post('/invoice-processing/deal/:id', async (req, res) => {
  */
 router.get('/invoice-processing/pending', async (req, res) => {
   try {
+    logger.info('Getting pending deals', {
+      timestamp: new Date().toISOString()
+    });
+
     const creationResult = await invoiceProcessing.getPendingInvoiceDeals();
     if (!creationResult.success) {
-      return res.status(500).json(creationResult);
+      // Check if it's a rate limit error (429)
+      const isRateLimit = creationResult.error?.includes('429') || 
+                         creationResult.error?.includes('Too Many Requests') ||
+                         creationResult.message?.includes('429') ||
+                         creationResult.message?.includes('Too Many Requests');
+      
+      logger.error('Failed to get pending invoice deals', {
+        error: creationResult.error,
+        message: creationResult.message,
+        isRateLimit,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Return 429 status for rate limit errors, 500 for others
+      const statusCode = isRateLimit ? 429 : 500;
+      return res.status(statusCode).json({
+        success: false,
+        error: isRateLimit 
+          ? 'Pipedrive API rate limit exceeded. Please try again later.'
+          : creationResult.error || 'Failed to get pending invoice deals',
+        message: isRateLimit
+          ? 'Превышен лимит запросов к Pipedrive API. Попробуйте позже.'
+          : creationResult.message || creationResult.error || 'Unknown error'
+      });
     }
 
     const deletionResult = await invoiceProcessing.getDealsMarkedForDeletion();
     if (!deletionResult.success) {
-      return res.status(500).json(deletionResult);
+      // Check if it's a rate limit error (429)
+      const isRateLimit = deletionResult.error?.includes('429') || 
+                         deletionResult.error?.includes('Too Many Requests') ||
+                         deletionResult.message?.includes('429') ||
+                         deletionResult.message?.includes('Too Many Requests');
+      
+      logger.error('Failed to get deals marked for deletion', {
+        error: deletionResult.error,
+        message: deletionResult.message,
+        isRateLimit,
+        timestamp: new Date().toISOString()
+      });
+      
+      // Return 429 status for rate limit errors, 500 for others
+      const statusCode = isRateLimit ? 429 : 500;
+      return res.status(statusCode).json({
+        success: false,
+        error: isRateLimit 
+          ? 'Pipedrive API rate limit exceeded. Please try again later.'
+          : deletionResult.error || 'Failed to get deals marked for deletion',
+        message: isRateLimit
+          ? 'Превышен лимит запросов к Pipedrive API. Попробуйте позже.'
+          : deletionResult.message || deletionResult.error || 'Unknown error'
+      });
     }
 
     const creationDeals = creationResult.deals || [];
     const deletionDeals = Array.isArray(deletionResult.deals) ? deletionResult.deals : [];
+
+    logger.info('Pending deals retrieved successfully', {
+      creationCount: creationDeals.length,
+      deletionCount: deletionDeals.length,
+      timestamp: new Date().toISOString()
+    });
 
     res.json({
       success: true,
@@ -601,11 +657,27 @@ router.get('/invoice-processing/pending', async (req, res) => {
       }
     });
   } catch (error) {
-    logger.error('Error getting pending deals:', error);
-    res.status(500).json({
+    logger.error('Error getting pending deals - exception caught', {
+      error: error.message,
+      stack: error.stack,
+      name: error.name,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Check if it's a rate limit error
+    const isRateLimit = error.message?.includes('429') || 
+                       error.message?.includes('Too Many Requests') ||
+                       error.response?.status === 429;
+    
+    const statusCode = isRateLimit ? 429 : 500;
+    res.status(statusCode).json({
       success: false,
-      error: 'Internal server error',
-      message: error.message
+      error: isRateLimit 
+        ? 'Pipedrive API rate limit exceeded. Please try again later.'
+        : 'Failed to get pending deals',
+      message: isRateLimit
+        ? 'Превышен лимит запросов к Pipedrive API. Попробуйте позже.'
+        : error.message || 'Unknown error occurred'
     });
   }
 });
