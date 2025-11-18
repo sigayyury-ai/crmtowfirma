@@ -3499,6 +3499,73 @@ class InvoiceProcessingService {
   }
 
   /**
+   * Обработка инвойса для одной сделки по ID (для webhook)
+   * @param {number|string} dealId - ID сделки
+   * @returns {Promise<Object>} - Результат обработки
+   */
+  async processDealInvoiceByWebhook(dealId) {
+    try {
+      logger.info(`Processing invoice for deal ${dealId} via webhook`);
+      
+      // Получаем данные сделки с связанными данными
+      const dealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
+      
+      if (!dealResult.success) {
+        return {
+          success: false,
+          error: `Failed to get deal data: ${dealResult.error}`
+        };
+      }
+      
+      // Обрабатываем сделку
+      const result = await this.processDealInvoice(dealResult.deal, dealResult.person, dealResult.organization);
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error processing deal ${dealId} via webhook:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Обработка удаления инвойсов для одной сделки (для webhook)
+   * @param {number|string} dealId - ID сделки
+   * @param {Object} deal - Данные сделки из webhook (опционально)
+   * @returns {Promise<Object>} - Результат обработки
+   */
+  async processDealDeletionByWebhook(dealId, deal = null) {
+    try {
+      logger.info(`Processing deletion for deal ${dealId} via webhook`);
+      
+      // Если сделка не передана, получаем её
+      if (!deal) {
+        const dealResult = await this.pipedriveClient.getDeal(dealId);
+        if (!dealResult.success) {
+          return {
+            success: false,
+            error: `Failed to get deal data: ${dealResult.error}`
+          };
+        }
+        deal = dealResult.deal;
+      }
+      
+      // Используем существующий метод обработки удаления
+      const result = await this.handleDealDeletion(deal);
+      
+      return result;
+    } catch (error) {
+      logger.error(`Error processing deal deletion ${dealId} via webhook:`, error);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Получение продуктов из сделки Pipedrive
    * @param {number} dealId - ID сделки
    * @returns {Promise<Array>} - Массив продуктов
