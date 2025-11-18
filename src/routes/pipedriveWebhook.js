@@ -7,6 +7,10 @@ const logger = require('../utils/logger');
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 
+// Хранилище последних webhook событий для отладки (в памяти, последние 50)
+const webhookHistory = [];
+const MAX_HISTORY_SIZE = 50;
+
 /**
  * POST /api/webhooks/pipedrive
  * Webhook endpoint for Pipedrive deal updates
@@ -18,9 +22,11 @@ const invoiceProcessing = new InvoiceProcessingService();
 router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
   try {
     const webhookData = req.body;
+    const timestamp = new Date().toISOString();
     
-    // Log webhook received
-    logger.info('Pipedrive webhook received', {
+    // Сохраняем событие в историю для отладки
+    const webhookEvent = {
+      timestamp,
       event: webhookData.event,
       dealId: webhookData.current?.id || 
               webhookData.previous?.id || 
@@ -29,7 +35,20 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
               webhookData.dealId ||
               webhookData.deal_id,
       bodyKeys: Object.keys(webhookData),
-      timestamp: new Date().toISOString()
+      body: webhookData // Сохраняем полное тело для отладки
+    };
+    
+    webhookHistory.unshift(webhookEvent); // Добавляем в начало
+    if (webhookHistory.length > MAX_HISTORY_SIZE) {
+      webhookHistory.pop(); // Удаляем старые события
+    }
+    
+    // Log webhook received
+    logger.info('Pipedrive webhook received', {
+      event: webhookData.event,
+      dealId: webhookEvent.dealId,
+      bodyKeys: webhookEvent.bodyKeys,
+      timestamp
     });
 
     // Поддержка двух форматов:
@@ -539,6 +558,72 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       message: error.message
     });
   }
+});
+
+/**
+ * GET /api/webhooks/pipedrive/history
+ * Получить историю последних webhook событий (для отладки)
+ */
+router.get('/webhooks/pipedrive/history', (req, res) => {
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const events = webhookHistory.slice(0, Math.min(limit, webhookHistory.length));
+  
+  res.json({
+    success: true,
+    total: webhookHistory.length,
+    limit,
+    events: events.map(event => ({
+      timestamp: event.timestamp,
+      event: event.event,
+      dealId: event.dealId,
+      bodyKeys: event.bodyKeys,
+      // Показываем только ключи тела, не полное содержимое (может быть большим)
+      bodyPreview: Object.keys(event.body).reduce((acc, key) => {
+        const value = event.body[key];
+        if (typeof value === 'object' && value !== null) {
+          acc[key] = Array.isArray(value) ? `[Array(${value.length})]` : '{...}';
+        } else {
+          acc[key] = String(value).substring(0, 100); // Ограничиваем длину
+        }
+        return acc;
+      }, {})
+    }))
+  });
+});
+
+/**
+ * GET /api/webhooks/pipedrive/history/:index
+ * Получить полное тело конкретного webhook события
+ */
+router.get('/webhooks/pipedrive/history/:index', (req, res) => {
+  const index = parseInt(req.params.index, 10);
+  
+  if (index < 0 || index >= webhookHistory.length) {
+    return res.status(404).json({
+      success: false,
+      error: 'Event not found',
+      availableRange: `0-${webhookHistory.length - 1}`
+    });
+  }
+  
+  res.json({
+    success: true,
+    event: webhookHistory[index]
+  });
+});
+
+/**
+ * DELETE /api/webhooks/pipedrive/history
+ * Очистить историю webhook событий
+ */
+router.delete('/webhooks/pipedrive/history', (req, res) => {
+  const cleared = webhookHistory.length;
+  webhookHistory.length = 0;
+  
+  res.json({
+    success: true,
+    message: `Cleared ${cleared} events`
+  });
 });
 
 module.exports = router;
