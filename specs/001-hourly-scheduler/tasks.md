@@ -2,7 +2,8 @@
 
 **Spec**: `specs/001-hourly-scheduler/spec.md`  
 **Plan Reference**: `specs/001-hourly-scheduler/plan.md`  
-**Last Updated**: 2025-11-10
+**Last Updated**: 2025-11-18  
+**Status**: ✅ Основные задачи выполнены, добавлена интеграция с Pipedrive webhooks
 
 ## Phase 0 — Research & Prep
 
@@ -12,10 +13,12 @@
 
 ## Phase 1 — Backend Scheduler Updates
 
-- [ ] Refactor `src/services/scheduler.js` to a single hourly job with concurrency guard (`isRunning`, `retryScheduled`).
-- [ ] Implement in-memory `runHistory` ring buffer (≥48 entries) with structured logging.
-- [ ] Add retry-on-failure (single retry within the hour) and expose state (`retryScheduled`, `nextRetryAt`).
-- [ ] Update initialization in `src/index.js` to auto-start scheduler without manual controls.
+- [x] Refactor `src/services/scheduler.js` to a single hourly job with concurrency guard (`isRunning`, `retryScheduled`).
+- [x] Implement in-memory `runHistory` ring buffer (≥48 entries) with structured logging.
+- [x] Add retry-on-failure (single retry within the hour) and expose state (`retryScheduled`, `nextRetryAt`).
+- [x] Update initialization in `src/index.js` to auto-start scheduler without manual controls.
+- [x] **NEW**: Remove `processLostDealRefunds()` from polling - refunds now processed via Pipedrive webhooks only.
+- [x] **NEW**: Stripe processing uses webhooks as primary mechanism, polling is fallback only.
 
 ## Phase 1.1 — API Adjustments
 
