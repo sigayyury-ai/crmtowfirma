@@ -1029,18 +1029,57 @@ router.get('/vat-margin/payment-report', async (req, res) => {
       status
     });
 
+    // Ensure report structure is valid
+    if (!report) {
+      logger.warn('Payment revenue report returned null/undefined', {
+        month,
+        year,
+        status
+      });
+      return res.json({
+        success: true,
+        data: [],
+        summary: {
+          payments_count: 0,
+          products_count: 0,
+          total_pln: 0,
+          unmatched_count: 0
+        },
+        filters: {
+          dateFrom: dateFrom || null,
+          dateTo: dateTo || null,
+          status: status || 'approved'
+        }
+      });
+    }
+
     res.json({
       success: true,
-      data: report.products,
-      summary: report.summary,
-      filters: report.filters
+      data: Array.isArray(report.products) ? report.products : [],
+      summary: report.summary || {
+        payments_count: 0,
+        products_count: 0,
+        total_pln: 0,
+        unmatched_count: 0
+      },
+      filters: report.filters || {
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+        status: status || 'approved'
+      }
     });
   } catch (error) {
-    logger.error('Error building payment revenue report:', error);
+    logger.error('Error building payment revenue report:', {
+      error: error.message,
+      stack: error.stack,
+      month: req.query.month,
+      year: req.query.year,
+      status: req.query.status
+    });
     res.status(500).json({
       success: false,
       error: 'Не удалось сформировать отчёт по платежам',
-      message: error.message
+      message: error.message || 'Unknown error occurred'
     });
   }
 });

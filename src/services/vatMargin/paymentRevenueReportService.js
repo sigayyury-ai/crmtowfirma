@@ -759,60 +759,177 @@ class PaymentRevenueReportService {
   }
 
   async getReport(options = {}) {
-    const dateRange = this.resolveDateRange(options);
-    const statusScope = this.normalizeStatusScope(options.status);
+    try {
+      const dateRange = this.resolveDateRange(options);
+      const statusScope = this.normalizeStatusScope(options.status);
 
-    const payments = await this.loadPayments({
-      dateFrom: dateRange.dateFrom,
-      dateTo: dateRange.dateTo,
-      statusScope
-    });
-
-    const proformaIds = this.extractProformaIds(payments);
-    const proformas = await this.loadProformas(proformaIds);
-    const proformaMap = this.mapProformas(proformas);
-
-    // Load product links for Stripe payments
-    // Stripe payments have product_id which is product_link.id (UUID), not stripe_product_id
-    const stripeProductLinkIds = Array.from(new Set(
-      payments
-        .filter((p) => p.source === 'stripe' && p.stripe_product_id)
-        .map((p) => p.stripe_product_id)
-    ));
-    
-    // Also get product_link IDs directly from stripe_payments.product_id
-    const directProductLinkIds = Array.from(new Set(
-      payments
-        .filter((p) => p.source === 'stripe' && p.stripe_product_id && typeof p.stripe_product_id === 'string' && p.stripe_product_id.length > 30)
-        .map((p) => p.stripe_product_id)
-    ));
-    
-    const allProductLinkIds = [...stripeProductLinkIds, ...directProductLinkIds];
-    const productLinksMap = new Map();
-    if (allProductLinkIds.length > 0 && this.stripeRepository.isEnabled()) {
+      // Load payments - handle errors gracefully
+      let payments = [];
       try {
-        const productLinks = await this.stripeRepository.listProductLinksByIds(allProductLinkIds);
-        productLinks.forEach((link, id) => {
-          productLinksMap.set(id, link);
+        payments = await this.loadPayments({
+          dateFrom: dateRange.dateFrom,
+          dateTo: dateRange.dateTo,
+          statusScope
         });
       } catch (error) {
-        logger.warn('Failed to load product links for Stripe payments', {
-          error: error.message
+        logger.error('Failed to load payments for report', {
+          error: error.message,
+          stack: error.stack
         });
+        // Return empty report instead of failing
+        return {
+          products: [],
+          summary: {
+            payments_count: 0,
+            products_count: 0,
+            currency_totals: {},
+            total_pln: 0,
+            unmatched_count: 0
+          },
+          filters: {
+            dateFrom: dateRange.dateFrom.toISOString(),
+            dateTo: dateRange.dateTo.toISOString(),
+            status: statusScope
+          }
+        };
       }
+
+      // Ensure payments is an array
+      if (!Array.isArray(payments)) {
+        logger.warn('Payments is not an array', { payments: typeof payments });
+        payments = [];
+      }
+
+      const proformaIds = this.extractProformaIds(payments);
+      
+      // Load proformas - handle errors gracefully
+      let proformas = [];
+      try {
+        proformas = await this.loadProformas(proformaIds);
+      } catch (error) {
+        logger.warn('Failed to load proformas for report', {
+          error: error.message,
+          proformaIdsCount: proformaIds.length
+        });
+        proformas = [];
+      }
+      
+      const proformaMap = this.mapProformas(proformas);
+
+      // Load product links for Stripe payments
+      // Stripe payments have product_id which is product_link.id (UUID), not stripe_product_id
+      const stripeProductLinkIds = Array.from(new Set(
+        payments
+          .filter((p) => p && p.source === 'stripe' && p.stripe_product_id)
+          .map((p) => p.stripe_product_id)
+      ));
+      
+      // Also get product_link IDs directly from stripe_payments.product_id
+      const directProductLinkIds = Array.from(new Set(
+        payments
+          .filter((p) => p && p.source === 'stripe' && p.stripe_product_id && typeof p.stripe_product_id === 'string' && p.stripe_product_id.length > 30)
+          .map((p) => p.stripe_product_id)
+      ));
+      
+      const allProductLinkIds = [...stripeProductLinkIds, ...directProductLinkIds];
+      let productLinksMap = new Map();
+      if (allProductLinkIds.length > 0 && this.stripeRepository.isEnabled()) {
+        try {
+          // listProductLinksByIds returns a Map directly
+          productLinksMap = await this.stripeRepository.listProductLinksByIds(allProductLinkIds);
+          // Ensure it's a Map
+          if (!(productLinksMap instanceof Map)) {
+            logger.warn('listProductLinksByIds did not return a Map', {
+              type: typeof productLinksMap
+            });
+            productLinksMap = new Map();
+          }
+        } catch (error) {
+          logger.warn('Failed to load product links for Stripe payments', {
+            error: error.message
+          });
+          productLinksMap = new Map();
+        }
+      }
+
+      // Aggregate products - ensure it always returns valid structure
+      let aggregation;
+      try {
+        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap);
+      } catch (error) {
+        logger.error('Failed to aggregate products for report', {
+          error: error.message,
+          stack: error.stack,
+          paymentsCount: payments.length
+        });
+        // Return empty aggregation on error
+        aggregation = {
+          products: [],
+          summary: {
+            payments_count: payments.length,
+            products_count: 0,
+            currency_totals: {},
+            total_pln: 0,
+            unmatched_count: 0
+          }
+        };
+      }
+
+      // Ensure aggregation structure is valid
+      if (!aggregation || typeof aggregation !== 'object') {
+        logger.warn('Invalid aggregation result', { aggregation });
+        aggregation = {
+          products: [],
+          summary: {
+            payments_count: payments.length,
+            products_count: 0,
+            currency_totals: {},
+            total_pln: 0,
+            unmatched_count: 0
+          }
+        };
+      }
+
+      return {
+        products: Array.isArray(aggregation.products) ? aggregation.products : [],
+        summary: aggregation.summary || {
+          payments_count: payments.length,
+          products_count: 0,
+          currency_totals: {},
+          total_pln: 0,
+          unmatched_count: 0
+        },
+        filters: {
+          dateFrom: dateRange.dateFrom.toISOString(),
+          dateTo: dateRange.dateTo.toISOString(),
+          status: statusScope
+        }
+      };
+    } catch (error) {
+      logger.error('Error in getReport', {
+        error: error.message,
+        stack: error.stack,
+        options
+      });
+      // Return empty report instead of throwing
+      const dateRange = this.resolveDateRange(options);
+      const statusScope = this.normalizeStatusScope(options.status);
+      return {
+        products: [],
+        summary: {
+          payments_count: 0,
+          products_count: 0,
+          currency_totals: {},
+          total_pln: 0,
+          unmatched_count: 0
+        },
+        filters: {
+          dateFrom: dateRange.dateFrom.toISOString(),
+          dateTo: dateRange.dateTo.toISOString(),
+          status: statusScope
+        }
+      };
     }
-
-    const aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap);
-
-    return {
-      products: aggregation.products,
-      summary: aggregation.summary,
-      filters: {
-        dateFrom: dateRange.dateFrom.toISOString(),
-        dateTo: dateRange.dateTo.toISOString(),
-        status: statusScope
-      }
-    };
   }
 
   async exportCsv(options = {}) {
