@@ -6,7 +6,8 @@ const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
 const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке hh:00
-const STRIPE_PAYMENTS_CRON_EXPRESSION = '*/15 * * * *'; // Каждые 15 минут для обработки Stripe платежей
+// Stripe payments теперь обрабатываются через webhooks, polling оставлен только как fallback
+// Запускается раз в час вместе с основным циклом для проверки пропущенных событий
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -20,13 +21,10 @@ class SchedulerService {
     this.historyLimit = options.historyLimit || HISTORY_LIMIT;
 
     this.isCronScheduled = false;
-    this.isStripePaymentsCronScheduled = false;
     this.isProcessing = false;
-    this.isStripePaymentsProcessing = false;
     this.currentRun = null;
     this.runHistory = [];
     this.cronJob = null;
-    this.stripePaymentsCronJob = null;
     this.retryTimeout = null;
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -50,8 +48,9 @@ class SchedulerService {
       return;
     }
 
-    // Основной cron для инвойсов (раз в час)
-    logger.info('Configuring hourly cron job for invoice processing');
+    // Основной cron для инвойсов и Stripe платежей (раз в час)
+    // Stripe платежи теперь обрабатываются через webhooks, но оставляем fallback polling
+    logger.info('Configuring hourly cron job for invoice and Stripe processing (fallback)');
     this.cronJob = cron.schedule(
       this.cronExpression,
       () => {
@@ -65,37 +64,17 @@ class SchedulerService {
       }
     );
 
-    // Отдельный cron для Stripe платежей (каждые 15 минут) - для быстрого обновления статусов
-    logger.info('Configuring frequent cron job for Stripe payments processing');
-    this.stripePaymentsCronJob = cron.schedule(
-      STRIPE_PAYMENTS_CRON_EXPRESSION,
-      () => {
-        this.runStripePaymentsCycle({ trigger: 'stripe_payments_cron' }).catch((error) => {
-          logger.error('Unexpected error in Stripe payments cron cycle:', error);
-        });
-      },
-      {
-        scheduled: true,
-        timezone: this.timezone
-      }
-    );
-
     this.isCronScheduled = true;
-    this.isStripePaymentsCronScheduled = true;
-    logger.info('Cron jobs scheduled successfully', {
-      invoiceCronExpression: this.cronExpression,
-      stripePaymentsCronExpression: STRIPE_PAYMENTS_CRON_EXPRESSION,
-      timezone: this.timezone
+    logger.info('Cron job scheduled successfully', {
+      cronExpression: this.cronExpression,
+      timezone: this.timezone,
+      note: 'Stripe payments are now processed via webhooks, hourly polling is fallback only'
     });
 
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
         logger.error('Startup invoice processing failed:', error);
-      });
-      // Также запускаем обработку Stripe платежей при старте
-      this.runStripePaymentsCycle({ trigger: 'startup' }).catch((error) => {
-        logger.error('Startup Stripe payments processing failed:', error);
       });
     });
   }
@@ -106,18 +85,12 @@ class SchedulerService {
       this.cronJob = null;
     }
 
-    if (this.stripePaymentsCronJob) {
-      this.stripePaymentsCronJob.stop();
-      this.stripePaymentsCronJob = null;
-    }
-
     if (this.retryTimeout) {
       clearTimeout(this.retryTimeout);
       this.retryTimeout = null;
     }
 
     this.isCronScheduled = false;
-    this.isStripePaymentsCronScheduled = false;
     this.retryScheduled = false;
     this.nextRetryAt = null;
 
@@ -126,55 +99,32 @@ class SchedulerService {
 
   /**
    * Отдельный цикл для обработки только Stripe платежей (без инвойсов)
-   * Запускается чаще (каждые 15 минут) для быстрого обновления статусов и задач
+   * УДАЛЕНО: Теперь Stripe платежи обрабатываются через webhooks
+   * Этот метод оставлен для обратной совместимости, но не используется в cron
+   * @deprecated Используйте webhooks для обработки Stripe платежей
    */
   async runStripePaymentsCycle({ trigger = 'manual' }) {
-    if (this.isStripePaymentsProcessing) {
-      logger.warn('Stripe payments processing already in progress. Skipping new run.', { trigger });
-      return {
-        success: false,
-        skipped: true,
-        reason: 'processing_in_progress'
-      };
-    }
-
-    this.isStripePaymentsProcessing = true;
+    logger.warn('runStripePaymentsCycle is deprecated - Stripe payments are now processed via webhooks', {
+      trigger
+    });
+    
     const runId = randomUUID();
-    logger.info('Stripe payments processing run started', { trigger, runId });
+    logger.info('Stripe payments processing run started (fallback mode)', { trigger, runId });
 
     try {
       // Обрабатываем только платежи Stripe (без создания новых Checkout Sessions)
-      // Checkout Sessions создаются в основном цикле раз в час
+      // Checkout Sessions создаются через webhooks
       const stripeResult = await this.stripeProcessor.processPendingPayments({
         trigger,
         runId,
-        skipTriggers: true // Пропускаем создание новых Checkout Sessions
+        skipTriggers: true // Пропускаем создание новых Checkout Sessions (они создаются через webhooks)
       });
 
-      // Обрабатываем рефанды для потерянных сделок
-      let refundResult = null;
-      try {
-        refundResult = await this.stripeProcessor.processLostDealRefunds({
-          trigger,
-          runId
-        });
-        if (refundResult && refundResult.summary) {
-          logger.info('Lost deal refunds processed', {
-            trigger,
-            runId,
-            refundsCreated: refundResult.summary.refundsCreated,
-            totalDeals: refundResult.summary.totalDeals
-          });
-        }
-      } catch (refundError) {
-        logger.error('Failed to process lost deal refunds', {
-          trigger,
-          runId,
-          error: refundError.message
-        });
-      }
+      // Рефанды для потерянных сделок теперь обрабатываются через webhooks
+      // (при изменении статуса на "lost" с reason "Refund")
+      // Не вызываем processLostDealRefunds() - это редкий кейс и обрабатывается мгновенно через webhook
 
-      logger.info('Stripe payments processing run completed', {
+      logger.info('Stripe payments processing run completed (fallback)', {
         trigger,
         runId,
         success: stripeResult?.success !== false,
@@ -196,8 +146,6 @@ class SchedulerService {
         success: false,
         error: error.message
       };
-    } finally {
-      this.isStripePaymentsProcessing = false;
     }
   }
 
@@ -249,34 +197,17 @@ class SchedulerService {
 
     try {
       invoiceResult = await this.invoiceProcessing.processPendingInvoices();
+      // Stripe payments: обрабатываем только существующие сессии (fallback)
+      // Checkout Sessions создаются через webhooks, не через polling
       stripeResult = await this.stripeProcessor.processPendingPayments({
         trigger,
-        runId
+        runId,
+        skipTriggers: true // Пропускаем создание новых Checkout Sessions (они создаются через webhooks)
       });
 
-      // Process refunds for lost deals
-      let refundResult = null;
-      try {
-        refundResult = await this.stripeProcessor.processLostDealRefunds({
-          trigger,
-          runId
-        });
-        if (refundResult && refundResult.summary) {
-          logger.info('Lost deal refunds processed', {
-            trigger,
-            runId,
-            refundsCreated: refundResult.summary.refundsCreated,
-            totalDeals: refundResult.summary.totalDeals
-          });
-        }
-      } catch (refundError) {
-        logger.error('Failed to process lost deal refunds', {
-          trigger,
-          runId,
-          error: refundError.message
-        });
-        // Don't fail the entire cycle if refund processing fails
-      }
+      // Рефанды для потерянных сделок теперь обрабатываются через webhooks
+      // (при изменении статуса на "lost" с reason "Refund")
+      // Не вызываем processLostDealRefunds() в polling - это редкий кейс и обрабатывается мгновенно через webhook
 
       const { combinedSummary, invoiceSummary, stripeSummary } = this.buildCombinedSummary(
         invoiceResult,
