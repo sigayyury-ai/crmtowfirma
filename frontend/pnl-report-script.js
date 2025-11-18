@@ -200,7 +200,7 @@ function renderReport(data) {
 
   // Build currency breakdown display if available
   let currencyBreakdownHtml = '';
-  if (total.currencyBreakdown && Object.keys(total.currencyBreakdown).length > 0) {
+  if (total && total.currencyBreakdown && Object.keys(total.currencyBreakdown).length > 0) {
     const breakdownItems = Object.keys(total.currencyBreakdown)
       .map(curr => `${formatCurrency(total.currencyBreakdown[curr])} ${curr}`)
       .join(', ');
@@ -290,7 +290,7 @@ function renderReport(data) {
           
           return `<td class="amount-cell"><strong>${amountDisplay}</strong>${monthBreakdownHtml}</td>`;
         }).join('')}
-        <td class="amount-cell total-cell"><strong>${formatCurrency(total.amountPln)}</strong></td>
+        <td class="amount-cell total-cell"><strong>${formatCurrency((total && total.amountPln) ? total.amountPln : 0)}</strong></td>
       </tr>
     `;
 
@@ -347,23 +347,35 @@ function renderReport(data) {
           
           return `<td class="amount-cell">${amountDisplay}${monthBreakdownHtml}</td>`;
         }).join('')}
-        <td class="amount-cell total-cell"><strong>${formatCurrency(total.amountPln)}</strong></td>
+        <td class="amount-cell total-cell"><strong>${formatCurrency((total && total.amountPln) ? total.amountPln : 0)}</strong></td>
       </tr>
     `;
   }
 
+  // Calculate margin
+  const revenue = (total && total.amountPln) ? Number(total.amountPln) : 0;
+  const expensesAmount = expensesTotal?.amountPln ? Number(expensesTotal.amountPln) : 0;
+  const margin = revenue - expensesAmount;
+  const marginPercent = (revenue > 0 && Number.isFinite(revenue) && Number.isFinite(margin)) 
+    ? ((margin / revenue) * 100) 
+    : 0;
+
   let html = `
     <div class="pnl-summary">
-      <h3>Год: ${year}</h3>
+      <h3>Год: ${year || 'N/A'}</h3>
       <div class="summary-stats">
         <div class="stat-item">
           <span class="stat-label">Всего приходов:</span>
-          <span class="stat-value">${formatCurrency(total.amountPln)} PLN</span>
+          <span class="stat-value">${formatCurrency(revenue)} PLN</span>
         </div>
         ${expensesTotal ? `
         <div class="stat-item">
           <span class="stat-label">Всего расходов:</span>
-          <span class="stat-value">${formatCurrency(expensesTotal.amountPln || 0)} PLN</span>
+          <span class="stat-value">${formatCurrency(expensesAmount)} PLN</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Маржинальность:</span>
+          <span class="stat-value">${formatCurrency(margin)} PLN (${Number.isFinite(marginPercent) ? marginPercent.toFixed(2) : '0.00'}%)</span>
         </div>
         ` : ''}
       </div>
