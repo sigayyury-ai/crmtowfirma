@@ -157,8 +157,13 @@ async function apiCall(endpoint, method = 'GET', data = null, apiOptions = {}) {
         const result = sanitize ? sanitizeValue(payload) : payload;
         
         if (!response.ok) {
-            // Don't throw for 500 errors on test endpoints - return error object instead
-            if (response.status === 500 && (endpoint.includes('/test') || endpoint.includes('/pipedrive/test'))) {
+            // Don't throw for 400/500 errors on test endpoints - return error object instead
+            // This prevents console errors for expected configuration issues
+            // 400 = configuration error (not a real error, just not configured)
+            // 500 = server error (should be logged but not thrown for test endpoints)
+            if ((response.status === 400 || response.status === 500) && 
+                (endpoint.includes('/test') || endpoint.includes('/pipedrive/test') || endpoint.includes('/wfirma/test'))) {
+                // Suppress console error for test endpoints - these are expected to fail if not configured
                 return {
                     success: false,
                     error: result.error || 'Internal server error',
@@ -271,18 +276,33 @@ async function testAllApis() {
 
 async function testPipedriveApi() {
     try {
+        // Use apiCall with error handling that doesn't throw for test endpoints
         const result = await apiCall('/pipedrive/test');
-        if (result.success) {
+        if (result && result.success) {
             elements.pipedriveStatus.textContent = '✅ Подключен';
             elements.pipedriveStatus.className = 'status-indicator healthy';
             addLog('success', `Pipedrive API: ${result.user?.name || 'Connected'}`);
         } else {
-            elements.pipedriveStatus.textContent = '❌ Ошибка';
-            elements.pipedriveStatus.className = 'status-indicator error';
-            addLog('warn', `Pipedrive API: ${result.message || result.error || 'Not configured'}`);
+            // Handle gracefully - don't show as error if it's a configuration issue
+            const isConfigError = result && (
+                result.error?.includes('not configured') || 
+                result.error?.includes('not initialized') ||
+                result.message?.includes('not configured') ||
+                result.message?.includes('not initialized')
+            );
+            
+            if (isConfigError) {
+                elements.pipedriveStatus.textContent = '⚠️ Не настроен';
+                elements.pipedriveStatus.className = 'status-indicator warning';
+                addLog('warn', 'Pipedrive API не настроен (PIPEDRIVE_API_TOKEN отсутствует)');
+            } else {
+                elements.pipedriveStatus.textContent = '❌ Ошибка';
+                elements.pipedriveStatus.className = 'status-indicator error';
+                addLog('warn', `Pipedrive API: ${result?.message || result?.error || 'Not configured'}`);
+            }
         }
     } catch (error) {
-        // Handle errors gracefully - don't show 500 errors
+        // This should not happen for test endpoints, but handle gracefully
         const errorMessage = error.message || 'Unknown error';
         if (errorMessage.includes('500') || errorMessage.includes('Internal Server Error')) {
             elements.pipedriveStatus.textContent = '⚠️ Не настроен';

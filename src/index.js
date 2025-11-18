@@ -7,16 +7,16 @@ const passport = require('passport');
 const logger = require('./utils/logger');
 const googleOAuthConfig = require('./config/googleOAuth');
 
-// Диагностическое логирование для рендера
-console.log('🚀 Starting application...');
-console.log('Environment check:');
-console.log('NODE_ENV:', process.env.NODE_ENV || 'not set');
-console.log('PORT:', process.env.PORT || 'not set');
-console.log('PIPEDRIVE_API_TOKEN:', process.env.PIPEDRIVE_API_TOKEN ? 'SET' : 'NOT SET');
-console.log('WFIRMA_APP_KEY:', process.env.WFIRMA_APP_KEY ? 'SET' : 'NOT SET');
-console.log('WFIRMA_COMPANY_ID:', process.env.WFIRMA_COMPANY_ID ? 'SET' : 'NOT SET');
-console.log('WFIRMA_ACCESS_KEY:', process.env.WFIRMA_ACCESS_KEY ? 'SET' : 'NOT SET');
-console.log('WFIRMA_SECRET_KEY:', process.env.WFIRMA_SECRET_KEY ? 'SET' : 'NOT SET');
+// Диагностическое логирование для рендера (только при старте)
+logger.info('🚀 Starting application...', {
+  NODE_ENV: process.env.NODE_ENV || 'not set',
+  PORT: process.env.PORT || 'not set',
+  hasPipedriveToken: !!process.env.PIPEDRIVE_API_TOKEN,
+  hasWfirmaAppKey: !!process.env.WFIRMA_APP_KEY,
+  hasWfirmaCompanyId: !!process.env.WFIRMA_COMPANY_ID,
+  hasWfirmaAccessKey: !!process.env.WFIRMA_ACCESS_KEY,
+  hasWfirmaSecretKey: !!process.env.WFIRMA_SECRET_KEY
+});
 
 // Импортируем роуты и сервисы
 const apiRoutes = require('./routes/api');
@@ -49,8 +49,6 @@ app.use(cors({
     : true,
   credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 // Middleware для запрета индексации поисковыми системами
 app.use((req, res, next) => {
@@ -58,15 +56,20 @@ app.use((req, res, next) => {
   next();
 });
 
-// Auth роуты (должны быть доступны без авторизации)
-app.use('/auth', authRoutes);
-
+// Webhook роуты ДО express.json() - они используют express.raw() для raw body
 // Pipedrive webhook (должен быть доступен без авторизации для Pipedrive)
 app.use('/api', pipedriveWebhookRoutes);
 
 // Stripe webhook (должен быть доступен без авторизации для Stripe)
 const stripeWebhookRoutes = require('./routes/stripeWebhook');
 app.use('/api', stripeWebhookRoutes);
+
+// JSON body parser применяется ПОСЛЕ webhook роутов
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Auth роуты (должны быть доступны без авторизации)
+app.use('/auth', authRoutes);
 
 // robots.txt to disallow indexing (доступен без авторизации)
 app.get('/robots.txt', (req, res) => {

@@ -83,7 +83,38 @@ Webhook проверяет подпись Stripe для защиты от под
 
 ## Тестирование
 
-Для локального тестирования используйте Stripe CLI:
+### Вариант 1: Использование тестового скрипта (рекомендуется)
+
+Создан удобный скрипт для тестирования webhook'ов:
+
+```bash
+# Убедитесь, что сервер запущен
+npm run dev
+
+# В другом терминале запустите тест
+node scripts/test-stripe-webhook.js checkout.session.completed
+
+# Доступные типы событий:
+# - checkout.session.completed
+# - checkout.session.async_payment_succeeded
+# - payment_intent.succeeded
+# - charge.refunded
+
+# Можно указать URL и секрет через переменные окружения:
+WEBHOOK_URL=http://localhost:3000/api/webhooks/stripe \
+STRIPE_WEBHOOK_SECRET=whsec_... \
+node scripts/test-stripe-webhook.js checkout.session.completed
+```
+
+Скрипт автоматически:
+- Проверяет доступность сервера
+- Создает mock события Stripe
+- Генерирует подпись webhook (если указан секрет)
+- Отправляет запрос и показывает результат
+
+### Вариант 2: Использование Stripe CLI
+
+Для тестирования с реальными событиями Stripe:
 
 ```bash
 # Установите Stripe CLI
@@ -97,6 +128,39 @@ stripe listen --forward-to localhost:3000/api/webhooks/stripe
 
 # Триггер тестового события
 stripe trigger checkout.session.completed
+```
+
+### Вариант 3: Ручной тест через curl
+
+```bash
+# Без проверки подписи (development)
+curl -X POST http://localhost:3000/api/webhooks/stripe \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "evt_test",
+    "type": "checkout.session.completed",
+    "data": {
+      "object": {
+        "id": "cs_test_123",
+        "payment_status": "paid",
+        "metadata": {
+          "deal_id": "1600"
+        }
+      }
+    }
+  }'
+```
+
+### Проверка логов
+
+После отправки webhook проверьте логи сервера:
+
+```bash
+# Логи должны показать:
+# - Получение webhook события
+# - Обработку платежа
+# - Успешное сохранение или ошибки
+tail -f logs/error.log
 ```
 
 ## Fallback

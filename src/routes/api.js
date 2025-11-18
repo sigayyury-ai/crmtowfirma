@@ -25,15 +25,30 @@ const wfirmaClient = new WfirmaClient();
 let pipedriveClient;
 try {
   pipedriveClient = new PipedriveClient();
+  logger.info('PipedriveClient initialized successfully', {
+    hasApiToken: !!process.env.PIPEDRIVE_API_TOKEN,
+    baseURL: process.env.PIPEDRIVE_BASE_URL || 'https://api.pipedrive.com/v1'
+  });
 } catch (error) {
-  logger.error('Failed to initialize PipedriveClient:', error);
+  logger.error('Failed to initialize PipedriveClient:', {
+    error: error.message,
+    stack: error.stack,
+    hasApiToken: !!process.env.PIPEDRIVE_API_TOKEN,
+    timestamp: new Date().toISOString()
+  });
   // Create a dummy client that will return errors
   pipedriveClient = {
-    testConnection: async () => ({
-      success: false,
-      error: 'PipedriveClient not initialized',
-      message: error.message || 'PIPEDRIVE_API_TOKEN is not set'
-    })
+    testConnection: async () => {
+      logger.warn('PipedriveClient.testConnection() called on dummy client', {
+        reason: 'PIPEDRIVE_API_TOKEN is not set',
+        timestamp: new Date().toISOString()
+      });
+      return {
+        success: false,
+        error: 'PipedriveClient not initialized',
+        message: error.message || 'PIPEDRIVE_API_TOKEN is not set'
+      };
+    }
   };
 }
 const userManagement = new UserManagementService();
@@ -203,40 +218,98 @@ router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRoute
  * Тест подключения к Pipedrive API
  */
 router.get('/pipedrive/test', async (req, res) => {
+  logger.info('Pipedrive test endpoint called', {
+    timestamp: new Date().toISOString(),
+    hasPipedriveClient: !!pipedriveClient
+  });
+
   try {
     // Check if pipedriveClient is available
     if (!pipedriveClient) {
-      logger.error('PipedriveClient not initialized');
-      return res.status(500).json({
+      logger.warn('PipedriveClient not initialized - PIPEDRIVE_API_TOKEN may be missing', {
+        endpoint: '/api/pipedrive/test',
+        timestamp: new Date().toISOString()
+      });
+      // Return 400 (Bad Request) instead of 500 for configuration errors
+      // This prevents browser console from showing it as a server error
+      return res.status(400).json({
         success: false,
         error: 'PipedriveClient not initialized',
         message: 'PIPEDRIVE_API_TOKEN may be missing'
       });
     }
 
+    logger.debug('Calling pipedriveClient.testConnection()');
     const result = await pipedriveClient.testConnection();
     
     if (result.success) {
+      logger.info('Pipedrive connection test successful', {
+        user: result.user?.name || 'Unknown',
+        timestamp: new Date().toISOString()
+      });
       res.json(result);
     } else {
-      res.status(500).json(result);
+      // Check if it's a configuration error (not initialized, missing token, etc.)
+      const isConfigError = result.error?.includes('not set') || 
+                           result.error?.includes('not initialized') ||
+                           result.message?.includes('not set') ||
+                           result.message?.includes('not initialized');
+      
+      // Log the result
+      if (isConfigError) {
+        logger.warn('Pipedrive connection test failed - configuration error', {
+          error: result.error,
+          message: result.message,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        logger.error('Pipedrive connection test failed - server error', {
+          error: result.error,
+          message: result.message,
+          details: result.details,
+          status: result.status,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Use 400 for configuration errors, 500 for actual server errors
+      const statusCode = isConfigError ? 400 : 500;
+      res.status(statusCode).json(result);
     }
   } catch (error) {
-    logger.error('Error testing Pipedrive connection:', {
+    logger.error('Error testing Pipedrive connection - exception caught', {
       error: error.message,
       stack: error.stack,
-      name: error.name
+      name: error.name,
+      endpoint: '/api/pipedrive/test',
+      timestamp: new Date().toISOString()
     });
     
     // Check if it's a configuration error
-    if (error.message && error.message.includes('PIPEDRIVE_API_TOKEN')) {
-      return res.status(500).json({
+    const isConfigError = error.message && (
+      error.message.includes('PIPEDRIVE_API_TOKEN') ||
+      error.message.includes('not set') ||
+      error.message.includes('not initialized')
+    );
+    
+    if (isConfigError) {
+      logger.warn('Pipedrive configuration error detected', {
+        error: error.message,
+        timestamp: new Date().toISOString()
+      });
+      // Return 400 for configuration errors instead of 500
+      return res.status(400).json({
         success: false,
         error: 'Configuration error',
         message: 'PIPEDRIVE_API_TOKEN is not set in environment variables'
       });
     }
     
+    // Only return 500 for actual server errors
+    logger.error('Pipedrive test failed with server error', {
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
     res.status(500).json({
       success: false,
       error: 'Internal server error',

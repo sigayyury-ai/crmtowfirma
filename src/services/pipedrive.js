@@ -417,9 +417,17 @@ class PipedriveClient {
    * @returns {Promise<Object>} - Результат теста
    */
   async testConnection() {
+    logger.info('PipedriveClient.testConnection() called', {
+      hasApiToken: !!this.apiToken,
+      timestamp: new Date().toISOString()
+    });
+
     try {
       // Check if API token is available
       if (!this.apiToken) {
+        logger.warn('PipedriveClient.testConnection() - API token not set', {
+          timestamp: new Date().toISOString()
+        });
         return {
           success: false,
           error: 'PIPEDRIVE_API_TOKEN is not set',
@@ -427,15 +435,26 @@ class PipedriveClient {
         };
       }
 
+      logger.debug('Calling getUserInfo() to test connection');
       const result = await this.getUserInfo();
-      
+
       if (result.success) {
+        logger.info('Pipedrive connection test successful', {
+          userId: result.user?.id,
+          userName: result.user?.name,
+          timestamp: new Date().toISOString()
+        });
         return {
           success: true,
           message: 'Connection to Pipedrive API successful',
           user: result.user
         };
       } else {
+        logger.error('Pipedrive connection test failed - getUserInfo() returned error', {
+          error: result.error,
+          details: result.details,
+          timestamp: new Date().toISOString()
+        });
         return {
           success: false,
           error: result.error || 'Failed to connect to Pipedrive API',
@@ -444,13 +463,14 @@ class PipedriveClient {
         };
       }
     } catch (error) {
-      logger.error('Error testing Pipedrive connection:', {
+      logger.error('Error testing Pipedrive connection - exception caught', {
         error: error.message,
         stack: error.stack,
         response: error.response?.data,
-        status: error.response?.status
+        status: error.response?.status,
+        timestamp: new Date().toISOString()
       });
-      
+
       return {
         success: false,
         error: error.message || 'Unknown error occurred',

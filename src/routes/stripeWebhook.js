@@ -20,6 +20,14 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
+  // Debug logging
+  logger.debug('Webhook received', {
+    contentType: req.headers['content-type'],
+    bodyType: typeof req.body,
+    bodyIsBuffer: Buffer.isBuffer(req.body),
+    bodyLength: req.body ? (Buffer.isBuffer(req.body) ? req.body.length : String(req.body).length) : 0
+  });
+
   if (!webhookSecret) {
     logger.warn('STRIPE_WEBHOOK_SECRET not configured, webhook verification skipped');
     // In development, allow without verification
@@ -36,12 +44,17 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
     } else {
       // In development without secret, parse body directly
-      event = JSON.parse(req.body.toString());
+      // req.body should be a Buffer when using express.raw()
+      const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body);
+      event = JSON.parse(bodyString);
     }
   } catch (err) {
     logger.error('Webhook signature verification failed', {
       error: err.message,
-      signature: sig ? 'present' : 'missing'
+      signature: sig ? 'present' : 'missing',
+      bodyType: typeof req.body,
+      bodyIsBuffer: Buffer.isBuffer(req.body),
+      bodyPreview: Buffer.isBuffer(req.body) ? req.body.toString('utf8').substring(0, 100) : String(req.body).substring(0, 100)
     });
     return res.status(400).json({ error: `Webhook Error: ${err.message}` });
   }
