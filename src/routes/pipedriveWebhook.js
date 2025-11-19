@@ -908,7 +908,12 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
           const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
             paymentSchedule,
-            sessions: sessions.map(s => ({ id: s.id, url: s.url })),
+            sessions: sessions.map(s => ({ 
+              id: s.id, 
+              url: s.url, 
+              type: s.type, 
+              amount: s.amount 
+            })),
             currency,
             totalAmount
           });
