@@ -3426,20 +3426,35 @@ class StripeProcessorService {
       // Get deal with person data
       const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       if (!fullDealResult.success || !fullDealResult.person) {
-        this.logger.warn(`⚠️  Не удалось получить данные сделки/персоны для уведомления | Deal ID: ${dealId}`, { dealId });
+        this.logger.warn(`⚠️  Не удалось получить данные сделки/персоны для уведомления | Deal ID: ${dealId}`, { 
+          dealId,
+          success: fullDealResult.success,
+          hasPerson: !!fullDealResult.person,
+          hasDeal: !!fullDealResult.deal
+        });
         return { success: false, error: 'Failed to get deal/person data' };
       }
 
       const deal = fullDealResult.deal;
       const person = fullDealResult.person;
-      const sendpulseId = this.getSendpulseId(person);
-
-      this.logger.info(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id} | SendPulse ID: ${sendpulseId || 'не найден'}`, {
+      
+      // Логируем все поля персоны для отладки
+      this.logger.info(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id}`, {
         dealId,
         personId: person.id,
         personName: person.name,
         personEmails: person.email?.map(e => e.value) || [],
-        sendpulseId
+        personFields: Object.keys(person).filter(k => k.startsWith('ff') || k.includes('sendpulse') || k.includes('SendPulse')).map(k => `${k}: ${person[k]}`)
+      });
+      
+      const sendpulseId = this.getSendpulseId(person);
+      
+      this.logger.info(`📧 SendPulse ID проверка | Deal ID: ${dealId} | Person ID: ${person.id} | SendPulse ID: ${sendpulseId || 'не найден'} | Поле: ${this.SENDPULSE_ID_FIELD_KEY}`, {
+        dealId,
+        personId: person.id,
+        sendpulseId,
+        sendpulseFieldKey: this.SENDPULSE_ID_FIELD_KEY,
+        sendpulseFieldValue: person[this.SENDPULSE_ID_FIELD_KEY] || 'не найдено'
       });
 
       if (!sendpulseId) {

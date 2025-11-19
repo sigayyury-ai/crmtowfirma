@@ -551,12 +551,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const currency = dealWithWebhookData.currency || 'PLN';
 
           // Отправляем уведомление в SendPulse с графиком платежей (без создания Stripe сессий)
+          logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сумма: ${totalAmount} ${currency}`);
           const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
             paymentSchedule,
             sessions: [], // Пустой массив - только график без ссылок
             currency,
             totalAmount
           });
+
+          logger.info(`📧 Результат отправки уведомления | Deal: ${dealId} | Успех: ${notificationResult.success} | Ошибка: ${notificationResult.error || 'нет'}`);
 
           if (notificationResult.success) {
             logger.info(`✅ Уведомление о графике платежей отправлено | Deal: ${dealId} | График: ${paymentSchedule}`);
