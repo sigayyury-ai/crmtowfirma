@@ -41,6 +41,28 @@ class StripeCrmSyncService {
     if (!dealId || !stageId) return;
 
     try {
+      // Проверяем статус сделки перед обновлением стадии
+      // Если сделка удалена, не пытаемся обновлять стадию
+      const dealResult = await this.pipedriveClient.getDeal(dealId);
+      if (!dealResult.success || !dealResult.deal) {
+        this.logger.warn('Deal not found, skipping stage update', {
+          dealId,
+          stageId,
+          error: dealResult.error
+        });
+        return;
+      }
+
+      const deal = dealResult.deal;
+      // Проверяем, не удалена ли сделка (в Pipedrive удаленные сделки имеют статус 'deleted' или отсутствуют)
+      if (deal.status === 'deleted' || deal.deleted) {
+        this.logger.warn('Deal is deleted, skipping stage update', {
+          dealId,
+          stageId
+        });
+        return;
+      }
+
       await this.pipedriveClient.updateDealStage(dealId, stageId);
       this.logger.info('Updated deal stage via Stripe processor', {
         dealId,
@@ -48,6 +70,16 @@ class StripeCrmSyncService {
         context
       });
     } catch (error) {
+      // Если ошибка связана с удаленной сделкой, логируем как предупреждение, а не ошибку
+      if (error.message?.includes('deleted') || error.message?.includes('Entity is deleted')) {
+        this.logger.warn('Deal is deleted, skipping stage update', {
+          dealId,
+          stageId,
+          error: error.message
+        });
+        return;
+      }
+      
       this.logger.error('Failed to update deal stage from Stripe payment', {
         dealId,
         stageId,
