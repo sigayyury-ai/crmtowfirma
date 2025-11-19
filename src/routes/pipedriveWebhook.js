@@ -601,49 +601,104 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             limit: 10
           });
 
+          // Проверяем существующие платежи с учетом статуса оплаты
           const existingPaymentTypes = existingPayments ? existingPayments.map(p => p.payment_type).filter(Boolean) : [];
-          const hasDeposit = existingPaymentTypes.includes('deposit');
-          const hasRest = existingPaymentTypes.includes('rest');
-          const hasSingle = existingPaymentTypes.includes('single');
+          
+          // Проверяем статус оплаты для каждого типа платежа
+          const getPaymentByType = (type) => existingPayments?.find(p => p.payment_type === type);
+          const isPaymentPaid = (payment) => {
+            if (!payment) return false;
+            // Проверяем payment_status из Stripe или статус в базе данных
+            const paymentStatus = payment.payment_status || payment.status;
+            return paymentStatus === 'paid' || paymentStatus === 'complete';
+          };
 
-          // Проверяем, все ли необходимые сессии созданы
+          const depositPayment = getPaymentByType('deposit');
+          const restPayment = getPaymentByType('rest');
+          const singlePayment = getPaymentByType('single');
+
+          const hasDeposit = !!depositPayment;
+          const hasRest = !!restPayment;
+          const hasSingle = !!singlePayment;
+          
+          const depositPaid = isPaymentPaid(depositPayment);
+          const restPaid = isPaymentPaid(restPayment);
+          const singlePaid = isPaymentPaid(singlePayment);
+
+          logger.info(`🔍 Проверка статуса оплаты существующих сессий | Deal: ${dealId}`, {
+            dealId,
+            paymentSchedule,
+            hasDeposit,
+            depositPaid,
+            hasRest,
+            restPaid,
+            hasSingle,
+            singlePaid,
+            existingPaymentStatuses: existingPayments?.map(p => ({
+              type: p.payment_type,
+              status: p.payment_status || p.status,
+              sessionId: p.session_id
+            })) || []
+          });
+
+          // Проверяем, все ли необходимые сессии созданы И оплачены
           let needToCreate = false;
           let missingSessions = [];
 
           if (paymentSchedule === '50/50') {
             // Для графика 50/50 нужны оба платежа: deposit и rest
-            if (!hasDeposit) {
+            // Если deposit не существует ИЛИ не оплачен → нужно создать
+            if (!hasDeposit || !depositPaid) {
               needToCreate = true;
-              missingSessions.push('deposit');
+              if (!hasDeposit) {
+                missingSessions.push('deposit');
+              } else if (!depositPaid) {
+                missingSessions.push('deposit (не оплачен)');
+              }
             }
-            if (!hasRest) {
+            // Если rest не существует ИЛИ не оплачен → нужно создать
+            if (!hasRest || !restPaid) {
               needToCreate = true;
-              missingSessions.push('rest');
+              if (!hasRest) {
+                missingSessions.push('rest');
+              } else if (!restPaid) {
+                missingSessions.push('rest (не оплачен)');
+              }
             }
           } else {
             // Для графика 100% нужен один платеж: single
-            if (!hasSingle) {
+            // Если single не существует ИЛИ не оплачен → нужно создать
+            if (!hasSingle || !singlePaid) {
               needToCreate = true;
-              missingSessions.push('single');
+              if (!hasSingle) {
+                missingSessions.push('single');
+              } else if (!singlePaid) {
+                missingSessions.push('single (не оплачен)');
+              }
             }
           }
 
           if (!needToCreate && existingPayments && existingPayments.length > 0) {
-            logger.info(`✅ Все необходимые Stripe сессии уже существуют | Deal: ${dealId} | График: ${paymentSchedule} | Количество: ${existingPayments.length}`, {
+            logger.info(`✅ Все необходимые Stripe сессии уже существуют И оплачены | Deal: ${dealId} | График: ${paymentSchedule} | Количество: ${existingPayments.length}`, {
               dealId,
               paymentSchedule,
               existingCount: existingPayments.length,
               sessionIds: existingPayments.map(p => p.session_id).slice(0, 5),
               paymentTypes: existingPaymentTypes,
-              note: 'Все платежи созданы, пропускаем создание новых'
+              paymentStatuses: existingPayments.map(p => ({
+                type: p.payment_type,
+                status: p.payment_status || p.status
+              })),
+              note: 'Все платежи созданы и оплачены, пропускаем создание новых'
             });
             return res.status(200).json({
               success: true,
-              message: 'All required Stripe Checkout Sessions already exist',
+              message: 'All required Stripe Checkout Sessions already exist and are paid',
               dealId,
               paymentSchedule,
               existingCount: existingPayments.length,
-              sessionIds: existingPayments.map(p => p.session_id).slice(0, 5)
+              sessionIds: existingPayments.map(p => p.session_id).slice(0, 5),
+              allPaid: true
             });
           }
 
@@ -706,10 +761,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 throw new Error(`Failed to create deposit session: ${depositResult.error || 'unknown'}`);
               }
             } else {
-              logger.info(`⏭️  Первый платеж уже существует, пропускаем | Deal: ${dealId}`);
+              if (depositPaid) {
+                logger.info(`✅ Первый платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
+              } else {
+                logger.info(`⚠️  Первый платеж существует, но не оплачен, создаем новый | Deal: ${dealId}`);
+              }
             }
 
-            if (!hasRest) {
+            if (!hasRest || !restPaid) {
               const restAmount = totalAmount / 2;
               logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency}`);
               const restResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
@@ -733,11 +792,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 throw new Error(`Failed to create rest session: ${restResult.error || 'unknown'}`);
               }
             } else {
-              logger.info(`⏭️  Второй платеж уже существует, пропускаем | Deal: ${dealId}`);
+              if (restPaid) {
+                logger.info(`✅ Второй платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
+              } else {
+                logger.info(`⚠️  Второй платеж существует, но не оплачен, создаем новый | Deal: ${dealId}`);
+              }
             }
           } else {
-            // Создаем один платеж на всю сумму (если его нет)
-            if (!hasSingle) {
+            // Создаем один платеж на всю сумму (если его нет ИЛИ не оплачен)
+            if (!hasSingle || !singlePaid) {
               logger.info(`💳 Создание единого платежа (100%) | Deal: ${dealId} | Сумма: ${totalAmount} ${currency}`);
               const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
                 trigger: 'pipedrive_webhook',
@@ -759,7 +822,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 throw new Error(`Failed to create checkout session: ${result.error || 'unknown'}`);
               }
             } else {
-              logger.info(`⏭️  Платеж уже существует, пропускаем | Deal: ${dealId}`);
+              if (singlePaid) {
+                logger.info(`✅ Платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
+              } else {
+                logger.info(`⚠️  Платеж существует, но не оплачен, создаем новый | Deal: ${dealId}`);
+              }
             }
           }
           
