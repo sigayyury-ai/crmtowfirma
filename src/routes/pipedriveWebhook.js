@@ -311,11 +311,23 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     const currentStageId = currentDeal.stage_id;
     // Проверяем все возможные варианты названия стадии из webhook'а и из currentDeal
     // Сначала проверяем webhookData (оригинальные данные), потом currentDeal
-    const currentStageName = (webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage'])) ||
+    const webhookStageName = webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage']);
+    const currentStageName = webhookStageName ||
                             currentDeal.stage_name || 
                             currentDeal['Deal stage'] || 
                             currentDeal['Deal_stage'] ||
                             currentDeal['deal_stage'];
+    
+    logger.info(`🔍 Извлечение стадии | Deal ID: ${dealId} | webhookData['Deal_stage']: "${webhookData?.['Deal_stage']}" | currentDeal.stage_name: "${currentDeal.stage_name}" | currentStageName: "${currentStageName}" | currentStageId: ${currentStageId}`, {
+      dealId,
+      webhookStageName,
+      currentDealStageName: currentDeal.stage_name,
+      currentDealDealStage: currentDeal['Deal stage'],
+      currentDealDeal_stage: currentDeal['Deal_stage'],
+      currentStageName,
+      currentStageId,
+      webhookDataKeys: webhookData ? Object.keys(webhookData).filter(k => k.toLowerCase().includes('stage')) : []
+    });
     
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
@@ -483,9 +495,22 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
           }
 
+          logger.info(`💳 Вызов createCheckoutSessionForDeal | Deal ID: ${dealId}`, {
+            dealId,
+            dealHasId: !!dealResult.deal?.id,
+            dealHasValue: !!dealResult.deal?.value
+          });
+          
           const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
             trigger: 'first_payment_stage',
             runId: `first-payment-${Date.now()}`
+          });
+
+          logger.info(`💳 Результат createCheckoutSessionForDeal | Deal ID: ${dealId} | Success: ${result.success} | Error: ${result.error || 'нет'}`, {
+            dealId,
+            success: result.success,
+            error: result.error,
+            sessionId: result.sessionId
           });
 
           if (result.success) {
@@ -502,7 +527,8 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
           } else {
             logger.error(`❌ Не удалось создать Stripe Checkout Session для стадии "First payment" | Deal ID: ${dealId} | Ошибка: ${result.error}`, {
               dealId,
-              error: result.error
+              error: result.error,
+              resultKeys: Object.keys(result || {})
             });
             return res.status(200).json({
               success: false,
