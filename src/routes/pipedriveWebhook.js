@@ -26,6 +26,16 @@ const MAX_HISTORY_SIZE = 50;
 router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, res) => {
   const timestamp = new Date().toISOString();
   
+  // Логирование в самом начале обработчика
+  logger.info('📥 Pipedrive webhook received', {
+    timestamp,
+    url: req.url,
+    method: req.method,
+    contentType: req.headers['content-type'],
+    hasBody: !!req.body,
+    bodyKeys: req.body ? Object.keys(req.body) : []
+  });
+  
   try {
     const webhookData = req.body;
     
@@ -673,9 +683,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         }
       }
 
-      // Валидные типы инвойсов (70, 71, 72)
-      const VALID_INVOICE_TYPES = ['70', '71', '72'];
-      if (VALID_INVOICE_TYPES.includes(normalizedInvoiceType)) {
+      // Валидные типы инвойсов (70, 71, 72) - поддерживаем как числовые, так и строковые значения
+      const VALID_INVOICE_TYPES = ['70', '71', '72', 'proforma'];
+      const isValidProformaType = VALID_INVOICE_TYPES.includes(normalizedInvoiceType);
+      if (isValidProformaType) {
         logger.info(`📄 Создание проформы | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
           dealId,
           currentInvoiceType
