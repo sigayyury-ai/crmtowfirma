@@ -81,38 +81,33 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                             webhookData['invoice_type'] !== undefined ||
                             webhookData['invoice'] !== undefined ||
                             webhookData[INVOICE_TYPE_FIELD_KEY] !== undefined;
-      const hasStage = webhookData['Deal stage'] !== undefined || 
-                      webhookData['Deal_stage'] !== undefined ||
-                      webhookData['deal_stage'] !== undefined ||
-                      webhookData['stage_id'] !== undefined;
       const hasStatus = webhookData['Deal status'] !== undefined || 
                        webhookData['Deal_status'] !== undefined ||
                        webhookData['deal_status'] !== undefined ||
                        webhookData['status'] !== undefined;
       
-      // Если есть все необходимые данные, используем их без запроса к API
-      if (hasInvoiceType && hasStage && hasStatus) {
-        logger.info(`✅ Webhook содержит все данные, используем без запроса к API | Deal ID: ${dealId}`, {
+      // Проверяем, есть ли Deal_stage_id (числовой ID стадии) в webhook'е
+      const stageId = webhookData['Deal_stage_id'] || 
+                     webhookData['Deal stage id'] || 
+                     webhookData['deal_stage_id'] || 
+                     webhookData['stage_id'];
+      const hasStageId = stageId !== undefined && !isNaN(Number(stageId));
+      
+      // Если есть stage_id и все необходимые данные, используем их без запроса к API
+      if (hasInvoiceType && hasStageId && hasStatus) {
+        logger.info(`✅ Webhook содержит все данные включая stage_id, используем без запроса к API | Deal ID: ${dealId}`, {
           dealId,
           hasInvoiceType,
-          hasStage,
+          hasStageId,
           hasStatus
         });
         
         // Собираем данные сделки из webhook
-        // Поддержка разных форматов названий полей из Pipedrive workflow automation
         currentDeal = {
           id: dealId,
-          stage_id: webhookData['Deal stage'] || 
-                   webhookData['Deal_stage'] || 
-                   webhookData['deal_stage'] || 
-                   webhookData['stage_id'],
-          stage_name: webhookData['Deal stage'] || 
-                     webhookData['Deal_stage'] || 
-                     webhookData['deal_stage'] || 
-                     webhookData['stage_name'],
+          stage_id: Number(stageId),
           status: webhookData['Deal status'] || 
-                 webhookData['Deal_status'] || 
+                 webhookData['Deal_status'] ||
                  webhookData['deal_status'] || 
                  webhookData['status'],
           [INVOICE_TYPE_FIELD_KEY]: webhookData['Invoice type'] || 
@@ -158,36 +153,15 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                                      webhookData['invoice_number'] ||
                                      webhookData['invoiceNumber'] ||
                                      webhookData[INVOICE_NUMBER_FIELD_KEY] ||
-                                     webhookData['Invoice'] // Fallback на поле Invoice, если там номер
+                                     webhookData['Invoice']
         };
-        
-        // Предыдущая стадия (если доступна)
-        const previousStageId = webhookData['Previous deal stage'] || 
-                                webhookData['Previous_deal_stage'] ||
-                                webhookData['previous_deal_stage'] || 
-                                webhookData['previous_stage_id'];
-        if (previousStageId) {
-          previousDeal = {
-            stage_id: previousStageId
-          };
-        } else {
-          previousDeal = null;
-        }
-        
-        logger.debug('Parsed deal data from workflow automation webhook', {
-          dealId,
-          stageId: currentDeal.stage_id,
-          status: currentDeal.status,
-          invoiceType: currentDeal[INVOICE_TYPE_FIELD_KEY],
-          personId: currentDeal.person_id,
-          organizationId: currentDeal.organization_id
-        });
+        previousDeal = null;
       } else {
-        // Если данных недостаточно, получаем полные данные сделки из Pipedrive API
-        logger.info(`📡 Webhook содержит неполные данные, запрашиваем полные данные сделки | Deal ID: ${dealId}`, {
+        // Если нет stage_id или данных недостаточно, получаем полные данные через API
+        logger.info(`📡 Webhook не содержит stage_id или данных недостаточно, запрашиваем полные данные сделки | Deal ID: ${dealId}`, {
           dealId,
           hasInvoiceType,
-          hasStage,
+          hasStageId,
           hasStatus
         });
 
@@ -204,7 +178,6 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             });
           }
           currentDeal = dealResult.deal;
-          // Для workflow automation нет previousDeal, так как мы не знаем предыдущее состояние
           previousDeal = null;
         } catch (error) {
           logger.error('Error fetching deal data from workflow automation webhook', {
