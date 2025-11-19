@@ -339,6 +339,17 @@ class StripeProcessorService {
     let amountTax = 0;
     let amountTaxPln = 0;
     
+    // ВАЖНО: Проверка что Stripe не удерживал налог
+    const stripeTaxAmount = fromMinorUnit(session.total_details?.amount_tax || 0, currency);
+    this.logger.info('✅ Проверка: Stripe не удерживал налог', {
+      dealId,
+      sessionId: session.id,
+      stripeTaxAmount,
+      stripeTaxAmountPln: stripeTaxAmount > 0 ? roundBankers(stripeTaxAmount * (amountConversion.rate || 1)) : 0,
+      hasTaxFromStripe: stripeTaxAmount > 0,
+      note: 'stripeTaxAmount должен быть 0 - Stripe не удерживает VAT'
+    });
+    
     if (shouldApplyVat) {
       // Рассчитываем VAT 23% для Польши (только для отображения)
       // Цена включает VAT (inclusive): amountTax = amount * 23 / 123
@@ -352,12 +363,24 @@ class StripeProcessorService {
         amountTaxPln = taxConversion.amountPln;
       }
       
-      this.logger.info('VAT рассчитан вручную для отображения (не из Stripe)', {
+      this.logger.info('📊 VAT рассчитан вручную для отображения (НЕ из Stripe)', {
         dealId,
+        sessionId: session.id,
         amount,
         amountTax,
+        amountTaxPln,
         vatRate: '23%',
-        note: 'VAT только для расчетов и чеков, Stripe не удерживает налог'
+        stripeTaxAmount,
+        note: 'VAT только для расчетов и чеков, Stripe не удерживает налог. Рассчитано вручную.'
+      });
+    } else {
+      this.logger.info('ℹ️  VAT не применяется для этой сделки', {
+        dealId,
+        sessionId: session.id,
+        customerType,
+        companyCountry: crmContext?.companyCountry,
+        sessionCountry: participant?.address?.country,
+        note: 'VAT не требуется по условиям'
       });
     }
     const addressValidation = await this.ensureAddress({
@@ -2283,12 +2306,25 @@ class StripeProcessorService {
         quantity: quantity
       };
 
+      // ВАЖНО: Проверка что Tax Rate НЕ добавляется к line_item
+      // Stripe НЕ будет удерживать VAT - это только для расчетов и отображения
+      this.logger.info('✅ Проверка: Tax Rate НЕ добавляется к line_item', {
+        dealId,
+        hasTaxRates: !!lineItem.tax_rates,
+        taxRatesCount: lineItem.tax_rates ? lineItem.tax_rates.length : 0,
+        amount: productPrice,
+        currency,
+        note: 'Stripe не удерживает VAT - сумма платежа = сумме из CRM'
+      });
+
       // VAT используется только для расчетов и отображения в чеках/инвойсах
       // НЕ применяется как Tax Rate в Stripe (Stripe не удерживает VAT)
       if (shouldApplyVat && countryCode === 'PL') {
-        this.logger.info('VAT будет рассчитан для отображения (не применяется в Stripe)', {
+        this.logger.info('📊 VAT будет рассчитан для отображения (не применяется в Stripe)', {
           dealId,
           vatRate: '23%',
+          shouldApplyVat,
+          countryCode,
           note: 'VAT только для расчетов и чеков, не удерживается Stripe'
         });
       }
@@ -2370,15 +2406,44 @@ class StripeProcessorService {
             vat_country: 'PL'
           }
         };
-        this.logger.info('VAT будет рассчитан для отображения (не применяется в Stripe)', {
+        this.logger.info('📊 VAT будет рассчитан для отображения (не применяется в Stripe)', {
           dealId,
           vatRate: '23%',
           note: 'VAT только для расчетов и чеков, не удерживается Stripe'
         });
       }
 
+      // ВАЖНО: Проверка что sessionParams НЕ содержит tax_id_collection и automatic_tax
+      this.logger.info('✅ Проверка: sessionParams не содержит налоговых настроек Stripe', {
+        dealId,
+        hasTaxIdCollection: !!sessionParams.tax_id_collection,
+        hasAutomaticTax: !!sessionParams.automatic_tax,
+        lineItemsCount: sessionParams.line_items?.length || 0,
+        firstLineItemHasTaxRates: !!sessionParams.line_items?.[0]?.tax_rates,
+        note: 'Stripe не будет удерживать VAT - сумма платежа = сумме из CRM'
+      });
+
       // 12. Create Checkout Session in Stripe
+      this.logger.info('💳 Создание Checkout Session в Stripe (без VAT)', {
+        dealId,
+        amount: productPrice,
+        currency,
+        paymentSchedule,
+        paymentType,
+        note: 'Сумма платежа в Stripe = сумме из CRM, VAT не удерживается'
+      });
       const session = await this.stripe.checkout.sessions.create(sessionParams);
+      
+      // ВАЖНО: Проверка что сессия создана без налога от Stripe
+      this.logger.info('✅ Checkout Session создан - проверка отсутствия налога от Stripe', {
+        dealId,
+        sessionId: session.id,
+        amountTotal: session.amount_total,
+        amountSubtotal: session.amount_subtotal,
+        amountTax: session.total_details?.amount_tax || 0,
+        hasTaxFromStripe: (session.total_details?.amount_tax || 0) > 0,
+        note: 'amount_tax должен быть 0 (Stripe не удерживает VAT)'
+      });
 
       // 13. Create tasks in CRM after successful session creation (if address is missing)
       // Задачи создаются только если адрес не найден и нужен VAT
