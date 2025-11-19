@@ -865,30 +865,42 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
  * Получить историю последних webhook событий (для отладки)
  */
 router.get('/webhooks/pipedrive/history', (req, res) => {
-  const limit = parseInt(req.query.limit, 10) || 20;
-  const events = webhookHistory.slice(0, Math.min(limit, webhookHistory.length));
-  
-  res.json({
-    success: true,
-    total: webhookHistory.length,
-    limit,
-    events: events.map(event => ({
-      timestamp: event.timestamp,
-      event: event.event,
-      dealId: event.dealId,
-      bodyKeys: event.bodyKeys,
-      // Показываем только ключи тела, не полное содержимое (может быть большим)
-      bodyPreview: Object.keys(event.body).reduce((acc, key) => {
-        const value = event.body[key];
-        if (typeof value === 'object' && value !== null) {
-          acc[key] = Array.isArray(value) ? `[Array(${value.length})]` : '{...}';
-        } else {
-          acc[key] = String(value).substring(0, 100); // Ограничиваем длину
-        }
-        return acc;
-      }, {})
-    }))
-  });
+  try {
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const events = webhookHistory.slice(0, Math.min(limit, webhookHistory.length));
+    
+    res.json({
+      success: true,
+      total: webhookHistory.length,
+      limit,
+      events: events.map(event => ({
+        timestamp: event.timestamp,
+        event: event.event,
+        dealId: event.dealId,
+        bodyKeys: event.bodyKeys || [],
+        // Показываем только ключи тела, не полное содержимое (может быть большим)
+        bodyPreview: event.bodyPreview || (event.body ? Object.keys(event.body).reduce((acc, key) => {
+          const value = event.body[key];
+          if (typeof value === 'object' && value !== null) {
+            acc[key] = Array.isArray(value) ? `[Array(${value.length})]` : '{...}';
+          } else {
+            acc[key] = String(value).substring(0, 100); // Ограничиваем длину
+          }
+          return acc;
+        }, {}) : {})
+      }))
+    });
+  } catch (error) {
+    logger.error('Error getting webhook history', {
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
 });
 
 /**
