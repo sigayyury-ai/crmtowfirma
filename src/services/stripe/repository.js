@@ -163,7 +163,7 @@ class StripeRepository {
       const errorCode = error.code || '';
       const errorMessage = error.message || '';
       if (errorCode === 'PGRST204' && (errorMessage.includes('invoice_number') || errorMessage.includes('receipt_number'))) {
-        logger.warn('Database columns invoice_number/receipt_number not found, retrying without them', {
+        logger.debug('Database columns invoice_number/receipt_number not found, retrying without them', {
           sessionId: payment.session_id
         });
         
