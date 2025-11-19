@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const StripeProcessorService = require('../services/stripe/processor');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
+const { STAGES } = require('../services/stripe/crmSync');
 const logger = require('../utils/logger');
 
 const stripeProcessor = new StripeProcessorService();
@@ -311,23 +312,11 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     const currentStageId = currentDeal.stage_id;
     // Проверяем все возможные варианты названия стадии из webhook'а и из currentDeal
     // Сначала проверяем webhookData (оригинальные данные), потом currentDeal
-    const webhookStageName = webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage']);
-    const currentStageName = webhookStageName ||
+    const currentStageName = (webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage'])) ||
                             currentDeal.stage_name || 
                             currentDeal['Deal stage'] || 
                             currentDeal['Deal_stage'] ||
                             currentDeal['deal_stage'];
-    
-    logger.info(`🔍 Извлечение стадии | Deal ID: ${dealId} | webhookData['Deal_stage']: "${webhookData?.['Deal_stage']}" | currentDeal.stage_name: "${currentDeal.stage_name}" | currentStageName: "${currentStageName}" | currentStageId: ${currentStageId}`, {
-      dealId,
-      webhookStageName,
-      currentDealStageName: currentDeal.stage_name,
-      currentDealDealStage: currentDeal['Deal stage'],
-      currentDealDeal_stage: currentDeal['Deal_stage'],
-      currentStageName,
-      currentStageId,
-      webhookDataKeys: webhookData ? Object.keys(webhookData).filter(k => k.toLowerCase().includes('stage')) : []
-    });
     
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
@@ -447,27 +436,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
 
     // ========== Обработка 2: Стадия "First payment" (триггер для Stripe) ==========
     // Если сделка попадает в стадию "First payment", создаем Stripe Checkout Session
-    const FIRST_PAYMENT_STAGE_NAME = 'First payment';
-    const FIRST_PAYMENT_STAGE_ID = process.env.PIPEDRIVE_FIRST_PAYMENT_STAGE_ID; // Опционально: можно указать stage_id
-    
-    logger.info(`🔍 Проверка триггера "First payment" | Deal ID: ${dealId} | Stage Name: "${currentStageName}" | Stage ID: ${currentStageId} | Status: ${currentStatus}`, {
-      dealId,
-      currentStageName,
-      currentStageId,
-      currentStatus,
-      FIRST_PAYMENT_STAGE_NAME,
-      FIRST_PAYMENT_STAGE_ID
-    });
-    
-    const isFirstPaymentStage = currentStageName === FIRST_PAYMENT_STAGE_NAME || 
-                               (FIRST_PAYMENT_STAGE_ID && String(currentStageId) === String(FIRST_PAYMENT_STAGE_ID));
-    
-    logger.info(`🔍 Результат проверки триггера "First payment" | Deal ID: ${dealId} | isFirstPaymentStage: ${isFirstPaymentStage} | currentStatus !== 'lost': ${currentStatus !== 'lost'}`, {
-      dealId,
-      isFirstPaymentStage,
-      currentStatus,
-      willProcess: isFirstPaymentStage && currentStatus !== 'lost'
-    });
+    const isFirstPaymentStage = String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID);
     
     if (isFirstPaymentStage && currentStatus !== 'lost') {
       logger.info(`💳 Триггер: стадия "First payment" | Deal ID: ${dealId} | Stage: ${currentStageName || currentStageId}`, {
@@ -495,22 +464,9 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
           }
 
-          logger.info(`💳 Вызов createCheckoutSessionForDeal | Deal ID: ${dealId}`, {
-            dealId,
-            dealHasId: !!dealResult.deal?.id,
-            dealHasValue: !!dealResult.deal?.value
-          });
-          
           const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
             trigger: 'first_payment_stage',
             runId: `first-payment-${Date.now()}`
-          });
-
-          logger.info(`💳 Результат createCheckoutSessionForDeal | Deal ID: ${dealId} | Success: ${result.success} | Error: ${result.error || 'нет'}`, {
-            dealId,
-            success: result.success,
-            error: result.error,
-            sessionId: result.sessionId
           });
 
           if (result.success) {
