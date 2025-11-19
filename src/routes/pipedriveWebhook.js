@@ -574,10 +574,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             // Сбрасываем invoice_type на пустое значение, чтобы избежать повторного срабатывания webhook'а
             try {
               const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              logger.info(`🔄 Сброс invoice_type | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
               await stripeProcessor.pipedriveClient.updateDeal(dealId, {
                 [INVOICE_TYPE_FIELD_KEY]: null
               });
-              logger.info(`✅ invoice_type сброшен | Deal: ${dealId}`);
+              logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
             } catch (resetError) {
               logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
             }
@@ -596,10 +597,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             // Сбрасываем invoice_type даже при ошибке, чтобы избежать повторных попыток
             try {
               const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              logger.info(`🔄 Сброс invoice_type после ошибки | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
               await stripeProcessor.pipedriveClient.updateDeal(dealId, {
                 [INVOICE_TYPE_FIELD_KEY]: null
               });
-              logger.info(`✅ invoice_type сброшен после ошибки | Deal: ${dealId}`);
+              logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
             } catch (resetError) {
               logger.warn(`⚠️  Не удалось сбросить invoice_type после ошибки | Deal: ${dealId}`, { error: resetError.message });
             }
@@ -616,10 +618,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           // Сбрасываем invoice_type при исключении, чтобы избежать повторных попыток
           try {
             const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+            logger.info(`🔄 Сброс invoice_type после исключения | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
             await stripeProcessor.pipedriveClient.updateDeal(dealId, {
               [INVOICE_TYPE_FIELD_KEY]: null
             });
-            logger.info(`✅ invoice_type сброшен после исключения | Deal: ${dealId}`);
+            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
           } catch (resetError) {
             logger.warn(`⚠️  Не удалось сбросить invoice_type после исключения | Deal: ${dealId}`, { error: resetError.message });
           }
