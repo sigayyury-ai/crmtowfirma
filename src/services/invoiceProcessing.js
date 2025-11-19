@@ -1269,6 +1269,11 @@ class InvoiceProcessingService {
       // ВАЖНО: Для проформ обрабатываем только типы 70, 71, 72 (не Stripe)
       // Stripe сделки обрабатываются отдельно через webhooks и Stripe processor
       const pendingDeals = dealsResult.deals.filter(deal => {
+        // Пропускаем удаленные сделки
+        if (deal.status === 'deleted' || deal.deleted === true) {
+          return false;
+        }
+
         const invoiceTypeValue = deal[this.INVOICE_TYPE_FIELD_KEY];
 
         if (invoiceTypeValue === undefined || invoiceTypeValue === null) {

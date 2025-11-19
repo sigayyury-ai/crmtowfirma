@@ -2692,18 +2692,50 @@ class StripeProcessorService {
       // Process each lost deal
       for (const deal of dealsResult.deals) {
         try {
+          // Skip deleted deals - они не должны обрабатываться
+          if (deal.status === 'deleted' || deal.deleted === true) {
+            this.logger.debug('Skipping deleted deal', {
+              dealId: deal.id
+            });
+            continue;
+          }
+
           // Check lost_reason - only process if reason is "Refund"
           // Get full deal data to check lost_reason (may not be in list response)
           let lostReason = deal.lost_reason || deal.lostReason || deal['lost_reason'];
+          let fullDeal = null;
           
           // If lost_reason not in list response, fetch full deal
           if (!lostReason) {
             try {
               const fullDealResult = await this.pipedriveClient.getDeal(deal.id);
               if (fullDealResult.success && fullDealResult.deal) {
-                lostReason = fullDealResult.deal.lost_reason || fullDealResult.deal.lostReason || fullDealResult.deal['lost_reason'];
+                fullDeal = fullDealResult.deal;
+                lostReason = fullDeal.lost_reason || fullDeal.lostReason || fullDeal['lost_reason'];
+                
+                // Проверяем, не удалена ли сделка (после получения полных данных)
+                if (fullDeal.status === 'deleted' || fullDeal.deleted === true) {
+                  this.logger.debug('Skipping deleted deal (checked via full deal fetch)', {
+                    dealId: deal.id
+                  });
+                  continue;
+                }
+              } else if (!fullDealResult.success) {
+                // Если сделка не найдена или удалена, пропускаем
+                this.logger.debug('Deal not found or deleted, skipping', {
+                  dealId: deal.id,
+                  error: fullDealResult.error
+                });
+                continue;
               }
             } catch (error) {
+              // Если ошибка связана с удаленной сделкой, пропускаем
+              if (error.message?.includes('deleted') || error.message?.includes('Entity is deleted')) {
+                this.logger.debug('Deal is deleted, skipping', {
+                  dealId: deal.id
+                });
+                continue;
+              }
               this.logger.warn('Failed to fetch full deal data for lost_reason check', {
                 dealId: deal.id,
                 error: error.message
