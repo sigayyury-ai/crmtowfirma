@@ -1999,16 +1999,10 @@ class StripeProcessorService {
 
       const fullDeal = fullDealResult.deal;
       
-      // Мержим данные из переданного deal (из webhook'а) в fullDeal
-      // Особенно важно для close_date/expected_close_date для определения графика платежей
+      // Мержим ВСЕ данные из переданного deal (из webhook'а) в fullDeal
+      // Это гарантирует, что все поля из webhook будут доступны для обработки
       if (deal && deal !== fullDeal) {
-        Object.assign(fullDeal, {
-          expected_close_date: deal.expected_close_date || fullDeal.expected_close_date,
-          close_date: deal.close_date || fullDeal.close_date,
-          title: deal.title || fullDeal.title,
-          value: deal.value || fullDeal.value,
-          currency: deal.currency || fullDeal.currency
-        });
+        Object.assign(fullDeal, deal);
       }
       
       // Определяем график платежей, если не передан в context

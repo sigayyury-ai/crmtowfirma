@@ -239,13 +239,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                  webhookData['org_id'] ||
                  (webhookData['Organization ID']?.value ? webhookData['Organization ID'].value : null) ||
                  (webhookData['Organisation_id']?.value ? webhookData['Organisation_id'].value : null),
-          // Копируем все остальные поля из webhook'а (кроме Deal_id, чтобы не перезаписать id)
+          // Копируем ВСЕ остальные поля из webhook'а (кроме Deal_id вариантов, чтобы не перезаписать id)
+          // Это гарантирует, что все поля из webhook попадут в currentDeal и будут доступны обработчикам
           ...Object.fromEntries(
             Object.entries(webhookData).filter(([key]) => {
               const lowerKey = key.toLowerCase();
-              return !['deal_id', 'dealid', 'deal id'].includes(lowerKey) &&
-                     // Не перезаписываем уже установленные поля
-                     !['id', 'stage_id', 'stage_name', 'status', 'title', 'person_id', 'organization_id', 'org_id'].includes(key);
+              // Исключаем только варианты Deal ID, чтобы не перезаписать id
+              return !['deal_id', 'dealid', 'deal id', 'deal_id', 'deal id'].includes(lowerKey);
             })
           )
         };
@@ -366,7 +366,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                             currentDeal?.['deal_stage'];
     
     // Get lost_reason
-    const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
+    const lostReason = currentDeal?.lost_reason || currentDeal?.lostReason || currentDeal?.['lost_reason'] || null;
 
     // ========== Обработка 1: Статус "lost" (приоритет) ==========
     // Проверяем статус lost ПЕРЕД обработкой invoice_type, так как это более критично
@@ -491,8 +491,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
           }
 
+          // Мержим данные из webhook в deal из API (чтобы сохранить все поля из webhook)
+          const dealWithWebhookData = currentDeal ? { ...dealResult.deal, ...currentDeal } : dealResult.deal;
+
           // Создаем Checkout Session для этой сделки
-          const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
+          const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
             trigger: 'pipedrive_webhook',
             runId: `webhook-${Date.now()}`
           });
@@ -577,7 +580,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.info(`💳 Создание Stripe платежа | Deal: ${dealId}`);
             const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
             if (dealResult.success && dealResult.deal) {
-              const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
+              // Мержим данные из webhook в deal из API (чтобы сохранить все поля из webhook)
+              const dealWithWebhookData = currentDeal ? { ...dealResult.deal, ...currentDeal } : dealResult.deal;
+              
+              const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
                 trigger: 'pipedrive_workflow_automation',
                 runId: `workflow-${Date.now()}`
               });
