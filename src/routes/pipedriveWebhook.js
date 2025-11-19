@@ -12,6 +12,10 @@ const invoiceProcessing = new InvoiceProcessingService();
 const webhookHistory = [];
 const MAX_HISTORY_SIZE = 50;
 
+// Защита от дублирующихся webhooks (последние 100 событий)
+const recentWebhookHashes = new Set();
+const MAX_HASH_SIZE = 100;
+
 /**
  * POST /api/webhooks/pipedrive
  * Webhook endpoint for Pipedrive deal updates
@@ -48,16 +52,53 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       bodyType: typeof webhookData
     });
     
+    // Извлекаем dealId для проверки дубликатов
+    const dealIdForHash = webhookData?.current?.id || 
+                          webhookData?.previous?.id || 
+                          webhookData?.['Deal ID'] || 
+                          webhookData?.['Deal_id'] ||
+                          webhookData?.dealId ||
+                          webhookData?.deal_id;
+    
+    // Создаем хеш для проверки дубликатов (ключевые поля webhook'а)
+    const webhookHash = JSON.stringify({
+      dealId: dealIdForHash,
+      event: webhookData?.event || 'workflow_automation',
+      stage: webhookData?.['Deal_stage_id'] || webhookData?.current?.stage_id || webhookData?.previous?.stage_id,
+      status: webhookData?.['Deal_status'] || webhookData?.current?.status || webhookData?.previous?.status,
+      invoice: webhookData?.['Invoice'] || webhookData?.current?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'] || webhookData?.previous?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'],
+      // Используем первые 1000 символов body для уникальности
+      bodyHash: JSON.stringify(webhookData).substring(0, 1000)
+    });
+    
+    // Проверяем, не обрабатывали ли мы этот webhook недавно (в последние 30 секунд)
+    if (recentWebhookHashes.has(webhookHash)) {
+      logger.info('⚠️ Дублирующийся webhook пропущен', {
+        dealId: dealIdForHash,
+        event: webhookData?.event || 'workflow_automation',
+        timestamp
+      });
+      return res.status(200).json({
+        success: true,
+        message: 'Duplicate webhook ignored',
+        dealId: dealIdForHash
+      });
+    }
+    
+    // Добавляем хеш в множество (ограничиваем размер)
+    recentWebhookHashes.add(webhookHash);
+    if (recentWebhookHashes.size > MAX_HASH_SIZE) {
+      // Удаляем старые хеши (просто очищаем и пересоздаем, так как Set не поддерживает порядок)
+      const hashArray = Array.from(recentWebhookHashes);
+      recentWebhookHashes.clear();
+      hashArray.slice(0, MAX_HASH_SIZE / 2).forEach(h => recentWebhookHashes.add(h));
+    }
+    
     // Сохраняем событие в историю для отладки
     const webhookEvent = {
       timestamp,
       event: webhookData?.event || 'workflow_automation',
-      dealId: webhookData?.current?.id || 
-              webhookData?.previous?.id || 
-              webhookData?.['Deal ID'] || 
-              webhookData?.['Deal_id'] ||
-              webhookData?.dealId ||
-              webhookData?.deal_id,
+      dealId: dealIdForHash,
       bodyKeys: webhookData ? Object.keys(webhookData) : [],
       bodyPreview: webhookData ? Object.fromEntries(
         Object.entries(webhookData).slice(0, 10).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v).substring(0, 100) : String(v).substring(0, 100)])
