@@ -40,15 +40,13 @@ const logger = winston.createLogger({
   ]
 });
 
-// Если не в production, также выводим в консоль
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.simple()
-    )
-  }));
-}
+// Выводим в консоль всегда (для Render Dashboard и локальной разработки)
+logger.add(new winston.transports.Console({
+  format: winston.format.combine(
+    winston.format.colorize(),
+    winston.format.simple()
+  )
+}));
 
 module.exports = logger;
 

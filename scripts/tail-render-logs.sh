@@ -13,4 +13,8 @@ if [[ -z "${RENDER_SERVICE_ID:-}" ]]; then
 fi
 
 echo "Streaming logs for service ${RENDER_SERVICE_ID}..."
-npx --yes @render/cli logs "${RENDER_SERVICE_ID}" --tail --lines 200 --api-key "${RENDER_API_KEY}"
+export RENDER_TOKEN="${RENDER_API_KEY}"
+# Try full path first, then fallback to PATH
+~/Library/Python/3.9/bin/render-cli logs "${RENDER_SERVICE_ID}" --tail --lines 200 2>&1 || \
+  /usr/local/bin/render-cli logs "${RENDER_SERVICE_ID}" --tail --lines 200 2>&1 || \
+  render-cli logs "${RENDER_SERVICE_ID}" --tail --lines 200 2>&1
