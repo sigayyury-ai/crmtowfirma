@@ -993,7 +993,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           if (notificationResult.success) {
             logger.info(`✅ Stripe платежи созданы и уведомление отправлено | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
             
-            // Создаем заметку в сделке с графиком платежей и ссылками
+            // Создаем заметку в сделке с графиком платежей и ссылками для мониторинга
             try {
               const formatAmount = (amount) => parseFloat(amount).toFixed(2);
               const stripeMode = process.env.STRIPE_MODE || 'test';
@@ -1009,21 +1009,21 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 
                 if (depositSession) {
                   noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(depositSession.amount)} ${currency}\n`;
-                  noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${depositSession.id}\n\n`;
+                  noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${depositSession.id})\n\n`;
                 }
                 
                 if (restSession) {
                   noteContent += `2️⃣ *Остаток 50%:* ${formatAmount(restSession.amount)} ${currency}\n`;
-                  noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${restSession.id}\n\n`;
+                  noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${restSession.id})\n\n`;
                 }
               } else if (paymentSchedule === '100%' && sessions.length >= 1) {
                 const singleSession = sessions[0];
                 noteContent += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}\n`;
-                noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${singleSession.id}\n\n`;
+                noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${singleSession.id})\n\n`;
               }
               
               noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;
-              noteContent += `📊 Мониторинг статусов: ${stripeBaseUrl}/payments`;
+              noteContent += `📊 [Мониторинг всех платежей по сделке](${stripeBaseUrl}/payments?search=${dealId})\n`;
               
               await stripeProcessor.pipedriveClient.addNoteToDeal(dealId, noteContent);
               logger.info(`✅ Заметка с графиком платежей добавлена в сделку | Deal: ${dealId}`);
