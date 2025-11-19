@@ -56,6 +56,7 @@ const CURRENCY_NAME_TO_CODE = {
   'polish zloty': 'PLN',
   'zloty': 'PLN',
   'euro': 'EUR',
+  'евро': 'EUR', // Кириллица
   'us dollar': 'USD',
   'dollar': 'USD',
   'british pound': 'GBP',
