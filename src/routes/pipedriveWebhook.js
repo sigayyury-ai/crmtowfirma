@@ -309,7 +309,13 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     
     // Get stage
     const currentStageId = currentDeal.stage_id;
-    const currentStageName = currentDeal.stage_name || currentDeal['Deal stage'] || currentDeal['Deal_stage'];
+    // Проверяем все возможные варианты названия стадии из webhook'а и из currentDeal
+    // Сначала проверяем webhookData (оригинальные данные), потом currentDeal
+    const currentStageName = (webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage'])) ||
+                            currentDeal.stage_name || 
+                            currentDeal['Deal stage'] || 
+                            currentDeal['Deal_stage'] ||
+                            currentDeal['deal_stage'];
     
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
@@ -432,8 +438,24 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     const FIRST_PAYMENT_STAGE_NAME = 'First payment';
     const FIRST_PAYMENT_STAGE_ID = process.env.PIPEDRIVE_FIRST_PAYMENT_STAGE_ID; // Опционально: можно указать stage_id
     
+    logger.info(`🔍 Проверка триггера "First payment" | Deal ID: ${dealId} | Stage Name: "${currentStageName}" | Stage ID: ${currentStageId} | Status: ${currentStatus}`, {
+      dealId,
+      currentStageName,
+      currentStageId,
+      currentStatus,
+      FIRST_PAYMENT_STAGE_NAME,
+      FIRST_PAYMENT_STAGE_ID
+    });
+    
     const isFirstPaymentStage = currentStageName === FIRST_PAYMENT_STAGE_NAME || 
                                (FIRST_PAYMENT_STAGE_ID && String(currentStageId) === String(FIRST_PAYMENT_STAGE_ID));
+    
+    logger.info(`🔍 Результат проверки триггера "First payment" | Deal ID: ${dealId} | isFirstPaymentStage: ${isFirstPaymentStage} | currentStatus !== 'lost': ${currentStatus !== 'lost'}`, {
+      dealId,
+      isFirstPaymentStage,
+      currentStatus,
+      willProcess: isFirstPaymentStage && currentStatus !== 'lost'
+    });
     
     if (isFirstPaymentStage && currentStatus !== 'lost') {
       logger.info(`💳 Триггер: стадия "First payment" | Deal ID: ${dealId} | Stage: ${currentStageName || currentStageId}`, {

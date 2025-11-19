@@ -2238,11 +2238,36 @@ class StripeProcessorService {
 
       // 13. Send SendPulse notification with payment schedule and links (unless skipped)
       if (!skipNotification) {
-        await this.sendPaymentNotificationForDeal(dealId, {
+        this.logger.info(`📧 Отправка уведомления о создании Checkout Session | Deal ID: ${dealId} | Session ID: ${session.id}`, {
+          dealId,
+          sessionId: session.id,
+          paymentSchedule: paymentSchedule || '100%',
+          skipNotification: false
+        });
+        
+        const notificationResult = await this.sendPaymentNotificationForDeal(dealId, {
           paymentSchedule: paymentSchedule || '100%',
           sessions: [{ id: session.id, url: session.url, type: paymentType || 'single', amount: productPrice }],
           currency,
           totalAmount: itemPrice || sumPrice || parseFloat(fullDeal.value) || 0
+        });
+        
+        if (notificationResult.success) {
+          this.logger.info(`✅ Уведомление о платеже отправлено | Deal ID: ${dealId} | Session ID: ${session.id}`, {
+            dealId,
+            sessionId: session.id
+          });
+        } else {
+          this.logger.warn(`⚠️  Не удалось отправить уведомление о платеже | Deal ID: ${dealId} | Session ID: ${session.id} | Ошибка: ${notificationResult.error}`, {
+            dealId,
+            sessionId: session.id,
+            error: notificationResult.error
+          });
+        }
+      } else {
+        this.logger.info(`ℹ️  Уведомление пропущено (skipNotification=true) | Deal ID: ${dealId} | Session ID: ${session.id}`, {
+          dealId,
+          sessionId: session.id
         });
       }
 
@@ -3236,8 +3261,14 @@ class StripeProcessorService {
   async sendPaymentNotificationForDeal(dealId, options = {}) {
     const { paymentSchedule, sessions = [], currency, totalAmount } = options;
 
+    this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
+      dealId,
+      sessionsCount: sessions.length,
+      paymentSchedule
+    });
+
     if (!this.sendpulseClient) {
-      this.logger.warn('SendPulse client not initialized, skipping payment notification', { dealId });
+      this.logger.warn(`⚠️  SendPulse клиент не инициализирован, уведомление не отправлено | Deal ID: ${dealId}`, { dealId });
       return { success: false, error: 'SendPulse client not initialized' };
     }
 
@@ -3245,7 +3276,7 @@ class StripeProcessorService {
       // Get deal with person data
       const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       if (!fullDealResult.success || !fullDealResult.person) {
-        this.logger.warn('Failed to get deal/person data for SendPulse notification', { dealId });
+        this.logger.warn(`⚠️  Не удалось получить данные сделки/персоны для уведомления | Deal ID: ${dealId}`, { dealId });
         return { success: false, error: 'Failed to get deal/person data' };
       }
 
@@ -3253,10 +3284,20 @@ class StripeProcessorService {
       const person = fullDealResult.person;
       const sendpulseId = this.getSendpulseId(person);
 
+      this.logger.info(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id} | SendPulse ID: ${sendpulseId || 'не найден'}`, {
+        dealId,
+        personId: person.id,
+        personName: person.name,
+        personEmails: person.email?.map(e => e.value) || [],
+        sendpulseId
+      });
+
       if (!sendpulseId) {
-        this.logger.info('SendPulse ID not found for person, skipping notification', {
+        this.logger.warn(`⚠️  SendPulse ID не найден для персоны, уведомление не отправлено | Deal ID: ${dealId} | Person ID: ${person.id} | Person Name: ${person.name}`, {
           dealId,
-          personId: person.id
+          personId: person.id,
+          personName: person.name,
+          personEmails: person.email?.map(e => e.value) || []
         });
         return { success: false, error: 'SendPulse ID not found' };
       }
