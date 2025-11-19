@@ -553,20 +553,30 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
         try {
           // Проверяем, есть ли уже Checkout Sessions для этой сделки
+          logger.info(`🔍 Проверка существующих Stripe сессий | Deal: ${dealId}`);
           const existingPayments = await stripeProcessor.repository.listPayments({
             dealId: String(dealId),
             limit: 10
           });
 
           if (existingPayments && existingPayments.length > 0) {
-            logger.info(`💳 Stripe сессии уже существуют | Deal: ${dealId} | Количество: ${existingPayments.length}`);
+            logger.info(`💳 Stripe сессии уже существуют | Deal: ${dealId} | Количество: ${existingPayments.length}`, {
+              dealId,
+              existingCount: existingPayments.length,
+              sessionIds: existingPayments.map(p => p.session_id).slice(0, 5),
+              paymentTypes: existingPayments.map(p => p.payment_type).filter(Boolean),
+              note: 'Пропускаем создание новых сессий - уже существуют'
+            });
             return res.status(200).json({
               success: true,
               message: 'Stripe Checkout Sessions already exist',
               dealId,
-              existingCount: existingPayments.length
+              existingCount: existingPayments.length,
+              sessionIds: existingPayments.map(p => p.session_id).slice(0, 5)
             });
           }
+          
+          logger.info(`✅ Существующих сессий не найдено, продолжаем создание | Deal: ${dealId}`);
 
           // Получаем полные данные сделки
           const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
@@ -627,13 +637,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const currency = dealWithWebhookData.currency || 'PLN';
 
           // Создаем Stripe Checkout Sessions
-          logger.info(`💳 Создание Stripe Checkout Sessions | Deal: ${dealId} | График: ${paymentSchedule}`);
+          logger.info(`💳 Создание Stripe Checkout Sessions | Deal: ${dealId} | График: ${paymentSchedule} | Сумма: ${totalAmount} ${currency}`);
           const sessions = [];
           const runId = `webhook-${Date.now()}`;
 
           if (paymentSchedule === '50/50') {
             // Создаем два платежа: предоплата и остаток
-            logger.info(`💳 Создание первого платежа (предоплата 50%) | Deal: ${dealId}`);
+            const depositAmount = totalAmount / 2;
+            logger.info(`💳 Создание первого платежа (предоплата 50%) | Deal: ${dealId} | Сумма: ${depositAmount} ${currency}`);
             const depositResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
               trigger: 'pipedrive_webhook',
               runId,
@@ -647,14 +658,16 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 id: depositResult.sessionId,
                 url: depositResult.sessionUrl,
                 type: 'deposit',
-                amount: totalAmount / 2
+                amount: depositAmount
               });
-              logger.info(`✅ Первый платеж создан | Deal: ${dealId} | Session ID: ${depositResult.sessionId}`);
+              logger.info(`✅ Первый платеж создан | Deal: ${dealId} | Session ID: ${depositResult.sessionId} | URL: ${depositResult.sessionUrl || 'нет'}`);
             } else {
+              logger.error(`❌ Ошибка создания первого платежа | Deal: ${dealId} | Ошибка: ${depositResult.error || 'unknown'}`);
               throw new Error(`Failed to create deposit session: ${depositResult.error || 'unknown'}`);
             }
 
-            logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId}`);
+            const restAmount = totalAmount / 2;
+            logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency}`);
             const restResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
               trigger: 'pipedrive_webhook',
               runId,
@@ -668,15 +681,16 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 id: restResult.sessionId,
                 url: restResult.sessionUrl,
                 type: 'rest',
-                amount: totalAmount / 2
+                amount: restAmount
               });
-              logger.info(`✅ Второй платеж создан | Deal: ${dealId} | Session ID: ${restResult.sessionId}`);
+              logger.info(`✅ Второй платеж создан | Deal: ${dealId} | Session ID: ${restResult.sessionId} | URL: ${restResult.sessionUrl || 'нет'}`);
             } else {
+              logger.error(`❌ Ошибка создания второго платежа | Deal: ${dealId} | Ошибка: ${restResult.error || 'unknown'}`);
               throw new Error(`Failed to create rest session: ${restResult.error || 'unknown'}`);
             }
           } else {
             // Создаем один платеж на всю сумму
-            logger.info(`💳 Создание единого платежа (100%) | Deal: ${dealId}`);
+            logger.info(`💳 Создание единого платежа (100%) | Deal: ${dealId} | Сумма: ${totalAmount} ${currency}`);
             const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
               trigger: 'pipedrive_webhook',
               runId,
@@ -691,11 +705,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 type: 'single',
                 amount: totalAmount
               });
-              logger.info(`✅ Платеж создан | Deal: ${dealId} | Session ID: ${result.sessionId}`);
+              logger.info(`✅ Платеж создан | Deal: ${dealId} | Session ID: ${result.sessionId} | URL: ${result.sessionUrl || 'нет'}`);
             } else {
+              logger.error(`❌ Ошибка создания платежа | Deal: ${dealId} | Ошибка: ${result.error || 'unknown'}`);
               throw new Error(`Failed to create checkout session: ${result.error || 'unknown'}`);
             }
           }
+          
+          logger.info(`✅ Все Stripe сессии созданы | Deal: ${dealId} | Количество: ${sessions.length} | График: ${paymentSchedule}`);
 
           // Отправляем уведомление в SendPulse с графиком платежей и ссылками на сессии
           logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
