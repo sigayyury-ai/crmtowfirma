@@ -560,6 +560,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
           if (notificationResult.success) {
             logger.info(`✅ Уведомление о графике платежей отправлено | Deal: ${dealId} | График: ${paymentSchedule}`);
+            
+            // Сбрасываем invoice_type на пустое значение, чтобы избежать повторного срабатывания webhook'а
+            try {
+              const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              await stripeProcessor.pipedriveClient.updateDeal(dealId, {
+                [INVOICE_TYPE_FIELD_KEY]: null
+              });
+              logger.info(`✅ invoice_type сброшен | Deal: ${dealId}`);
+            } catch (resetError) {
+              logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
+            }
+            
             return res.status(200).json({
               success: true,
               message: 'Payment schedule calculated and notification sent',
@@ -570,6 +582,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           } else {
             logger.error(`❌ Не удалось отправить уведомление | Deal: ${dealId} | Ошибка: ${notificationResult.error}`);
+            
+            // Сбрасываем invoice_type даже при ошибке, чтобы избежать повторных попыток
+            try {
+              const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              await stripeProcessor.pipedriveClient.updateDeal(dealId, {
+                [INVOICE_TYPE_FIELD_KEY]: null
+              });
+              logger.info(`✅ invoice_type сброшен после ошибки | Deal: ${dealId}`);
+            } catch (resetError) {
+              logger.warn(`⚠️  Не удалось сбросить invoice_type после ошибки | Deal: ${dealId}`, { error: resetError.message });
+            }
+            
             return res.status(200).json({
               success: false,
               error: notificationResult.error,
@@ -578,6 +602,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           }
         } catch (error) {
           logger.error(`❌ Ошибка расчета графика платежей | Deal: ${dealId}`);
+          
+          // Сбрасываем invoice_type при исключении, чтобы избежать повторных попыток
+          try {
+            const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+            await stripeProcessor.pipedriveClient.updateDeal(dealId, {
+              [INVOICE_TYPE_FIELD_KEY]: null
+            });
+            logger.info(`✅ invoice_type сброшен после исключения | Deal: ${dealId}`);
+          } catch (resetError) {
+            logger.warn(`⚠️  Не удалось сбросить invoice_type после исключения | Deal: ${dealId}`, { error: resetError.message });
+          }
+          
           return res.status(200).json({
             success: false,
             error: error.message,
