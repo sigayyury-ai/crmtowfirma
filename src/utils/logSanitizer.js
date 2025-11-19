@@ -5,7 +5,9 @@ const EMAIL_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const PHONE_REGEX = /(?:\+?\d[\s-]?){6,15}/g;
 const TOKEN_REGEX = /[A-Za-z0-9\-_]{20,}/g;
 const PROFORMA_REGEX = /CO-PROF\s?\d{1,3}\/\d{4}/gi;
-const AMOUNT_REGEX = /\b\d{1,3}(?:[\s\u00A0]?)?(?:\d{3}(?:[\s\u00A0]?))*([.,]\d{1,2})?\s?(PLN|USD|EUR)?\b/gi;
+// Более точный regex для сумм: маскируем только числа с валютой или с запятыми/точками (десятичные)
+// Исключаем простые числа без валюты (это могут быть ID)
+const AMOUNT_REGEX = /\b\d{1,3}(?:[\s\u00A0]?)?(?:\d{3}(?:[\s\u00A0]?))*([.,]\d{1,2})\s?(PLN|USD|EUR)?\b|\b\d{1,3}(?:[\s\u00A0]?)?(?:\d{3}(?:[\s\u00A0]?))*\s?(PLN|USD|EUR)\b/gi;
 
 const INCIDENT_WARNING_THRESHOLD = Number.parseInt(process.env.LOG_SANITIZER_WARNING_THRESHOLD || '10', 10);
 function isDevVerbose() {
@@ -73,6 +75,20 @@ function sanitizeString(value, context = {}) {
   const maskedFields = [];
 
   patterns().forEach(({ type, regex, replacer }) => {
+    // Для сумм проверяем контекст - не маскируем числа в ID полях или после "Deal ID:", "dealId:" и т.д.
+    if (type === MaskTypes.AMOUNT) {
+      // Проверяем, не является ли это ID полем
+      const fieldName = context.field || '';
+      const isIdField = /id|Id|ID/.test(fieldName);
+      
+      // Проверяем, не идет ли число после "Deal ID:", "dealId:" и т.д. в сообщении
+      const isIdContext = /(?:Deal\s+ID|dealId|deal_id|Deal_id|person_id|org_id|stage_id|activity_id)[:\s]*\d+/i.test(value);
+      
+      if (isIdField || isIdContext) {
+        return; // Пропускаем маскировку сумм для ID полей
+      }
+    }
+    
     regex.lastIndex = 0;
     const matches = sanitized.match(regex);
     if (!matches) return;
@@ -96,10 +112,39 @@ function sanitizeObject(obj, context = {}) {
 
   Object.keys(obj).forEach((key) => {
     const value = obj[key];
+    // Не маскируем поля, которые содержат "id" или "Id" в названии (это ID, а не суммы)
+    const isIdField = /id|Id|ID/.test(key);
+    
     if (typeof value === 'string') {
-      const result = sanitizeString(value, { ...context, field: key });
-      clone[key] = result.sanitized;
-      maskedFields.push(...result.maskedFields);
+      // Для ID полей используем специальную обработку без маскировки сумм
+      if (isIdField) {
+        // Для ID полей маскируем только токены, email, телефон, но не суммы
+        const idValueSanitized = sanitizeString(value, { ...context, field: key });
+        // Убираем маскировку сумм из результата для ID полей
+        const patternsWithoutAmount = patterns().filter(p => p.type !== MaskTypes.AMOUNT);
+        let sanitized = value;
+        const maskedFieldsForId = [];
+        
+        patternsWithoutAmount.forEach(({ type, regex, replacer }) => {
+          regex.lastIndex = 0;
+          const matches = sanitized.match(regex);
+          if (!matches) return;
+          
+          matches.forEach((match) => {
+            const replacement = typeof replacer === 'function' ? replacer(match) : replacer;
+            sanitized = sanitized.replace(match, replacement);
+            maskedFieldsForId.push({ type, originalLength: match.length, replacement });
+            trackIncident(type, match.length, { ...context, field: key });
+          });
+        });
+        
+        clone[key] = sanitized;
+        maskedFields.push(...maskedFieldsForId);
+      } else {
+        const result = sanitizeString(value, { ...context, field: key });
+        clone[key] = result.sanitized;
+        maskedFields.push(...result.maskedFields);
+      }
     } else if (value && typeof value === 'object') {
       const result = sanitizeObject(value, { ...context, field: key });
       clone[key] = result.sanitized;
