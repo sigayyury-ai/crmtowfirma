@@ -589,15 +589,29 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
           const deal = dealResult.deal;
           // Мержим данные из webhook в deal из API (чтобы сохранить все поля из webhook)
-          const dealWithWebhookData = currentDeal ? { ...deal, ...currentDeal } : deal;
+          // ВАЖНО: Приоритет отдаем данным из API, так как они более полные и актуальные
+          // Webhook данные используются только для полей, которых нет в API
+          const dealWithWebhookData = currentDeal ? { 
+            ...deal, 
+            ...Object.fromEntries(
+              Object.entries(currentDeal).filter(([key, value]) => 
+                value !== null && value !== undefined && value !== ''
+              )
+            )
+          } : deal;
 
           // Рассчитываем график платежей на основе expected_close_date
+          // ВАЖНО: Приоритет отдаем expected_close_date из API (deal), так как это основное поле
           // Проверяем все возможные варианты названий полей
-          const closeDate = dealWithWebhookData.expected_close_date || 
-                           dealWithWebhookData.close_date ||
+          const closeDate = deal.expected_close_date ||  // Приоритет 1: API deal
+                           deal['expected_close_date'] ||  // Приоритет 2: API deal (bracket)
+                           deal.close_date ||  // Приоритет 3: API deal close_date
+                           deal['close_date'] ||  // Приоритет 4: API deal close_date (bracket)
+                           dealWithWebhookData.expected_close_date ||  // Приоритет 5: Merged data
                            dealWithWebhookData['expected_close_date'] ||
+                           dealWithWebhookData.close_date ||
                            dealWithWebhookData['close_date'] ||
-                           webhookData?.['Expected close date'] ||
+                           webhookData?.['Expected close date'] ||  // Приоритет 6: Webhook
                            webhookData?.['Deal_close_date'] ||
                            webhookData?.['expected_close_date'] ||
                            webhookData?.['close_date'] ||
