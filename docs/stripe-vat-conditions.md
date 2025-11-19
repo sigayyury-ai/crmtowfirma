@@ -85,25 +85,34 @@ shouldApplyVat({ customerType, companyCountry, sessionCountry }) {
 
 ## Применение VAT в Stripe
 
-### Tax Rate для Польши
+### ⚠️ ВАЖНО: VAT только для расчетов и отображения
+
+**VAT НЕ применяется в Stripe как Tax Rate** - Stripe не удерживает VAT.  
+VAT рассчитывается только для:
+- Отображения в чеках/инвойсах
+- Сохранения в базе данных для отчетов
+- Внутренних расчетов
+
+### Расчет VAT для отображения
 
 Если `shouldApplyVat = true` и `countryCode === 'PL'`:
-- Добавляется Tax Rate 23% (стандартная ставка НДС в Польше)
-- Tax Rate ID получается через `ensurePolandTaxRate()`
-- Tax Rate добавляется к `line_item.tax_rates`
+- VAT 23% рассчитывается вручную: `amountTax = amount * 0.23 / 1.23`
+- Сохраняется в базе данных в полях `amount_tax` и `amount_tax_pln`
+- Отображается в чеках/инвойсах для клиента
+- **НЕ добавляется к Stripe Checkout Session как Tax Rate**
 
 ### Для B2B компаний из Польши:
 
-- Включается `tax_id_collection` для сбора налогового номера компании
 - Создается Customer объект в Stripe (не только `customer_email`)
 - Включается `invoice_creation` для автоматического создания инвойсов
 - В метаданных сохраняются: `company_name`, `company_tax_id`, `company_address`
+- **НЕ включается `tax_id_collection`** (VAT не удерживается Stripe)
 
 ### Для B2C клиентов:
 
 - Используется только `customer_email` (без Customer объекта)
-- Инвойсы не создаются автоматически (Stripe отправляет receipt автоматически)
-- VAT применяется через Tax Rate, если страна = PL
+- Receipt отправляется автоматически Stripe
+- VAT рассчитывается для отображения в receipt (если страна = PL)
 
 ---
 
@@ -114,10 +123,10 @@ shouldApplyVat({ customerType, companyCountry, sessionCountry }) {
 customerType: 'organization'
 companyCountry: 'PL'
 shouldApplyVat: true ✅
-→ VAT 23% применяется
-→ Tax Rate добавляется к платежу
-→ tax_id_collection включен
+→ VAT 23% рассчитывается для отображения (НЕ применяется в Stripe)
+→ VAT сохраняется в базе данных
 → Invoice создается автоматически
+→ VAT отображается в invoice для клиента
 ```
 
 ### Пример 2: B2B компания из Германии
@@ -134,9 +143,10 @@ shouldApplyVat: false ❌
 customerType: 'person'
 sessionCountry: 'PL'
 shouldApplyVat: true ✅
-→ VAT 23% применяется
-→ Tax Rate добавляется к платежу
+→ VAT 23% рассчитывается для отображения (НЕ применяется в Stripe)
+→ VAT сохраняется в базе данных
 → Receipt отправляется автоматически
+→ VAT отображается в receipt для клиента
 ```
 
 ### Пример 4: B2C клиент из Германии
@@ -191,8 +201,30 @@ shouldApplyVat: true ✅
 
 **Файл:** `src/services/stripe/processor.js`
 
-**Методы:**
-- `shouldApplyVat({ customerType, companyCountry, sessionCountry })` - определяет необходимость VAT
+**Основные методы:**
+
+### `shouldApplyVat({ customerType, companyCountry, sessionCountry })`
+Определяет необходимость применения VAT для расчетов и отображения.
+
+**Параметры:**
+- `customerType` - тип клиента: `'organization'` (B2B) или `'person'` (B2C)
+- `companyCountry` - страна компании (для B2B)
+- `sessionCountry` - страна из адреса клиента (для B2C)
+
+**Возвращает:** `boolean` - должен ли применяться VAT
+
+**Логика:**
+- Для B2B (`organization`): возвращает `true` только если `companyCountry === 'PL'`
+- Для B2C (`person`): всегда возвращает `true`
+
+### `ensurePolandTaxRate()`
+Создает или получает Tax Rate для Польши (23% VAT) в Stripe.
+
+**Примечание:** Этот метод больше не используется для применения Tax Rate в Stripe, так как VAT не удерживается Stripe. Оставлен для совместимости со старым кодом.
+
+**Возвращает:** `Promise<string>` - ID Tax Rate в Stripe
+
+### Другие методы:
 - `getCrmContext(dealId)` - получает контекст CRM (B2B/B2C, адреса, страна)
 - `ensureAddress({ dealId, shouldApplyVat, participant, crmContext })` - проверяет адрес
 - `extractAddressParts(crmContext)` - извлекает части адреса

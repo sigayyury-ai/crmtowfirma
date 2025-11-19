@@ -400,8 +400,8 @@ class StripeProcessorService {
       amount_pln: amountPln,
       amount_tax: roundBankers(amountTax),
       amount_tax_pln: amountTaxPln,
-      tax_behavior: session.total_details?.breakdown?.taxes?.[0]?.tax_behavior || session.total_details?.tax_behavior || null,
-      tax_rate_id: session.total_details?.breakdown?.taxes?.[0]?.rate || null,
+      tax_behavior: 'inclusive', // VAT включен в цену (рассчитывается для отображения)
+      tax_rate_id: shouldApplyVat ? '23%' : null, // Только для информации, не применяется в Stripe
       status: addressValidation.valid ? 'processed' : 'pending_metadata',
       customer_email: participant.email,
       customer_name: participant.name,
@@ -2259,7 +2259,7 @@ class StripeProcessorService {
       // 9. Prepare Checkout Session parameters
       const amountInMinorUnits = toMinorUnit(productPrice, currency);
       
-      // Prepare line item with optional tax rate for Poland
+      // Prepare line item (VAT не применяется в Stripe, только для расчетов и отображения)
       const lineItem = {
         price_data: {
           currency: currency.toLowerCase(),
@@ -2269,23 +2269,14 @@ class StripeProcessorService {
         quantity: quantity
       };
 
-      // Add tax rate for Poland (23% VAT) if VAT should be applied
-      let polandTaxRateId = null;
+      // VAT используется только для расчетов и отображения в чеках/инвойсах
+      // НЕ применяется как Tax Rate в Stripe (Stripe не удерживает VAT)
       if (shouldApplyVat && countryCode === 'PL') {
-        try {
-          polandTaxRateId = await this.ensurePolandTaxRate();
-          lineItem.tax_rates = [polandTaxRateId];
-          this.logger.info('Added Poland VAT Tax Rate to line item', {
-            dealId,
-            taxRateId: polandTaxRateId,
-            percentage: 23
-          });
-        } catch (error) {
-          this.logger.warn('Failed to add Tax Rate, falling back to automatic_tax', {
-            dealId,
-            error: error.message
-          });
-        }
+        this.logger.info('VAT будет рассчитан для отображения (не применяется в Stripe)', {
+          dealId,
+          vatRate: '23%',
+          note: 'VAT только для расчетов и чеков, не удерживается Stripe'
+        });
       }
 
       const sessionParams = {
@@ -2352,24 +2343,24 @@ class StripeProcessorService {
         // receipt_email is set via customer_email, Stripe will send receipt automatically
       }
 
-      // 11. Configure VAT using fixed 23% Tax Rate for Poland (NOT automatic_tax)
-      // Tax Rate is already added to line_item above if shouldApplyVat && countryCode === 'PL'
-      // For B2B companies, enable tax_id_collection
+      // 11. VAT используется только для расчетов и отображения (НЕ применяется в Stripe)
+      // VAT рассчитывается и сохраняется в базе данных для отображения в чеках/инвойсах
+      // Stripe НЕ удерживает VAT - это только для внутренних расчетов
       if (shouldApplyVat && countryCode === 'PL') {
-        if (stripeCustomerId) {
-          // B2B: Enable tax_id_collection for company tax ID
-          sessionParams.tax_id_collection = {
-            enabled: true
-          };
-        }
-        // Add metadata about VAT collection
+        // Добавляем метаданные о VAT для расчетов (но не применяем Tax Rate)
         sessionParams.payment_intent_data = {
           metadata: {
             ...sessionParams.metadata,
-            vat_collect_only: 'true',
-            vat_rate: '23%'
+            vat_calculation_only: 'true', // Только для расчетов, не для удержания
+            vat_rate: '23%',
+            vat_country: 'PL'
           }
         };
+        this.logger.info('VAT будет рассчитан для отображения (не применяется в Stripe)', {
+          dealId,
+          vatRate: '23%',
+          note: 'VAT только для расчетов и чеков, не удерживается Stripe'
+        });
       }
 
       // 12. Create Checkout Session in Stripe
