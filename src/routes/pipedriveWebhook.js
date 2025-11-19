@@ -603,13 +603,24 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                            webhookData?.['close_date'] ||
                            null;
           
+          // Детальное логирование всех возможных полей с датами
+          const dealDateFields = Object.keys(deal).filter(k => 
+            k.toLowerCase().includes('close') || 
+            k.toLowerCase().includes('date') ||
+            k.toLowerCase().includes('expected')
+          ).reduce((acc, key) => {
+            acc[key] = deal[key];
+            return acc;
+          }, {});
+          
           logger.info(`📅 Расчет графика платежей | Deal: ${dealId}`, {
-          dealId,
+            dealId,
             closeDate: closeDate || 'не указана',
-            fromDeal: deal.expected_close_date || deal.close_date || 'нет',
-            fromCurrentDeal: currentDeal?.expected_close_date || currentDeal?.close_date || 'нет',
-            fromWebhook: webhookData?.['Deal_close_date'] || webhookData?.['Expected close date'] || 'нет',
-            allDealKeys: Object.keys(deal).filter(k => k.toLowerCase().includes('close') || k.toLowerCase().includes('date')).join(', ')
+            fromDeal: deal.expected_close_date || deal.close_date || deal['expected_close_date'] || deal['close_date'] || 'нет',
+            fromCurrentDeal: currentDeal?.expected_close_date || currentDeal?.close_date || currentDeal?.['expected_close_date'] || currentDeal?.['close_date'] || 'нет',
+            fromWebhook: webhookData?.['Deal_close_date'] || webhookData?.['Expected close date'] || webhookData?.['expected_close_date'] || webhookData?.['close_date'] || 'нет',
+            allDealDateFields: dealDateFields,
+            dealKeysWithDate: Object.keys(deal).filter(k => k.toLowerCase().includes('close') || k.toLowerCase().includes('date')).join(', ')
           });
           
           let paymentSchedule = '100%';
