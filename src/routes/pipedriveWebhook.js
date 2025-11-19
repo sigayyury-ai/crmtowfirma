@@ -576,95 +576,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     }
 
     // ========== Обработка 3: Стадия "First payment" (триггер для Stripe) ==========
-    // Если сделка попадает в стадию "First payment", создаем Stripe Checkout Session
-    const isFirstPaymentStage = String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID);
-    
-    if (isFirstPaymentStage && currentStatus !== 'lost') {
-      logger.info(`💳 Триггер: стадия "First payment" | Deal ID: ${dealId} | Stage: ${currentStageName || currentStageId}`, {
-        dealId,
-        stageId: currentStageId,
-        stageName: currentStageName,
-        status: currentStatus
-      });
-
-      try {
-        // Проверяем, есть ли уже Checkout Sessions для этой сделки
-        const existingPayments = await stripeProcessor.repository.listPayments({
-          dealId: String(dealId),
-          limit: 10
-        });
-
-        if (!existingPayments || existingPayments.length === 0) {
-          // Если нет Checkout Sessions, создаем их
-          // Всегда получаем полные данные сделки через API для создания Checkout Session
-          // (нужны продукты, email персоны и другие данные)
-          logger.info(`💳 Создание Stripe Checkout Sessions для стадии "First payment" | Deal ID: ${dealId}`, { 
-            dealId 
-          });
-          
-          const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
-          if (!dealResult.success || !dealResult.deal) {
-            throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
-          }
-
-          // Дополняем данные из API данными из webhook'а (особенно важно для close_date для определения графика платежей)
-          if (currentDeal) {
-            Object.assign(dealResult.deal, currentDeal);
-          }
-
-          const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
-            trigger: 'first_payment_stage',
-            runId: `first-payment-${Date.now()}`
-          });
-
-          if (result.success) {
-            logger.info(`✅ Stripe Checkout Session создана для стадии "First payment" | Deal ID: ${dealId} | Session ID: ${result.sessionId}`, {
-              dealId,
-              sessionId: result.sessionId
-            });
-            return res.status(200).json({
-              success: true,
-              message: 'Stripe Checkout Session created for First payment stage',
-              dealId,
-              sessionId: result.sessionId
-            });
-          } else {
-            logger.error(`❌ Не удалось создать Stripe Checkout Session для стадии "First payment" | Deal ID: ${dealId} | Ошибка: ${result.error}`, {
-              dealId,
-              error: result.error,
-              resultKeys: Object.keys(result || {})
-            });
-            return res.status(200).json({
-              success: false,
-              error: result.error,
-              dealId
-            });
-          }
-        } else {
-          logger.info(`ℹ️  Stripe Checkout Sessions уже существуют для стадии "First payment" | Deal ID: ${dealId} | Существующих: ${existingPayments.length}`, {
-            dealId,
-            existingCount: existingPayments.length
-          });
-          return res.status(200).json({
-            success: true,
-            message: 'Checkout Sessions already exist',
-            dealId,
-            existingCount: existingPayments.length
-          });
-        }
-      } catch (error) {
-        logger.error(`❌ Ошибка обработки триггера "First payment" | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
-          dealId,
-          error: error.message,
-          stack: error.stack
-        });
-        return res.status(200).json({
-          success: false,
-          error: error.message,
-          dealId
-        });
-      }
-    }
+    // ВРЕМЕННО ОТКЛЮЧЕНО: создание Stripe Checkout Sessions через стадию "First payment"
+    // Используется только триггер через invoice_type = "Stripe" (75)
+    // const isFirstPaymentStage = String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID);
+    // 
+    // if (isFirstPaymentStage && currentStatus !== 'lost') {
+    //   // Логика создания Checkout Sessions отключена
+    // }
 
     // ========== Обработка 3: invoice_type ==========
     // Упрощенная логика: обрабатываем invoice_type всегда, когда он установлен
