@@ -241,14 +241,31 @@ class PipedriveClient {
    */
   async getPerson(personId) {
     try {
+      // Запрашиваем кастомное поле SendPulse ID (ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c)
+      // Используем параметр fields для получения всех полей или конкретного кастомного поля
+      const SENDPULSE_ID_FIELD_KEY = process.env.PIPEDRIVE_SENDPULSE_ID_FIELD_KEY || 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
       const response = await this.client.get(`/persons/${personId}`, {
-        params: { api_token: this.apiToken }
+        params: { 
+          api_token: this.apiToken,
+          // Запрашиваем все поля или конкретное кастомное поле SendPulse ID
+          fields: SENDPULSE_ID_FIELD_KEY
+        }
       });
       
       if (response.data.success) {
+        const person = response.data.data;
+        // Логируем наличие SendPulse ID для отладки
+        const sendpulseId = person[SENDPULSE_ID_FIELD_KEY];
+        logger.debug(`Person data retrieved | Person ID: ${personId} | SendPulse ID: ${sendpulseId || 'не найден'}`, {
+          personId,
+          hasSendpulseId: !!sendpulseId,
+          sendpulseFieldKey: SENDPULSE_ID_FIELD_KEY,
+          personFields: Object.keys(person).filter(k => k.startsWith('ff') || k.includes('sendpulse')).join(', ')
+        });
+        
         return {
           success: true,
-          person: response.data.data,
+          person: person,
           message: 'Person retrieved successfully'
         };
       } else {
