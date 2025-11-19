@@ -517,11 +517,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     if (currentInvoiceType) {
       const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
       
-      // Stripe trigger (75)
+      // Stripe trigger (75) - поддерживаем как числовое значение "75", так и строковое "stripe"
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
-      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | normalizedInvoiceType: "${normalizedInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${normalizedInvoiceType === STRIPE_TRIGGER_VALUE}`);
+      const STRIPE_TRIGGER_VALUE_LOWER = STRIPE_TRIGGER_VALUE.toLowerCase();
       
-      if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
+      // Проверяем оба варианта: числовое значение "75" и строковое "stripe"
+      const isStripeTrigger = normalizedInvoiceType === STRIPE_TRIGGER_VALUE || 
+                             normalizedInvoiceType === STRIPE_TRIGGER_VALUE_LOWER ||
+                             normalizedInvoiceType === 'stripe';
+      
+      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | normalizedInvoiceType: "${normalizedInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${isStripeTrigger}`);
+      
+      if (isStripeTrigger) {
         logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
         logger.info(`💳 Начало расчета графика платежей и отправки в SendPulse | Deal: ${dealId}`);
 
