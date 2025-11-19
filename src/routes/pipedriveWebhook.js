@@ -238,10 +238,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           currentDeal = dealResult.deal;
           previousDeal = null;
         } catch (error) {
-          logger.error('Error fetching deal data from workflow automation webhook', {
-            dealId,
-            error: error.message
-          });
+          logger.error(`❌ Ошибка получения данных сделки | Deal: ${dealId}`);
           return res.status(500).json({ 
             success: false, 
             error: `Error fetching deal: ${error.message}` 
@@ -267,10 +264,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           return res.status(400).json({ success: false, error: 'Missing deal id in deleted deal webhook' });
         }
         
-        logger.info(`🗑️  Сделка удалена, начинаем удаление проформ | Deal ID: ${dealId}`, {
-          dealId,
-          event: webhookData.event
-        });
+        logger.info(`🗑️  Сделка удалена, удаляем проформы | Deal: ${dealId}`);
         
         try {
           // Получаем данные сделки перед удалением для поиска проформ
@@ -289,11 +283,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             dealId
           });
         } catch (error) {
-          logger.error('Failed to delete proformas for deleted deal via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -625,10 +615,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       dealId
     });
   } catch (error) {
-    logger.error('Error processing Pipedrive webhook', {
-      error: error.message,
-      stack: error.stack,
-      body: req.body,
+    logger.error('❌ Ошибка обработки webhook', {
       url: req.url,
       method: req.method
     });
