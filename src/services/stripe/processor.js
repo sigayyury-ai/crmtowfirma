@@ -2335,7 +2335,7 @@ class StripeProcessorService {
             description: invoiceDescription
           }
         };
-        // Allow Stripe to update customer name/address if needed (required for tax_id_collection)
+        // Allow Stripe to update customer name/address if needed
         sessionParams.customer_update = {
           name: 'auto',
           address: 'auto'
