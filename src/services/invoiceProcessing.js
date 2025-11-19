@@ -688,6 +688,18 @@ class InvoiceProcessingService {
       }
     }
 
+    // Закрываем задачи, связанные с удаленными проформами
+    if (allSuccess && removedNumbers.size > 0) {
+      try {
+        await this.closeProformaTasks(dealId, Array.from(removedNumbers));
+      } catch (error) {
+        logger.error('Failed to close proforma tasks (non-critical)', {
+          dealId,
+          error: error.message
+        });
+      }
+    }
+
     if (allSuccess) {
       const clearResult = await this.clearDeleteTrigger(dealId, invoiceFieldUpdatePayload);
       if (!clearResult.success) {
@@ -710,6 +722,115 @@ class InvoiceProcessingService {
     }
 
     return { success: allSuccess, processed, error: allSuccess ? null : 'One or more deletions failed' };
+  }
+
+  /**
+   * Закрыть задачи проформы в Pipedrive
+   * @param {number} dealId - ID сделки
+   * @param {string[]} invoiceNumbers - Номера проформ
+   * @returns {Promise<Object>} - Результат закрытия задач
+   */
+  async closeProformaTasks(dealId, invoiceNumbers) {
+    if (!dealId || !invoiceNumbers || invoiceNumbers.length === 0) {
+      return { success: true, closed: 0, message: 'No invoice numbers provided' };
+    }
+
+    try {
+      const activitiesResult = await this.pipedriveClient.getDealActivities(dealId, 'task');
+      if (!activitiesResult.success || !activitiesResult.activities || activitiesResult.activities.length === 0) {
+        logger.info('No tasks found for deal', { dealId });
+        return { success: true, closed: 0, message: 'No tasks found' };
+      }
+
+      const tasksToClose = [];
+      const taskSubjects = ['Проверка предоплаты', 'Проверка остатка', 'Проверка платежа'];
+
+      for (const activity of activitiesResult.activities) {
+        // Проверяем, что задача еще не закрыта
+        if (activity.done) {
+          continue;
+        }
+
+        // Проверяем subject задачи
+        const subject = activity.subject || '';
+        const isPaymentTask = taskSubjects.some(taskSubject => subject.includes(taskSubject));
+        
+        if (!isPaymentTask) {
+          continue;
+        }
+
+        // Проверяем, что задача связана с одной из удаленных проформ
+        const note = activity.note || '';
+        const matchesInvoice = invoiceNumbers.some(invoiceNumber => {
+          const normalizedInvoiceNumber = this.normalizeInvoiceNumber(invoiceNumber);
+          return normalizedInvoiceNumber && note.toLowerCase().includes(normalizedInvoiceNumber);
+        });
+
+        if (matchesInvoice) {
+          tasksToClose.push(activity.id);
+        }
+      }
+
+      if (tasksToClose.length === 0) {
+        logger.info('No matching tasks found to close', { dealId, invoiceNumbers });
+        return { success: true, closed: 0, message: 'No matching tasks found' };
+      }
+
+      let closedCount = 0;
+      for (const taskId of tasksToClose) {
+        try {
+          const updateResult = await this.pipedriveClient.updateActivity(taskId, {
+            done: 1,
+            done_date: new Date().toISOString().split('T')[0]
+          });
+
+          if (updateResult.success) {
+            closedCount++;
+            logger.info('Proforma task closed successfully', {
+              dealId,
+              taskId,
+              invoiceNumbers
+            });
+          } else {
+            logger.warn('Failed to close proforma task', {
+              dealId,
+              taskId,
+              error: updateResult.error
+            });
+          }
+        } catch (error) {
+          logger.error('Error closing proforma task', {
+            dealId,
+            taskId,
+            error: error.message
+          });
+        }
+      }
+
+      logger.info('Proforma tasks closed', {
+        dealId,
+        closed: closedCount,
+        total: tasksToClose.length,
+        invoiceNumbers
+      });
+
+      return {
+        success: true,
+        closed: closedCount,
+        total: tasksToClose.length,
+        message: `Closed ${closedCount} of ${tasksToClose.length} tasks`
+      };
+    } catch (error) {
+      logger.error('Error closing proforma tasks', {
+        dealId,
+        invoiceNumbers,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 
   normalizeInvoiceNumber(value) {
