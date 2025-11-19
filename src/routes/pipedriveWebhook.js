@@ -55,6 +55,10 @@ const recentWebhookHashes = new Map(); // Map<hash, timestamp>
 const MAX_HASH_SIZE = 500;
 const HASH_TTL_MS = 60000; // 60 секунд
 
+// Блокировка обработки Stripe платежей для конкретных сделок (предотвращает параллельную обработку)
+const stripeProcessingLocks = new Map(); // Map<dealId, timestamp>
+const STRIPE_LOCK_TTL_MS = 30 * 1000; // 30 секунд блокировка
+
 /**
  * POST /api/webhooks/pipedrive
  * Webhook endpoint for Pipedrive deal updates
@@ -548,11 +552,36 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       
       logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
       
-      if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
-        logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
-        logger.info(`💳 Начало обработки Stripe платежей | Deal: ${dealId}`);
+        if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
+          logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
+          
+          // Проверяем блокировку обработки для этой сделки
+          const lockKey = `stripe-${dealId}`;
+          const lockTimestamp = processingLocks.get(lockKey);
+          const now = Date.now();
+          
+          if (lockTimestamp && (now - lockTimestamp) < LOCK_TTL_MS) {
+            logger.info(`⏸️  Обработка Stripe платежей уже выполняется для этой сделки, пропускаем | Deal: ${dealId} | Блокировка до: ${new Date(lockTimestamp + LOCK_TTL_MS).toISOString()}`);
+            return res.status(200).json({
+              success: true,
+              message: 'Stripe processing already in progress for this deal',
+              dealId
+            });
+          }
+          
+          // Устанавливаем блокировку
+          processingLocks.set(lockKey, now);
+          
+          // Очищаем устаревшие блокировки
+          for (const [key, timestamp] of processingLocks.entries()) {
+            if (now - timestamp > LOCK_TTL_MS) {
+              processingLocks.delete(key);
+            }
+          }
+          
+          logger.info(`💳 Начало обработки Stripe платежей | Deal: ${dealId}`);
 
-        try {
+          try {
           // Получаем полные данные сделки для определения графика платежей
           const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
           if (!dealResult.success || !dealResult.deal) {
@@ -930,20 +959,23 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               await stripeProcessor.pipedriveClient.updateDeal(dealId, {
                 [INVOICE_TYPE_FIELD_KEY]: null
               });
-              logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
-            } catch (resetError) {
-              logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
-            }
-            
-            return res.status(200).json({
-              success: true,
-              message: 'Stripe Checkout Sessions created and notification sent',
-              dealId,
-              paymentSchedule,
-              totalAmount,
-              currency,
-              sessions: sessions.map(s => ({ id: s.id, type: s.type }))
-            });
+            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
+          } catch (resetError) {
+            logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
+          }
+          
+          // Снимаем блокировку после успешной обработки
+          stripeProcessingLocks.delete(dealId);
+          
+          return res.status(200).json({
+            success: true,
+            message: 'Stripe Checkout Sessions created and notification sent',
+            dealId,
+            paymentSchedule,
+            totalAmount,
+            currency,
+            sessions: sessions.map(s => ({ id: s.id, type: s.type }))
+          });
           } else {
             logger.error(`❌ Не удалось отправить уведомление | Deal: ${dealId} | Ошибка: ${notificationResult.error}`);
             
@@ -954,17 +986,20 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               await stripeProcessor.pipedriveClient.updateDeal(dealId, {
                 [INVOICE_TYPE_FIELD_KEY]: null
               });
-              logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
-            } catch (resetError) {
-              logger.warn(`⚠️  Не удалось сбросить invoice_type после ошибки | Deal: ${dealId}`, { error: resetError.message });
-            }
-            
-            return res.status(200).json({
-              success: false,
-              error: notificationResult.error,
-              dealId,
-              sessions: sessions.map(s => ({ id: s.id, type: s.type }))
-            });
+            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
+          } catch (resetError) {
+            logger.warn(`⚠️  Не удалось сбросить invoice_type после ошибки | Deal: ${dealId}`, { error: resetError.message });
+          }
+          
+          // Снимаем блокировку после обработки (даже при ошибке)
+          stripeProcessingLocks.delete(dealId);
+          
+          return res.status(200).json({
+            success: false,
+            error: notificationResult.error,
+            dealId,
+            sessions: sessions.map(s => ({ id: s.id, type: s.type }))
+          });
           }
         } catch (error) {
           logger.error(`❌ Ошибка создания Stripe платежей | Deal: ${dealId}`, { error: error.message });
@@ -980,6 +1015,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           } catch (resetError) {
             logger.warn(`⚠️  Не удалось сбросить invoice_type после исключения | Deal: ${dealId}`, { error: resetError.message });
           }
+          
+          // Снимаем блокировку после обработки (даже при исключении)
+          stripeProcessingLocks.delete(dealId);
           
           return res.status(200).json({
             success: false,
