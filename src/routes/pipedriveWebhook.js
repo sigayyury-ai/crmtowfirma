@@ -8,6 +8,43 @@ const logger = require('../utils/logger');
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 
+/**
+ * Нормализует invoice_type к числовому ID
+ * Преобразует строковые значения в числовые ID для единообразной обработки
+ * @param {string|number} invoiceType - Значение invoice_type из webhook или deal
+ * @returns {string|null} - Нормализованное значение (ID) или null
+ */
+function normalizeInvoiceTypeToId(invoiceType) {
+  if (!invoiceType) return null;
+  
+  const normalized = String(invoiceType).trim().toLowerCase();
+  
+  // Маппинг строковых значений на числовые ID
+  const typeMapping = {
+    'stripe': '75',
+    'proforma': '70',
+    'proforma 70': '70',
+    'proforma 71': '71',
+    'proforma 72': '72',
+    'delete': '74',
+    'done': '73',
+    'refund': 'refund' // Оставляем как есть для рефандов
+  };
+  
+  // Если это уже числовое значение, возвращаем как есть
+  if (/^\d+$/.test(normalized)) {
+    return normalized;
+  }
+  
+  // Если есть маппинг, возвращаем ID
+  if (typeMapping[normalized]) {
+    return typeMapping[normalized];
+  }
+  
+  // Если не найдено, возвращаем оригинальное значение (может быть кастомное)
+  return String(invoiceType).trim();
+}
+
 // Хранилище последних webhook событий для отладки (в памяти, последние 50)
 const webhookHistory = [];
 const MAX_HISTORY_SIZE = 50;
@@ -361,7 +398,6 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
     // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
-    // Логируем все возможные варианты извлечения invoice_type
     const invoiceTypeFromWebhook1 = webhookData?.['Invoice type'];
     const invoiceTypeFromWebhook2 = webhookData?.['Invoice'];
     const invoiceTypeFromWebhook3 = webhookData?.['invoice_type'];
@@ -369,18 +405,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const invoiceTypeFromWebhook5 = webhookData?.[INVOICE_TYPE_FIELD_KEY];
     const invoiceFromWebhook = invoiceTypeFromWebhook1 || invoiceTypeFromWebhook2 || invoiceTypeFromWebhook3 || invoiceTypeFromWebhook4 || invoiceTypeFromWebhook5;
     const invoiceFromDeal = currentDeal?.[INVOICE_TYPE_FIELD_KEY];
-    const currentInvoiceType = invoiceFromWebhook || invoiceFromDeal || null;
+    const rawInvoiceType = invoiceFromWebhook || invoiceFromDeal || null;
+    
+    // Нормализуем invoice_type к ID (основной метод)
+    const currentInvoiceType = normalizeInvoiceTypeToId(rawInvoiceType);
     
     // Логируем извлечение invoice_type для диагностики
-    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId}`, {
-      'Invoice type': invoiceTypeFromWebhook1,
-      'Invoice': invoiceTypeFromWebhook2,
-      'invoice_type': invoiceTypeFromWebhook3,
-      'invoice': invoiceTypeFromWebhook4,
-      [INVOICE_TYPE_FIELD_KEY]: invoiceTypeFromWebhook5,
-      'Из deal': invoiceFromDeal,
-      'Итого': currentInvoiceType
-    });
+    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId} | Сырое значение: ${rawInvoiceType || 'null'} | Нормализовано к ID: ${currentInvoiceType || 'null'}`);
     
     // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
@@ -470,33 +501,29 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
     // ========== Обработка 2: invoice_type = "Delete" (приоритет перед стадией) ==========
     // Проверяем удаление ПЕРЕД обработкой стадии, чтобы удаление имело приоритет
-    if (currentInvoiceType) {
-      const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
-      const DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
-      
-      if (DELETE_TRIGGER_VALUES.has(normalizedInvoiceType)) {
-        logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
+    // Используем только ID "74" для удаления
+    if (currentInvoiceType === '74') {
+      logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
-        try {
-          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
-          if (result.success) {
-            logger.info(`✅ Проформы удалены | Deal: ${dealId}`);
-          } else {
-            logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
-          }
-          return res.status(200).json({
-            success: result.success,
-            message: result.success ? 'Deletion processed' : result.error,
-            dealId
-          });
-        } catch (error) {
-          logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
-          return res.status(200).json({
-            success: false,
-            error: error.message,
-            dealId
-          });
+      try {
+        const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+        if (result.success) {
+          logger.info(`✅ Проформы удалены | Deal: ${dealId}`);
+        } else {
+          logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
         }
+        return res.status(200).json({
+          success: result.success,
+          message: result.success ? 'Deletion processed' : result.error,
+          dealId
+        });
+      } catch (error) {
+        logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
+        return res.status(200).json({
+          success: false,
+          error: error.message,
+          dealId
+        });
       }
     }
 
@@ -511,24 +538,16 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
     // ========== Обработка 3: invoice_type ==========
     // Упрощенная логика: обрабатываем invoice_type всегда, когда он установлен
-    // Не проверяем previousInvoiceType, так как он может быть недостоверным
-    logger.info(`🔍 Проверка invoice_type | Deal: ${dealId} | currentInvoiceType: ${currentInvoiceType || 'null'}`);
+    // Используем только ID (основной метод)
+    logger.info(`🔍 Проверка invoice_type | Deal: ${dealId} | currentInvoiceType (ID): ${currentInvoiceType || 'null'}`);
     
     if (currentInvoiceType) {
-      const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
-      
-      // Stripe trigger (75) - поддерживаем как числовое значение "75", так и строковое "stripe"
+      // Stripe trigger - используем только ID "75" (основной метод)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
-      const STRIPE_TRIGGER_VALUE_LOWER = STRIPE_TRIGGER_VALUE.toLowerCase();
       
-      // Проверяем оба варианта: числовое значение "75" и строковое "stripe"
-      const isStripeTrigger = normalizedInvoiceType === STRIPE_TRIGGER_VALUE || 
-                             normalizedInvoiceType === STRIPE_TRIGGER_VALUE_LOWER ||
-                             normalizedInvoiceType === 'stripe';
+      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
       
-      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | normalizedInvoiceType: "${normalizedInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${isStripeTrigger}`);
-      
-      if (isStripeTrigger) {
+      if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
         logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
         logger.info(`💳 Начало расчета графика платежей и отправки в SendPulse | Deal: ${dealId}`);
 
@@ -669,10 +688,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         }
       }
 
-      // Валидные типы инвойсов (70, 71, 72) - поддерживаем как числовые, так и строковые значения
-      // Примечание: проверка Delete (74 или "delete") уже выполнена выше в секции "Обработка 2"
-      const VALID_INVOICE_TYPES = ['70', '71', '72', 'proforma'];
-      const isValidProformaType = VALID_INVOICE_TYPES.includes(normalizedInvoiceType);
+      // Валидные типы инвойсов (70, 71, 72) - используем только ID
+      // Примечание: проверка Delete (74) уже выполнена выше в секции "Обработка 2"
+      const VALID_INVOICE_TYPES = ['70', '71', '72'];
+      const isValidProformaType = VALID_INVOICE_TYPES.includes(currentInvoiceType);
       if (isValidProformaType) {
         logger.info(`📄 Создание проформы | Deal: ${dealId}`);
 
@@ -703,12 +722,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
     // ========== Обработка 3: Workflow automation - проверка invoice_type при изменении стадии ==========
     // Если webhook пришел от workflow automation (изменение стадии), проверяем invoice_type
+    // Используем только ID (основной метод)
     if (isWorkflowAutomation && currentInvoiceType) {
-      const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
-      
-      // Stripe trigger (75)
+      // Stripe trigger - используем только ID "75" (основной метод)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
-      if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
+      if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
         // Проверка Stripe платежей
 
         // Проверяем, есть ли уже Checkout Sessions для этой сделки
@@ -751,9 +769,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         }
       }
 
-      // Валидные типы инвойсов (70, 71, 72)
+      // Валидные типы инвойсов (70, 71, 72) - используем только ID
       const VALID_INVOICE_TYPES = ['70', '71', '72'];
-      if (VALID_INVOICE_TYPES.includes(normalizedInvoiceType)) {
+      if (VALID_INVOICE_TYPES.includes(currentInvoiceType)) {
         logger.info(`📄 Создание проформы | Deal: ${dealId}`);
 
         try {
