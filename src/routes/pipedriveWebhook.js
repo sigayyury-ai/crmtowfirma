@@ -488,7 +488,53 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       }
     }
 
-    // ========== Обработка 2: Стадия "First payment" (триггер для Stripe) ==========
+    // ========== Обработка 2: invoice_type = "Delete" (приоритет перед стадией) ==========
+    // Проверяем удаление ПЕРЕД обработкой стадии, чтобы удаление имело приоритет
+    if (currentInvoiceType) {
+      const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
+      const DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
+      
+      if (DELETE_TRIGGER_VALUES.has(normalizedInvoiceType)) {
+        logger.info(`🗑️  Удаление проформ по invoice_type | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
+          dealId,
+          currentInvoiceType
+        });
+
+        try {
+          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+          if (result.success) {
+            logger.info(`✅ Проформы удалены по invoice_type | Deal ID: ${dealId}`, {
+              dealId,
+              success: result.success
+            });
+          } else {
+            logger.warn(`⚠️  Не удалось удалить проформы по invoice_type | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
+              dealId,
+              success: result.success,
+              error: result.error
+            });
+          }
+          return res.status(200).json({
+            success: result.success,
+            message: result.success ? 'Deletion processed' : result.error,
+            dealId
+          });
+        } catch (error) {
+          logger.error('Error processing deal deletion via webhook', {
+            dealId,
+            error: error.message,
+            stack: error.stack
+          });
+          return res.status(200).json({
+            success: false,
+            error: error.message,
+            dealId
+          });
+        }
+      }
+    }
+
+    // ========== Обработка 3: Стадия "First payment" (триггер для Stripe) ==========
     // Если сделка попадает в стадию "First payment", создаем Stripe Checkout Session
     const isFirstPaymentStage = String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID);
     
@@ -642,48 +688,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         }
       }
 
-      // Delete trigger (74 или "delete")
-      const DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
-      if (DELETE_TRIGGER_VALUES.has(normalizedInvoiceType)) {
-        logger.info(`🗑️  Удаление проформ по invoice_type | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
-          dealId,
-          currentInvoiceType
-        });
-
-        try {
-          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
-          if (result.success) {
-            logger.info(`✅ Проформы удалены по invoice_type | Deal ID: ${dealId}`, {
-              dealId,
-              success: result.success
-            });
-          } else {
-            logger.warn(`⚠️  Не удалось удалить проформы по invoice_type | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
-              dealId,
-              success: result.success,
-              error: result.error
-            });
-          }
-          return res.status(200).json({
-            success: result.success,
-            message: result.success ? 'Deletion processed' : result.error,
-            dealId
-          });
-        } catch (error) {
-          logger.error('Error processing deal deletion via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
-          return res.status(200).json({
-            success: false,
-            error: error.message,
-            dealId
-          });
-        }
-      }
-
       // Валидные типы инвойсов (70, 71, 72) - поддерживаем как числовые, так и строковые значения
+      // Примечание: проверка Delete (74 или "delete") уже выполнена выше в секции "Обработка 2"
       const VALID_INVOICE_TYPES = ['70', '71', '72', 'proforma'];
       const isValidProformaType = VALID_INVOICE_TYPES.includes(normalizedInvoiceType);
       if (isValidProformaType) {
