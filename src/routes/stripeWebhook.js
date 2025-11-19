@@ -42,17 +42,25 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       dealId = session.metadata?.deal_id;
+      logger.info(`🔍 Извлечение deal_id из checkout.session.completed | Deal: ${dealId || 'не найден'}`, {
+        hasMetadata: !!session.metadata,
+        metadataKeys: session.metadata ? Object.keys(session.metadata) : []
+      });
     } else if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
       const sessionId = paymentIntent.metadata?.session_id;
+      logger.info(`🔍 Извлечение deal_id из payment_intent.succeeded | SessionId: ${sessionId || 'не найден'}`);
       if (sessionId) {
         try {
           const session = await stripe.checkout.sessions.retrieve(sessionId);
           dealId = session.metadata?.deal_id;
+          logger.info(`🔍 Deal_id из Session | Deal: ${dealId || 'не найден'}`);
         } catch (sessionError) {
           logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
         }
       }
+    } else {
+      logger.info(`⚠️  Неподдерживаемый тип события | Тип: ${event.type}`);
     }
     
     // Создаем задачу в сделке, для которой пришел webhook
@@ -67,6 +75,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       } catch (taskError) {
         logger.error(`❌ Ошибка создания задачи | Deal: ${dealId}`, { error: taskError.message });
       }
+    } else {
+      logger.warn(`⚠️  Deal ID не найден в webhook | Тип события: ${event.type}`);
     }
 
     /* ЗАКОММЕНТИРОВАНО: Полная обработка Stripe webhook событий
