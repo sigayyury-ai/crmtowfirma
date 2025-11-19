@@ -969,6 +969,44 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           if (notificationResult.success) {
             logger.info(`✅ Stripe платежи созданы и уведомление отправлено | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
             
+            // Создаем заметку в сделке с графиком платежей и ссылками
+            try {
+              const formatAmount = (amount) => parseFloat(amount).toFixed(2);
+              const stripeMode = process.env.STRIPE_MODE || 'test';
+              const stripeBaseUrl = stripeMode === 'live' 
+                ? 'https://dashboard.stripe.com' 
+                : 'https://dashboard.stripe.com/test';
+              
+              let noteContent = `💳 *График платежей: ${paymentSchedule}*\n\n`;
+              
+              if (paymentSchedule === '50/50' && sessions.length >= 2) {
+                const depositSession = sessions.find(s => s.type === 'deposit');
+                const restSession = sessions.find(s => s.type === 'rest');
+                
+                if (depositSession) {
+                  noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(depositSession.amount)} ${currency}\n`;
+                  noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${depositSession.id}\n\n`;
+                }
+                
+                if (restSession) {
+                  noteContent += `2️⃣ *Остаток 50%:* ${formatAmount(restSession.amount)} ${currency}\n`;
+                  noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${restSession.id}\n\n`;
+                }
+              } else if (paymentSchedule === '100%' && sessions.length >= 1) {
+                const singleSession = sessions[0];
+                noteContent += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}\n`;
+                noteContent += `   Stripe: ${stripeBaseUrl}/checkout_sessions/${singleSession.id}\n\n`;
+              }
+              
+              noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;
+              noteContent += `📊 Мониторинг статусов: ${stripeBaseUrl}/payments`;
+              
+              await stripeProcessor.pipedriveClient.addNoteToDeal(dealId, noteContent);
+              logger.info(`✅ Заметка с графиком платежей добавлена в сделку | Deal: ${dealId}`);
+            } catch (noteError) {
+              logger.warn(`⚠️  Не удалось добавить заметку в сделку | Deal: ${dealId}`, { error: noteError.message });
+            }
+            
             // Сбрасываем invoice_type на пустое значение, чтобы избежать повторного срабатывания webhook'а
             try {
               const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
@@ -976,13 +1014,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               await stripeProcessor.pipedriveClient.updateDeal(dealId, {
                 [INVOICE_TYPE_FIELD_KEY]: null
               });
-            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
-          } catch (resetError) {
-            logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
-          }
-          
-          // Снимаем блокировку после успешной обработки
-          stripeProcessingLocks.delete(dealId);
+              logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
+            } catch (resetError) {
+              logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
+            }
+            
+            // Снимаем блокировку после успешной обработки
+            stripeProcessingLocks.delete(dealId);
           
           return res.status(200).json({
             success: true,
