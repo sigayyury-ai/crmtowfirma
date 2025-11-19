@@ -222,3 +222,4 @@ After MVP:
 - Add category colors/visual customization
 
 
+

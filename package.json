@@ -10,7 +10,11 @@
     "test:supabase": "node scripts/testSupabaseConnection.js",
     "migrate:proformas": "node scripts/migrateProformasToSupabase.js",
     "serve:vat": "npx http-server frontend/vat-margin -p 4173",
-    "run:stripe-processor": "node scripts/runStripeProcessor.js"
+    "run:stripe-processor": "node scripts/runStripeProcessor.js",
+    "test:webhooks": "node scripts/test-webhooks.js",
+    "test:webhooks:interactive": "node scripts/test-webhooks.js interactive",
+    "test:webhooks:history": "node scripts/test-webhooks.js history",
+    "test:webhooks:check": "node scripts/test-webhooks.js check"
   },
   "keywords": [
     "pipedrive",
@@ -41,7 +45,8 @@
     "yargs": "^18.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "render-cli": "^0.3.2"
   },
   "engines": {
     "node": ">=18.0.0"

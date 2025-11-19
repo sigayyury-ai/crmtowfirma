@@ -161,3 +161,4 @@ CREATE TABLE expense_category_mappings (
 6. Автоматическое создание правил при применении предложений
 
 
+
