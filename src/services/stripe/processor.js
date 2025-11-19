@@ -2378,14 +2378,15 @@ class StripeProcessorService {
         }
       }
 
-      // 14. Update deal status to "Done" (73) in CRM
+      // 14. Update deal invoice_type to "Stripe" (75) in CRM after creating Checkout Session
+      // "Done" (73) will be set only after successful payment via webhook
       try {
         await this.pipedriveClient.updateDeal(dealId, {
-          [this.invoiceTypeFieldKey]: this.invoiceDoneValue
+          [this.invoiceTypeFieldKey]: this.stripeTriggerValue
         });
-        this.logger.info('Updated deal status to Done', { dealId });
+        this.logger.info('Updated deal invoice_type to Stripe', { dealId });
       } catch (updateError) {
-        this.logger.warn('Failed to update deal status', {
+        this.logger.warn('Failed to update deal invoice_type to Stripe', {
           dealId,
           error: updateError.message
         });
