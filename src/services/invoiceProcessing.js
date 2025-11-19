@@ -383,18 +383,36 @@ class InvoiceProcessingService {
     }
 
     const originalInvoiceFieldValue = this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null;
+    logger.info(`🔍 Поиск проформ для удаления | Deal ID: ${dealId} | Invoice Number Field Key: ${this.INVOICE_NUMBER_FIELD_KEY} | Значение поля: ${originalInvoiceFieldValue || 'не указано'}`, {
+      dealId,
+      invoiceNumberFieldKey: this.INVOICE_NUMBER_FIELD_KEY,
+      invoiceNumberFieldValue: originalInvoiceFieldValue,
+      dealKeys: Object.keys(deal || {})
+    });
+    
     const expectedNumbers = this.parseInvoiceNumbers(
       this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null
     );
+    
+    logger.info(`📋 Распарсенные номера проформ: ${Array.from(expectedNumbers).join(', ') || 'нет'}`, {
+      dealId,
+      expectedNumbers: Array.from(expectedNumbers),
+      expectedNumbersCount: expectedNumbers.size
+    });
 
     const proformaMap = new Map();
     try {
       const linkedProformas = await this.proformaRepository.findByDealId(dealId);
+      logger.info(`🔍 Поиск по deal_id: найдено ${linkedProformas?.length || 0} проформ`, {
+        dealId,
+        foundCount: linkedProformas?.length || 0,
+        proformaIds: (linkedProformas || []).map(p => p.id)
+      });
       (linkedProformas || []).forEach((item) => {
         proformaMap.set(String(item.id), item);
       });
     } catch (error) {
-      logger.error('Error fetching proformas by deal id:', {
+      logger.error(`❌ Ошибка поиска проформ по deal_id | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
         dealId,
         error: error.message
       });
@@ -441,8 +459,65 @@ class InvoiceProcessingService {
       }
     }
 
+    // Если проформы не найдены по deal_id, пробуем найти по номеру проформы из INVOICE_NUMBER_FIELD_KEY
+    if (proformaMap.size === 0 && expectedNumbers.size > 0 && this.proformaRepository?.isEnabled()) {
+      logger.info(`🔍 Проформы не найдены по deal_id, ищем по номерам | Deal ID: ${dealId} | Номера для поиска: ${Array.from(expectedNumbers).join(', ')}`, {
+        dealId,
+        expectedNumbers: Array.from(expectedNumbers),
+        invoiceNumberFieldValue: originalInvoiceFieldValue
+      });
+      
+      try {
+        const invoiceNumberCandidates = Array.from(expectedNumbers);
+        logger.info(`📋 Запрос к базе данных по номерам: ${invoiceNumberCandidates.join(', ')}`, {
+          dealId,
+          candidates: invoiceNumberCandidates
+        });
+        
+        const matches = await this.proformaRepository.findByFullnumbers(invoiceNumberCandidates);
+        logger.info(`📋 Результат поиска по номерам: найдено ${matches?.length || 0} проформ`, {
+          dealId,
+          foundCount: matches?.length || 0,
+          foundIds: (matches || []).map(m => m.id),
+          foundNumbers: (matches || []).map(m => m.fullnumber)
+        });
+        
+        (matches || []).forEach((item) => {
+          proformaMap.set(String(item.id), item);
+        });
+        
+        if (proformaMap.size > 0) {
+          logger.info(`✅ Проформы найдены по номерам | Deal ID: ${dealId} | Найдено: ${proformaMap.size} | Номера: ${invoiceNumberCandidates.join(', ')}`, {
+            dealId,
+            foundCount: proformaMap.size,
+            invoiceNumbers: invoiceNumberCandidates,
+            proformaIds: Array.from(proformaMap.keys())
+          });
+        } else {
+          logger.warn(`⚠️  Проформы не найдены по номерам | Deal ID: ${dealId} | Искали: ${invoiceNumberCandidates.join(', ')} | Значение поля: ${originalInvoiceFieldValue || 'не указано'}`, {
+            dealId,
+            searchedNumbers: invoiceNumberCandidates,
+            invoiceNumberFieldValue: originalInvoiceFieldValue
+          });
+        }
+      } catch (error) {
+        logger.error(`❌ Ошибка поиска проформ по номерам | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
+          dealId,
+          expectedNumbers: Array.from(expectedNumbers),
+          error: error.message,
+          stack: error.stack
+        });
+      }
+    }
+    
     if (proformaMap.size === 0) {
-      logger.warn('No proformas linked to deal for deletion', { dealId });
+      logger.warn('No proformas found for deletion', { 
+        dealId,
+        searchedByDealId: true,
+        searchedByInvoiceNumbers: expectedNumbers.size > 0,
+        invoiceNumberFieldValue: originalInvoiceFieldValue,
+        expectedNumbers: expectedNumbers.size > 0 ? Array.from(expectedNumbers) : []
+      });
       await this.proformaRepository.recordDeletionLog({
         proformaId: null,
         dealId,

@@ -15,9 +15,12 @@ const MAX_HISTORY_SIZE = 50;
  * POST /api/webhooks/pipedrive
  * Webhook endpoint for Pipedrive deal updates
  * Обрабатывает триггеры:
- * 1. Изменение invoice_type → создание инвойса или Stripe Checkout Session
- * 2. Изменение статуса на "lost" с reason "Refund" → обработка рефандов
- * 3. Изменение invoice_type на "delete"/"74" → удаление инвойсов
+ * 1. Изменение статуса на "lost" с reason "Refund" → обработка рефандов
+ * 2. Изменение статуса на "lost" (любой другой reason) → удаление инвойсов
+ * 3. Стадия "First payment" → создание Stripe Checkout Session
+ * 4. Изменение invoice_type → создание инвойса или Stripe Checkout Session
+ * 5. Изменение invoice_type на "delete"/"74" → удаление инвойсов
+ * 6. Удаление сделки (deleted.deal) → удаление инвойсов
  */
 router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
   try {
@@ -44,7 +47,8 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     }
     
     // Log webhook received
-    logger.info('Pipedrive webhook received', {
+    const eventType = webhookData.event || 'workflow_automation';
+    logger.info(`📥 Webhook получен: ${eventType} | Deal ID: ${webhookEvent.dealId}`, {
       event: webhookData.event,
       dealId: webhookEvent.dealId,
       bodyKeys: webhookEvent.bodyKeys,
@@ -67,6 +71,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       isWorkflowAutomation = true;
       
       const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+      const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
       
       // Проверяем, есть ли уже данные в webhook (оптимизация)
       // Поддержка разных форматов названий полей (с пробелами, с подчеркиваниями, camelCase)
@@ -86,7 +91,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       
       // Если есть все необходимые данные, используем их без запроса к API
       if (hasInvoiceType && hasStage && hasStatus) {
-        logger.info('Webhook from workflow automation with full data, using provided data', {
+        logger.info(`✅ Webhook содержит все данные, используем без запроса к API | Deal ID: ${dealId}`, {
           dealId,
           hasInvoiceType,
           hasStage,
@@ -101,6 +106,10 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                    webhookData['Deal_stage'] || 
                    webhookData['deal_stage'] || 
                    webhookData['stage_id'],
+          stage_name: webhookData['Deal stage'] || 
+                     webhookData['Deal_stage'] || 
+                     webhookData['deal_stage'] || 
+                     webhookData['stage_name'],
           status: webhookData['Deal status'] || 
                  webhookData['Deal_status'] || 
                  webhookData['deal_status'] || 
@@ -142,7 +151,13 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
           lost_reason: webhookData['Deal_lost_reason'] ||
                       webhookData['Deal lost reason'] ||
                       webhookData['lost_reason'] ||
-                      webhookData['lostReason']
+                      webhookData['lostReason'],
+          [INVOICE_NUMBER_FIELD_KEY]: webhookData['Invoice number'] ||
+                                     webhookData['Invoice_number'] ||
+                                     webhookData['invoice_number'] ||
+                                     webhookData['invoiceNumber'] ||
+                                     webhookData[INVOICE_NUMBER_FIELD_KEY] ||
+                                     webhookData['Invoice'] // Fallback на поле Invoice, если там номер
         };
         
         // Предыдущая стадия (если доступна)
@@ -168,7 +183,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
         });
       } else {
         // Если данных недостаточно, получаем полные данные сделки из Pipedrive API
-        logger.info('Webhook from workflow automation with partial data, fetching full deal data', {
+        logger.info(`📡 Webhook содержит неполные данные, запрашиваем полные данные сделки | Deal ID: ${dealId}`, {
           dealId,
           hasInvoiceType,
           hasStage,
@@ -203,9 +218,68 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       }
     } else {
       // Стандартный формат Pipedrive webhook
+      // Проверяем тип события
+      const eventType = webhookData.event || '';
+      
+      // Обработка удаления сделки (deleted.deal)
+      if (eventType.includes('deleted') && eventType.includes('deal')) {
+        // При удалении сделки в webhook приходит previous с данными удаленной сделки
+        const deletedDeal = webhookData.previous || webhookData.data?.previous;
+        dealId = deletedDeal?.id || webhookData.current?.id || webhookData.data?.current?.id;
+        
+        if (!dealId) {
+          logger.warn('Webhook for deleted deal missing deal id', { 
+            event: webhookData.event,
+            bodyKeys: Object.keys(webhookData)
+          });
+          return res.status(400).json({ success: false, error: 'Missing deal id in deleted deal webhook' });
+        }
+        
+        logger.info(`🗑️  Сделка удалена, начинаем удаление проформ | Deal ID: ${dealId}`, {
+          dealId,
+          event: webhookData.event
+        });
+        
+        try {
+          // Получаем данные сделки перед удалением для поиска проформ
+          const dealResult = await invoiceProcessing.pipedriveClient.getDeal(dealId);
+          const deal = dealResult.success && dealResult.deal ? dealResult.deal : deletedDeal;
+          
+          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, deal);
+          if (result.success) {
+            logger.info(`✅ Проформы удалены для удаленной сделки | Deal ID: ${dealId}`, {
+              dealId,
+              success: result.success
+            });
+          } else {
+            logger.warn(`⚠️  Не удалось удалить проформы для удаленной сделки | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
+              dealId,
+              success: result.success,
+              error: result.error
+            });
+          }
+          return res.status(200).json({
+            success: result.success,
+            message: result.success ? 'Proformas deleted' : result.error,
+            dealId
+          });
+        } catch (error) {
+          logger.error('Failed to delete proformas for deleted deal via webhook', {
+            dealId,
+            error: error.message,
+            stack: error.stack
+          });
+          return res.status(200).json({
+            success: false,
+            error: error.message,
+            dealId
+          });
+        }
+      }
+      
       // Check if this is a deal update event
-      if (!webhookData.event || (!webhookData.event.includes('deal') && !webhookData.event.includes('updated'))) {
-        logger.debug('Webhook event is not a deal update, skipping', {
+      if (!eventType.includes('deal') && !eventType.includes('updated')) {
+        logger.debug('Webhook event is not a deal update or delete, skipping', {
           event: webhookData.event
         });
         return res.status(200).json({ success: true, message: 'Event ignored' });
@@ -229,30 +303,228 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     
     // Get invoice_type values
     const currentInvoiceType = currentDeal[INVOICE_TYPE_FIELD_KEY];
-    const previousInvoiceType = previousDeal?.[INVOICE_TYPE_FIELD_KEY];
     
     // Get status
     const currentStatus = currentDeal.status;
-    const previousStatus = previousDeal?.status;
+    
+    // Get stage
+    const currentStageId = currentDeal.stage_id;
+    const currentStageName = currentDeal.stage_name || currentDeal['Deal stage'] || currentDeal['Deal_stage'];
     
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
-
-    // ========== Обработка 1: Изменение invoice_type ==========
-    // Для workflow automation проверяем только текущее значение (без сравнения с предыдущим)
-    const invoiceTypeChanged = isWorkflowAutomation 
-      ? !!currentInvoiceType  // Если пришел webhook от workflow, проверяем наличие invoice_type
-      : (currentInvoiceType !== previousInvoiceType && previousInvoiceType !== undefined);
     
-    if (invoiceTypeChanged && currentInvoiceType) {
+    // Debug logging
+    const statusEmoji = currentStatus === 'lost' ? '❌' : currentStatus === 'won' ? '✅' : '🔄';
+    logger.info(`${statusEmoji} Проверка статуса сделки | Deal ID: ${dealId} | Статус: ${currentStatus || 'не указан'} | Причина потери: ${lostReason || 'нет'} | Invoice Type: ${currentInvoiceType || 'не указан'}`, {
+      dealId,
+      currentStatus,
+      lostReason,
+      currentInvoiceType,
+      isWorkflowAutomation,
+      currentDealKeys: currentDeal ? Object.keys(currentDeal) : [],
+      hasStatus: !!currentDeal?.status,
+      statusValue: currentDeal?.status
+    });
+
+    // ========== Обработка 1: Статус "lost" (приоритет) ==========
+    // Проверяем статус lost ПЕРЕД обработкой invoice_type, так как это более критично
+    if (currentStatus === 'lost') {
+      const normalizedLostReason = lostReason ? String(lostReason).trim().toLowerCase() : '';
+      const isRefundReason = normalizedLostReason === 'refund' || normalizedLostReason === 'refound';
+      
+      const reasonText = normalizedLostReason || 'не указана';
+      logger.info(`❌ Сделка закрыта как потерянная | Deal ID: ${dealId} | Причина: ${reasonText} | Рефанд: ${isRefundReason ? 'да' : 'нет'}`, {
+        dealId,
+        currentStatus,
+        lostReason: normalizedLostReason,
+        isRefundReason,
+        isWorkflowAutomation
+      });
+
+      if (isRefundReason) {
+        logger.info(`💰 Обработка рефандов для потерянной сделки | Deal ID: ${dealId} | Причина: ${normalizedLostReason}`, {
+          dealId,
+          currentStatus,
+          lostReason: normalizedLostReason,
+          isWorkflowAutomation
+        });
+
+        const summary = {
+          totalDeals: 1,
+          refundsCreated: 0,
+          errors: []
+        };
+
+        try {
+          await stripeProcessor.refundDealPayments(dealId, summary);
+          
+          logger.info(`✅ Рефанды обработаны | Deal ID: ${dealId} | Создано рефандов: ${summary.refundsCreated}${summary.errors.length > 0 ? ` | Ошибки: ${summary.errors.length}` : ''}`, {
+            dealId,
+            refundsCreated: summary.refundsCreated,
+            errors: summary.errors
+          });
+
+          return res.status(200).json({
+            success: true,
+            message: 'Refunds processed',
+            dealId,
+            refundsCreated: summary.refundsCreated,
+            errors: summary.errors
+          });
+        } catch (error) {
+          logger.error('Failed to process refunds for lost deal via webhook', {
+            dealId,
+            error: error.message,
+            stack: error.stack
+          });
+          return res.status(200).json({
+            success: false,
+            error: error.message,
+            dealId
+          });
+        }
+        } else {
+        // Если lost_reason не "Refund", удаляем проформы
+        logger.info(`🗑️  Удаление проформ для потерянной сделки (не рефанд) | Deal ID: ${dealId} | Причина: ${normalizedLostReason || 'не указана'}`, {
+          dealId,
+          currentStatus,
+          lostReason: normalizedLostReason,
+          isWorkflowAutomation
+        });
+
+        try {
+          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+          if (result.success) {
+            logger.info(`✅ Проформы удалены | Deal ID: ${dealId}`, {
+              dealId,
+              success: result.success
+            });
+          } else {
+            logger.warn(`⚠️  Не удалось удалить проформы | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
+              dealId,
+              success: result.success,
+              error: result.error
+            });
+          }
+          return res.status(200).json({
+            success: result.success,
+            message: result.success ? 'Proformas deleted' : result.error,
+            dealId
+          });
+        } catch (error) {
+          logger.error('Failed to delete proformas for lost deal via webhook', {
+            dealId,
+            error: error.message,
+            stack: error.stack
+          });
+          return res.status(200).json({
+            success: false,
+            error: error.message,
+            dealId
+          });
+        }
+      }
+    }
+
+    // ========== Обработка 2: Стадия "First payment" (триггер для Stripe) ==========
+    // Если сделка попадает в стадию "First payment", создаем Stripe Checkout Session
+    const FIRST_PAYMENT_STAGE_NAME = 'First payment';
+    const FIRST_PAYMENT_STAGE_ID = process.env.PIPEDRIVE_FIRST_PAYMENT_STAGE_ID; // Опционально: можно указать stage_id
+    
+    const isFirstPaymentStage = currentStageName === FIRST_PAYMENT_STAGE_NAME || 
+                               (FIRST_PAYMENT_STAGE_ID && String(currentStageId) === String(FIRST_PAYMENT_STAGE_ID));
+    
+    if (isFirstPaymentStage && currentStatus !== 'lost') {
+      logger.info(`💳 Триггер: стадия "First payment" | Deal ID: ${dealId} | Stage: ${currentStageName || currentStageId}`, {
+        dealId,
+        stageId: currentStageId,
+        stageName: currentStageName,
+        status: currentStatus
+      });
+
+      try {
+        // Проверяем, есть ли уже Checkout Sessions для этой сделки
+        const existingPayments = await stripeProcessor.repository.listPayments({
+          dealId: String(dealId),
+          limit: 10
+        });
+
+        if (!existingPayments || existingPayments.length === 0) {
+          // Если нет Checkout Sessions, создаем их
+          logger.info(`💳 Создание Stripe Checkout Sessions для стадии "First payment" | Deal ID: ${dealId}`, { 
+            dealId 
+          });
+          
+          const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
+          }
+
+          const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
+            trigger: 'first_payment_stage',
+            runId: `first-payment-${Date.now()}`
+          });
+
+          if (result.success) {
+            logger.info(`✅ Stripe Checkout Session создана для стадии "First payment" | Deal ID: ${dealId} | Session ID: ${result.sessionId}`, {
+              dealId,
+              sessionId: result.sessionId
+            });
+            return res.status(200).json({
+              success: true,
+              message: 'Stripe Checkout Session created for First payment stage',
+              dealId,
+              sessionId: result.sessionId
+            });
+          } else {
+            logger.error(`❌ Не удалось создать Stripe Checkout Session для стадии "First payment" | Deal ID: ${dealId} | Ошибка: ${result.error}`, {
+              dealId,
+              error: result.error
+            });
+            return res.status(200).json({
+              success: false,
+              error: result.error,
+              dealId
+            });
+          }
+        } else {
+          logger.info(`ℹ️  Stripe Checkout Sessions уже существуют для стадии "First payment" | Deal ID: ${dealId} | Существующих: ${existingPayments.length}`, {
+            dealId,
+            existingCount: existingPayments.length
+          });
+          return res.status(200).json({
+            success: true,
+            message: 'Checkout Sessions already exist',
+            dealId,
+            existingCount: existingPayments.length
+          });
+        }
+      } catch (error) {
+        logger.error(`❌ Ошибка обработки триггера "First payment" | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
+          dealId,
+          error: error.message,
+          stack: error.stack
+        });
+        return res.status(200).json({
+          success: false,
+          error: error.message,
+          dealId
+        });
+      }
+    }
+
+    // ========== Обработка 3: invoice_type ==========
+    // Упрощенная логика: обрабатываем invoice_type всегда, когда он установлен
+    // Не проверяем previousInvoiceType, так как он может быть недостоверным
+    if (currentInvoiceType) {
       const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
       
       // Stripe trigger (75)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
       if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
-        logger.info('Invoice type changed to Stripe trigger, creating Checkout Session', {
+        logger.info(`💳 Создание Stripe Checkout Session | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
           dealId,
-          previousInvoiceType,
           currentInvoiceType
         });
 
@@ -270,7 +542,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
           });
 
           if (result.success) {
-            logger.info('Checkout Session created via webhook', {
+            logger.info(`✅ Stripe Checkout Session создана | Deal ID: ${dealId} | Session ID: ${result.sessionId}`, {
               dealId,
               sessionId: result.sessionId
             });
@@ -281,7 +553,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
               sessionId: result.sessionId
             });
           } else {
-            logger.error('Failed to create Checkout Session via webhook', {
+            logger.error(`❌ Не удалось создать Stripe Checkout Session | Deal ID: ${dealId} | Ошибка: ${result.error}`, {
               dealId,
               error: result.error
             });
@@ -308,18 +580,25 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       // Delete trigger (74 или "delete")
       const DELETE_TRIGGER_VALUES = new Set(['delete', '74']);
       if (DELETE_TRIGGER_VALUES.has(normalizedInvoiceType)) {
-        logger.info('Invoice type changed to delete trigger, processing deletion', {
+        logger.info(`🗑️  Удаление проформ по invoice_type | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
           dealId,
-          previousInvoiceType,
           currentInvoiceType
         });
 
         try {
           const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
-          logger.info('Deal deletion processed via webhook', {
-            dealId,
-            success: result.success
-          });
+          if (result.success) {
+            logger.info(`✅ Проформы удалены по invoice_type | Deal ID: ${dealId}`, {
+              dealId,
+              success: result.success
+            });
+          } else {
+            logger.warn(`⚠️  Не удалось удалить проформы по invoice_type | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
+              dealId,
+              success: result.success,
+              error: result.error
+            });
+          }
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Deletion processed' : result.error,
@@ -342,18 +621,26 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       // Валидные типы инвойсов (70, 71, 72)
       const VALID_INVOICE_TYPES = ['70', '71', '72'];
       if (VALID_INVOICE_TYPES.includes(normalizedInvoiceType)) {
-        logger.info('Invoice type changed to valid type, processing invoice creation', {
+        logger.info(`📄 Создание проформы | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType}`, {
           dealId,
-          previousInvoiceType,
           currentInvoiceType
         });
 
         try {
           const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId);
-          logger.info('Invoice processed via webhook', {
-            dealId,
-            success: result.success
-          });
+          if (result.success) {
+            logger.info(`✅ Проформа создана | Deal ID: ${dealId} | Invoice Type: ${result.invoiceType || currentInvoiceType}`, {
+              dealId,
+              success: result.success,
+              invoiceType: result.invoiceType
+            });
+          } else {
+            logger.warn(`⚠️  Не удалось создать проформу | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
+              dealId,
+              success: result.success,
+              error: result.error
+            });
+          }
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Invoice processed' : result.error,
@@ -361,7 +648,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             invoiceType: result.invoiceType
           });
         } catch (error) {
-          logger.error('Error processing invoice via webhook', {
+          logger.error(`❌ Ошибка при создании проформы | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
             dealId,
             error: error.message,
             stack: error.stack
@@ -375,77 +662,6 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       }
     }
 
-    // ========== Обработка 2: Изменение статуса на "lost" с reason "Refund" ==========
-    // Проверяем два случая:
-    // 1. Стандартный webhook: статус изменился с "open" на "lost"
-    // 2. Workflow automation: webhook приходит с Deal_status = "lost" и Deal_lost_reason = "Refund"
-    const statusChangedToLost = 
-      currentStatus === 'lost' && 
-      previousStatus !== 'lost' &&
-      previousStatus !== undefined &&
-      previousStatus !== null;
-
-    // Для workflow automation: если статус уже "lost" и есть reason "Refund"
-    const isLostWithRefund = 
-      currentStatus === 'lost' && 
-      (isWorkflowAutomation || previousStatus === undefined || previousStatus === null);
-
-    if (statusChangedToLost || isLostWithRefund) {
-      const normalizedLostReason = lostReason ? String(lostReason).trim().toLowerCase() : '';
-      const isRefundReason = normalizedLostReason === 'refund' || normalizedLostReason === 'refound';
-
-      if (isRefundReason) {
-        logger.info('Deal status is lost with Refund reason, processing refunds', {
-          dealId,
-          previousStatus,
-          currentStatus,
-          lostReason: normalizedLostReason,
-          isWorkflowAutomation,
-          trigger: statusChangedToLost ? 'status_changed' : 'workflow_automation'
-        });
-
-        const summary = {
-          totalDeals: 1,
-          refundsCreated: 0,
-          errors: []
-        };
-
-        try {
-          await stripeProcessor.refundDealPayments(dealId, summary);
-          
-          logger.info('Refunds processed for lost deal via webhook', {
-            dealId,
-            refundsCreated: summary.refundsCreated,
-            errors: summary.errors
-          });
-
-          return res.status(200).json({
-            success: true,
-            message: 'Refunds processed',
-            dealId,
-            refundsCreated: summary.refundsCreated,
-            errors: summary.errors
-          });
-        } catch (error) {
-          logger.error('Failed to process refunds for lost deal via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
-          return res.status(200).json({
-            success: false,
-            error: error.message,
-            dealId
-          });
-        }
-      } else {
-        logger.debug('Deal lost but reason is not "Refund", skipping refund processing', {
-          dealId,
-          lostReason: normalizedLostReason,
-          currentStatus
-        });
-      }
-    }
 
     // ========== Обработка 3: Workflow automation - проверка invoice_type при изменении стадии ==========
     // Если webhook пришел от workflow automation (изменение стадии), проверяем invoice_type
@@ -455,7 +671,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       // Stripe trigger (75)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
       if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
-        logger.info('Workflow automation: Deal in payment stage with Stripe trigger, checking Checkout Sessions', {
+        logger.info(`💳 Workflow automation: проверка Stripe Checkout Sessions | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType} | Stage: ${currentDeal.stage_id}`, {
           dealId,
           currentInvoiceType,
           stageId: currentDeal.stage_id
@@ -470,7 +686,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
 
           if (!existingPayments || existingPayments.length === 0) {
             // Если нет Checkout Sessions, создаем их
-            logger.info('No Checkout Sessions found, creating them', { dealId });
+            logger.info(`💳 Создание Stripe Checkout Sessions (workflow automation) | Deal ID: ${dealId}`, { dealId });
             const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
             if (dealResult.success && dealResult.deal) {
               const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
@@ -494,7 +710,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             });
           }
         } catch (error) {
-          logger.error('Error processing Stripe trigger from workflow automation', {
+          logger.error(`❌ Ошибка обработки Stripe триггера (workflow automation) | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
             dealId,
             error: error.message
           });
@@ -504,7 +720,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
       // Валидные типы инвойсов (70, 71, 72)
       const VALID_INVOICE_TYPES = ['70', '71', '72'];
       if (VALID_INVOICE_TYPES.includes(normalizedInvoiceType)) {
-        logger.info('Workflow automation: Deal in payment stage with invoice type, processing invoice', {
+        logger.info(`📄 Workflow automation: создание проформы | Deal ID: ${dealId} | Invoice Type: ${currentInvoiceType} | Stage: ${currentDeal.stage_id}`, {
           dealId,
           currentInvoiceType,
           stageId: currentDeal.stage_id
@@ -521,7 +737,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
             });
           }
         } catch (error) {
-          logger.error('Error processing invoice from workflow automation', {
+          logger.error(`❌ Ошибка создания проформы (workflow automation) | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
             dealId,
             error: error.message
           });
@@ -533,9 +749,9 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     logger.debug('No trigger conditions met, webhook processed successfully', {
       dealId,
       invoiceTypeChanged,
-      statusChangedToLost,
       currentInvoiceType,
       currentStatus,
+      lostReason,
       isWorkflowAutomation
     });
     

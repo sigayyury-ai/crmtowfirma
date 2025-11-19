@@ -785,11 +785,13 @@ class StripeProcessorService {
       const isFirst = paymentType === 'deposit' || paymentType === 'first' || paymentType === 'single';
       const isRest = paymentType === 'rest' || paymentType === 'second';
 
-      // Get deal to check close_date for single payment logic
+      // Get deal to check close_date for single payment logic and current stage
       let isSinglePaymentExpected = false;
+      let currentDealStageId = null;
       try {
         const dealResult = await this.pipedriveClient.getDeal(dealId);
         if (dealResult.success && dealResult.deal) {
+          currentDealStageId = dealResult.deal.stage_id;
           const closeDate = dealResult.deal.expected_close_date || dealResult.deal.close_date;
           if (closeDate) {
             const expectedCloseDate = new Date(closeDate);
@@ -807,13 +809,30 @@ class StripeProcessorService {
       }
 
       // Logic for stage updates:
-      // 1. If rest/second payment → Camp Waiter (stage 27)
-      // 2. If first payment AND single payment expected → Camp Waiter (stage 27)
-      // 3. If first payment AND two payments expected → First Payment (stage 18)
-      // 4. If final flag → Camp Waiter (stage 27)
+      // 1. If deal is in "First payment" stage → Camp Waiter (stage 27) - оплата при одном платеже
+      // 2. If rest/second payment → Camp Waiter (stage 27) - второй платеж из двух
+      // 3. If first payment AND single payment expected → Camp Waiter (stage 27)
+      // 4. If first payment AND two payments expected → Second Payment (stage 32) - ждем второй платеж
+      // 5. If final flag → Camp Waiter (stage 27)
 
-      if (isFinal || isRest) {
-        // Second payment (rest) or final payment - move to Camp Waiter
+      // Если сделка уже в стадии "First payment" и приходит оплата → Camp Waiter (один платеж)
+      if (currentDealStageId === STAGES.FIRST_PAYMENT_ID) {
+        await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
+          type: 'first_payment_stage_paid',
+          sessionId: session.id,
+          paymentType
+        });
+        
+        // Add note to deal about payment
+        await this.addPaymentNoteToDeal(dealId, {
+          paymentType: 'payment',
+          amount: paymentRecord.original_amount,
+          currency: paymentRecord.currency,
+          amountPln: paymentRecord.amount_pln,
+          sessionId: session.id
+        });
+      } else if (isFinal || isRest) {
+        // Second payment (rest) or final payment - move to Camp Waiter (второй платеж получен)
         await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
           type: 'final_payment',
           sessionId: session.id,
@@ -829,8 +848,8 @@ class StripeProcessorService {
             paymentType
           });
         } else {
-          // First payment of two (>= 30 days) - move to First Payment stage
-          await this.crmSyncService.updateDealStage(dealId, STAGES.FIRST_PAYMENT_ID, {
+          // First payment of two (>= 30 days) - move to Second Payment stage (ждем второй платеж)
+          await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
             type: 'first_payment',
             sessionId: session.id
           });
