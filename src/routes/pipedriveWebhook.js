@@ -116,6 +116,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       body: webhookData // Сохраняем полное тело для отладки
     };
     
+    // Логируем все поля, связанные с Invoice, для диагностики
+    const invoiceFields = webhookData ? Object.entries(webhookData)
+      .filter(([key]) => key.toLowerCase().includes('invoice') || key.toLowerCase().includes('invoice'))
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(', ') : 'нет';
+    logger.info(`🔍 Поля Invoice в webhook | Deal: ${dealIdForHash || 'неизвестен'} | Поля: ${invoiceFields || 'нет'}`);
+    
     webhookHistory.unshift(webhookEvent); // Добавляем в начало
     if (webhookHistory.length > MAX_HISTORY_SIZE) {
       webhookHistory.pop(); // Удаляем старые события
