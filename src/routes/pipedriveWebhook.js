@@ -31,8 +31,14 @@ const HASH_TTL_MS = 60000; // 60 секунд
 router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, res) => {
   const timestamp = new Date().toISOString();
   
+  // Логируем получение webhook'а в самом начале
+  logger.info(`📥 Webhook получен | Timestamp: ${timestamp} | Method: ${req.method} | URL: ${req.url}`);
+  
   try {
     const webhookData = req.body;
+    
+    // Логируем структуру webhook'а для отладки
+    logger.info(`📥 Webhook данные получены | Keys: ${webhookData ? Object.keys(webhookData).join(', ') : 'нет данных'}`);
     
     // Проверяем, не является ли это webhook от Stripe (игнорируем его)
     // Проверяем по User-Agent, IP адресам Stripe и структуре данных
