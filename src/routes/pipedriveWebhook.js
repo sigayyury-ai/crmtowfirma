@@ -350,14 +350,19 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
     // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
-    const currentInvoiceType = (webhookData && (webhookData['Invoice type'] || webhookData['Invoice'] || webhookData['invoice_type'] || webhookData['invoice'] || webhookData[INVOICE_TYPE_FIELD_KEY])) ||
-                              currentDeal?.[INVOICE_TYPE_FIELD_KEY] ||
-                              null;
+    const invoiceFromWebhook = webhookData && (webhookData['Invoice type'] || webhookData['Invoice'] || webhookData['invoice_type'] || webhookData['invoice'] || webhookData[INVOICE_TYPE_FIELD_KEY]);
+    const invoiceFromDeal = currentDeal?.[INVOICE_TYPE_FIELD_KEY];
+    const currentInvoiceType = invoiceFromWebhook || invoiceFromDeal || null;
+    
+    // Логируем извлечение invoice_type для диагностики
+    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId} | Из webhook: ${invoiceFromWebhook || 'нет'} | Из deal: ${invoiceFromDeal || 'нет'} | Итого: ${currentInvoiceType || 'null'}`);
     
     // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
                          currentDeal?.status ||
                          'open';
+    
+    logger.info(`🔍 Извлечение статуса | Deal: ${dealId} | Status: ${currentStatus}`);
     
     // Get stage - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStageId = (webhookData && (webhookData['Deal_stage_id'] || webhookData['Deal stage id'] || webhookData['deal_stage_id'] || webhookData['stage_id'])) ||
@@ -482,23 +487,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // ========== Обработка 3: invoice_type ==========
     // Упрощенная логика: обрабатываем invoice_type всегда, когда он установлен
     // Не проверяем previousInvoiceType, так как он может быть недостоверным
-    logger.debug('Проверка invoice_type', {
-      dealId,
-      currentInvoiceType,
-      normalizedInvoiceType: currentInvoiceType ? String(currentInvoiceType).trim().toLowerCase() : null
-    });
+    logger.info(`🔍 Проверка invoice_type | Deal: ${dealId} | currentInvoiceType: ${currentInvoiceType || 'null'}`);
     
     if (currentInvoiceType) {
       const normalizedInvoiceType = String(currentInvoiceType).trim().toLowerCase();
       
       // Stripe trigger (75)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
-      logger.debug('Сравнение invoice_type', {
-        dealId,
-        normalizedInvoiceType,
-        STRIPE_TRIGGER_VALUE,
-        matches: normalizedInvoiceType === STRIPE_TRIGGER_VALUE
-      });
+      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | normalizedInvoiceType: "${normalizedInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${normalizedInvoiceType === STRIPE_TRIGGER_VALUE}`);
       
       if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
         logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
