@@ -119,24 +119,6 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const eventType = webhookData.event || 'workflow_automation';
     logger.info(`📥 Webhook получен | Deal: ${webhookEvent.dealId || 'неизвестен'}`);
 
-    // ВРЕМЕННО: Создаем задачу для тестирования webhook'ов
-    // Создаем задачу в сделке, из которой пришел webhook
-    if (dealIdForHash) {
-      try {
-        const dealIdNum = parseInt(dealIdForHash);
-        if (!isNaN(dealIdNum)) {
-          await invoiceProcessing.pipedriveClient.createTask({
-            deal_id: dealIdNum,
-            subject: 'Сработал хук',
-            due_date: new Date().toISOString().split('T')[0]
-          });
-          logger.info(`✅ Задача создана | Deal: ${dealIdNum}`);
-        }
-      } catch (taskError) {
-        logger.error(`❌ Ошибка создания задачи | Deal: ${dealIdForHash}`, { error: taskError.message });
-      }
-    }
-
     // Поддержка двух форматов:
     // 1. Стандартный формат Pipedrive: { event: "updated.deal", current: {...}, previous: {...} }
     // 2. Формат от workflow automation: { "Deal ID": "123" } или { dealId: "123" }
