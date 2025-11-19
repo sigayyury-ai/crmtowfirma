@@ -354,12 +354,26 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
     // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
-    const invoiceFromWebhook = webhookData && (webhookData['Invoice type'] || webhookData['Invoice'] || webhookData['invoice_type'] || webhookData['invoice'] || webhookData[INVOICE_TYPE_FIELD_KEY]);
+    // Логируем все возможные варианты извлечения invoice_type
+    const invoiceTypeFromWebhook1 = webhookData?.['Invoice type'];
+    const invoiceTypeFromWebhook2 = webhookData?.['Invoice'];
+    const invoiceTypeFromWebhook3 = webhookData?.['invoice_type'];
+    const invoiceTypeFromWebhook4 = webhookData?.['invoice'];
+    const invoiceTypeFromWebhook5 = webhookData?.[INVOICE_TYPE_FIELD_KEY];
+    const invoiceFromWebhook = invoiceTypeFromWebhook1 || invoiceTypeFromWebhook2 || invoiceTypeFromWebhook3 || invoiceTypeFromWebhook4 || invoiceTypeFromWebhook5;
     const invoiceFromDeal = currentDeal?.[INVOICE_TYPE_FIELD_KEY];
     const currentInvoiceType = invoiceFromWebhook || invoiceFromDeal || null;
     
     // Логируем извлечение invoice_type для диагностики
-    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId} | Из webhook: ${invoiceFromWebhook || 'нет'} | Из deal: ${invoiceFromDeal || 'нет'} | Итого: ${currentInvoiceType || 'null'}`);
+    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId}`, {
+      'Invoice type': invoiceTypeFromWebhook1,
+      'Invoice': invoiceTypeFromWebhook2,
+      'invoice_type': invoiceTypeFromWebhook3,
+      'invoice': invoiceTypeFromWebhook4,
+      [INVOICE_TYPE_FIELD_KEY]: invoiceTypeFromWebhook5,
+      'Из deal': invoiceFromDeal,
+      'Итого': currentInvoiceType
+    });
     
     // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
