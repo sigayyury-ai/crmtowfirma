@@ -792,7 +792,14 @@ class InvoiceProcessingService {
       }
 
       if (tasksToClose.length === 0) {
-        logger.info('No matching tasks found to close', { dealId, invoiceNumbers });
+        logger.info(`⚠️ Задачи не найдены для закрытия | Deal: ${dealId} | Искали номера: ${invoiceNumbers.join(', ')}`);
+        // Логируем найденные задачи для отладки
+        const foundTasks = activitiesResult.activities
+          .filter(a => !a.done && ['Проверка предоплаты', 'Проверка остатка', 'Проверка платежа'].some(s => (a.subject || '').includes(s)))
+          .map(a => ({ id: a.id, subject: a.subject, note: (a.note || '').substring(0, 100) }));
+        if (foundTasks.length > 0) {
+          logger.info(`Найдено задач для сделки (но не совпали номера): ${foundTasks.length}`, { tasks: foundTasks });
+        }
         return { success: true, closed: 0, message: 'No matching tasks found' };
       }
 
