@@ -109,15 +109,29 @@ function normaliseCurrency(currency) {
   
   // Try to map full currency name to code
   const lowerName = trimmed.toLowerCase();
+  
+  // Exact match first
   if (CURRENCY_NAME_TO_CODE[lowerName]) {
     return CURRENCY_NAME_TO_CODE[lowerName];
   }
   
-  // Check if it contains known currency names
+  // Check if it contains known currency names (more flexible matching)
   for (const [name, code] of Object.entries(CURRENCY_NAME_TO_CODE)) {
+    // Check if the currency name contains the key or vice versa
     if (lowerName.includes(name) || name.includes(lowerName)) {
       return code;
     }
+    // Also check word boundaries for better matching
+    const nameWords = name.split(' ');
+    const currencyWords = lowerName.split(' ');
+    if (nameWords.length > 0 && currencyWords.some(word => nameWords.includes(word))) {
+      return code;
+    }
+  }
+  
+  // Special case: "POLISH ZLOTY" → "PLN"
+  if (lowerName.includes('polish') && lowerName.includes('zloty')) {
+    return 'PLN';
   }
   
   // If we can't map it, try to extract 3-letter code from the string

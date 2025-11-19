@@ -4,6 +4,7 @@ const StripeProcessorService = require('../services/stripe/processor');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
 const { STAGES } = require('../services/stripe/crmSync');
 const logger = require('../utils/logger');
+const { normaliseCurrency } = require('../utils/currency');
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
@@ -789,7 +790,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             }
           }
 
-          const currency = dealWithWebhookData.currency || 'PLN';
+          // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
+          const rawCurrency = dealWithWebhookData.currency || 'PLN';
+          const currency = normaliseCurrency(rawCurrency);
+          
+          if (rawCurrency !== currency) {
+            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
+          }
 
           // Создаем только недостающие Stripe Checkout Sessions
           logger.info(`💳 Создание недостающих Stripe Checkout Sessions | Deal: ${dealId} | График: ${paymentSchedule} | Сумма: ${totalAmount} ${currency} | Недостающие: ${missingSessions.join(', ') || 'все'}`);

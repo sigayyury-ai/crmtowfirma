@@ -2146,7 +2146,19 @@ class StripeProcessorService {
         });
       }
       
-      const currency = normaliseCurrency(fullDeal.currency || 'PLN');
+      // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
+      const rawCurrency = fullDeal.currency || 'PLN';
+      const currency = normaliseCurrency(rawCurrency);
+      
+      // Логируем нормализацию валюты для отладки
+      if (rawCurrency !== currency) {
+        this.logger.info('Валюта нормализована', {
+          dealId,
+          rawCurrency,
+          normalizedCurrency: currency,
+          note: 'Полное название валюты преобразовано в ISO код'
+        });
+      }
       const productName = firstProduct.name || firstProduct.product?.name || fullDeal.title || 'Camp / Tourist service';
 
       if (productPrice <= 0) {
