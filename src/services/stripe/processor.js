@@ -460,6 +460,19 @@ class StripeProcessorService {
       raw_payload: session
     };
 
+    // ВАЖНО: Логируем итоговые данные платежа для проверки
+    this.logger.info('💾 Сохранение платежа в базу данных', {
+      dealId,
+      sessionId: session.id,
+      original_amount: roundBankers(amount),
+      amount_pln: amountPln,
+      amount_tax: roundBankers(amountTax),
+      amount_tax_pln: amountTaxPln,
+      expected_vat: shouldApplyVat,
+      stripeTaxAmount: fromMinorUnit(session.total_details?.amount_tax || 0, currency),
+      note: 'VAT рассчитан вручную для отображения, Stripe не удерживал налог'
+    });
+
     // Check if payment was already processed to avoid duplicate stage updates
     const existingPayment = await this.repository.findPaymentBySessionId(session.id);
     const isNewPayment = !existingPayment;
