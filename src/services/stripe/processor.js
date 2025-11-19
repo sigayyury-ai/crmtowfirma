@@ -2062,15 +2062,34 @@ class StripeProcessorService {
 
       const fullDeal = fullDealResult.deal;
       
-      // Мержим ВСЕ данные из переданного deal (из webhook'а) в fullDeal
-      // Это гарантирует, что все поля из webhook будут доступны для обработки
+      // Мержим данные из переданного deal (из webhook'а) в fullDeal
+      // ВАЖНО: Приоритет отдаем данным из API, так как они более полные и актуальные
+      // Webhook данные используются только для полей, которых нет в API или которые не пустые
       if (deal && deal !== fullDeal) {
-        Object.assign(fullDeal, deal);
+        // Мержим только непустые значения из webhook, чтобы не перезаписать данные из API
+        Object.keys(deal).forEach(key => {
+          const webhookValue = deal[key];
+          const apiValue = fullDeal[key];
+          // Перезаписываем только если значение из webhook не пустое И значение из API пустое
+          if (webhookValue !== null && webhookValue !== undefined && webhookValue !== '' && 
+              (apiValue === null || apiValue === undefined || apiValue === '')) {
+            fullDeal[key] = webhookValue;
+          }
+        });
       }
       
       // Определяем график платежей, если не передан в context
+      // ВАЖНО: Приоритет отдаем expected_close_date из API (fullDeal), так как это основное поле
       if (!paymentSchedule) {
-        const closeDate = fullDeal.expected_close_date || fullDeal.close_date;
+        const closeDate = fullDeal.expected_close_date ||  // Приоритет 1: API deal
+                         fullDeal['expected_close_date'] ||  // Приоритет 2: API deal (bracket)
+                         fullDeal.close_date ||  // Приоритет 3: API deal close_date
+                         fullDeal['close_date'] ||  // Приоритет 4: API deal close_date (bracket)
+                         deal?.expected_close_date ||  // Приоритет 5: Webhook deal
+                         deal?.['expected_close_date'] ||
+                         deal?.close_date ||
+                         deal?.['close_date'] ||
+                         null;
         if (closeDate) {
           try {
             const expectedCloseDate = new Date(closeDate);
@@ -3608,7 +3627,12 @@ class StripeProcessorService {
       }
 
       // Calculate payment dates based on close_date
-      const closeDate = deal.expected_close_date || deal.close_date;
+      // ВАЖНО: Приоритет отдаем expected_close_date из API (deal), так как это основное поле
+      const closeDate = deal.expected_close_date ||  // Приоритет 1: API deal
+                       deal['expected_close_date'] ||  // Приоритет 2: API deal (bracket)
+                       deal.close_date ||  // Приоритет 3: API deal close_date
+                       deal['close_date'] ||  // Приоритет 4: API deal close_date (bracket)
+                       null;
       let firstPaymentDate = null;
       let secondPaymentDate = null;
       let singlePaymentDate = null;
