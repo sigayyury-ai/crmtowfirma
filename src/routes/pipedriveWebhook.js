@@ -593,10 +593,27 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const dealWithWebhookData = currentDeal ? { ...deal, ...currentDeal } : deal;
 
           // Рассчитываем график платежей на основе expected_close_date
-          const closeDate = dealWithWebhookData.expected_close_date || dealWithWebhookData.close_date;
-          let paymentSchedule = '100%';
+          // Проверяем все возможные варианты названий полей
+          const closeDate = dealWithWebhookData.expected_close_date || 
+                           dealWithWebhookData.close_date ||
+                           dealWithWebhookData['expected_close_date'] ||
+                           dealWithWebhookData['close_date'] ||
+                           webhookData?.['Expected close date'] ||
+                           webhookData?.['Deal_close_date'] ||
+                           webhookData?.['expected_close_date'] ||
+                           webhookData?.['close_date'] ||
+                           null;
           
-          logger.info(`📅 Расчет графика платежей | Deal: ${dealId} | Дата закрытия: ${closeDate || 'не указана'}`);
+          logger.info(`📅 Расчет графика платежей | Deal: ${dealId}`, {
+            dealId,
+            closeDate: closeDate || 'не указана',
+            fromDeal: deal.expected_close_date || deal.close_date || 'нет',
+            fromCurrentDeal: currentDeal?.expected_close_date || currentDeal?.close_date || 'нет',
+            fromWebhook: webhookData?.['Deal_close_date'] || webhookData?.['Expected close date'] || 'нет',
+            allDealKeys: Object.keys(deal).filter(k => k.toLowerCase().includes('close') || k.toLowerCase().includes('date')).join(', ')
+          });
+          
+          let paymentSchedule = '100%';
           
           if (closeDate) {
             try {
