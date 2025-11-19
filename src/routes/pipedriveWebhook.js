@@ -527,7 +527,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       }
     }
 
-    // ========== Обработка 3: Стадия "First payment" (триггер для Stripe) ==========
+    // ========== Обработка 3: Стадия "First payment" (ID: 18) (триггер для Stripe) ==========
     // ВРЕМЕННО ОТКЛЮЧЕНО: создание Stripe Checkout Sessions через стадию "First payment"
     // Используется только триггер через invoice_type = "Stripe" (75)
     // const isFirstPaymentStage = String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID);

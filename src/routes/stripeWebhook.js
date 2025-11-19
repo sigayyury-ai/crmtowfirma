@@ -33,93 +33,28 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   try {
     logger.info(`📥 Stripe webhook получен | Тип: ${event.type}`);
 
-    // ВРЕМЕННО: Только создаем задачу для тестирования webhook'ов
-    // Весь остальной код закомментирован для постепенной разработки
-    
-    let dealId = null;
-    
-    // Извлекаем deal_id из разных типов событий
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      dealId = session.metadata?.deal_id;
-      logger.info(`🔍 Извлечение deal_id из checkout.session.completed | Deal: ${dealId || 'не найден'}`, {
-        hasMetadata: !!session.metadata,
-        metadataKeys: session.metadata ? Object.keys(session.metadata) : []
-      });
-    } else if (event.type === 'payment_intent.succeeded') {
-      const paymentIntent = event.data.object;
-      const sessionId = paymentIntent.metadata?.session_id;
-      logger.info(`🔍 Извлечение deal_id из payment_intent.succeeded | SessionId: ${sessionId || 'не найден'}`);
-      if (sessionId) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(sessionId);
-          dealId = session.metadata?.deal_id;
-          logger.info(`🔍 Deal_id из Session | Deal: ${dealId || 'не найден'}`);
-        } catch (sessionError) {
-          logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
-        }
-      }
-    } else {
-      logger.info(`⚠️  Неподдерживаемый тип события | Тип: ${event.type}`);
-    }
-    
-    // Создаем задачу в сделке, для которой пришел webhook
-    if (dealId) {
-      try {
-        await stripeProcessor.pipedriveClient.createTask({
-          deal_id: parseInt(dealId),
-          subject: 'Сработал хук',
-          due_date: new Date().toISOString().split('T')[0]
-        });
-        logger.info(`✅ Задача создана | Deal: ${dealId}`);
-      } catch (taskError) {
-        logger.error(`❌ Ошибка создания задачи | Deal: ${dealId}`, { error: taskError.message });
-      }
-    } else {
-      logger.warn(`⚠️  Deal ID не найден в webhook | Тип события: ${event.type}`);
-    }
-
-    /* ЗАКОММЕНТИРОВАНО: Полная обработка Stripe webhook событий
-    // Обрабатываем события Checkout Session
+    // Обрабатываем события Checkout Session (создание сессии)
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const dealId = session.metadata?.deal_id;
 
       if (dealId) {
-        // Проверяем, что invoice_type = Stripe перед обработкой
+        logger.info(`💳 Обработка Checkout Session | Deal: ${dealId} | Session: ${session.id}`);
+        
         try {
-          const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
-          if (dealResult.success && dealResult.deal) {
-            const currentInvoiceType = String(dealResult.deal[stripeProcessor.invoiceTypeFieldKey] || '').trim();
-            const stripeTriggerValue = stripeProcessor.stripeTriggerValue;
-            
-            // Обрабатываем только если invoice_type = Stripe
-            if (currentInvoiceType === stripeTriggerValue) {
-              logger.info(`💳 Обработка Checkout Session | Deal: ${dealId} | Session: ${session.id}`);
-              
-              // Обрабатываем платеж через processor
-              await stripeProcessor.persistSession(session);
-              
-              // Если платеж оплачен, обновляем invoice_type на "Done"
-              if (session.payment_status === 'paid') {
-                try {
-                  await stripeProcessor.pipedriveClient.updateDeal(dealId, {
-                    [stripeProcessor.invoiceTypeFieldKey]: stripeProcessor.invoiceDoneValue
-                  });
-                  logger.info(`✅ invoice_type обновлен на Done | Deal: ${dealId}`);
-                } catch (updateError) {
-                  logger.error(`❌ Ошибка обновления invoice_type на Done | Deal: ${dealId}`, { error: updateError.message });
-                }
-              }
-            } else {
-              logger.info(`⏭️  Пропуск Checkout Session | Deal: ${dealId} | invoice_type: ${currentInvoiceType} (ожидается: ${stripeTriggerValue})`);
-            }
-          } else {
-            logger.warn(`⚠️  Сделка не найдена | Deal: ${dealId}`);
-          }
-        } catch (dealError) {
-          logger.error(`❌ Ошибка получения сделки | Deal: ${dealId}`, { error: dealError.message });
+          // Обрабатываем платеж через processor (автоматически обновляет стадии)
+          // persistSession обрабатывает платеж и обновляет стадии сделки на основе типа платежа:
+          // - Первый платеж (deposit) → Second Payment (ID: 32) или Camp Waiter (ID: 27) если один платеж
+          // - Второй платеж (rest) → Camp Waiter (ID: 27)
+          // - Единый платеж (single) → Camp Waiter (ID: 27)
+          await stripeProcessor.persistSession(session);
+          
+          logger.info(`✅ Checkout Session обработан | Deal: ${dealId} | Session: ${session.id}`);
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки Checkout Session | Deal: ${dealId} | Session: ${session.id}`, { error: error.message });
         }
+      } else {
+        logger.warn(`⚠️  Deal ID не найден в Checkout Session | Session: ${session.id}`);
       }
     }
 
@@ -134,45 +69,55 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           const dealId = session.metadata?.deal_id;
           
           if (dealId) {
-            // Проверяем, что invoice_type = Stripe перед обработкой
-            try {
-              const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
-              if (dealResult.success && dealResult.deal) {
-                const currentInvoiceType = String(dealResult.deal[stripeProcessor.invoiceTypeFieldKey] || '').trim();
-                const stripeTriggerValue = stripeProcessor.stripeTriggerValue;
-                
-                // Обрабатываем только если invoice_type = Stripe
-                if (currentInvoiceType === stripeTriggerValue) {
-                  logger.info(`✅ Платеж успешен | Deal: ${dealId} | Session: ${sessionId}`);
-                  
-                  // Обрабатываем платеж (если еще не обработан)
-                  await stripeProcessor.persistSession(session);
-                  
-                  // Обновляем invoice_type на "Done" (73) после успешной оплаты
-                  try {
-                    await stripeProcessor.pipedriveClient.updateDeal(dealId, {
-                      [stripeProcessor.invoiceTypeFieldKey]: stripeProcessor.invoiceDoneValue
-                    });
-                    logger.info(`✅ invoice_type обновлен на Done | Deal: ${dealId}`);
-                  } catch (updateError) {
-                    logger.error(`❌ Ошибка обновления invoice_type на Done | Deal: ${dealId}`, { error: updateError.message });
-                  }
-                } else {
-                  logger.info(`⏭️  Пропуск Payment Intent | Deal: ${dealId} | invoice_type: ${currentInvoiceType} (ожидается: ${stripeTriggerValue})`);
-                }
-              } else {
-                logger.warn(`⚠️  Сделка не найдена | Deal: ${dealId}`);
-              }
-            } catch (dealError) {
-              logger.error(`❌ Ошибка получения сделки | Deal: ${dealId}`, { error: dealError.message });
-            }
+            logger.info(`✅ Платеж успешен | Deal: ${dealId} | Session: ${sessionId}`);
+            
+            // Обрабатываем платеж через processor (автоматически обновляет стадии)
+            await stripeProcessor.persistSession(session);
+            
+            logger.info(`✅ Payment Intent обработан | Deal: ${dealId} | Session: ${sessionId}`);
+          } else {
+            logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
           }
         } catch (sessionError) {
           logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
         }
+      } else {
+        logger.warn(`⚠️  Session ID не найден в Payment Intent | PaymentIntent: ${paymentIntent.id}`);
       }
     }
-    */
+
+    // Обрабатываем события Charge Refunded (возврат платежа)
+    if (event.type === 'charge.refunded') {
+      const charge = event.data.object;
+      const paymentIntentId = charge.payment_intent;
+      
+      if (paymentIntentId) {
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          const sessionId = paymentIntent.metadata?.session_id;
+          
+          if (sessionId) {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            const dealId = session.metadata?.deal_id;
+            
+            if (dealId) {
+              logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
+              
+              // Обрабатываем возврат через CRM sync (автоматически обновляет стадии)
+              await stripeProcessor.crmSyncService.handleRefund({
+                id: charge.id,
+                amount: charge.amount,
+                metadata: session.metadata
+              });
+              
+              logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+            }
+          }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки возврата | Charge: ${charge.id}`, { error: error.message });
+        }
+      }
+    }
 
     res.status(200).json({ received: true });
   } catch (error) {
