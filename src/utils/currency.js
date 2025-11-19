@@ -50,12 +50,84 @@ function roundBankers(value, precision = 2) {
 }
 
 /**
+ * Map of currency names to ISO currency codes
+ */
+const CURRENCY_NAME_TO_CODE = {
+  'polish zloty': 'PLN',
+  'zloty': 'PLN',
+  'euro': 'EUR',
+  'us dollar': 'USD',
+  'dollar': 'USD',
+  'british pound': 'GBP',
+  'pound': 'GBP',
+  'swiss franc': 'CHF',
+  'japanese yen': 'JPY',
+  'yen': 'JPY',
+  'australian dollar': 'AUD',
+  'canadian dollar': 'CAD',
+  'chinese yuan': 'CNY',
+  'yuan': 'CNY',
+  'russian ruble': 'RUB',
+  'ruble': 'RUB',
+  'ukrainian hryvnia': 'UAH',
+  'hryvnia': 'UAH',
+  'czech koruna': 'CZK',
+  'koruna': 'CZK',
+  'swedish krona': 'SEK',
+  'krona': 'SEK',
+  'norwegian krone': 'NOK',
+  'krone': 'NOK',
+  'danish krone': 'DKK',
+  'hungarian forint': 'HUF',
+  'forint': 'HUF',
+  'romanian leu': 'RON',
+  'leu': 'RON',
+  'bulgarian lev': 'BGN',
+  'lev': 'BGN',
+  'croatian kuna': 'HRK',
+  'kuna': 'HRK',
+  'turkish lira': 'TRY',
+  'lira': 'TRY'
+};
+
+/**
  * Normalise currency code to upper-case 3 letter ISO.
+ * Handles both currency codes (e.g., "PLN", "EUR") and full names (e.g., "Polish Zloty", "Euro").
  * @param {string} currency
- * @returns {string}
+ * @returns {string} - ISO currency code in uppercase (e.g., "PLN", "EUR")
  */
 function normaliseCurrency(currency) {
-  return typeof currency === 'string' ? currency.trim().toUpperCase() : 'PLN';
+  if (typeof currency !== 'string') return 'PLN';
+  
+  const trimmed = currency.trim();
+  if (!trimmed) return 'PLN';
+  
+  // If it's already a 3-letter code (uppercase or lowercase), return uppercase
+  if (/^[A-Z]{3}$/i.test(trimmed)) {
+    return trimmed.toUpperCase();
+  }
+  
+  // Try to map full currency name to code
+  const lowerName = trimmed.toLowerCase();
+  if (CURRENCY_NAME_TO_CODE[lowerName]) {
+    return CURRENCY_NAME_TO_CODE[lowerName];
+  }
+  
+  // Check if it contains known currency names
+  for (const [name, code] of Object.entries(CURRENCY_NAME_TO_CODE)) {
+    if (lowerName.includes(name) || name.includes(lowerName)) {
+      return code;
+    }
+  }
+  
+  // If we can't map it, try to extract 3-letter code from the string
+  const codeMatch = trimmed.match(/\b([A-Z]{3})\b/i);
+  if (codeMatch) {
+    return codeMatch[1].toUpperCase();
+  }
+  
+  // Default to PLN if we can't determine
+  return 'PLN';
 }
 
 async function convertCurrency(amount, fromCurrency, toCurrency = DEFAULT_TARGET_CURRENCY) {
