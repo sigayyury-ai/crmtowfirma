@@ -629,7 +629,6 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Если ни один триггер не сработал, возвращаем успех
     logger.debug('No trigger conditions met, webhook processed successfully', {
       dealId,
-      invoiceTypeChanged,
       currentInvoiceType,
       currentStatus,
       lostReason,
