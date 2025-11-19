@@ -231,11 +231,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 webhookData['name'],
           stage_id: Number(stageId),
           stage_name: webhookData['Deal stage'] || 
-                     webhookData['Deal_stage'] || 
-                     webhookData['deal_stage'] || 
+                   webhookData['Deal_stage'] || 
+                   webhookData['deal_stage'] || 
                      webhookData['stage_name'],
           status: webhookData['Deal status'] || 
-                 webhookData['Deal_status'] ||
+                 webhookData['Deal_status'] || 
                  webhookData['deal_status'] || 
                  webhookData['status'],
           // Invoice поля
@@ -305,7 +305,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             })
           )
         };
-        previousDeal = null;
+          previousDeal = null;
       } else {
         // Если нет stage_id или данных недостаточно, получаем полные данные через API
 
@@ -462,21 +462,21 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           
           logger.info(`✅ Рефанды обработаны | Deal: ${dealId}`);
 
-          return res.status(200).json({
-            success: true,
+            return res.status(200).json({
+              success: true,
             message: 'Refunds processed',
-            dealId,
+              dealId,
             refundsCreated: summary.refundsCreated,
             errors: summary.errors
           });
         } catch (error) {
           logger.error(`❌ Ошибка обработки рефандов | Deal: ${dealId}`);
-          return res.status(200).json({
-            success: false,
+            return res.status(200).json({
+              success: false,
             error: error.message,
-            dealId
-          });
-        }
+              dealId
+            });
+          }
         } else {
         // Если lost_reason не "Refund", удаляем проформы
         logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
@@ -510,27 +510,27 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     if (currentInvoiceType === '74') {
       logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
-      try {
-        const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+        try {
+          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
         if (result.success) {
           logger.info(`✅ Проформы удалены | Deal: ${dealId}`);
         } else {
           logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
         }
-        return res.status(200).json({
-          success: result.success,
-          message: result.success ? 'Deletion processed' : result.error,
-          dealId
-        });
-      } catch (error) {
+          return res.status(200).json({
+            success: result.success,
+            message: result.success ? 'Deletion processed' : result.error,
+            dealId
+          });
+        } catch (error) {
         logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
-        return res.status(200).json({
-          success: false,
-          error: error.message,
-          dealId
-        });
+          return res.status(200).json({
+            success: false,
+            error: error.message,
+            dealId
+          });
+        }
       }
-    }
 
     // ========== Обработка 3: Стадия "First payment" (ID: 18) (триггер для Stripe) ==========
     // ВРЕМЕННО ОТКЛЮЧЕНО: создание Stripe Checkout Sessions через стадию "First payment"
@@ -581,7 +581,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           logger.info(`💳 Начало обработки Stripe платежей | Deal: ${dealId}`);
 
           try {
-          // Получаем полные данные сделки для определения графика платежей
+            // Получаем полные данные сделки для определения графика платежей
           const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
           if (!dealResult.success || !dealResult.deal) {
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
@@ -604,7 +604,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                            null;
           
           logger.info(`📅 Расчет графика платежей | Deal: ${dealId}`, {
-            dealId,
+          dealId,
             closeDate: closeDate || 'не указана',
             fromDeal: deal.expected_close_date || deal.close_date || 'нет',
             fromCurrentDeal: currentDeal?.expected_close_date || currentDeal?.close_date || 'нет',
@@ -680,7 +680,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             } catch (error) {
               // Если сессия не найдена в Stripe, считаем что её нет
               logger.warn(`⚠️  Сессия не найдена в Stripe | Deal: ${dealId} | Session ID: ${payment.session_id}`, {
-                dealId,
+            dealId,
                 sessionId: payment.session_id,
                 error: error.message
               });
@@ -787,7 +787,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
           if (!needToCreate && existingPayments && existingPayments.length > 0) {
             logger.info(`✅ Все необходимые Stripe сессии уже существуют И оплачены | Deal: ${dealId} | График: ${paymentSchedule} | Количество: ${existingPayments.length}`, {
-              dealId,
+            dealId,
               paymentSchedule,
               existingCount: existingPayments.length,
               sessionIds: existingPayments.map(p => p.session_id).slice(0, 5),
@@ -797,8 +797,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 status: p.payment_status || p.status
               })),
               note: 'Все платежи созданы и оплачены, пропускаем создание новых'
-            });
-            return res.status(200).json({
+          });
+          return res.status(200).json({
               success: true,
               message: 'All required Stripe Checkout Sessions already exist and are paid',
               dealId,
@@ -1020,7 +1020,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             
             // Снимаем блокировку после успешной обработки
             stripeProcessingLocks.delete(dealId);
-          
+
           return res.status(200).json({
             success: true,
             message: 'Stripe Checkout Sessions created and notification sent',
@@ -1092,13 +1092,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId, currentDeal);
           if (result.success) {
             logger.info(`✅ Проформа создана | Deal: ${dealId}`);
-          } else {
+      } else {
             logger.warn(`⚠️  Не удалось создать проформу | Deal: ${dealId}`);
           }
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Invoice processed' : result.error,
-            dealId,
+          dealId,
             invoiceType: result.invoiceType
           });
         } catch (error) {
@@ -1239,30 +1239,30 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
  */
 router.get('/webhooks/pipedrive/history', (req, res) => {
   try {
-    const limit = parseInt(req.query.limit, 10) || 20;
-    const events = webhookHistory.slice(0, Math.min(limit, webhookHistory.length));
-    
-    res.json({
-      success: true,
-      total: webhookHistory.length,
-      limit,
-      events: events.map(event => ({
-        timestamp: event.timestamp,
-        event: event.event,
-        dealId: event.dealId,
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const events = webhookHistory.slice(0, Math.min(limit, webhookHistory.length));
+  
+  res.json({
+    success: true,
+    total: webhookHistory.length,
+    limit,
+    events: events.map(event => ({
+      timestamp: event.timestamp,
+      event: event.event,
+      dealId: event.dealId,
         bodyKeys: event.bodyKeys || [],
-        // Показываем только ключи тела, не полное содержимое (может быть большим)
+      // Показываем только ключи тела, не полное содержимое (может быть большим)
         bodyPreview: event.bodyPreview || (event.body ? Object.keys(event.body).reduce((acc, key) => {
-          const value = event.body[key];
-          if (typeof value === 'object' && value !== null) {
-            acc[key] = Array.isArray(value) ? `[Array(${value.length})]` : '{...}';
-          } else {
-            acc[key] = String(value).substring(0, 100); // Ограничиваем длину
-          }
-          return acc;
+        const value = event.body[key];
+        if (typeof value === 'object' && value !== null) {
+          acc[key] = Array.isArray(value) ? `[Array(${value.length})]` : '{...}';
+        } else {
+          acc[key] = String(value).substring(0, 100); // Ограничиваем длину
+        }
+        return acc;
         }, {}) : {})
-      }))
-    });
+    }))
+  });
   } catch (error) {
     logger.error('Error getting webhook history', {
       error: error.message,
