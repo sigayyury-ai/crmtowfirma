@@ -229,10 +229,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         try {
           const dealResult = await invoiceProcessing.pipedriveClient.getDeal(dealId);
           if (!dealResult.success || !dealResult.deal) {
-            logger.error('Failed to fetch deal data from workflow automation webhook', {
-              dealId,
-              error: dealResult.error
-            });
+            logger.error(`❌ Ошибка получения данных сделки | Deal: ${dealId}`);
             return res.status(400).json({ 
               success: false, 
               error: `Failed to fetch deal: ${dealResult.error || 'unknown'}` 
@@ -351,32 +348,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                             currentDeal?.['Deal_stage'] ||
                             currentDeal?.['deal_stage'];
     
-    logger.info('📊 Извлеченные данные из webhook', {
-      dealId,
-      currentStageId,
-      currentStatus,
-      currentInvoiceType,
-      currentStageName,
-      hasCurrentDeal: !!currentDeal,
-      webhookKeys: webhookData ? Object.keys(webhookData) : [],
-      isFirstPaymentStage: String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID)
-    });
-    
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
-    
-    // Debug logging
-    const statusEmoji = currentStatus === 'lost' ? '❌' : currentStatus === 'won' ? '✅' : '🔄';
-    logger.info(`${statusEmoji} Проверка статуса сделки | Deal ID: ${dealId} | Статус: ${currentStatus || 'не указан'} | Причина потери: ${lostReason || 'нет'} | Invoice Type: ${currentInvoiceType || 'не указан'}`, {
-      dealId,
-      currentStatus,
-      lostReason,
-      currentInvoiceType,
-      isWorkflowAutomation,
-      currentDealKeys: currentDeal ? Object.keys(currentDeal) : [],
-      hasStatus: !!currentDeal?.status,
-      statusValue: currentDeal?.status
-    });
 
     // ========== Обработка 1: Статус "lost" (приоритет) ==========
     // Проверяем статус lost ПЕРЕД обработкой invoice_type, так как это более критично
@@ -384,14 +357,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       const normalizedLostReason = lostReason ? String(lostReason).trim().toLowerCase() : '';
       const isRefundReason = normalizedLostReason === 'refund' || normalizedLostReason === 'refound';
       
-      const reasonText = normalizedLostReason || 'не указана';
-      logger.info(`❌ Сделка закрыта как потерянная | Deal ID: ${dealId} | Причина: ${reasonText} | Рефанд: ${isRefundReason ? 'да' : 'нет'}`, {
-        dealId,
-        currentStatus,
-        lostReason: normalizedLostReason,
-        isRefundReason,
-        isWorkflowAutomation
-      });
+      logger.info(`❌ Сделка закрыта как потерянная | Deal: ${dealId} | Рефанд: ${isRefundReason ? 'да' : 'нет'}`);
 
       if (isRefundReason) {
         logger.info(`💰 Обработка рефандов | Deal: ${dealId}`);
@@ -415,11 +381,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             errors: summary.errors
           });
         } catch (error) {
-          logger.error('Failed to process refunds for lost deal via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка обработки рефандов | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -443,11 +405,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             dealId
           });
         } catch (error) {
-          logger.error('Failed to delete proformas for lost deal via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -479,11 +437,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             dealId
           });
         } catch (error) {
-          logger.error('Error processing deal deletion via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -543,11 +497,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           }
         } catch (error) {
-          logger.error('Error creating Checkout Session via webhook', {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка создания Stripe платежа | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -566,17 +516,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         try {
           const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId, currentDeal);
           if (result.success) {
-            logger.info(`✅ Проформа создана | Deal ID: ${dealId} | Invoice Type: ${result.invoiceType || currentInvoiceType}`, {
-              dealId,
-              success: result.success,
-              invoiceType: result.invoiceType
-            });
+            logger.info(`✅ Проформа создана | Deal: ${dealId}`);
           } else {
-            logger.warn(`⚠️  Не удалось создать проформу | Deal ID: ${dealId} | Ошибка: ${result.error || 'неизвестная'}`, {
-              dealId,
-              success: result.success,
-              error: result.error
-            });
+            logger.warn(`⚠️  Не удалось создать проформу | Deal: ${dealId}`);
           }
           return res.status(200).json({
             success: result.success,
@@ -585,11 +527,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             invoiceType: result.invoiceType
           });
         } catch (error) {
-          logger.error(`❌ Ошибка при создании проформы | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
-            dealId,
-            error: error.message,
-            stack: error.stack
-          });
+          logger.error(`❌ Ошибка создания проформы | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,
@@ -643,10 +581,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           }
         } catch (error) {
-          logger.error(`❌ Ошибка обработки Stripe триггера (workflow automation) | Deal ID: ${dealId} | Ошибка: ${error.message}`, {
-            dealId,
-            error: error.message
-          });
+          logger.error(`❌ Ошибка создания Stripe платежа | Deal: ${dealId}`);
         }
       }
 
