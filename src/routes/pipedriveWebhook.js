@@ -124,6 +124,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Log webhook received
     const eventType = webhookData.event || 'workflow_automation';
     logger.info(`📥 Webhook получен | Deal: ${webhookEvent.dealId || 'неизвестен'}`);
+    logger.info(`🔍 Начало обработки webhook | Deal: ${webhookEvent.dealId || 'неизвестен'} | Event type: ${eventType}`);
 
     // Поддержка двух форматов:
     // 1. Стандартный формат Pipedrive: { event: "updated.deal", current: {...}, previous: {...} }
@@ -347,6 +348,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
       dealId = currentDeal.id;
     }
+    
+    logger.info(`🔍 Deal ID определен | Deal: ${dealId} | isWorkflowAutomation: ${isWorkflowAutomation}`);
+    
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
     // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
