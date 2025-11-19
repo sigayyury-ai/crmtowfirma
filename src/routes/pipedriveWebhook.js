@@ -34,12 +34,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const webhookData = req.body;
     
     // Проверяем, не является ли это webhook от Stripe (игнорируем его)
-    if (webhookData && webhookData.object === 'event' && webhookData.type && webhookData.api_version) {
-      // Это Stripe webhook, игнорируем его
+    // Проверяем по User-Agent и структуре данных
+    const isStripeWebhook = req.headers['user-agent']?.includes('Stripe') ||
+                           (webhookData && webhookData.object === 'event' && webhookData.type && webhookData.api_version);
+    
+    if (isStripeWebhook) {
+      // Это Stripe webhook, игнорируем его без логирования
       return res.status(200).json({
         success: true,
-        message: 'Stripe webhook ignored',
-        note: 'Stripe webhooks are handled by /api/webhooks/stripe endpoint'
+        message: 'Stripe webhook ignored'
       });
     }
     
