@@ -495,42 +495,89 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       });
       
       if (normalizedInvoiceType === STRIPE_TRIGGER_VALUE) {
-        logger.info(`💳 Создание Stripe платежа | Deal: ${dealId}`);
+        logger.info(`💳 Расчет графика платежей и отправка в SendPulse | Deal: ${dealId}`);
 
         try {
-          // Получаем сделку для создания Checkout Session
-          const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
+          // Получаем полные данные сделки
+          const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
           if (!dealResult.success || !dealResult.deal) {
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
           }
 
+          const deal = dealResult.deal;
           // Мержим данные из webhook в deal из API (чтобы сохранить все поля из webhook)
-          const dealWithWebhookData = currentDeal ? { ...dealResult.deal, ...currentDeal } : dealResult.deal;
+          const dealWithWebhookData = currentDeal ? { ...deal, ...currentDeal } : deal;
 
-          // Создаем Checkout Session для этой сделки
-          const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
-            trigger: 'pipedrive_webhook',
-            runId: `webhook-${Date.now()}`
+          // Рассчитываем график платежей на основе expected_close_date
+          const closeDate = dealWithWebhookData.expected_close_date || dealWithWebhookData.close_date;
+          let paymentSchedule = '100%';
+          
+          if (closeDate) {
+            try {
+              const expectedCloseDate = new Date(closeDate);
+              const today = new Date();
+              const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+              
+              if (daysDiff >= 30) {
+                paymentSchedule = '50/50';
+                logger.info(`📅 Определен график 50/50 | Deal: ${dealId} | Дней до закрытия: ${daysDiff}`);
+              } else {
+                paymentSchedule = '100%';
+                logger.info(`📅 Определен график 100% | Deal: ${dealId} | Дней до закрытия: ${daysDiff}`);
+              }
+            } catch (error) {
+              logger.warn(`⚠️  Ошибка расчета графика платежей, используем 100% | Deal: ${dealId}`, { error: error.message });
+              paymentSchedule = '100%';
+            }
+          } else {
+            logger.warn(`⚠️  Нет даты закрытия, используем график 100% | Deal: ${dealId}`);
+            paymentSchedule = '100%';
+          }
+
+          // Получаем сумму сделки
+          const dealProductsResult = await stripeProcessor.pipedriveClient.getDealProducts(dealId);
+          let totalAmount = parseFloat(dealWithWebhookData.value) || 0;
+          
+          if (dealProductsResult.success && dealProductsResult.products && dealProductsResult.products.length > 0) {
+            const firstProduct = dealProductsResult.products[0];
+            const sumPrice = typeof firstProduct.sum === 'number' 
+              ? firstProduct.sum 
+              : parseFloat(firstProduct.sum) || 0;
+            if (sumPrice > 0) {
+              totalAmount = sumPrice;
+            }
+          }
+
+          const currency = dealWithWebhookData.currency || 'PLN';
+
+          // Отправляем уведомление в SendPulse с графиком платежей (без создания Stripe сессий)
+          const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+            paymentSchedule,
+            sessions: [], // Пустой массив - только график без ссылок
+            currency,
+            totalAmount
           });
 
-          if (result.success) {
-            logger.info(`✅ Stripe платеж создан | Deal: ${dealId}`);
+          if (notificationResult.success) {
+            logger.info(`✅ Уведомление о графике платежей отправлено | Deal: ${dealId} | График: ${paymentSchedule}`);
             return res.status(200).json({
               success: true,
-              message: 'Checkout Session created',
+              message: 'Payment schedule calculated and notification sent',
               dealId,
-              sessionId: result.sessionId
+              paymentSchedule,
+              totalAmount,
+              currency
             });
           } else {
-            logger.error(`❌ Не удалось создать Stripe платеж | Deal: ${dealId}`);
+            logger.error(`❌ Не удалось отправить уведомление | Deal: ${dealId} | Ошибка: ${notificationResult.error}`);
             return res.status(200).json({
               success: false,
-              error: result.error,
+              error: notificationResult.error,
               dealId
             });
           }
         } catch (error) {
-          logger.error(`❌ Ошибка создания Stripe платежа | Deal: ${dealId}`);
+          logger.error(`❌ Ошибка расчета графика платежей | Deal: ${dealId}`);
           return res.status(200).json({
             success: false,
             error: error.message,

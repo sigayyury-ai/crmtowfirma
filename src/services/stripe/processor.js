@@ -3510,7 +3510,36 @@ class StripeProcessorService {
 
       let message = '';
       
-      if (paymentSchedule === '50/50' && sessions.length >= 2) {
+      // Если sessions пустые, отправляем только информацию о графике платежей
+      if (sessions.length === 0) {
+        if (paymentSchedule === '50/50') {
+          const depositAmount = totalAmount / 2;
+          message = `*Привет! Для тебя определен график платежей.*\n\n`;
+          message += `*График платежей:*\n\n`;
+          
+          let dateText = '';
+          if (firstPaymentDate) {
+            dateText = ` до *${formatDate(firstPaymentDate)}*`;
+          }
+          message += `1️⃣ *Предоплата 50%:* ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
+          
+          if (secondPaymentDate) {
+            dateText = ` до *${formatDate(secondPaymentDate)}*`;
+          }
+          message += `2️⃣ *Остаток 50%:* ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
+          
+          message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        } else {
+          // Single payment
+          let dateText = '';
+          if (singlePaymentDate) {
+            dateText = ` до *${formatDate(singlePaymentDate)}*`;
+          }
+          message = `*Привет! Для тебя определен график платежей.*\n\n`;
+          message += `💳 *Полная оплата:* ${formatAmount(totalAmount)} ${currency}${dateText}\n\n`;
+          message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        }
+      } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
         // Two payments: deposit and rest
         message = `*Привет! Для тебя созданы ссылки на оплату через Stripe.*\n\n`;
         message += `*График платежей:*\n\n`;
@@ -3558,7 +3587,9 @@ class StripeProcessorService {
         message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
       }
 
-      message += `\n💡 Нажми на ссылку выше, чтобы перейти к оплате.`;
+      if (sessions.length > 0) {
+        message += `\n💡 Нажми на ссылку выше, чтобы перейти к оплате.`;
+      }
 
       // Send message via SendPulse
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
