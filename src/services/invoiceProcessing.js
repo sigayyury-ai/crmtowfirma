@@ -688,10 +688,15 @@ class InvoiceProcessingService {
       }
     }
 
-    // Закрываем задачи, связанные с удаленными проформами
-    if (allSuccess && removedNumbers.size > 0) {
+    // Закрываем задачи, связанные с проформами (используем все номера из expectedNumbers, так как они могут быть в задачах)
+    const allInvoiceNumbers = Array.from(new Set([
+      ...Array.from(removedNumbers),
+      ...Array.from(expectedNumbers)
+    ]));
+    
+    if (allInvoiceNumbers.length > 0) {
       try {
-        await this.closeProformaTasks(dealId, Array.from(removedNumbers));
+        await this.closeProformaTasks(dealId, allInvoiceNumbers);
       } catch (error) {
         logger.error('Failed to close proforma tasks (non-critical)', {
           dealId,
@@ -760,10 +765,25 @@ class InvoiceProcessingService {
         }
 
         // Проверяем, что задача связана с одной из удаленных проформ
-        const note = activity.note || '';
+        // Ищем номер проформы в note (может быть в разных форматах)
+        const note = (activity.note || '').toLowerCase();
         const matchesInvoice = invoiceNumbers.some(invoiceNumber => {
+          if (!invoiceNumber) return false;
+          
+          // Нормализуем номер проформы
           const normalizedInvoiceNumber = this.normalizeInvoiceNumber(invoiceNumber);
-          return normalizedInvoiceNumber && note.toLowerCase().includes(normalizedInvoiceNumber);
+          if (!normalizedInvoiceNumber) return false;
+          
+          // Проверяем разные варианты формата номера в note
+          // Например: "CO-PROF 149/2025", "co-prof 149/2025", "149/2025", "149"
+          const numberParts = normalizedInvoiceNumber.split('/');
+          const numberOnly = numberParts[0]?.replace(/[^0-9]/g, '');
+          const yearPart = numberParts[1];
+          
+          // Ищем полный номер, номер без префикса, или только число
+          return note.includes(normalizedInvoiceNumber) ||
+                 (numberOnly && note.includes(numberOnly)) ||
+                 (yearPart && note.includes(yearPart));
         });
 
         if (matchesInvoice) {
