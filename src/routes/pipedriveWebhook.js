@@ -606,11 +606,40 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           
           // Проверяем статус оплаты для каждого типа платежа
           const getPaymentByType = (type) => existingPayments?.find(p => p.payment_type === type);
-          const isPaymentPaid = (payment) => {
-            if (!payment) return false;
-            // Проверяем payment_status из Stripe или статус в базе данных
-            const paymentStatus = payment.payment_status || payment.status;
-            return paymentStatus === 'paid' || paymentStatus === 'complete';
+          
+          // Проверяем статус сессии в Stripe API (не только в базе данных)
+          // Сессия может быть истекшей, отмененной или неактивной
+          const checkSessionStatus = async (payment) => {
+            if (!payment || !payment.session_id) return { exists: false, paid: false, active: false };
+            
+            try {
+              // Получаем актуальный статус сессии из Stripe
+              const session = await stripeProcessor.stripe.checkout.sessions.retrieve(payment.session_id);
+              
+              const isPaid = session.payment_status === 'paid';
+              const isActive = session.status === 'open' || session.status === 'complete';
+              const isExpired = session.status === 'expired';
+              const isCanceled = session.status === 'canceled';
+              
+              return {
+                exists: true,
+                paid: isPaid,
+                active: isActive && !isExpired && !isCanceled,
+                expired: isExpired,
+                canceled: isCanceled,
+                paymentStatus: session.payment_status,
+                sessionStatus: session.status,
+                sessionId: session.id
+              };
+            } catch (error) {
+              // Если сессия не найдена в Stripe, считаем что её нет
+              logger.warn(`⚠️  Сессия не найдена в Stripe | Deal: ${dealId} | Session ID: ${payment.session_id}`, {
+                dealId,
+                sessionId: payment.session_id,
+                error: error.message
+              });
+              return { exists: false, paid: false, active: false, error: error.message };
+            }
           };
 
           const depositPayment = getPaymentByType('deposit');
@@ -621,24 +650,50 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const hasRest = !!restPayment;
           const hasSingle = !!singlePayment;
           
-          const depositPaid = isPaymentPaid(depositPayment);
-          const restPaid = isPaymentPaid(restPayment);
-          const singlePaid = isPaymentPaid(singlePayment);
+          // Проверяем статус каждой сессии в Stripe API
+          const depositStatus = depositPayment ? await checkSessionStatus(depositPayment) : { exists: false, paid: false, active: false };
+          const restStatus = restPayment ? await checkSessionStatus(restPayment) : { exists: false, paid: false, active: false };
+          const singleStatus = singlePayment ? await checkSessionStatus(singlePayment) : { exists: false, paid: false, active: false };
+          
+          const depositPaid = depositStatus.paid;
+          const restPaid = restStatus.paid;
+          const singlePaid = singleStatus.paid;
+          
+          const depositActive = depositStatus.active;
+          const restActive = restStatus.active;
+          const singleActive = singleStatus.active;
 
-          logger.info(`🔍 Проверка статуса оплаты существующих сессий | Deal: ${dealId}`, {
+          logger.info(`🔍 Проверка статуса сессий в Stripe API | Deal: ${dealId}`, {
             dealId,
             paymentSchedule,
-            hasDeposit,
-            depositPaid,
-            hasRest,
-            restPaid,
-            hasSingle,
-            singlePaid,
-            existingPaymentStatuses: existingPayments?.map(p => ({
-              type: p.payment_type,
-              status: p.payment_status || p.status,
-              sessionId: p.session_id
-            })) || []
+            deposit: {
+              exists: hasDeposit,
+              paid: depositPaid,
+              active: depositActive,
+              expired: depositStatus.expired,
+              canceled: depositStatus.canceled,
+              paymentStatus: depositStatus.paymentStatus,
+              sessionStatus: depositStatus.sessionStatus
+            },
+            rest: {
+              exists: hasRest,
+              paid: restPaid,
+              active: restActive,
+              expired: restStatus.expired,
+              canceled: restStatus.canceled,
+              paymentStatus: restStatus.paymentStatus,
+              sessionStatus: restStatus.sessionStatus
+            },
+            single: {
+              exists: hasSingle,
+              paid: singlePaid,
+              active: singleActive,
+              expired: singleStatus.expired,
+              canceled: singleStatus.canceled,
+              paymentStatus: singleStatus.paymentStatus,
+              sessionStatus: singleStatus.sessionStatus
+            },
+            note: 'Проверяем актуальный статус в Stripe API, а не только в базе данных'
           });
 
           // Проверяем, все ли необходимые сессии созданы И оплачены
@@ -647,33 +702,39 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
           if (paymentSchedule === '50/50') {
             // Для графика 50/50 нужны оба платежа: deposit и rest
-            // Если deposit не существует ИЛИ не оплачен → нужно создать
-            if (!hasDeposit || !depositPaid) {
+            // Если deposit не существует ИЛИ не оплачен ИЛИ не активен → нужно создать
+            if (!hasDeposit || !depositPaid || !depositActive) {
               needToCreate = true;
               if (!hasDeposit) {
                 missingSessions.push('deposit');
               } else if (!depositPaid) {
                 missingSessions.push('deposit (не оплачен)');
+              } else if (!depositActive) {
+                missingSessions.push(`deposit (${depositStatus.expired ? 'истек' : depositStatus.canceled ? 'отменен' : 'неактивен'})`);
               }
             }
-            // Если rest не существует ИЛИ не оплачен → нужно создать
-            if (!hasRest || !restPaid) {
+            // Если rest не существует ИЛИ не оплачен ИЛИ не активен → нужно создать
+            if (!hasRest || !restPaid || !restActive) {
               needToCreate = true;
               if (!hasRest) {
                 missingSessions.push('rest');
               } else if (!restPaid) {
                 missingSessions.push('rest (не оплачен)');
+              } else if (!restActive) {
+                missingSessions.push(`rest (${restStatus.expired ? 'истек' : restStatus.canceled ? 'отменен' : 'неактивен'})`);
               }
             }
           } else {
             // Для графика 100% нужен один платеж: single
-            // Если single не существует ИЛИ не оплачен → нужно создать
-            if (!hasSingle || !singlePaid) {
+            // Если single не существует ИЛИ не оплачен ИЛИ не активен → нужно создать
+            if (!hasSingle || !singlePaid || !singleActive) {
               needToCreate = true;
               if (!hasSingle) {
                 missingSessions.push('single');
               } else if (!singlePaid) {
                 missingSessions.push('single (не оплачен)');
+              } else if (!singleActive) {
+                missingSessions.push(`single (${singleStatus.expired ? 'истек' : singleStatus.canceled ? 'отменен' : 'неактивен'})`);
               }
             }
           }
