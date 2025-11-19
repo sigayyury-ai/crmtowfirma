@@ -158,6 +158,35 @@ class StripeRepository {
         });
         return null;
       }
+      
+      // Handle missing columns (invoice_number, receipt_number) - retry without them
+      const errorCode = error.code || '';
+      const errorMessage = error.message || '';
+      if (errorCode === 'PGRST204' && (errorMessage.includes('invoice_number') || errorMessage.includes('receipt_number'))) {
+        logger.warn('Database columns invoice_number/receipt_number not found, retrying without them', {
+          sessionId: payment.session_id
+        });
+        
+        // Remove optional fields and retry
+        const paymentWithoutOptionalFields = { ...payment };
+        delete paymentWithoutOptionalFields.invoice_number;
+        delete paymentWithoutOptionalFields.receipt_number;
+        
+        const { error: retryError } = await this.supabase
+          .from('stripe_payments')
+          .upsert(compact(paymentWithoutOptionalFields), { onConflict: 'session_id' });
+        
+        if (retryError) {
+          logger.error('Failed to upsert stripe payment after removing optional fields', { 
+            error: retryError, 
+            sessionId: payment.session_id 
+          });
+          throw retryError;
+        }
+        
+        return payment.session_id;
+      }
+      
       logger.error('Failed to upsert stripe payment', { error, sessionId: payment.session_id });
       throw error;
     }

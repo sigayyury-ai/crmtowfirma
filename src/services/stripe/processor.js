@@ -30,7 +30,7 @@ class StripeProcessorService {
     this.invoiceTypeFieldKey = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     this.stripeTriggerValue = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75');
     this.invoiceDoneValue = String(process.env.PIPEDRIVE_INVOICE_DONE_VALUE || '73');
-    this.checkoutSuccessUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL || null;
+    this.checkoutSuccessUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL || 'https://comoon.io/comoonity/';
     this.checkoutCancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL || this.checkoutSuccessUrl;
     
     // Initialize SendPulse client (optional, may not be configured)
@@ -491,22 +491,8 @@ class StripeProcessorService {
       paymentRecord.receipt_number = receiptNumber;
     }
     
-    try {
-      await this.repository.savePayment(paymentRecord);
-    } catch (saveError) {
-      // If error is about missing columns, try saving without invoice/receipt number
-      if (saveError.message?.includes('invoice_number') || saveError.message?.includes('receipt_number')) {
-        this.logger.warn('Database columns invoice_number/receipt_number not found, saving without them', {
-          dealId,
-          sessionId: session.id
-        });
-        delete paymentRecord.invoice_number;
-        delete paymentRecord.receipt_number;
-        await this.repository.savePayment(paymentRecord);
-      } else {
-        throw saveError;
-      }
-    }
+    // Save payment (repository handles missing invoice_number/receipt_number columns automatically)
+    await this.repository.savePayment(paymentRecord);
     await this.paymentPlanService.updatePlanFromSession(paymentRecord, session);
 
     // Send invoice to customer ONLY for B2B deals (B2C gets receipt automatically)
@@ -823,6 +809,9 @@ class StripeProcessorService {
           paymentType
         });
         
+        // Close address tasks if payment received
+        await this.closeAddressTasks(dealId);
+        
         // Add note to deal about payment
         await this.addPaymentNoteToDeal(dealId, {
           paymentType: 'payment',
@@ -838,6 +827,9 @@ class StripeProcessorService {
           sessionId: session.id,
           paymentType
         });
+        
+        // Close address tasks if payment received
+        await this.closeAddressTasks(dealId);
       } else if (isFirst) {
         // For 'single' payment type, always go to Camp Waiter (it's the only payment)
         if (paymentType === 'single' || isSinglePaymentExpected) {
@@ -847,6 +839,9 @@ class StripeProcessorService {
             sessionId: session.id,
             paymentType
           });
+          
+          // Close address tasks if payment received
+          await this.closeAddressTasks(dealId);
         } else {
           // First payment of two (>= 30 days) - move to Second Payment stage (ждем второй платеж)
           await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
@@ -1490,7 +1485,15 @@ class StripeProcessorService {
   }
 
   async ensureAddress({ dealId, shouldApplyVat, participant, crmContext }) {
+    this.logger.info('Checking address for deal', {
+      dealId,
+      shouldApplyVat,
+      hasParticipant: !!participant,
+      hasCrmContext: !!crmContext
+    });
+    
     if (!shouldApplyVat) {
+      this.logger.info('VAT not required, skipping address check', { dealId });
       return { valid: true };
     }
 
@@ -1512,13 +1515,35 @@ class StripeProcessorService {
       crmAddressParts.country
     );
 
+    this.logger.info('Address validation result', {
+      dealId,
+      hasStripeAddress,
+      hasCrmAddress,
+      hasCompanyAddress: !!companyAddress,
+      customerAddress: customerAddress ? {
+        line1: customerAddress.line1,
+        postalCode: customerAddress.postalCode,
+        city: customerAddress.city,
+        country: customerAddress.country
+      } : null,
+      crmAddressParts: crmAddressParts ? {
+        line1: crmAddressParts.line1,
+        postalCode: crmAddressParts.postalCode,
+        city: crmAddressParts.city,
+        country: crmAddressParts.country
+      } : null
+    });
+
     if (hasStripeAddress || hasCrmAddress || companyAddress) {
       return { valid: true };
     }
 
     if (dealId && !this.addressTaskCache.has(dealId)) {
+      this.logger.info('Creating address task for deal', { dealId });
       await this.createAddressTask(dealId);
       this.addressTaskCache.add(dealId);
+    } else if (dealId && this.addressTaskCache.has(dealId)) {
+      this.logger.info('Address task already created for deal (cached)', { dealId });
     }
 
     return {
@@ -1541,6 +1566,62 @@ class StripeProcessorService {
       this.logger.info('Created CRM task for missing address', { dealId });
     } catch (error) {
       this.logger.error('Failed to create CRM task for missing address', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
+   * Close address tasks for a deal after payment is received
+   * @param {number} dealId - Deal ID
+   */
+  async closeAddressTasks(dealId) {
+    if (!dealId) return;
+    
+    try {
+      // Get all tasks for the deal
+      const tasksResult = await this.pipedriveClient.getDealActivities(dealId, 'task');
+      if (!tasksResult.success || !tasksResult.activities) {
+        return;
+      }
+
+      // Find address tasks by subject
+      const addressTasks = tasksResult.activities.filter(task => 
+        task.subject && task.subject.includes('Stripe: заполнить адрес для расчёта VAT')
+      );
+
+      if (addressTasks.length === 0) {
+        this.logger.debug('No address tasks found to close', { dealId });
+        return;
+      }
+
+      // Close each address task
+      for (const task of addressTasks) {
+        try {
+          // Mark task as done by setting done_date
+          await this.pipedriveClient.updateActivity(task.id, {
+            done: 1,
+            done_date: new Date().toISOString().split('T')[0]
+          });
+          this.logger.info('Closed address task after payment', {
+            dealId,
+            taskId: task.id,
+            taskSubject: task.subject
+          });
+        } catch (error) {
+          this.logger.warn('Failed to close address task', {
+            dealId,
+            taskId: task.id,
+            error: error.message
+          });
+        }
+      }
+
+      // Remove from cache
+      this.addressTaskCache.delete(dealId);
+    } catch (error) {
+      this.logger.error('Failed to close address tasks', {
         dealId,
         error: error.message
       });
@@ -1656,6 +1737,13 @@ class StripeProcessorService {
           const closeDate = deal.expected_close_date || deal.close_date;
           let use50_50Schedule = false;
           
+          this.logger.info('Determining payment schedule', {
+            dealId: deal.id,
+            expected_close_date: deal.expected_close_date,
+            close_date: deal.close_date,
+            closeDate
+          });
+          
           if (closeDate) {
             try {
               const expectedCloseDate = new Date(closeDate);
@@ -1684,6 +1772,10 @@ class StripeProcessorService {
                 error: error.message
               });
             }
+          } else {
+            this.logger.warn('No close_date found, defaulting to 100% payment schedule', {
+              dealId: deal.id
+            });
           }
 
           // Check if sessions already exist for this deal
@@ -1892,7 +1984,7 @@ class StripeProcessorService {
    * Create Stripe Checkout Session for a single deal.
    */
   async createCheckoutSessionForDeal(deal, context = {}) {
-    const { trigger, runId, paymentType, customAmount, paymentSchedule, paymentIndex, skipNotification } = context;
+    let { trigger, runId, paymentType, customAmount, paymentSchedule, paymentIndex, skipNotification } = context;
     const dealId = deal.id;
 
     try {
@@ -1906,6 +1998,59 @@ class StripeProcessorService {
       }
 
       const fullDeal = fullDealResult.deal;
+      
+      // Мержим данные из переданного deal (из webhook'а) в fullDeal
+      // Особенно важно для close_date/expected_close_date для определения графика платежей
+      if (deal && deal !== fullDeal) {
+        Object.assign(fullDeal, {
+          expected_close_date: deal.expected_close_date || fullDeal.expected_close_date,
+          close_date: deal.close_date || fullDeal.close_date,
+          title: deal.title || fullDeal.title,
+          value: deal.value || fullDeal.value,
+          currency: deal.currency || fullDeal.currency
+        });
+      }
+      
+      // Определяем график платежей, если не передан в context
+      if (!paymentSchedule) {
+        const closeDate = fullDeal.expected_close_date || fullDeal.close_date;
+        if (closeDate) {
+          try {
+            const expectedCloseDate = new Date(closeDate);
+            const today = new Date();
+            const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+            
+            if (daysDiff >= 30) {
+              paymentSchedule = '50/50';
+              this.logger.info('Auto-determined 50/50 payment schedule', {
+                dealId,
+                daysDiff,
+                closeDate
+              });
+            } else {
+              paymentSchedule = '100%';
+              this.logger.info('Auto-determined 100% payment schedule', {
+                dealId,
+                daysDiff,
+                closeDate
+              });
+            }
+          } catch (error) {
+            this.logger.warn('Failed to determine payment schedule, defaulting to 100%', {
+              dealId,
+              closeDate,
+              error: error.message
+            });
+            paymentSchedule = '100%';
+          }
+        } else {
+          this.logger.warn('No close_date found, defaulting to 100% payment schedule', {
+            dealId
+          });
+          paymentSchedule = '100%';
+        }
+      }
+      
       const person = fullDealResult.person;
       const organization = fullDealResult.organization;
 
@@ -2152,8 +2297,8 @@ class StripeProcessorService {
           trigger,
           run_id: runId || null
         },
-        success_url: this.checkoutSuccessUrl || `https://dashboard.stripe.com/test/payments`,
-        cancel_url: this.checkoutCancelUrl || this.checkoutSuccessUrl || `https://dashboard.stripe.com/test/payments`
+        success_url: this.buildCheckoutUrl(this.checkoutSuccessUrl, dealId, 'success'),
+        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel')
       };
 
       // 10. Set customer (B2B) or customer_email (B2C)
@@ -2223,7 +2368,17 @@ class StripeProcessorService {
       // 12. Create Checkout Session in Stripe
       const session = await this.stripe.checkout.sessions.create(sessionParams);
 
-      // 13. Update deal status to "Done" (73) in CRM
+      // 13. Create tasks in CRM after successful session creation (if address is missing)
+      // Задачи создаются только если адрес не найден и нужен VAT
+      if (!addressValidation.valid && shouldApplyVat) {
+        // ensureAddress уже создал задачу, но проверяем еще раз для надежности
+        if (dealId && !this.addressTaskCache.has(dealId)) {
+          await this.createAddressTask(dealId);
+          this.addressTaskCache.add(dealId);
+        }
+      }
+
+      // 14. Update deal status to "Done" (73) in CRM
       try {
         await this.pipedriveClient.updateDeal(dealId, {
           [this.invoiceTypeFieldKey]: this.invoiceDoneValue
@@ -2236,7 +2391,7 @@ class StripeProcessorService {
         });
       }
 
-      // 13. Send SendPulse notification with payment schedule and links (unless skipped)
+      // 15. Send SendPulse notification with payment schedule and links (unless skipped)
       if (!skipNotification) {
         this.logger.info(`📧 Отправка уведомления о создании Checkout Session | Deal ID: ${dealId} | Session ID: ${session.id}`, {
           dealId,
@@ -3439,6 +3594,30 @@ class StripeProcessorService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  /**
+   * Строит URL для редиректа после платежа с параметрами deal_id
+   * @param {string} baseUrl - Базовый URL из переменной окружения
+   * @param {string|number} dealId - ID сделки
+   * @param {string} type - Тип редиректа ('success' или 'cancel')
+   * @returns {string|null} - URL с параметрами или null если baseUrl не задан
+   */
+  buildCheckoutUrl(baseUrl, dealId, type = 'success') {
+    if (!baseUrl) return null;
+    
+    try {
+      const url = new URL(baseUrl);
+      url.searchParams.set('deal_id', String(dealId));
+      url.searchParams.set('type', type);
+      return url.toString();
+    } catch (error) {
+      // Если baseUrl не валидный URL, возвращаем как есть с параметрами через ?
+      if (baseUrl.includes('?')) {
+        return `${baseUrl}&deal_id=${dealId}&type=${type}`;
+      }
+      return `${baseUrl}?deal_id=${dealId}&type=${type}`;
     }
   }
 }

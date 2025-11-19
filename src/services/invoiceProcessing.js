@@ -1095,7 +1095,13 @@ class InvoiceProcessingService {
    */
   async getPendingInvoiceDeals() {
     try {
-      // Получаем все активные сделки
+      // Значение для Stripe из переменной окружения
+      const STRIPE_INVOICE_TYPE_VALUE = process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75';
+      const validTypes = Object.values(this.INVOICE_TYPES);
+      const stripeTypeId = parseInt(STRIPE_INVOICE_TYPE_VALUE, 10);
+      
+      // Получаем все открытые сделки (Pipedrive API не поддерживает фильтрацию по кастомным полям напрямую)
+      // Фильтрация выполняется на клиенте для экономии токенов
       const dealsResult = await this.pipedriveClient.getDeals({
         limit: 500,
         start: 0,
@@ -1107,6 +1113,8 @@ class InvoiceProcessingService {
       }
       
       // Фильтруем сделки с установленным полем Invoice type
+      // ВАЖНО: Для проформ обрабатываем только типы 70, 71, 72 (не Stripe)
+      // Stripe сделки обрабатываются отдельно через webhooks и Stripe processor
       const pendingDeals = dealsResult.deals.filter(deal => {
         const invoiceTypeValue = deal[this.INVOICE_TYPE_FIELD_KEY];
 
@@ -1118,6 +1126,9 @@ class InvoiceProcessingService {
 
         // Пропускаем сделки, помеченные триггером на удаление
         if (this.DELETE_TRIGGER_VALUES.has(normalizedValue)) {
+          if (deal.id === 1625) {
+            logger.info(`Deal 1625 filtered out: delete trigger (${normalizedValue})`);
+          }
           return false;
         }
 
@@ -1132,15 +1143,48 @@ class InvoiceProcessingService {
           return false;
         }
 
+        // Пропускаем Stripe тип (75) - он обрабатывается отдельно через webhooks
+        if (invoiceTypeId === stripeTypeId) {
+          if (deal.id === 1625) {
+            logger.info(`Deal 1625 filtered out: Stripe type (${invoiceTypeId}), processed via webhooks`);
+          }
+          return false;
+        }
+
+        // Включаем только проформы (70, 71, 72)
+        const isValidProformaType = validTypes.includes(invoiceTypeId);
+        if (deal.id === 1625) {
+          logger.info(`Deal 1625 filter check: invoiceTypeId=${invoiceTypeId}, validTypes=${JSON.stringify(validTypes)}, isValid=${isValidProformaType}`);
+        }
+        return isValidProformaType;
+      });
+      
+      // Добавляем метку типа для каждой сделки
+      const dealsWithType = pendingDeals.map(deal => {
+        const invoiceTypeValue = deal[this.INVOICE_TYPE_FIELD_KEY];
+        const invoiceTypeId = parseInt(String(invoiceTypeValue).trim(), 10);
+        const stripeTypeId = parseInt(STRIPE_INVOICE_TYPE_VALUE, 10);
         const validTypes = Object.values(this.INVOICE_TYPES);
-        return validTypes.includes(invoiceTypeId);
+        
+        let invoiceTypeLabel = 'Проформа';
+        if (invoiceTypeId === stripeTypeId) {
+          invoiceTypeLabel = 'Создание Stripe платежа';
+        } else if (validTypes.includes(invoiceTypeId)) {
+          invoiceTypeLabel = 'Проформа';
+        }
+        
+        return {
+          ...deal,
+          _invoiceTypeLabel: invoiceTypeLabel,
+          _invoiceTypeId: invoiceTypeId
+        };
       });
       
       logger.info(`Found ${pendingDeals.length} deals with invoice type field set`);
       
       return {
         success: true,
-        deals: pendingDeals
+        deals: dealsWithType
       };
       
     } catch (error) {
@@ -1220,12 +1264,8 @@ class InvoiceProcessingService {
           source: existingProforma.source || null
         });
 
-        if (existingProforma.invoiceNumber) {
-          await this.ensureInvoiceNumber(fullDeal, existingProforma.invoiceNumber, {
-            attempts: 1,
-            backoffBaseMs: 200
-          });
-        }
+        // НЕ обновляем Invoice number автоматически - это может вызвать бесконечный цикл webhooks
+        // Если номер нужно обновить, это должно делаться вручную или при создании новой проформы
 
         const clearResult = await this.clearInvoiceTrigger(
           fullDeal.id,
@@ -1505,6 +1545,14 @@ class InvoiceProcessingService {
       
       // КРИТИЧНО: Снимаем триггер в CRM ТОЛЬКО после успешного создания проформы в wFirma
       // Проверяем еще раз, что invoiceId существует перед установкой "Done"
+      logger.info('Checking invoice result before clearing trigger:', {
+        dealId: fullDeal.id,
+        hasInvoiceId: !!invoiceResult.invoiceId,
+        invoiceId: invoiceResult.invoiceId,
+        invoiceNumber: invoiceResult.invoiceNumber,
+        success: invoiceResult.success
+      });
+      
       if (invoiceResult.invoiceId) {
         logger.info(`Setting invoice type to "Done" for deal ${fullDeal.id} after successful invoice creation (ID: ${invoiceResult.invoiceId})`);
         
@@ -1519,47 +1567,30 @@ class InvoiceProcessingService {
         
         const clearTriggerResult = await this.clearInvoiceTrigger(fullDeal.id, invoiceResult.invoiceId, additionalFields);
         if (!clearTriggerResult.success) {
-          logger.warn('Failed to clear invoice trigger in Pipedrive', {
+          logger.error('Failed to clear invoice trigger in Pipedrive - invoice type NOT set to Done', {
             dealId: fullDeal.id,
             invoiceId: invoiceResult.invoiceId,
-            error: clearTriggerResult.error
+            error: clearTriggerResult.error,
+            note: 'Proforma was created but invoice_type was NOT updated to Done due to error'
           });
           // Не считаем это критической ошибкой - проформа уже создана
         } else {
           logger.info(`Invoice trigger cleared successfully for deal ${fullDeal.id} (invoice ID: ${invoiceResult.invoiceId})`);
         }
       } else {
-        logger.error(`Cannot clear invoice trigger: invoiceId is missing for deal ${fullDeal.id}`);
+        logger.error(`Cannot clear invoice trigger: invoiceId is missing for deal ${fullDeal.id} - invoice_type will NOT be set to Done`, {
+          dealId: fullDeal.id,
+          invoiceResult: {
+            success: invoiceResult.success,
+            error: invoiceResult.error,
+            invoiceId: invoiceResult.invoiceId,
+            invoiceNumber: invoiceResult.invoiceNumber
+          }
+        });
         // Не устанавливаем "Done", так как проформа не создана
       }
 
       // Создаем задачи на проверку оплат
-      // 13. Создаем активности в Pipedrive для контроля оплат
-      const activityResult = await this.createPaymentCheckActivity(fullDeal, contractor);
-      if (!activityResult.success) {
-        logger.warn('Failed to create payment check activity', {
-          dealId: fullDeal.id,
-          error: activityResult.error
-        });
-      }
-
-      if (activityResult.success && activityResult.schedule?.secondPaymentDate) {
-        const secondActivityResult = await this.createPaymentCheckActivity(
-          fullDeal,
-          contractor,
-          activityResult.schedule.secondPaymentDate,
-          'second'
-        );
-
-        if (!secondActivityResult.success) {
-          logger.warn('Failed to create second payment check activity', {
-            dealId: fullDeal.id,
-            error: secondActivityResult.error
-          });
-        }
-      }
-
-      // 14. Создаем задачи в Pipedrive для проверки платежей (перенесено в конец)
       try {
         logger.info('Checking task creation requirements:', {
           dealId: fullDeal.id,
@@ -1569,12 +1600,21 @@ class InvoiceProcessingService {
         });
 
         if (invoiceResult.paymentSchedule) {
-          const invoiceNumberForTasks = invoiceResult.invoiceNumber || invoiceResult.invoiceId;
-          tasksResult = await this.createPaymentVerificationTasks(
-            invoiceResult.paymentSchedule,
-            invoiceNumberForTasks,
-            fullDeal.id
-          );
+          // Используем только invoiceNumber, не invoiceId (чтобы не создавать задачи без номера проформы)
+          const invoiceNumberForTasks = invoiceResult.invoiceNumber;
+          if (!invoiceNumberForTasks) {
+            logger.warn('Skipping payment verification tasks: invoice number is missing', {
+              dealId: fullDeal.id,
+              invoiceId: invoiceResult.invoiceId,
+              hasInvoiceNumber: !!invoiceResult.invoiceNumber
+            });
+          } else {
+            tasksResult = await this.createPaymentVerificationTasks(
+              invoiceResult.paymentSchedule,
+              invoiceNumberForTasks,
+              fullDeal.id
+            );
+          }
 
           if (!tasksResult.success || tasksResult.tasksFailed > 0) {
             logger.error('Payment verification tasks creation failed or partially failed (non-critical):', {
@@ -1705,103 +1745,6 @@ class InvoiceProcessingService {
 
     } catch (error) {
       logger.error('Error creating or assigning label:', error);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Создать активность на проверку оплаты
-   * @param {Object} deal - Данные сделки
-   * @param {Object} contractor - Контрагент wFirma
-   * @returns {Promise<Object>} - Результат создания активности
-   */
-  async createPaymentCheckActivity(deal, contractor, customDueDate = null, activitySuffix = 'first') {
-    try {
-      if (!deal || !deal.id) {
-        return { success: false, error: 'Deal data missing' };
-      }
-
-      const personId = deal.person_id?.value || deal.person_id || null;
-      const contractorName = contractor?.name || deal.person_name || 'Контрагент';
-
-      const dueDate = customDueDate
-        ? new Date(customDueDate)
-        : new Date();
-
-      if (!customDueDate) {
-        dueDate.setDate(dueDate.getDate() + this.PAYMENT_TERMS_DAYS);
-      }
-
-      const dueDateStr = dueDate.toISOString().split('T')[0];
-
-      let secondPaymentDateStr = null;
-      if (activitySuffix === 'first' && !customDueDate && deal.expected_close_date) {
-        try {
-          const expectedCloseDate = new Date(deal.expected_close_date);
-          const balanceDueDate = new Date(expectedCloseDate);
-          balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
-
-          if (balanceDueDate > dueDate) {
-            secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
-          }
-        } catch (error) {
-          logger.warn('Failed to compute second payment date for activity', {
-            dealId: deal.id,
-            expectedCloseDate: deal.expected_close_date,
-            error: error.message
-          });
-        }
-      }
-
-      const subject = activitySuffix === 'second'
-        ? `Проверить вторую оплату ${contractorName}`
-        : `Проверить оплату ${contractorName}`;
-
-      const activityData = {
-        subject,
-        type: 'task',
-        deal_id: deal.id,
-        person_id: personId,
-        due_date: dueDateStr,
-        public_description: 'Проверить поступление оплаты по созданной проформе',
-        note: activitySuffix === 'second'
-          ? `Второй платеж по проформе. Проверить поступление оплаты до ${dueDateStr}.`
-          : `Проформа: ${deal.title || ''}. Проверить поступление оплаты до ${dueDateStr}.`
-      };
-
-      const result = await this.pipedriveClient.createTask(activityData);
-
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error || 'Failed to create activity in Pipedrive'
-        };
-      }
-
-      const logLabel = activitySuffix === 'second' ? 'Second payment check activity created' : 'Payment check activity created';
-      logger.info(logLabel, {
-        dealId: deal.id,
-        activityId: result.task?.id,
-        dueDate: dueDateStr,
-        type: activitySuffix,
-        secondPaymentDate: secondPaymentDateStr || null
-      });
-
-      return {
-        success: true,
-        activity: result.task,
-        schedule: activitySuffix === 'first'
-          ? {
-              dueDate: dueDateStr,
-              secondPaymentDate: secondPaymentDateStr
-            }
-          : undefined
-      };
-    } catch (error) {
-      logger.error('Error creating payment check activity:', error);
       return {
         success: false,
         error: error.message
@@ -2164,8 +2107,16 @@ class InvoiceProcessingService {
       // Конвертируем в число для сравнения (Pipedrive может возвращать строку)
       const invoiceTypeId = parseInt(invoiceTypeValue);
       
-      // Проверяем, что значение соответствует одному из наших типов
+      // Проверяем, что значение соответствует одному из наших типов (включая Stripe)
       const validTypes = Object.values(this.INVOICE_TYPES);
+      const STRIPE_INVOICE_TYPE_VALUE = parseInt(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75', 10);
+      
+      // Если это Stripe тип, возвращаем null (Stripe обрабатывается отдельно через webhooks)
+      if (invoiceTypeId === STRIPE_INVOICE_TYPE_VALUE) {
+        logger.info(`Deal ${deal.id} has Stripe invoice type (${invoiceTypeId}), skipping proforma processing`);
+        return null; // Stripe обрабатывается отдельно
+      }
+      
       if (!validTypes.includes(invoiceTypeId)) {
         logger.warn(`Deal ${deal.id} has invalid invoice type: ${invoiceTypeValue} (ID: ${invoiceTypeId})`);
         return null;
@@ -2328,7 +2279,23 @@ class InvoiceProcessingService {
       });
       return {
         success: false,
-        error: 'Missing required parameters for task creation'
+        error: 'Missing required parameters for task creation',
+        skipped: true
+      };
+    }
+    
+    // Проверяем, что invoiceNumber не пустой и валидный
+    const normalizedInvoiceNumber = typeof invoiceNumber === 'string' ? invoiceNumber.trim() : String(invoiceNumber || '').trim();
+    if (!normalizedInvoiceNumber || normalizedInvoiceNumber === 'null' || normalizedInvoiceNumber === 'undefined' || normalizedInvoiceNumber === '') {
+      logger.warn('Skipping payment verification tasks: invoice number is empty or invalid', {
+        dealId,
+        invoiceNumber,
+        normalizedInvoiceNumber
+      });
+      return {
+        success: false,
+        error: 'Invoice number is empty or invalid',
+        skipped: true
       };
     }
 
@@ -2672,8 +2639,31 @@ class InvoiceProcessingService {
         postal_address_country: person.postal_address_country
       });
       
+      logger.info('Preparing contractor data from person:', {
+        personId: person.id,
+        personName: person.name,
+        firstName: person.first_name,
+        lastName: person.last_name,
+        email: email,
+        address: address,
+        zip: zip || defaultZip,
+        city: city || defaultCity,
+        country: country,
+        postal_address: person.postal_address,
+        postal_address_route: person.postal_address_route,
+        postal_address_locality: person.postal_address_locality,
+        postal_address_postal_code: person.postal_address_postal_code,
+        postal_address_country: person.postal_address_country
+      });
+      
+      // Формируем имя: приоритет first_name + last_name, затем person.name, затем email
+      const firstName = person.first_name || '';
+      const lastName = person.last_name || '';
+      const fullName = `${firstName} ${lastName}`.trim();
+      const contractorName = fullName || person.name || email.split('@')[0] || 'Unknown Customer';
+      
       return {
-        name: person.name || `${person.first_name || ''} ${person.last_name || ''}`.trim(),
+        name: contractorName,
         email: email,
         address: address,
         zip: zip || defaultZip,
@@ -3578,11 +3568,14 @@ class InvoiceProcessingService {
    * @param {number|string} dealId - ID сделки
    * @returns {Promise<Object>} - Результат обработки
    */
-  async processDealInvoiceByWebhook(dealId) {
+  async processDealInvoiceByWebhook(dealId, dealFromWebhook = null) {
     try {
-      logger.info(`Processing invoice for deal ${dealId} via webhook`);
+      logger.info(`Processing invoice for deal ${dealId} via webhook`, {
+        hasDealFromWebhook: !!dealFromWebhook
+      });
       
-      // Получаем данные сделки с связанными данными
+      // Если есть данные из webhook'а, используем их, но все равно запрашиваем полные данные
+      // (нужны продукты, email персоны и другие данные, которых нет в webhook'е)
       const dealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       
       if (!dealResult.success) {
@@ -3590,6 +3583,12 @@ class InvoiceProcessingService {
           success: false,
           error: `Failed to get deal data: ${dealResult.error}`
         };
+      }
+      
+      // Если есть данные из webhook'а, дополняем deal объект этими полями
+      // (это может быть полезно для полей, которые не приходят через API)
+      if (dealFromWebhook) {
+        Object.assign(dealResult.deal, dealFromWebhook);
       }
       
       // Обрабатываем сделку

@@ -509,9 +509,16 @@ router.get('/invoice-processing/scheduler-history', (req, res) => {
  */
 router.post('/invoice-processing/run', async (req, res) => {
   try {
-    const { period = 'manual' } = req.body;
+    const { period = 'manual', force = false } = req.body;
     
-    logger.info(`Manual invoice processing triggered with period: ${period}`);
+    logger.info(`Manual invoice processing triggered with period: ${period}`, { force });
+    
+    // Если force=true, сбрасываем флаг isProcessing
+    if (force && scheduler.isProcessing) {
+      logger.warn('Force reset processing lock', { wasProcessing: scheduler.isProcessing });
+      scheduler.isProcessing = false;
+      scheduler.currentRun = null;
+    }
     
     const result = await scheduler.runManualProcessing(period);
 
@@ -519,7 +526,8 @@ router.post('/invoice-processing/run', async (req, res) => {
       return res.status(409).json({
         success: false,
         error: 'Processing already in progress',
-        reason: result.reason || 'processing_in_progress'
+        reason: result.reason || 'processing_in_progress',
+        hint: 'Use { "force": true } to reset processing lock'
       });
     }
 
@@ -530,6 +538,33 @@ router.post('/invoice-processing/run', async (req, res) => {
     res.status(500).json(result || { success: false, error: 'Unknown error' });
   } catch (error) {
     logger.error('Error running manual invoice processing:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/invoice-processing/reset
+ * Сбросить флаг обработки (если зависла)
+ */
+router.post('/invoice-processing/reset', async (req, res) => {
+  try {
+    const wasProcessing = scheduler.isProcessing;
+    scheduler.isProcessing = false;
+    scheduler.currentRun = null;
+    
+    logger.info('Processing lock reset', { wasProcessing });
+    
+    res.json({
+      success: true,
+      message: 'Processing lock reset',
+      wasProcessing
+    });
+  } catch (error) {
+    logger.error('Error resetting processing lock:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',
@@ -699,9 +734,10 @@ router.get('/invoice-processing/queue', async (req, res) => {
         customerEmail: deal.person_id?.email?.[0]?.value || 'No email',
         value: deal.formatted_value,
         currency: deal.currency,
-        invoiceType: deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '70' ? 'Proforma' : 
-                   deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '71' ? 'Prepayment' :
-                   deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '72' ? 'Final' : 'Unknown',
+        invoiceType: deal._invoiceTypeLabel || 
+                    (deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '70' ? 'Proforma' : 
+                     deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '71' ? 'Prepayment' :
+                     deal.ad67729ecfe0345287b71a3b00910e8ba5b3b496 === '72' ? 'Final' : 'Unknown'),
         addTime: deal.add_time,
         updateTime: deal.update_time
       }));

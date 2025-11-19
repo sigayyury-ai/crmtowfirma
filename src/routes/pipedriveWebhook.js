@@ -23,22 +23,35 @@ const MAX_HISTORY_SIZE = 50;
  * 5. Изменение invoice_type на "delete"/"74" → удаление инвойсов
  * 6. Удаление сделки (deleted.deal) → удаление инвойсов
  */
-router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
+router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, res) => {
+  const timestamp = new Date().toISOString();
+  
   try {
     const webhookData = req.body;
-    const timestamp = new Date().toISOString();
+    
+    logger.info('📥 Webhook получен (до сохранения в историю)', {
+      hasBody: !!webhookData,
+      bodyKeys: webhookData ? Object.keys(webhookData) : [],
+      url: req.url,
+      method: req.method,
+      contentType: req.headers['content-type'],
+      bodyType: typeof webhookData
+    });
     
     // Сохраняем событие в историю для отладки
     const webhookEvent = {
       timestamp,
-      event: webhookData.event,
-      dealId: webhookData.current?.id || 
-              webhookData.previous?.id || 
-              webhookData['Deal ID'] || 
-              webhookData['Deal_id'] ||
-              webhookData.dealId ||
-              webhookData.deal_id,
-      bodyKeys: Object.keys(webhookData),
+      event: webhookData?.event || 'workflow_automation',
+      dealId: webhookData?.current?.id || 
+              webhookData?.previous?.id || 
+              webhookData?.['Deal ID'] || 
+              webhookData?.['Deal_id'] ||
+              webhookData?.dealId ||
+              webhookData?.deal_id,
+      bodyKeys: webhookData ? Object.keys(webhookData) : [],
+      bodyPreview: webhookData ? Object.fromEntries(
+        Object.entries(webhookData).slice(0, 10).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v).substring(0, 100) : String(v).substring(0, 100)])
+      ) : {},
       body: webhookData // Сохраняем полное тело для отладки
     };
     
@@ -46,6 +59,11 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     if (webhookHistory.length > MAX_HISTORY_SIZE) {
       webhookHistory.pop(); // Удаляем старые события
     }
+    
+    logger.info('✅ Webhook сохранен в историю', {
+      historyLength: webhookHistory.length,
+      dealId: webhookEvent.dealId
+    });
     
     // Log webhook received
     const eventType = webhookData.event || 'workflow_automation';
@@ -93,28 +111,50 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                      webhookData['stage_id'];
       const hasStageId = stageId !== undefined && !isNaN(Number(stageId));
       
-      // Если есть stage_id и все необходимые данные, используем их без запроса к API
-      if (hasInvoiceType && hasStageId && hasStatus) {
-        logger.info(`✅ Webhook содержит все данные включая stage_id, используем без запроса к API | Deal ID: ${dealId}`, {
+      // Если есть stage_id и status, используем их без запроса к API
+      // invoice_type не обязателен для триггера стадии "First payment"
+      if (hasStageId && hasStatus) {
+        logger.info(`✅ Webhook содержит stage_id и status, используем без запроса к API | Deal ID: ${dealId}`, {
           dealId,
-          hasInvoiceType,
           hasStageId,
-          hasStatus
+          hasStatus,
+          stageId: Number(stageId)
         });
         
-        // Собираем данные сделки из webhook
+        // Собираем данные сделки из webhook - берем все поля
         currentDeal = {
           id: dealId,
+          // Основные поля
+          title: webhookData['Deal title'] || 
+                webhookData['Deal_title'] ||
+                webhookData['deal_title'] ||
+                webhookData['title'] ||
+                webhookData['Deal name'] ||
+                webhookData['Deal_name'] ||
+                webhookData['deal_name'] ||
+                webhookData['name'],
           stage_id: Number(stageId),
+          stage_name: webhookData['Deal stage'] || 
+                     webhookData['Deal_stage'] || 
+                     webhookData['deal_stage'] || 
+                     webhookData['stage_name'],
           status: webhookData['Deal status'] || 
                  webhookData['Deal_status'] ||
                  webhookData['deal_status'] || 
                  webhookData['status'],
+          // Invoice поля
           [INVOICE_TYPE_FIELD_KEY]: webhookData['Invoice type'] || 
                                     webhookData['Invoice'] ||
                                     webhookData['invoice_type'] || 
                                     webhookData['invoice'] ||
                                     webhookData[INVOICE_TYPE_FIELD_KEY],
+          [INVOICE_NUMBER_FIELD_KEY]: webhookData['Invoice number'] ||
+                                     webhookData['Invoice_number'] ||
+                                     webhookData['invoice_number'] ||
+                                     webhookData['invoiceNumber'] ||
+                                     webhookData[INVOICE_NUMBER_FIELD_KEY] ||
+                                     webhookData['Invoice'],
+          // Финансовые поля
           value: webhookData['Deal value'] || 
                 webhookData['Deal_value'] ||
                 webhookData['deal_value'] || 
@@ -124,6 +164,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                    webhookData['deal_currency'] || 
                    webhookData['currency'] ||
                    webhookData['Currency'],
+          // Даты
           expected_close_date: webhookData['Expected close date'] || 
                                webhookData['Deal_close_date'] ||
                                webhookData['expected_close_date'] || 
@@ -131,6 +172,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
           close_date: webhookData['Deal_close_date'] ||
                      webhookData['Deal closed date'] ||
                      webhookData['close_date'],
+          // Связи
           person_id: webhookData['Person ID'] || 
                     webhookData['Contact id'] ||
                     webhookData['Contact_id'] ||
@@ -144,16 +186,28 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
                           webhookData['organizationId'] ||
                           (webhookData['Organization ID']?.value ? webhookData['Organization ID'].value : null) ||
                           (webhookData['Organisation_id']?.value ? webhookData['Organisation_id'].value : null),
+          // Lost reason
           lost_reason: webhookData['Deal_lost_reason'] ||
                       webhookData['Deal lost reason'] ||
                       webhookData['lost_reason'] ||
                       webhookData['lostReason'],
-          [INVOICE_NUMBER_FIELD_KEY]: webhookData['Invoice number'] ||
-                                     webhookData['Invoice_number'] ||
-                                     webhookData['invoice_number'] ||
-                                     webhookData['invoiceNumber'] ||
-                                     webhookData[INVOICE_NUMBER_FIELD_KEY] ||
-                                     webhookData['Invoice']
+          // Дополнительные поля для совместимости
+          org_id: webhookData['Organization ID'] || 
+                 webhookData['Organisation_id'] ||
+                 webhookData['organization_id'] || 
+                 webhookData['organizationId'] ||
+                 webhookData['org_id'] ||
+                 (webhookData['Organization ID']?.value ? webhookData['Organization ID'].value : null) ||
+                 (webhookData['Organisation_id']?.value ? webhookData['Organisation_id'].value : null),
+          // Копируем все остальные поля из webhook'а (кроме Deal_id, чтобы не перезаписать id)
+          ...Object.fromEntries(
+            Object.entries(webhookData).filter(([key]) => {
+              const lowerKey = key.toLowerCase();
+              return !['deal_id', 'dealid', 'deal id'].includes(lowerKey) &&
+                     // Не перезаписываем уже установленные поля
+                     !['id', 'stage_id', 'stage_name', 'status', 'title', 'person_id', 'organization_id', 'org_id'].includes(key);
+            })
+          )
         };
         previousDeal = null;
       } else {
@@ -275,21 +329,38 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     }
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
-    // Get invoice_type values
-    const currentInvoiceType = currentDeal[INVOICE_TYPE_FIELD_KEY];
+    // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
+    const currentInvoiceType = (webhookData && (webhookData['Invoice type'] || webhookData['Invoice'] || webhookData['invoice_type'] || webhookData['invoice'] || webhookData[INVOICE_TYPE_FIELD_KEY])) ||
+                              currentDeal?.[INVOICE_TYPE_FIELD_KEY] ||
+                              null;
     
-    // Get status
-    const currentStatus = currentDeal.status;
+    // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
+    const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
+                         currentDeal?.status ||
+                         'open';
     
-    // Get stage
-    const currentStageId = currentDeal.stage_id;
+    // Get stage - проверяем сначала webhookData для workflow automation, потом currentDeal
+    const currentStageId = (webhookData && (webhookData['Deal_stage_id'] || webhookData['Deal stage id'] || webhookData['deal_stage_id'] || webhookData['stage_id'])) ||
+                          currentDeal?.stage_id ||
+                          null;
     // Проверяем все возможные варианты названия стадии из webhook'а и из currentDeal
     // Сначала проверяем webhookData (оригинальные данные), потом currentDeal
     const currentStageName = (webhookData && (webhookData['Deal stage'] || webhookData['Deal_stage'] || webhookData['deal_stage'])) ||
-                            currentDeal.stage_name || 
-                            currentDeal['Deal stage'] || 
-                            currentDeal['Deal_stage'] ||
-                            currentDeal['deal_stage'];
+                            currentDeal?.stage_name || 
+                            currentDeal?.['Deal stage'] || 
+                            currentDeal?.['Deal_stage'] ||
+                            currentDeal?.['deal_stage'];
+    
+    logger.info('📊 Извлеченные данные из webhook', {
+      dealId,
+      currentStageId,
+      currentStatus,
+      currentInvoiceType,
+      currentStageName,
+      hasCurrentDeal: !!currentDeal,
+      webhookKeys: webhookData ? Object.keys(webhookData) : [],
+      isFirstPaymentStage: String(currentStageId) === String(STAGES.FIRST_PAYMENT_ID)
+    });
     
     // Get lost_reason
     const lostReason = currentDeal.lost_reason || currentDeal.lostReason || currentDeal['lost_reason'];
@@ -428,6 +499,8 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
 
         if (!existingPayments || existingPayments.length === 0) {
           // Если нет Checkout Sessions, создаем их
+          // Всегда получаем полные данные сделки через API для создания Checkout Session
+          // (нужны продукты, email персоны и другие данные)
           logger.info(`💳 Создание Stripe Checkout Sessions для стадии "First payment" | Deal ID: ${dealId}`, { 
             dealId 
           });
@@ -435,6 +508,11 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
           const dealResult = await stripeProcessor.pipedriveClient.getDeal(dealId);
           if (!dealResult.success || !dealResult.deal) {
             throw new Error(`Failed to fetch deal: ${dealResult.error || 'unknown'}`);
+          }
+
+          // Дополняем данные из API данными из webhook'а (особенно важно для close_date для определения графика платежей)
+          if (currentDeal) {
+            Object.assign(dealResult.deal, currentDeal);
           }
 
           const result = await stripeProcessor.createCheckoutSessionForDeal(dealResult.deal, {
@@ -604,7 +682,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
         });
 
         try {
-          const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId);
+          const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId, currentDeal);
           if (result.success) {
             logger.info(`✅ Проформа создана | Deal ID: ${dealId} | Invoice Type: ${result.invoiceType || currentInvoiceType}`, {
               dealId,
@@ -704,7 +782,7 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
         });
 
         try {
-          const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId);
+          const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId, currentDeal);
           if (result.success) {
             return res.status(200).json({
               success: true,
@@ -741,8 +819,26 @@ router.post('/webhooks/pipedrive', express.json(), async (req, res) => {
     logger.error('Error processing Pipedrive webhook', {
       error: error.message,
       stack: error.stack,
-      body: req.body
+      body: req.body,
+      url: req.url,
+      method: req.method
     });
+    
+    // Сохраняем ошибку в историю для отладки
+    const errorEvent = {
+      timestamp,
+      event: 'error',
+      dealId: req.body?.current?.id || req.body?.['Deal_id'] || req.body?.['Deal ID'] || null,
+      bodyKeys: req.body ? Object.keys(req.body) : [],
+      error: error.message,
+      bodyPreview: req.body ? Object.fromEntries(
+        Object.entries(req.body).slice(0, 5).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v).substring(0, 50) : String(v).substring(0, 50)])
+      ) : {}
+    };
+    webhookHistory.unshift(errorEvent);
+    if (webhookHistory.length > MAX_HISTORY_SIZE) {
+      webhookHistory.pop();
+    }
 
     // Return 200 to prevent Pipedrive from retrying on our errors
     return res.status(200).json({

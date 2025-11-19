@@ -132,6 +132,15 @@ class PipedriveClient {
         params.status = options.status;
       }
 
+      // Передаем кастомные поля как параметры запроса для фильтрации
+      // Pipedrive API позволяет фильтровать по кастомным полям через параметры с ключом поля
+      Object.keys(options).forEach(key => {
+        // Пропускаем стандартные параметры и передаем только кастомные поля
+        if (!['limit', 'start', 'stage_id', 'status'].includes(key)) {
+          params[key] = options[key];
+        }
+      });
+
       const response = await this.client.get('/deals', { params });
       
       if (response.data.success) {
@@ -566,6 +575,88 @@ class PipedriveClient {
     } catch (error) {
       logger.error('Error adding note to deal:', {
         dealId,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Get activities (tasks, calls, etc.) for a deal
+   * @param {number} dealId - Deal ID
+   * @param {string} type - Activity type filter (optional, e.g., 'task', 'call')
+   * @returns {Promise<Object>} - Activities data
+   */
+  async getDealActivities(dealId, type = null) {
+    try {
+      const params = {
+        api_token: this.apiToken,
+        deal_id: dealId,
+        limit: 500
+      };
+      
+      if (type) {
+        params.type = type;
+      }
+
+      const response = await this.client.get('/activities', { params });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          activities: response.data.data || []
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Unknown error',
+        activities: []
+      };
+    } catch (error) {
+      logger.error('Failed to get deal activities', {
+        dealId,
+        type,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        activities: []
+      };
+    }
+  }
+
+  /**
+   * Update an activity (task, call, etc.)
+   * @param {number} activityId - Activity ID
+   * @param {Object} updateData - Data to update (e.g., { done: 1, done_date: '2025-01-01' })
+   * @returns {Promise<Object>} - Updated activity data
+   */
+  async updateActivity(activityId, updateData) {
+    try {
+      const response = await this.client.put(`/activities/${activityId}`, updateData, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          activity: response.data.data,
+          message: 'Activity updated successfully'
+        };
+      }
+
+      throw new Error('Failed to update activity');
+    } catch (error) {
+      logger.error('Error updating activity:', {
+        activityId,
         error: error.message,
         details: error.response?.data || null
       });
