@@ -764,29 +764,34 @@ class InvoiceProcessingService {
           continue;
         }
 
-        // Проверяем, что задача связана с одной из удаленных проформ
-        // Ищем номер проформы в note (может быть в разных форматах)
-        const note = (activity.note || '').toLowerCase();
-        const matchesInvoice = invoiceNumbers.some(invoiceNumber => {
-          if (!invoiceNumber) return false;
-          
-          // Нормализуем номер проформы
-          const normalizedInvoiceNumber = this.normalizeInvoiceNumber(invoiceNumber);
-          if (!normalizedInvoiceNumber) return false;
-          
-          // Проверяем разные варианты формата номера в note
-          // Например: "CO-PROF 149/2025", "co-prof 149/2025", "149/2025", "149"
-          const numberParts = normalizedInvoiceNumber.split('/');
-          const numberOnly = numberParts[0]?.replace(/[^0-9]/g, '');
-          const yearPart = numberParts[1];
-          
-          // Ищем полный номер, номер без префикса, или только число
-          return note.includes(normalizedInvoiceNumber) ||
-                 (numberOnly && note.includes(numberOnly)) ||
-                 (yearPart && note.includes(yearPart));
-        });
+        // Если есть номера проформ, проверяем совпадение в note
+        // Если номеров нет, закрываем все задачи с нужными subject'ами для этой сделки
+        if (invoiceNumbers.length > 0) {
+          const note = (activity.note || '').toLowerCase();
+          const matchesInvoice = invoiceNumbers.some(invoiceNumber => {
+            if (!invoiceNumber) return false;
+            
+            // Нормализуем номер проформы
+            const normalizedInvoiceNumber = this.normalizeInvoiceNumber(invoiceNumber);
+            if (!normalizedInvoiceNumber) return false;
+            
+            // Проверяем разные варианты формата номера в note
+            // Например: "CO-PROF 149/2025", "co-prof 149/2025", "149/2025", "149"
+            const numberParts = normalizedInvoiceNumber.split('/');
+            const numberOnly = numberParts[0]?.replace(/[^0-9]/g, '');
+            const yearPart = numberParts[1];
+            
+            // Ищем полный номер, номер без префикса, или только число
+            return note.includes(normalizedInvoiceNumber) ||
+                   (numberOnly && note.includes(numberOnly)) ||
+                   (yearPart && note.includes(yearPart));
+          });
 
-        if (matchesInvoice) {
+          if (matchesInvoice) {
+            tasksToClose.push(activity.id);
+          }
+        } else {
+          // Если номеров нет, закрываем все задачи с нужными subject'ами (для случая удаления всех проформ)
           tasksToClose.push(activity.id);
         }
       }
