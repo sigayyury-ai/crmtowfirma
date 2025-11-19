@@ -36,13 +36,26 @@ class StripeProcessorService {
     // Initialize SendPulse client (optional, may not be configured)
     this.sendpulseClient = null;
     try {
-      const hasSendpulseId = !!process.env.SENDPULSE_ID?.trim();
-      const hasSendpulseSecret = !!process.env.SENDPULSE_SECRET?.trim();
+      const sendpulseId = process.env.SENDPULSE_ID?.trim();
+      const sendpulseSecret = process.env.SENDPULSE_SECRET?.trim();
+      const hasSendpulseId = !!sendpulseId;
+      const hasSendpulseSecret = !!sendpulseSecret;
+      
+      this.logger.info('SendPulse initialization check:', {
+        hasSendpulseId,
+        hasSendpulseSecret,
+        sendpulseIdLength: sendpulseId?.length || 0,
+        sendpulseSecretLength: sendpulseSecret?.length || 0
+      });
+      
       if (hasSendpulseId && hasSendpulseSecret) {
         this.sendpulseClient = new SendPulseClient();
-        this.logger.info('SendPulse client initialized for Stripe processor');
+        this.logger.info('SendPulse client initialized successfully');
       } else {
-        this.logger.warn('SendPulse client not initialized (credentials missing)');
+        this.logger.warn('SendPulse client not initialized (credentials missing)', {
+          hasSendpulseId,
+          hasSendpulseSecret
+        });
       }
     } catch (error) {
       this.logger.warn('SendPulse client initialization failed', { error: error.message });
