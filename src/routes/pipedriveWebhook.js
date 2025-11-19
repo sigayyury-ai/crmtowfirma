@@ -556,12 +556,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
           
           // Проверяем блокировку обработки для этой сделки
-          const lockKey = `stripe-${dealId}`;
-          const lockTimestamp = processingLocks.get(lockKey);
+          const lockTimestamp = stripeProcessingLocks.get(dealId);
           const now = Date.now();
           
-          if (lockTimestamp && (now - lockTimestamp) < LOCK_TTL_MS) {
-            logger.info(`⏸️  Обработка Stripe платежей уже выполняется для этой сделки, пропускаем | Deal: ${dealId} | Блокировка до: ${new Date(lockTimestamp + LOCK_TTL_MS).toISOString()}`);
+          if (lockTimestamp && (now - lockTimestamp) < STRIPE_LOCK_TTL_MS) {
+            logger.info(`⏸️  Обработка Stripe платежей уже выполняется для этой сделки, пропускаем | Deal: ${dealId} | Блокировка до: ${new Date(lockTimestamp + STRIPE_LOCK_TTL_MS).toISOString()}`);
             return res.status(200).json({
               success: true,
               message: 'Stripe processing already in progress for this deal',
@@ -570,12 +569,12 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           }
           
           // Устанавливаем блокировку
-          processingLocks.set(lockKey, now);
+          stripeProcessingLocks.set(dealId, now);
           
           // Очищаем устаревшие блокировки
-          for (const [key, timestamp] of processingLocks.entries()) {
-            if (now - timestamp > LOCK_TTL_MS) {
-              processingLocks.delete(key);
+          for (const [lockedDealId, timestamp] of stripeProcessingLocks.entries()) {
+            if (now - timestamp > STRIPE_LOCK_TTL_MS) {
+              stripeProcessingLocks.delete(lockedDealId);
             }
           }
           
