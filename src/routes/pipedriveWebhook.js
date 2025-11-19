@@ -644,7 +644,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
   } catch (error) {
     logger.error('❌ Ошибка обработки webhook', {
       url: req.url,
-      method: req.method
+      method: req.method,
+      error: error.message,
+      stack: error.stack
     });
     
     // Сохраняем ошибку в историю для отладки
