@@ -310,42 +310,56 @@ class StripeProcessorService {
   async persistSession(session) {
     const currency = normaliseCurrency(session.currency);
     
-    // For inclusive tax rate, use amount_subtotal (price without additional VAT)
-    // For exclusive tax rate, use amount_subtotal (price without VAT)
-    // amount_total includes VAT, but for inclusive tax, VAT is already in the price
-    const taxBehavior = session.total_details?.breakdown?.taxes?.[0]?.tax_behavior || 
-                       session.total_details?.tax_behavior || 
-                       null;
-    const isInclusiveTax = taxBehavior === 'inclusive';
-    
-    // Use amount_subtotal for display (price from CRM), amount_total for actual payment
+    // VAT НЕ применяется в Stripe, поэтому amount_total = amount_subtotal (нет налога от Stripe)
+    // Используем amount_total как базовую сумму (цена из CRM)
     const amountSubtotal = fromMinorUnit(session.amount_subtotal || session.amount_total || 0, currency);
     const amountTotal = fromMinorUnit(session.amount_total || 0, currency);
     
-    // For display in notes and reports, use subtotal (price from CRM without additional VAT)
-    // For inclusive tax, subtotal should equal the price from CRM
-    // Always use subtotal to avoid showing VAT twice
-    const amount = amountSubtotal;
+    // Базовая сумма для расчетов (цена из CRM)
+    const amount = amountSubtotal || amountTotal;
     
     const amountConversion = await this.convertAmountWithRate(amount, currency);
     const amountPln = amountConversion.amountPln;
-    const amountTax = fromMinorUnit(session.total_details?.amount_tax || 0, currency);
-    let amountTaxPln = 0;
-    if (amountConversion.rate) {
-      amountTaxPln = roundBankers(amountTax * amountConversion.rate);
-    } else {
-      const taxConversion = await this.convertAmountWithRate(amountTax, currency);
-      amountTaxPln = taxConversion.amountPln;
-    }
+    
+    // Получаем контекст CRM для определения необходимости VAT
     const participant = this.getParticipant(session);
     const dealId = session.metadata?.deal_id || null;
     const crmContext = await this.getCrmContext(dealId);
     const customerType = crmContext?.isB2B ? 'organization' : 'person';
+    
+    // Определяем, должен ли применяться VAT (для расчета)
     const shouldApplyVat = this.shouldApplyVat({
       customerType,
       companyCountry: crmContext?.companyCountry,
       sessionCountry: participant?.address?.country
     });
+    
+    // Рассчитываем VAT вручную для отображения (если должен применяться)
+    // VAT НЕ удерживается Stripe, только рассчитывается для чеков/инвойсов
+    let amountTax = 0;
+    let amountTaxPln = 0;
+    
+    if (shouldApplyVat) {
+      // Рассчитываем VAT 23% для Польши (только для отображения)
+      // Цена включает VAT (inclusive): amountTax = amount * 23 / 123
+      const vatRate = 0.23; // 23%
+      amountTax = roundBankers(amount * vatRate / (1 + vatRate)); // VAT из цены с НДС
+      
+      if (amountConversion.rate) {
+        amountTaxPln = roundBankers(amountTax * amountConversion.rate);
+      } else {
+        const taxConversion = await this.convertAmountWithRate(amountTax, currency);
+        amountTaxPln = taxConversion.amountPln;
+      }
+      
+      this.logger.info('VAT рассчитан вручную для отображения (не из Stripe)', {
+        dealId,
+        amount,
+        amountTax,
+        vatRate: '23%',
+        note: 'VAT только для расчетов и чеков, Stripe не удерживает налог'
+      });
+    }
     const addressValidation = await this.ensureAddress({
       dealId,
       shouldApplyVat,
