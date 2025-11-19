@@ -12,9 +12,10 @@ const invoiceProcessing = new InvoiceProcessingService();
 const webhookHistory = [];
 const MAX_HISTORY_SIZE = 50;
 
-// Защита от дублирующихся webhooks (последние 100 событий)
-const recentWebhookHashes = new Set();
-const MAX_HASH_SIZE = 100;
+// Защита от дублирующихся webhooks (последние 500 событий, храним 60 секунд)
+const recentWebhookHashes = new Map(); // Map<hash, timestamp>
+const MAX_HASH_SIZE = 500;
+const HASH_TTL_MS = 60000; // 60 секунд
 
 /**
  * POST /api/webhooks/pipedrive
@@ -34,15 +35,23 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const webhookData = req.body;
     
     // Проверяем, не является ли это webhook от Stripe (игнорируем его)
-    // Проверяем по User-Agent и структуре данных
-    const isStripeWebhook = req.headers['user-agent']?.includes('Stripe') ||
-                           (webhookData && webhookData.object === 'event' && webhookData.type && webhookData.api_version);
+    // Проверяем по User-Agent, IP адресам Stripe и структуре данных
+    const userAgent = req.headers['user-agent'] || '';
+    const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    const isStripeUserAgent = userAgent.includes('Stripe');
+    const isStripeIP = clientIP && (
+      clientIP.includes('54.187.') || // Stripe IP ranges
+      clientIP.includes('54.230.') ||
+      clientIP.includes('54.239.')
+    );
+    const isStripeStructure = webhookData && webhookData.object === 'event' && webhookData.type && webhookData.api_version;
     
-    if (isStripeWebhook) {
+    if (isStripeUserAgent || isStripeIP || isStripeStructure) {
       // Это Stripe webhook, игнорируем его без логирования
+      // ВАЖНО: В Stripe Dashboard должен быть указан URL: https://invoices.comoon.io/api/webhooks/stripe
       return res.status(200).json({
         success: true,
-        message: 'Stripe webhook ignored'
+        message: 'Stripe webhook ignored - use /api/webhooks/stripe endpoint'
       });
     }
     
@@ -54,20 +63,24 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                           webhookData?.dealId ||
                           webhookData?.deal_id;
     
-    // Создаем хеш для проверки дубликатов (ключевые поля webhook'а)
-    const webhookHash = JSON.stringify({
-      dealId: dealIdForHash,
-      event: webhookData?.event || 'workflow_automation',
-      stage: webhookData?.['Deal_stage_id'] || webhookData?.current?.stage_id || webhookData?.previous?.stage_id,
-      status: webhookData?.['Deal_status'] || webhookData?.current?.status || webhookData?.previous?.status,
-      invoice: webhookData?.['Invoice'] || webhookData?.current?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'] || webhookData?.previous?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'],
-      // Используем первые 1000 символов body для уникальности
-      bodyHash: JSON.stringify(webhookData).substring(0, 1000)
-    });
+    // Очищаем устаревшие хеши
+    const now = Date.now();
+    for (const [hash, timestamp] of recentWebhookHashes.entries()) {
+      if (now - timestamp > HASH_TTL_MS) {
+        recentWebhookHashes.delete(hash);
+      }
+    }
     
-    // Проверяем, не обрабатывали ли мы этот webhook недавно (в последние 30 секунд)
+    // Создаем упрощенный хеш для проверки дубликатов (только ключевые поля)
+    const stageId = webhookData?.['Deal_stage_id'] || webhookData?.current?.stage_id || webhookData?.previous?.stage_id;
+    const status = webhookData?.['Deal_status'] || webhookData?.current?.status || webhookData?.previous?.status;
+    const invoice = webhookData?.['Invoice'] || webhookData?.current?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'] || webhookData?.previous?.['ad67729ecfe0345287b71a3b00910e8ba5b3b496'];
+    
+    const webhookHash = `${dealIdForHash || 'no-deal'}|${webhookData?.event || 'workflow'}|${stageId || ''}|${status || ''}|${invoice || ''}`;
+    
+    // Проверяем, не обрабатывали ли мы этот webhook недавно
     if (recentWebhookHashes.has(webhookHash)) {
-      logger.info(`⚠️ Дублирующийся webhook пропущен | Deal: ${dealIdForHash}`);
+      // Дублирующийся webhook, игнорируем без логирования
       return res.status(200).json({
         success: true,
         message: 'Duplicate webhook ignored',
@@ -75,13 +88,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       });
     }
     
-    // Добавляем хеш в множество (ограничиваем размер)
-    recentWebhookHashes.add(webhookHash);
+    // Добавляем хеш с timestamp
+    recentWebhookHashes.set(webhookHash, now);
+    
+    // Ограничиваем размер (удаляем самые старые)
     if (recentWebhookHashes.size > MAX_HASH_SIZE) {
-      // Удаляем старые хеши (просто очищаем и пересоздаем, так как Set не поддерживает порядок)
-      const hashArray = Array.from(recentWebhookHashes);
-      recentWebhookHashes.clear();
-      hashArray.slice(0, MAX_HASH_SIZE / 2).forEach(h => recentWebhookHashes.add(h));
+      const sortedEntries = Array.from(recentWebhookHashes.entries()).sort((a, b) => a[1] - b[1]);
+      const toDelete = sortedEntries.slice(0, sortedEntries.length - MAX_HASH_SIZE / 2);
+      toDelete.forEach(([hash]) => recentWebhookHashes.delete(hash));
     }
     
     // Сохраняем событие в историю для отладки
