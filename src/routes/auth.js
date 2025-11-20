@@ -11,12 +11,17 @@ router.get('/google', (req, res, next) => {
   const config = require('../config/googleOAuth');
   
   // Логируем callback URL перед редиректом
+  const urlHelper = require('../utils/urlHelper');
+  const baseUrl = urlHelper.getBaseUrl(req);
+  
   logger.info('Initiating Google OAuth:', {
     callbackURL: config.googleOAuth.callbackURL,
     clientID: config.googleOAuth.clientID ? 'SET' : 'NOT SET',
     requestedURL: req.originalUrl,
+    baseUrl: baseUrl,
     host: req.get('host'),
-    protocol: req.protocol
+    protocol: req.protocol,
+    note: 'baseUrl используется для логирования, callbackURL берется из конфигурации'
   });
   
   passport.authenticate('google', {

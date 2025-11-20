@@ -519,11 +519,13 @@ class StripeProcessorService {
               : session.payment_intent.id;
             
             try {
+              // Retrieve payment intent with charges expanded
               const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
-                expand: ['charges.data.receipt']
+                expand: ['charges']
               });
               
               // Get receipt number from latest charge
+              // receipt_number is available directly on charge object, no need to expand receipt
               if (paymentIntent.charges?.data?.length > 0) {
                 const charge = paymentIntent.charges.data[0];
                 receiptNumber = charge.receipt_number || null;
@@ -717,9 +719,10 @@ class StripeProcessorService {
             : session.payment_intent.id;
           
           try {
-            // Get payment intent to check if receipt was sent
+            // Get payment intent with charges expanded
+            // receipt_email is available directly on charge object, no need to expand receipt
             const paymentIntent = await this.stripe.paymentIntents.retrieve(paymentIntentId, {
-              expand: ['charges.data.receipt']
+              expand: ['charges']
             });
             
             // Check if receipt email was sent

@@ -17,8 +17,14 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!webhookSecret) {
-    logger.warn('Stripe webhook secret not configured');
-    return res.status(400).json({ error: 'Webhook secret not configured' });
+    logger.warn('Stripe webhook secret not configured', {
+      hint: 'Add STRIPE_WEBHOOK_SECRET environment variable in Render Dashboard',
+      documentation: 'See docs/render-stripe-webhook-secret.md for instructions'
+    });
+    return res.status(400).json({ 
+      error: 'Webhook secret not configured',
+      hint: 'STRIPE_WEBHOOK_SECRET environment variable is missing. Add it in Render Dashboard → Environment → Environment Variables'
+    });
   }
 
   let event;

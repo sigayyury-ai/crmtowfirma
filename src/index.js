@@ -123,10 +123,16 @@ app.use((req, res) => {
 
 // Запуск сервера
 app.listen(PORT, () => {
+  const urlHelper = require('./utils/urlHelper');
+  
   logger.info(`Server running on port ${PORT}`);
   logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`Frontend available at: http://localhost:${PORT}`);
-  logger.info(`API available at: http://localhost:${PORT}/api`);
+  
+  // Use urlHelper for consistent URL determination
+  const baseUrl = urlHelper.getBaseUrl();
+  
+  logger.info(`Frontend available at: ${baseUrl}`);
+  logger.info(`API available at: ${baseUrl}/api`);
   
   // Логируем Google OAuth настройки для отладки
   const googleOAuthConfig = require('./config/googleOAuth');
