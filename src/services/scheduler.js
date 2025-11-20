@@ -8,6 +8,7 @@ const DEFAULT_TIMEZONE = 'Europe/Warsaw';
 const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке hh:00
 // Stripe payments теперь обрабатываются через webhooks, polling оставлен только как fallback
 // Запускается раз в час вместе с основным циклом для проверки пропущенных событий
+const DELETION_CRON_EXPRESSION = '0 2 * * *'; // Раз в сутки в 2:00 ночи (редкий кейс)
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -25,6 +26,7 @@ class SchedulerService {
     this.currentRun = null;
     this.runHistory = [];
     this.cronJob = null;
+    this.deletionCronJob = null;
     this.retryTimeout = null;
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -70,6 +72,25 @@ class SchedulerService {
       timezone: this.timezone,
       note: 'Stripe payments are now processed via webhooks, hourly polling is fallback only'
     });
+
+    // Отдельный cron для обработки удалений (раз в сутки в 2:00 ночи)
+    // Удаления обрабатываются через webhooks, это только fallback для редких случаев
+    logger.info('Configuring daily cron job for deletion processing (fallback)', {
+      cronExpression: DELETION_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+    this.deletionCronJob = cron.schedule(
+      DELETION_CRON_EXPRESSION,
+      () => {
+        this.runDeletionCycle({ trigger: 'cron_deletion', retryAttempt: 0 }).catch((error) => {
+          logger.error('Unexpected error in deletion cron cycle:', error);
+        });
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
 
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
