@@ -218,7 +218,11 @@ class PaymentService {
       throw historyError;
     }
 
-    const pendingPayments = (paymentsData || []).filter((item) => item.manual_status !== MANUAL_STATUS_APPROVED);
+    // For expenses (direction='out'), show ALL payments regardless of manual_status
+    // For income (direction='in'), filter out approved payments (they are matched to proformas)
+    const pendingPayments = direction === 'out'
+      ? (paymentsData || []) // Show all expenses
+      : (paymentsData || []).filter((item) => item.manual_status !== MANUAL_STATUS_APPROVED); // Filter approved income payments
 
     const payments = pendingPayments.map((item) => this.resolvePaymentRecord(item));
 
