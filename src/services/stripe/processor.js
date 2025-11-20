@@ -2629,6 +2629,15 @@ class StripeProcessorService {
       // 9. Prepare Checkout Session parameters
       const amountInMinorUnits = toMinorUnit(productPrice, currency);
       
+      // Calculate VAT for display in line item description (if applicable)
+      let lineItemDescription = null;
+      if (shouldApplyVat && countryCode === 'PL') {
+        const vatRate = 0.23; // 23%
+        const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
+        const amountExcludingVat = roundBankers(productPrice - vatAmount);
+        lineItemDescription = `Amount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency} | VAT (23%): ${vatAmount.toFixed(2)} ${currency} | Total: ${productPrice.toFixed(2)} ${currency}`;
+      }
+      
       // Prepare line item (VAT не применяется в Stripe, только для расчетов и отображения)
       const lineItem = {
         price_data: {
@@ -2638,6 +2647,11 @@ class StripeProcessorService {
         },
         quantity: quantity
       };
+      
+      // Add VAT breakdown to line item description if applicable
+      if (lineItemDescription) {
+        lineItem.description = lineItemDescription;
+      }
 
       // ВАЖНО: Проверка что Tax Rate НЕ добавляется к line_item
       // Stripe НЕ будет удерживать VAT - это только для расчетов и отображения
