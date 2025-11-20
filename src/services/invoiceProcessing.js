@@ -268,10 +268,12 @@ class InvoiceProcessingService {
         trigger
       });
 
-      // Обработка запросов на удаление (пропускаем при старте, обрабатываем в cron)
-      // Webhooks обрабатывают удаления в реальном времени, при старте это избыточно
-      if (trigger !== 'startup') {
-        logger.info('📋 Step 1: Processing deletion requests...');
+      // Обработка запросов на удаление (пропускаем при старте и в основном cron)
+      // Удаления обрабатываются через webhooks в реальном времени
+      // Отдельный cron раз в сутки обрабатывает удаления как fallback
+      // В основном цикле (раз в час) удаления не обрабатываем - это редкий кейс
+      if (trigger === 'cron_deletion') {
+        logger.info('📋 Step 1: Processing deletion requests (daily fallback)...');
         const deletionResult = await this.processDeletionRequests();
       if (!deletionResult.success) {
         logger.warn('⚠️  Deletion trigger processing finished with errors', {
@@ -287,7 +289,7 @@ class InvoiceProcessingService {
         });
       }
       } else {
-        logger.info('⏭️  Skipping deletion processing on startup (webhooks handle deletions in real-time)', {
+        logger.info('⏭️  Skipping deletion processing (webhooks handle deletions in real-time, daily cron is fallback)', {
           trigger
         });
       }
