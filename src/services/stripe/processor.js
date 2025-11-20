@@ -2686,22 +2686,38 @@ class StripeProcessorService {
         });
       }
 
+      // Add VAT breakdown to metadata for display in Checkout Session
+      const metadata = {
+        deal_id: String(dealId),
+        product_id: crmProductId ? String(crmProductId) : null,
+        product_link_id: productLinkId ? String(productLinkId) : null,
+        payment_id: `deal_${dealId}_${Date.now()}`,
+        payment_type: paymentType || 'deposit', // Use provided paymentType or default to 'deposit'
+        payment_schedule: paymentSchedule || '100%', // '50/50' or '100%'
+        payment_part: paymentSchedule === '50/50' ? (paymentType === 'deposit' ? '1 of 2' : '2 of 2') : '1 of 1',
+        created_by: 'stripe_processor',
+        trigger,
+        run_id: runId || null
+      };
+      
+      // Add VAT breakdown to metadata if applicable (for display in Checkout Session)
+      if (shouldApplyVat && countryCode === 'PL') {
+        const vatRate = 0.23; // 23%
+        const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
+        const amountExcludingVat = roundBankers(productPrice - vatAmount);
+        metadata.vat_applicable = 'true';
+        metadata.vat_rate = '23%';
+        metadata.amount_excluding_vat = amountExcludingVat.toFixed(2);
+        metadata.vat_amount = vatAmount.toFixed(2);
+        metadata.total_including_vat = productPrice.toFixed(2);
+        metadata.vat_currency = currency;
+      }
+      
       const sessionParams = {
         mode: 'payment',
         payment_method_types: ['card'],
         line_items: [lineItem],
-        metadata: {
-          deal_id: String(dealId),
-          product_id: crmProductId ? String(crmProductId) : null,
-          product_link_id: productLinkId ? String(productLinkId) : null,
-          payment_id: `deal_${dealId}_${Date.now()}`,
-          payment_type: paymentType || 'deposit', // Use provided paymentType or default to 'deposit'
-          payment_schedule: paymentSchedule || '100%', // '50/50' or '100%'
-          payment_part: paymentSchedule === '50/50' ? (paymentType === 'deposit' ? '1 of 2' : '2 of 2') : '1 of 1',
-          created_by: 'stripe_processor',
-          trigger,
-          run_id: runId || null
-        },
+        metadata,
         success_url: this.buildCheckoutUrl(this.checkoutSuccessUrl, dealId, 'success'),
         cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel')
       };
@@ -2758,6 +2774,20 @@ class StripeProcessorService {
         sessionParams.customer_email = customerEmail;
         // B2C doesn't need invoice_creation - Stripe will send receipt automatically
         // receipt_email is set via customer_email, Stripe will send receipt automatically
+        
+        // Add VAT breakdown to payment intent metadata for B2C (for display in receipt)
+        if (shouldApplyVat && countryCode === 'PL') {
+          if (!sessionParams.payment_intent_data) {
+            sessionParams.payment_intent_data = {};
+          }
+          if (!sessionParams.payment_intent_data.metadata) {
+            sessionParams.payment_intent_data.metadata = {};
+          }
+          sessionParams.payment_intent_data.metadata = {
+            ...sessionParams.payment_intent_data.metadata,
+            ...metadata
+          };
+        }
       }
 
       // 11. VAT используется только для расчетов и отображения (НЕ применяется в Stripe)
