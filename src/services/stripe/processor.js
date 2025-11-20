@@ -626,21 +626,103 @@ class StripeProcessorService {
         // Store invoice URL for adding to note/message
         const invoiceUrl = invoice.hosted_invoice_url || invoice.invoice_pdf || null;
         
+        // Add VAT information to invoice footer if VAT should be applied
+        // This ensures VAT breakdown is visible in the invoice PDF
+        if (shouldApplyVat && countryCode === 'PL' && invoice.status !== 'paid') {
+          try {
+            const vatRate = 0.23; // 23%
+            const invoiceAmount = fromMinorUnit(invoice.amount_due || invoice.total || 0, invoice.currency || 'pln');
+            const vatAmount = roundBankers(invoiceAmount * vatRate / (1 + vatRate));
+            const amountExcludingVat = roundBankers(invoiceAmount - vatAmount);
+            
+            const vatFooter = `VAT breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${invoice.currency?.toUpperCase() || 'PLN'}\nVAT (23%): ${vatAmount.toFixed(2)} ${invoice.currency?.toUpperCase() || 'PLN'}\nTotal (including VAT): ${invoiceAmount.toFixed(2)} ${invoice.currency?.toUpperCase() || 'PLN'}\n\nNote: VAT is included in the price. Stripe does not collect VAT separately.`;
+            
+            // Update invoice footer to show VAT breakdown
+            await this.stripe.invoices.update(invoiceId, {
+              footer: vatFooter
+            });
+            
+            this.logger.info(`📊 [Deal #${dealId}] VAT information added to invoice footer`, {
+              invoiceId,
+              vatAmount,
+              amountExcludingVat,
+              totalAmount: invoiceAmount,
+              currency: invoice.currency
+            });
+          } catch (vatUpdateError) {
+            this.logger.warn(`⚠️  [Deal #${dealId}] Failed to add VAT to invoice footer`, {
+              invoiceId,
+              error: vatUpdateError.message
+            });
+          }
+        }
+        
         // Check if invoice needs to be sent
         // For paid invoices, we can always send them (Stripe will handle duplicates)
         if (invoice.status === 'paid' || invoice.status === 'open') {
           try {
+            // Verify email is available before sending
+            if (!invoiceEmail) {
+              this.logger.warn(`⚠️  [Deal #${dealId}] Cannot send invoice - no email found`, {
+                invoiceId,
+                invoiceCustomerEmail: invoice.customer_email,
+                invoiceCustomer: typeof invoice.customer === 'object' ? invoice.customer?.email : invoice.customer,
+                sessionCustomerEmail: session.customer_email,
+                participantEmail: this.getParticipant(session)?.email
+              });
+              return;
+            }
+            
+            // Ensure Customer has email set (required for Stripe to send invoice email)
+            if (invoice.customer && typeof invoice.customer === 'object' && invoice.customer.id) {
+              const customerId = invoice.customer.id;
+              const customerEmail = invoice.customer.email;
+              
+              // If customer exists but doesn't have email, update it
+              if (!customerEmail && invoiceEmail) {
+                try {
+                  this.logger.info(`📧 [Deal #${dealId}] Updating customer email before sending invoice`, {
+                    customerId,
+                    email: invoiceEmail
+                  });
+                  await this.stripe.customers.update(customerId, {
+                    email: invoiceEmail
+                  });
+                  this.logger.info(`✅ [Deal #${dealId}] Customer email updated`, {
+                    customerId,
+                    email: invoiceEmail
+                  });
+                } catch (updateError) {
+                  this.logger.warn(`⚠️  [Deal #${dealId}] Failed to update customer email`, {
+                    customerId,
+                    email: invoiceEmail,
+                    error: updateError.message
+                  });
+                }
+              }
+            }
+            
             // Try to send invoice - Stripe will handle if already sent
             this.logger.info(`📧 [Deal #${dealId}] Sending invoice to customer via Stripe API`, {
               invoiceId,
               customerEmail: invoiceEmail,
-              invoiceStatus: invoice.status
+              invoiceStatus: invoice.status,
+              invoiceCustomerEmail: invoice.customer_email,
+              invoiceCustomerId: typeof invoice.customer === 'object' ? invoice.customer?.id : invoice.customer,
+              invoiceUrl: invoice.hosted_invoice_url || invoice.invoice_pdf,
+              note: 'Stripe will send email to customer_email or customer.email. Check Stripe Dashboard → Invoices → Email delivery status'
             });
+            
+            // Send invoice - Stripe will send email automatically if customer_email or customer.email is set
             await this.stripe.invoices.sendInvoice(invoiceId);
-            this.logger.info(`✅ [Deal #${dealId}] Invoice sent successfully`, {
+            
+            this.logger.info(`✅ [Deal #${dealId}] Invoice sent successfully via Stripe API`, {
               invoiceId,
               customerEmail: invoiceEmail,
-              invoiceUrl
+              invoiceUrl: invoice.hosted_invoice_url || invoice.invoice_pdf,
+              invoicePdf: invoice.invoice_pdf,
+              hostedInvoiceUrl: invoice.hosted_invoice_url,
+              note: 'Invoice sent. Check Stripe Dashboard → Invoices → [invoice] → Email delivery status to verify email was sent. If not received, check spam folder.'
             });
             
             // Add invoice URL to payment note if available
@@ -2610,10 +2692,20 @@ class StripeProcessorService {
           }
         }
         
+        // Calculate VAT for display in invoice (if applicable)
+        let vatInfo = '';
+        if (shouldApplyVat && countryCode === 'PL') {
+          const vatRate = 0.23; // 23%
+          const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
+          const amountExcludingVat = roundBankers(productPrice - vatAmount);
+          vatInfo = `\n\nVAT breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency}\nVAT (23%): ${vatAmount.toFixed(2)} ${currency}\nTotal (including VAT): ${productPrice.toFixed(2)} ${currency}\n\nNote: VAT is included in the price. Stripe does not collect VAT separately.`;
+        }
+        
         sessionParams.invoice_creation = {
           enabled: true,
           invoice_data: {
-            description: invoiceDescription
+            description: invoiceDescription + (vatInfo || ''),
+            footer: vatInfo ? 'VAT is included in the total amount. Stripe does not collect VAT separately.' : null
           }
         };
         // Allow Stripe to update customer name/address if needed
@@ -3175,7 +3267,7 @@ class StripeProcessorService {
             try {
               // Get the original charge to ensure receipt_email is set
               const paymentIntent = await this.stripe.paymentIntents.retrieve(piId, {
-                expand: ['charges.data']
+                expand: ['charges']
               });
               
               if (paymentIntent.charges?.data?.length > 0) {
