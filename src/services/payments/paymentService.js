@@ -328,10 +328,10 @@ class PaymentService {
    * @param {Object} options - Import options
    * @param {string} [options.filename='bank.csv'] - Filename
    * @param {string} [options.uploadedBy=null] - User who uploaded the file
-   * @param {number} [options.autoMatchThreshold=90] - Minimum confidence threshold for automatic category assignment (0-100)
+   * @param {number} [options.autoMatchThreshold=100] - Minimum confidence threshold for automatic category assignment (0-100). Default: 100 (disabled - all require manual selection)
    * @returns {Promise<Object>} Import statistics
    */
-  async ingestExpensesCsv(buffer, { filename = 'bank.csv', uploadedBy = null, autoMatchThreshold = 90 } = {}) {
+  async ingestExpensesCsv(buffer, { filename = 'bank.csv', uploadedBy = null, autoMatchThreshold = 100 } = {}) {
     if (!supabase) {
       throw new Error('Supabase client is not configured');
     }
