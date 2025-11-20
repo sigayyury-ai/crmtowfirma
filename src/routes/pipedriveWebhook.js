@@ -875,16 +875,44 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
 
           if (paymentSchedule === '50/50') {
             // Создаем недостающие платежи для графика 50/50
+            // Дополнительная проверка: если есть активный (не оплаченный и не истекший) deposit, не создаем новый
             if (!hasDeposit) {
-              const depositAmount = totalAmount / 2;
-              logger.info(`💳 Создание первого платежа (предоплата 50%) | Deal: ${dealId} | Сумма: ${depositAmount} ${currency}`);
-              const depositResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
-                trigger: 'pipedrive_webhook',
-                runId,
-                paymentType: 'deposit',
-                paymentSchedule: '50/50',
-                paymentIndex: 1
+              // Перед созданием проверяем еще раз, не появился ли платеж (защита от race condition)
+              const doubleCheckPayments = await stripeProcessor.repository.listPayments({
+                dealId: String(dealId),
+                paymentType: 'deposit'
               });
+              const hasActiveDeposit = doubleCheckPayments?.some(p => 
+                p.payment_status !== 'paid' && 
+                p.payment_status !== 'refunded' &&
+                p.status !== 'expired' &&
+                p.status !== 'canceled'
+              );
+              
+              if (hasActiveDeposit) {
+                logger.warn(`⚠️  Обнаружен активный deposit при повторной проверке, пропускаем создание | Deal: ${dealId}`, {
+                  dealId,
+                  activePayments: doubleCheckPayments.filter(p => 
+                    p.payment_status !== 'paid' && 
+                    p.payment_status !== 'refunded' &&
+                    p.status !== 'expired' &&
+                    p.status !== 'canceled'
+                  ).map(p => ({
+                    sessionId: p.session_id,
+                    paymentStatus: p.payment_status,
+                    status: p.status
+                  }))
+                });
+              } else {
+                const depositAmount = totalAmount / 2;
+                logger.info(`💳 Создание первого платежа (предоплата 50%) | Deal: ${dealId} | Сумма: ${depositAmount} ${currency}`);
+                const depositResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
+                  trigger: 'pipedrive_webhook',
+                  runId,
+                  paymentType: 'deposit',
+                  paymentSchedule: '50/50',
+                  paymentIndex: 1
+                });
 
               if (depositResult.success && depositResult.sessionId) {
                 sessions.push({
@@ -907,27 +935,55 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             }
 
             if (!hasRest || !restPaid) {
-              const restAmount = totalAmount / 2;
-              logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency}`);
-              const restResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
-                trigger: 'pipedrive_webhook',
-                runId,
-                paymentType: 'rest',
-                paymentSchedule: '50/50',
-                paymentIndex: 2
+              // Дополнительная проверка: если есть активный rest, не создаем новый
+              const doubleCheckRestPayments = await stripeProcessor.repository.listPayments({
+                dealId: String(dealId),
+                paymentType: 'rest'
               });
-
-              if (restResult.success && restResult.sessionId) {
-                sessions.push({
-                  id: restResult.sessionId,
-                  url: restResult.sessionUrl,
-                  type: 'rest',
-                  amount: restAmount
+              const hasActiveRest = doubleCheckRestPayments?.some(p => 
+                p.payment_status !== 'paid' && 
+                p.payment_status !== 'refunded' &&
+                p.status !== 'expired' &&
+                p.status !== 'canceled'
+              );
+              
+              if (hasActiveRest) {
+                logger.warn(`⚠️  Обнаружен активный rest при повторной проверке, пропускаем создание | Deal: ${dealId}`, {
+                  dealId,
+                  activePayments: doubleCheckRestPayments.filter(p => 
+                    p.payment_status !== 'paid' && 
+                    p.payment_status !== 'refunded' &&
+                    p.status !== 'expired' &&
+                    p.status !== 'canceled'
+                  ).map(p => ({
+                    sessionId: p.session_id,
+                    paymentStatus: p.payment_status,
+                    status: p.status
+                  }))
                 });
-                logger.info(`✅ Второй платеж создан | Deal: ${dealId} | Session ID: ${restResult.sessionId} | URL: ${restResult.sessionUrl || 'нет'}`);
               } else {
-                logger.error(`❌ Ошибка создания второго платежа | Deal: ${dealId} | Ошибка: ${restResult.error || 'unknown'}`);
-                throw new Error(`Failed to create rest session: ${restResult.error || 'unknown'}`);
+                const restAmount = totalAmount / 2;
+                logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency}`);
+                const restResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
+                  trigger: 'pipedrive_webhook',
+                  runId,
+                  paymentType: 'rest',
+                  paymentSchedule: '50/50',
+                  paymentIndex: 2
+                });
+
+                if (restResult.success && restResult.sessionId) {
+                  sessions.push({
+                    id: restResult.sessionId,
+                    url: restResult.sessionUrl,
+                    type: 'rest',
+                    amount: restAmount
+                  });
+                  logger.info(`✅ Второй платеж создан | Deal: ${dealId} | Session ID: ${restResult.sessionId} | URL: ${restResult.sessionUrl || 'нет'}`);
+                } else {
+                  logger.error(`❌ Ошибка создания второго платежа | Deal: ${dealId} | Ошибка: ${restResult.error || 'unknown'}`);
+                  throw new Error(`Failed to create rest session: ${restResult.error || 'unknown'}`);
+                }
               }
             } else {
               if (restPaid) {
@@ -939,25 +995,53 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           } else {
             // Создаем один платеж на всю сумму (если его нет ИЛИ не оплачен)
             if (!hasSingle || !singlePaid) {
-              logger.info(`💳 Создание единого платежа (100%) | Deal: ${dealId} | Сумма: ${totalAmount} ${currency}`);
-              const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
-                trigger: 'pipedrive_webhook',
-                runId,
-                paymentType: 'single',
-                paymentSchedule: '100%'
+              // Дополнительная проверка: если есть активный single, не создаем новый
+              const doubleCheckSinglePayments = await stripeProcessor.repository.listPayments({
+                dealId: String(dealId),
+                paymentType: 'single'
               });
-
-              if (result.success && result.sessionId) {
-                sessions.push({
-                  id: result.sessionId,
-                  url: result.sessionUrl,
-                  type: 'single',
-                  amount: totalAmount
+              const hasActiveSingle = doubleCheckSinglePayments?.some(p => 
+                p.payment_status !== 'paid' && 
+                p.payment_status !== 'refunded' &&
+                p.status !== 'expired' &&
+                p.status !== 'canceled'
+              );
+              
+              if (hasActiveSingle) {
+                logger.warn(`⚠️  Обнаружен активный single при повторной проверке, пропускаем создание | Deal: ${dealId}`, {
+                  dealId,
+                  activePayments: doubleCheckSinglePayments.filter(p => 
+                    p.payment_status !== 'paid' && 
+                    p.payment_status !== 'refunded' &&
+                    p.status !== 'expired' &&
+                    p.status !== 'canceled'
+                  ).map(p => ({
+                    sessionId: p.session_id,
+                    paymentStatus: p.payment_status,
+                    status: p.status
+                  }))
                 });
-                logger.info(`✅ Платеж создан | Deal: ${dealId} | Session ID: ${result.sessionId} | URL: ${result.sessionUrl || 'нет'}`);
               } else {
-                logger.error(`❌ Ошибка создания платежа | Deal: ${dealId} | Ошибка: ${result.error || 'unknown'}`);
-                throw new Error(`Failed to create checkout session: ${result.error || 'unknown'}`);
+                logger.info(`💳 Создание единого платежа (100%) | Deal: ${dealId} | Сумма: ${totalAmount} ${currency}`);
+                const result = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
+                  trigger: 'pipedrive_webhook',
+                  runId,
+                  paymentType: 'single',
+                  paymentSchedule: '100%'
+                });
+
+                if (result.success && result.sessionId) {
+                  sessions.push({
+                    id: result.sessionId,
+                    url: result.sessionUrl,
+                    type: 'single',
+                    amount: totalAmount
+                  });
+                  logger.info(`✅ Платеж создан | Deal: ${dealId} | Session ID: ${result.sessionId} | URL: ${result.sessionUrl || 'нет'}`);
+                } else {
+                  logger.error(`❌ Ошибка создания платежа | Deal: ${dealId} | Ошибка: ${result.error || 'unknown'}`);
+                  throw new Error(`Failed to create checkout session: ${result.error || 'unknown'}`);
+                }
               }
             } else {
               if (singlePaid) {
