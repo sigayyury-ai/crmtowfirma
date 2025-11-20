@@ -2581,9 +2581,19 @@ class StripeProcessorService {
           productName,
           crmProductId: crmProductId || 'none'
         });
+        
+        // Add VAT breakdown to product description if applicable
+        let productDescription = `Camp product: ${productName}`;
+        if (shouldApplyVat && countryCode === 'PL') {
+          const vatRate = 0.23; // 23%
+          const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
+          const amountExcludingVat = roundBankers(productPrice - vatAmount);
+          productDescription += `\n\nVAT breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency}\nVAT (23%): ${vatAmount.toFixed(2)} ${currency}\nTotal (including VAT): ${productPrice.toFixed(2)} ${currency}`;
+        }
+        
         const stripeProduct = await this.stripe.products.create({
           name: productName,
-          description: `Camp product: ${productName}`,
+          description: productDescription,
           metadata: {
             crm_product_id: crmProductId ? String(crmProductId) : null,
             deal_id: String(dealId),
