@@ -13,15 +13,29 @@ const expensesState = {
 
 // Initialize page
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('Expenses page loaded, initializing...');
+  
+  // Check if required elements exist
+  const tbody = document.getElementById('expensesTableBody');
+  if (!tbody) {
+    console.error('expensesTableBody element not found in DOM!');
+    return;
+  }
+  
   loadExpenseCategories();
   loadExpenses();
   
   // Handle CSV file input change
-  document.getElementById('expensesCsvInput').addEventListener('change', (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleExpensesCsvUpload();
-    }
-  });
+  const csvInput = document.getElementById('expensesCsvInput');
+  if (csvInput) {
+    csvInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        handleExpensesCsvUpload();
+      }
+    });
+  } else {
+    console.warn('expensesCsvInput element not found');
+  }
 });
 
 // Utility functions
@@ -61,21 +75,45 @@ async function loadExpenseCategories() {
 
 // Load expenses
 async function loadExpenses() {
+  const tbody = document.getElementById('expensesTableBody');
+  if (!tbody) {
+    console.error('expensesTableBody element not found!');
+    return;
+  }
+
   try {
+    // Show loading state
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="6" style="text-align: center; padding: 40px;">
+          Загрузка расходов...
+        </td>
+      </tr>
+    `;
+
     const cacheBuster = `&_t=${Date.now()}`;
     const url = `${API_BASE}/api/vat-margin/payments?direction=out&limit=1000${cacheBuster}`;
     
+    console.log('Loading expenses from:', url);
     const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     const payload = await response.json();
+    console.log('API response:', { success: payload.success, dataLength: payload.data?.length, paymentsLength: payload.payments?.length });
     
     if (!payload.success) {
       throw new Error(payload.error || 'Не удалось загрузить расходы');
     }
     
     let expenses = payload.data || payload.payments || [];
+    console.log('Raw expenses count:', expenses.length);
     
     // Ensure only expenses (direction = 'out') are shown
     expenses = expenses.filter(e => e.direction === 'out');
+    console.log('Filtered expenses count (direction=out):', expenses.length);
     
     expensesState.items = expenses;
     
@@ -88,13 +126,16 @@ async function loadExpenses() {
   } catch (error) {
     console.error('Failed to load expenses:', error);
     addLog('error', `Ошибка загрузки расходов: ${error.message}`);
-    document.getElementById('expensesTableBody').innerHTML = `
-      <tr>
-        <td colspan="6" style="text-align: center; padding: 40px; color: red;">
-          Ошибка загрузки: ${error.message}
-        </td>
-      </tr>
-    `;
+    if (tbody) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="6" style="text-align: center; padding: 40px; color: red;">
+            Ошибка загрузки: ${error.message}
+            <br><small>Проверьте консоль браузера для подробностей</small>
+          </td>
+        </tr>
+      `;
+    }
   }
 }
 
