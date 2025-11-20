@@ -196,7 +196,7 @@ class SchedulerService {
     let stripeResult;
 
     try {
-      invoiceResult = await this.invoiceProcessing.processPendingInvoices();
+      invoiceResult = await this.invoiceProcessing.processPendingInvoices({ trigger });
       
       // Stripe payments: обрабатываем только в cron (раз в час) как fallback для пропущенных webhooks
       // При старте системы пропускаем обработку Stripe, так как:

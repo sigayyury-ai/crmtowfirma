@@ -250,9 +250,13 @@ class InvoiceProcessingService {
 
   /**
    * Основной метод обработки сделок с измененным полем Invoice type
+   * @param {Object} options - Опции обработки
+   * @param {string} options.trigger - Триггер запуска (startup, cron, manual, etc.)
    * @returns {Promise<Object>} - Результат обработки
    */
-  async processPendingInvoices() {
+  async processPendingInvoices(options = {}) {
+    const { trigger = 'manual' } = options;
+    
     // Сброс и инициализация статистики
     this.resetStats();
     this.stats.startTime = Date.now();
@@ -260,12 +264,15 @@ class InvoiceProcessingService {
     try {
       logger.info('🚀 Starting invoice processing for pending deals...', {
         timestamp: new Date().toISOString(),
-        environment: process.env.NODE_ENV || 'development'
+        environment: process.env.NODE_ENV || 'development',
+        trigger
       });
 
-      // Обработка запросов на удаление
-      logger.info('📋 Step 1: Processing deletion requests...');
-      const deletionResult = await this.processDeletionRequests();
+      // Обработка запросов на удаление (пропускаем при старте, обрабатываем в cron)
+      // Webhooks обрабатывают удаления в реальном времени, при старте это избыточно
+      if (trigger !== 'startup') {
+        logger.info('📋 Step 1: Processing deletion requests...');
+        const deletionResult = await this.processDeletionRequests();
       if (!deletionResult.success) {
         logger.warn('⚠️  Deletion trigger processing finished with errors', {
           error: deletionResult.error,
@@ -277,6 +284,11 @@ class InvoiceProcessingService {
           processed: deletionResult.processed,
           errors: deletionResult.errors,
           total: deletionResult.total
+        });
+      }
+      } else {
+        logger.info('⏭️  Skipping deletion processing on startup (webhooks handle deletions in real-time)', {
+          trigger
         });
       }
       
