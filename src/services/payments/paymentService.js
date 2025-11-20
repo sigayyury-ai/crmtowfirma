@@ -527,9 +527,40 @@ class PaymentService {
         preservedCount++;
       }
 
+      // Normalize operation_date to ISO format for proper filtering in PNL reports
+      // CSV dates can be in various formats (YYYY-MM-DD, DD.MM.YYYY, etc.)
+      let normalizedOperationDate = expense.operation_date;
+      if (expense.operation_date && typeof expense.operation_date === 'string') {
+        try {
+          // Try to parse the date string
+          const dateObj = new Date(expense.operation_date);
+          if (!isNaN(dateObj.getTime())) {
+            // Valid date - convert to ISO string
+            normalizedOperationDate = dateObj.toISOString();
+          } else {
+            // Try common Polish date formats
+            // Format: DD.MM.YYYY or DD-MM-YYYY
+            const polishFormatMatch = expense.operation_date.match(/^(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})/);
+            if (polishFormatMatch) {
+              const [, day, month, year] = polishFormatMatch;
+              const dateObj = new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
+              if (!isNaN(dateObj.getTime())) {
+                normalizedOperationDate = dateObj.toISOString();
+              }
+            }
+          }
+        } catch (dateError) {
+          logger.warn('Failed to normalize operation_date', {
+            originalDate: expense.operation_date,
+            error: dateError.message
+          });
+          // Keep original date if normalization fails
+        }
+      }
+
       const paymentRecord = {
-        operation_date: expense.operation_date,
-        payment_date: expense.operation_date, // Required field - use operation_date
+        operation_date: normalizedOperationDate,
+        payment_date: normalizedOperationDate, // Required field - use normalized operation_date
         description: expense.description,
         account: expense.account,
         amount: expense.amount,
