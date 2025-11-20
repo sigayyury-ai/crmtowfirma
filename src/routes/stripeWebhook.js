@@ -226,6 +226,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
     }
 
     // Обрабатываем события Charge Updated (обновление статуса платежа)
+    // Это событие приходит когда charge обновляется (например, когда мы добавляем receipt_email или VAT breakdown)
     if (event.type === 'charge.updated') {
       const charge = event.data.object;
       const paymentIntentId = charge.payment_intent;
@@ -248,6 +249,12 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
                                    charge.status === 'failed' ? 'unpaid' : 'unpaid';
               
               await stripeProcessor.repository.updatePaymentStatus(sessionId, paymentStatus);
+              
+              // Если платеж успешен, обрабатываем через persistSession для отправки email и добавления VAT breakdown
+              if (charge.status === 'succeeded' && session.payment_status === 'paid') {
+                logger.info(`📧 Обработка успешного платежа через persistSession для отправки email/VAT | Deal: ${dealId} | Charge: ${charge.id}`);
+                await stripeProcessor.persistSession(session);
+              }
               
               logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
             }
