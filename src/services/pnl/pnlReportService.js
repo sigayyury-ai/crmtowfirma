@@ -648,20 +648,11 @@ class PnlReportService {
       } else {
         const expensePayments = Array.isArray(expensePaymentsData) ? expensePaymentsData : [];
 
-        // Process automatic expense payments (only for auto categories)
+        // Process all expense payments (including both auto and manual categories)
+        // Show ALL payments with direction='out' in PNL report
         for (const payment of expensePayments) {
           const categoryId = payment.expense_category_id || null;
           const category = expenseCategoriesMap.get(categoryId);
-          
-          // Skip payments for manual categories (they use manual entries instead)
-          if (category && category.management_type === 'manual') {
-            logger.debug('Skipping expense payment: manual category', {
-              paymentId: payment.id,
-              categoryId: categoryId,
-              categoryName: category.name
-            });
-            continue;
-          }
 
           const month = extractMonthFromDate(payment.operation_date);
           if (!month || month < 1 || month > 12) {
