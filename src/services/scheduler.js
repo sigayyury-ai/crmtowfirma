@@ -485,6 +485,56 @@ class SchedulerService {
     return this.runCycle({ trigger: label, retryAttempt: 0 });
   }
 
+  /**
+   * Отдельный цикл только для обработки удалений (запускается раз в сутки)
+   * @param {Object} options - Опции запуска
+   * @param {string} options.trigger - Триггер запуска
+   * @param {number} options.retryAttempt - Номер попытки повтора
+   * @returns {Promise<Object>} - Результат обработки удалений
+   */
+  async runDeletionCycle({ trigger = 'manual', retryAttempt = 0 }) {
+    const runId = randomUUID();
+    logger.info('Deletion processing cycle started', { trigger, retryAttempt, runId });
+
+    try {
+      const deletionResult = await this.invoiceProcessing.processDeletionRequests();
+      
+      if (!deletionResult.success) {
+        logger.error('Deletion processing finished with errors', {
+          trigger,
+          retryAttempt,
+          runId,
+          error: deletionResult.error
+        });
+      } else {
+        logger.info('Deletion processing finished successfully', {
+          trigger,
+          retryAttempt,
+          runId,
+          total: deletionResult.total,
+          processed: deletionResult.processed,
+          errors: deletionResult.errors
+        });
+      }
+
+      return {
+        success: deletionResult.success !== false,
+        deletion: deletionResult
+      };
+    } catch (error) {
+      logger.error('Deletion processing crashed', {
+        trigger,
+        retryAttempt,
+        runId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   normalizeSummary(result = {}) {
     const summary = result?.summary || {};
     return {
