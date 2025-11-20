@@ -390,7 +390,7 @@ function parseBankStatement(content) {
       // Pattern: 2-3 capitalized words at the start, followed by optional address/other info
       const namePattern = /^[A-ZĄĆĘŁŃÓŚŹŻ]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,}(\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,})?(\s|,|$)/;
       
-      // Exclude common expense patterns
+      // Exclude common expense patterns and refund patterns
       const isExpensePattern = descUpper.includes('PRZELEW WYCHODZĄCY') || 
                                 descUpper.includes('PRZELEW WYCHODZACY') ||
                                 descUpper.includes('ZAKUP') ||
@@ -399,10 +399,25 @@ function parseBankStatement(content) {
                                 descUpper.includes('KARTA') ||
                                 descUpper.includes('BLIK');
       
-      if (namePattern.test(descUpper) && !isExpensePattern) {
+      // Check for refund/return patterns - these are expenses even if they start with a name
+      const isRefundPattern = descUpper.includes('ZVROT') ||
+                               descUpper.includes('ZWROT') ||
+                               descUpper.includes('REFUND') ||
+                               descUpper.includes('RETURN') ||
+                               descUpper.includes('REVERSAL') ||
+                               descUpper.includes('REVERSJA') ||
+                               descUpper.includes('ANULOWANIE') ||
+                               descUpper.includes('CANCEL');
+      
+      // If it's a refund/return, it's always an expense (out), regardless of name pattern
+      if (isRefundPattern) {
+        direction = 'out';
+        directionSource = 'description_refund';
+      } else if (namePattern.test(descUpper) && !isExpensePattern) {
         // Likely an incoming payment from a person (even if amount is negative in CSV)
         // Many banks show incoming payments with negative sign in CSV exports
         // Trust person name pattern over amount sign when category is not specified
+        // BUT: only if it's not a refund/return pattern
         direction = 'in';
         directionSource = 'description';
       }
