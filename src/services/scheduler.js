@@ -284,6 +284,9 @@ class SchedulerService {
         this.scheduleRetry();
       }
 
+      // Извлекаем статистику API вызовов из invoiceResult
+      const apiStats = invoiceResult?.stats?.apiCalls || {};
+      
       if (!combinedSuccess) {
         logger.error('Invoice processing finished with errors', {
           trigger,
@@ -291,7 +294,9 @@ class SchedulerService {
           runId,
           durationMs,
           error: entry.message,
-          stripeSummary
+          invoiceSummary,
+          stripeSummary,
+          apiCalls: apiStats
         });
       } else {
         logger.info('Invoice processing finished successfully', {
@@ -300,7 +305,13 @@ class SchedulerService {
           runId,
           durationMs,
           invoiceSummary,
-          stripeSummary
+          stripeSummary,
+          apiCalls: {
+            pipedrive: apiStats.pipedrive || 0,
+            wfirma: apiStats.wfirma || 0,
+            other: apiStats.other || 0,
+            total: apiStats.total || 0
+          }
         });
       }
 
