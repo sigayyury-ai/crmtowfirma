@@ -22,7 +22,10 @@ POST https://your-domain.com/api/webhooks/stripe
    - Найдите и отметьте галочками:
      - ✅ `checkout.session.completed` (основное событие - срабатывает когда клиент оплатил через Checkout)
      - ✅ `checkout.session.async_payment_succeeded` (для асинхронных платежей - банковские переводы и т.д.)
+     - ✅ `checkout.session.async_payment_failed` (для отслеживания неудачных асинхронных платежей)
+     - ✅ `checkout.session.expired` (для отслеживания истекших сессий)
      - ✅ `payment_intent.succeeded` (резервное событие - на случай если первое не сработало)
+     - ✅ `payment_intent.payment_failed` (для отслеживания неудачных платежей)
      - ✅ `charge.refunded` (для обработки возвратов средств)
    - Или выберите **"Select all events"** если хотите получать все события (не обязательно)
 5. Нажмите **Add endpoint**
@@ -35,28 +38,52 @@ POST https://your-domain.com/api/webhooks/stripe
 
 ## Как это работает
 
+### Успешные платежи
+
 1. Клиент оплачивает через Stripe Checkout
-2. Stripe отправляет webhook `checkout.session.completed`
+2. Stripe отправляет webhook `checkout.session.completed` (мгновенные платежи) или `checkout.session.async_payment_succeeded` (асинхронные платежи)
 3. Webhook обрабатывает платеж:
+   - Обновляет статус платежа в базе данных (`payment_status = 'paid'`)
    - Проверяет, не был ли уже обработан
-   - Сохраняет платеж в базу данных
+   - Сохраняет платеж в базу данных (если новый)
    - Обновляет статус сделки в CRM
    - Добавляет заметку о платеже
 4. Если обработка не удалась → создается задача в CRM для проверки
 
+### Неудачные платежи
+
+1. При неудачной попытке оплаты Stripe отправляет webhook `payment_intent.payment_failed` или `checkout.session.async_payment_failed`
+2. Webhook обновляет статус платежа в базе данных (`payment_status = 'unpaid'`)
+3. Статус обновляется для корректного отображения в отчетах и аналитике
+
+### Истекшие сессии
+
+1. При истечении сессии оплаты Stripe отправляет webhook `checkout.session.expired`
+2. Webhook обновляет статус платежа в базе данных (`payment_status = 'unpaid'`)
+3. Это позволяет отслеживать, какие платежи не были завершены вовремя
+
 ## Обрабатываемые события
 
 ### `checkout.session.completed`
-Основное событие, срабатывает когда Checkout Session завершен и оплачен (мгновенные платежи).
+Основное событие, срабатывает когда Checkout Session завершен и оплачен (мгновенные платежи). Обрабатывает платеж и обновляет стадии сделки в CRM.
 
 ### `checkout.session.async_payment_succeeded`
-Событие для асинхронных платежей (например, банковские переводы), которые обрабатываются не мгновенно. Использует ту же логику обработки, что и `checkout.session.completed`.
+Событие для асинхронных платежей (например, банковские переводы), которые обрабатываются не мгновенно. Обновляет статус платежа в базе данных и обрабатывает платеж через processor (обновляет стадии сделки).
+
+### `checkout.session.async_payment_failed`
+Событие для отслеживания неудачных асинхронных платежей. Обновляет статус платежа в базе данных на `unpaid` для корректного отображения в отчетах.
+
+### `checkout.session.expired`
+Событие для отслеживания истекших сессий оплаты. Обновляет статус платежа в базе данных на `unpaid`, чтобы отразить, что сессия истекла и платеж не был завершен.
 
 ### `payment_intent.succeeded`
-Резервное событие на случай, если `checkout.session.completed` не сработало.
+Резервное событие на случай, если `checkout.session.completed` не сработало. Обновляет статус платежа в базе данных и обрабатывает платеж через processor.
+
+### `payment_intent.payment_failed`
+Событие для отслеживания неудачных платежей. Обновляет статус платежа в базе данных на `unpaid` при неудачной попытке оплаты.
 
 ### `charge.refunded`
-Событие для обработки возвратов средств. Обрабатывается мгновенно при создании возврата в Stripe.
+Событие для обработки возвратов средств. Обрабатывается мгновенно при создании возврата в Stripe. Обрабатывает возврат через CRM sync и обновляет стадии сделки.
 
 ## Обработка ошибок
 
@@ -97,7 +124,10 @@ node scripts/test-stripe-webhook.js checkout.session.completed
 # Доступные типы событий:
 # - checkout.session.completed
 # - checkout.session.async_payment_succeeded
+# - checkout.session.async_payment_failed
+# - checkout.session.expired
 # - payment_intent.succeeded
+# - payment_intent.payment_failed
 # - charge.refunded
 
 # Можно указать URL и секрет через переменные окружения:

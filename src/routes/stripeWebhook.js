@@ -42,6 +42,9 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
         logger.info(`💳 Обработка Checkout Session | Deal: ${dealId} | Session: ${session.id}`);
         
         try {
+          // Обновляем статус платежа в базе данных
+          await stripeProcessor.repository.updatePaymentStatus(session.id, session.payment_status || 'paid');
+          
           // Обрабатываем платеж через processor (автоматически обновляет стадии)
           // persistSession обрабатывает платеж и обновляет стадии сделки на основе типа платежа:
           // - Первый платеж (deposit) → Second Payment (ID: 32) или Camp Waiter (ID: 27) если один платеж
@@ -52,6 +55,72 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           logger.info(`✅ Checkout Session обработан | Deal: ${dealId} | Session: ${session.id}`);
         } catch (error) {
           logger.error(`❌ Ошибка обработки Checkout Session | Deal: ${dealId} | Session: ${session.id}`, { error: error.message });
+        }
+      } else {
+        logger.warn(`⚠️  Deal ID не найден в Checkout Session | Session: ${session.id}`);
+      }
+    }
+
+    // Обрабатываем события асинхронных платежей (банковские переводы и т.д.)
+    if (event.type === 'checkout.session.async_payment_succeeded') {
+      const session = event.data.object;
+      const dealId = session.metadata?.deal_id;
+
+      if (dealId) {
+        logger.info(`💳 Обработка асинхронного платежа (успешно) | Deal: ${dealId} | Session: ${session.id}`);
+        
+        try {
+          // Обновляем статус платежа в базе данных
+          await stripeProcessor.repository.updatePaymentStatus(session.id, session.payment_status || 'paid');
+          
+          // Обрабатываем платеж через processor (автоматически обновляет стадии)
+          await stripeProcessor.persistSession(session);
+          
+          logger.info(`✅ Асинхронный платеж обработан | Deal: ${dealId} | Session: ${session.id}`);
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки асинхронного платежа | Deal: ${dealId} | Session: ${session.id}`, { error: error.message });
+        }
+      } else {
+        logger.warn(`⚠️  Deal ID не найден в Checkout Session | Session: ${session.id}`);
+      }
+    }
+
+    // Обрабатываем события неудачных асинхронных платежей
+    if (event.type === 'checkout.session.async_payment_failed') {
+      const session = event.data.object;
+      const dealId = session.metadata?.deal_id;
+
+      if (dealId) {
+        logger.info(`❌ Обработка неудачного асинхронного платежа | Deal: ${dealId} | Session: ${session.id}`);
+        
+        try {
+          // Обновляем статус платежа в базе данных
+          await stripeProcessor.repository.updatePaymentStatus(session.id, session.payment_status || 'unpaid');
+          
+          logger.info(`✅ Статус неудачного платежа обновлен | Deal: ${dealId} | Session: ${session.id}`);
+        } catch (error) {
+          logger.error(`❌ Ошибка обновления статуса неудачного платежа | Deal: ${dealId} | Session: ${session.id}`, { error: error.message });
+        }
+      } else {
+        logger.warn(`⚠️  Deal ID не найден в Checkout Session | Session: ${session.id}`);
+      }
+    }
+
+    // Обрабатываем события истечения сессии
+    if (event.type === 'checkout.session.expired') {
+      const session = event.data.object;
+      const dealId = session.metadata?.deal_id;
+
+      if (dealId) {
+        logger.info(`⏰ Обработка истечения сессии | Deal: ${dealId} | Session: ${session.id}`);
+        
+        try {
+          // Обновляем статус платежа в базе данных
+          await stripeProcessor.repository.updatePaymentStatus(session.id, session.payment_status || 'unpaid');
+          
+          logger.info(`✅ Статус истекшей сессии обновлен | Deal: ${dealId} | Session: ${session.id}`);
+        } catch (error) {
+          logger.error(`❌ Ошибка обновления статуса истекшей сессии | Deal: ${dealId} | Session: ${session.id}`, { error: error.message });
         }
       } else {
         logger.warn(`⚠️  Deal ID не найден в Checkout Session | Session: ${session.id}`);
@@ -71,10 +140,41 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           if (dealId) {
             logger.info(`✅ Платеж успешен | Deal: ${dealId} | Session: ${sessionId}`);
             
+            // Обновляем статус платежа в базе данных
+            await stripeProcessor.repository.updatePaymentStatus(sessionId, session.payment_status || 'paid');
+            
             // Обрабатываем платеж через processor (автоматически обновляет стадии)
             await stripeProcessor.persistSession(session);
             
             logger.info(`✅ Payment Intent обработан | Deal: ${dealId} | Session: ${sessionId}`);
+          } else {
+            logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
+          }
+        } catch (sessionError) {
+          logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
+        }
+      } else {
+        logger.warn(`⚠️  Session ID не найден в Payment Intent | PaymentIntent: ${paymentIntent.id}`);
+      }
+    }
+
+    // Обрабатываем события неудачных платежей
+    if (event.type === 'payment_intent.payment_failed') {
+      const paymentIntent = event.data.object;
+      const sessionId = paymentIntent.metadata?.session_id;
+      
+      if (sessionId) {
+        try {
+          const session = await stripe.checkout.sessions.retrieve(sessionId);
+          const dealId = session.metadata?.deal_id;
+          
+          if (dealId) {
+            logger.info(`❌ Платеж не удался | Deal: ${dealId} | Session: ${sessionId} | PaymentIntent: ${paymentIntent.id}`);
+            
+            // Обновляем статус платежа в базе данных
+            await stripeProcessor.repository.updatePaymentStatus(sessionId, session.payment_status || 'unpaid');
+            
+            logger.info(`✅ Статус неудачного платежа обновлен | Deal: ${dealId} | Session: ${sessionId}`);
           } else {
             logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
           }

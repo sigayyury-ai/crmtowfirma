@@ -213,6 +213,44 @@ class StripeRepository {
     return data;
   }
 
+  /**
+   * Update payment status for an existing payment
+   * @param {string} sessionId - Stripe Checkout Session ID
+   * @param {string} paymentStatus - New payment status (paid, unpaid, no_payment_required, etc.)
+   * @returns {Promise<boolean>} - Returns true if update was successful
+   */
+  async updatePaymentStatus(sessionId, paymentStatus) {
+    if (!this.isEnabled() || !sessionId || !paymentStatus) {
+      logger.warn('Cannot update payment status: missing sessionId or paymentStatus', {
+        sessionId,
+        paymentStatus
+      });
+      return false;
+    }
+
+    const { error } = await this.supabase
+      .from('stripe_payments')
+      .update({
+        payment_status: paymentStatus,
+        updated_at: new Date().toISOString()
+      })
+      .eq('session_id', sessionId);
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payments is missing; cannot update payment status', {
+          sessionId
+        });
+        return false;
+      }
+      logger.error('Failed to update payment status', { error, sessionId, paymentStatus });
+      throw error;
+    }
+
+    logger.info('Payment status updated', { sessionId, paymentStatus });
+    return true;
+  }
+
   async listProductLinksByIds(ids = []) {
     if (!this.isEnabled() || !Array.isArray(ids) || ids.length === 0) {
       return new Map();
