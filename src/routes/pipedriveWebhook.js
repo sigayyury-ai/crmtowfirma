@@ -926,6 +926,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 logger.error(`❌ Ошибка создания первого платежа | Deal: ${dealId} | Ошибка: ${depositResult.error || 'unknown'}`);
                 throw new Error(`Failed to create deposit session: ${depositResult.error || 'unknown'}`);
               }
+              }
             } else {
               if (depositPaid) {
                 logger.info(`✅ Первый платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
