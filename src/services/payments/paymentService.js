@@ -558,6 +558,18 @@ class PaymentService {
         }
       }
 
+      // IMPORTANT: Expenses import only processes payments with direction = 'out' (negative amounts)
+      // This is filtered earlier in the code (line 375), but we explicitly set it here for clarity
+      // PNL reports filter expenses by direction = 'out', income by direction = 'in'
+      if (expense.direction !== 'out') {
+        logger.warn('Skipping non-expense payment in expenses import', {
+          operationHash: expense.operation_hash,
+          direction: expense.direction,
+          description: expense.description?.substring(0, 50)
+        });
+        continue; // Skip this payment - should not happen due to earlier filter, but safety check
+      }
+
       const paymentRecord = {
         operation_date: normalizedOperationDate,
         payment_date: normalizedOperationDate, // Required field - use normalized operation_date
@@ -565,7 +577,7 @@ class PaymentService {
         account: expense.account,
         amount: expense.amount,
         currency: expense.currency || 'PLN',
-        direction: 'out',
+        direction: 'out', // Expenses only - payments with negative amounts (direction = 'out')
         payer_name: expense.payer_name,
         payer_normalized_name: expense.payer_normalized_name,
         operation_hash: expense.operation_hash,
@@ -588,7 +600,9 @@ class PaymentService {
       }
     }
     
-    logger.info(`Expense processing summary: ${expenses.length} total, ${autoMatchedCount} auto-matched, ${preservedCount} preserved, ${uncategorizedCount} uncategorized`);
+    logger.info(`Expense processing summary: ${expenses.length} total (direction='out' only), ${autoMatchedCount} auto-matched, ${preservedCount} preserved, ${uncategorizedCount} uncategorized`, {
+      note: 'Only expenses (direction=out, negative amounts) are processed. Income payments (direction=in, positive amounts) are ignored in expenses import.'
+    });
 
     // Save expenses to database
     // IMPORTANT: For existing records, we need to explicitly reset expense_category_id to null
