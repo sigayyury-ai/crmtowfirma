@@ -2462,23 +2462,88 @@ class StripeProcessorService {
       // 3. Calculate amount and currency from first product
       const firstProduct = dealProductsResult.products[0];
       const quantity = parseFloat(firstProduct.quantity) || 1;
-      const itemPrice = typeof firstProduct.item_price === 'number'
-        ? firstProduct.item_price
-        : parseFloat(firstProduct.item_price) || 0;
-      const sumPrice = typeof firstProduct.sum === 'number'
-        ? firstProduct.sum
-        : parseFloat(firstProduct.sum) || 0;
-      let productPrice = itemPrice || sumPrice || parseFloat(fullDeal.value) || 0;
+      
+      // Parse prices more carefully - handle 0 as valid value
+      const itemPriceRaw = firstProduct.item_price;
+      const sumPriceRaw = firstProduct.sum;
+      const dealValueRaw = fullDeal.value;
+      
+      const itemPrice = (itemPriceRaw !== null && itemPriceRaw !== undefined && itemPriceRaw !== '')
+        ? (typeof itemPriceRaw === 'number' ? itemPriceRaw : parseFloat(itemPriceRaw))
+        : null;
+      const sumPrice = (sumPriceRaw !== null && sumPriceRaw !== undefined && sumPriceRaw !== '')
+        ? (typeof sumPriceRaw === 'number' ? sumPriceRaw : parseFloat(sumPriceRaw))
+        : null;
+      const dealValue = (dealValueRaw !== null && dealValueRaw !== undefined && dealValueRaw !== '')
+        ? (typeof dealValueRaw === 'number' ? dealValueRaw : parseFloat(dealValueRaw))
+        : null;
+      
+      // Determine base price: prefer itemPrice, then sumPrice, then dealValue
+      // Use null to indicate "not found" vs 0 which is a valid price
+      let basePrice = null;
+      if (itemPrice !== null && !isNaN(itemPrice)) {
+        basePrice = itemPrice;
+      } else if (sumPrice !== null && !isNaN(sumPrice)) {
+        basePrice = sumPrice;
+      } else if (dealValue !== null && !isNaN(dealValue)) {
+        basePrice = dealValue;
+      }
+      
+      // Log price calculation details for debugging
+      this.logger.info('💰 Расчет цены продукта', {
+        dealId,
+        itemPriceRaw,
+        itemPrice,
+        sumPriceRaw,
+        sumPrice,
+        dealValueRaw,
+        dealValue,
+        basePrice,
+        quantity,
+        paymentSchedule,
+        paymentType,
+        customAmount,
+        productName: firstProduct.name || firstProduct.product?.name || 'N/A'
+      });
+      
+      // If no valid price found, return error
+      if (basePrice === null || isNaN(basePrice)) {
+        this.logger.error('❌ Не удалось определить цену продукта', {
+          dealId,
+          itemPrice,
+          sumPrice,
+          dealValue,
+          firstProduct: JSON.stringify(firstProduct),
+          dealValue: fullDeal.value
+        });
+        return {
+          success: false,
+          error: 'Product price is zero or invalid',
+          details: {
+            itemPrice,
+            sumPrice,
+            dealValue,
+            product: firstProduct
+          }
+        };
+      }
+      
+      let productPrice = basePrice;
       
       // Override amount if customAmount is provided (for second payment)
       if (customAmount && customAmount > 0) {
         productPrice = customAmount;
+        this.logger.info('Использована кастомная сумма', {
+          dealId,
+          customAmount,
+          originalBasePrice: basePrice
+        });
       } else if (paymentSchedule === '50/50') {
         // For 50/50 schedule, split amount in half
-        productPrice = productPrice / 2;
+        productPrice = basePrice / 2;
         this.logger.info('Split payment amount for 50/50 schedule', {
           dealId,
-          originalAmount: itemPrice || sumPrice || parseFloat(fullDeal.value) || 0,
+          originalAmount: basePrice,
           splitAmount: productPrice,
           paymentType,
           paymentIndex
@@ -2500,10 +2565,25 @@ class StripeProcessorService {
       }
       const productName = firstProduct.name || firstProduct.product?.name || fullDeal.title || 'Camp / Tourist service';
 
-      if (productPrice <= 0) {
+      if (productPrice <= 0 || isNaN(productPrice)) {
+        this.logger.error('❌ Итоговая цена продукта невалидна', {
+          dealId,
+          productPrice,
+          basePrice,
+          customAmount,
+          paymentSchedule,
+          paymentType
+        });
         return {
           success: false,
-          error: 'Product price is zero or invalid'
+          error: 'Product price is zero or invalid',
+          details: {
+            productPrice,
+            basePrice,
+            customAmount,
+            paymentSchedule,
+            paymentType
+          }
         };
       }
 
