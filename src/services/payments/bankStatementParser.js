@@ -363,12 +363,13 @@ function parseBankStatement(content) {
     const account = accountRaw.replace(/^"|"$/g, '').trim();
     const category = categoryRaw.replace(/^"|"$/g, '').trim();
     
-    // Determine direction based on category column if available
-    // Category column may contain: "WYCHODZĄCY" / "WYCHODZACY" (outgoing) or "PRZYCHODZĄCY" / "PRZYCHODZACY" (incoming)
-    let direction = amountDirection;
+    // PRIMARY RULE: Sign of amount is the main criterion
+    // Negative amount (-) = expense (out), Positive amount (+) = income (in)
+    let direction = amountDirection; // Start with direction from amount sign
     let directionSource = 'amount'; // Track what determined the direction
     
-    // Check category column first (most reliable)
+    // Check category column (can override amount sign in special cases)
+    // Category column may contain: "WYCHODZĄCY" / "WYCHODZACY" (outgoing) or "PRZYCHODZĄCY" / "PRZYCHODZACY" (incoming)
     if (category) {
       const categoryUpper = category.toUpperCase();
       if (categoryUpper.includes('WYCHODZĄCY') || categoryUpper.includes('WYCHODZACY')) {
@@ -380,26 +381,11 @@ function parseBankStatement(content) {
       }
     }
     
-    // Additional check: if category doesn't specify direction, check description for patterns
-    // Person names at the start of description often indicate incoming payments
-    // This is important because some banks show incoming payments with negative sign in CSV
-    if (directionSource === 'amount' && description) {
+    // Check description for refund/return patterns - these override everything
+    // Refunds are always expenses (out), even if amount is positive or description has a name
+    if (description) {
       const descUpper = description.toUpperCase().trim();
       
-      // Check if description starts with what looks like a person name (2-3 words, all caps, no numbers)
-      // Pattern: 2-3 capitalized words at the start, followed by optional address/other info
-      const namePattern = /^[A-ZĄĆĘŁŃÓŚŹŻ]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,}(\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,})?(\s|,|$)/;
-      
-      // Exclude common expense patterns and refund patterns
-      const isExpensePattern = descUpper.includes('PRZELEW WYCHODZĄCY') || 
-                                descUpper.includes('PRZELEW WYCHODZACY') ||
-                                descUpper.includes('ZAKUP') ||
-                                descUpper.includes('OPŁATA') ||
-                                descUpper.includes('PŁATNOŚĆ') ||
-                                descUpper.includes('KARTA') ||
-                                descUpper.includes('BLIK');
-      
-      // Check for refund/return patterns - these are expenses even if they start with a name
       const isRefundPattern = descUpper.includes('ZVROT') ||
                                descUpper.includes('ZWROT') ||
                                descUpper.includes('REFUND') ||
@@ -409,25 +395,48 @@ function parseBankStatement(content) {
                                descUpper.includes('ANULOWANIE') ||
                                descUpper.includes('CANCEL');
       
-      // If it's a refund/return, it's always an expense (out), regardless of name pattern
       if (isRefundPattern) {
+        // Refunds are always expenses, regardless of amount sign or name pattern
         direction = 'out';
         directionSource = 'description_refund';
-      } else if (namePattern.test(descUpper) && !isExpensePattern) {
-        // Likely an incoming payment from a person (even if amount is negative in CSV)
-        // Many banks show incoming payments with negative sign in CSV exports
-        // Trust person name pattern over amount sign when category is not specified
-        // BUT: only if it's not a refund/return pattern
-        direction = 'in';
-        directionSource = 'description';
       }
     }
     
-    // Safety check: if category says "PRZYCHODZĄCY" but amount is negative, trust category
-    // This handles cases where bank shows negative amounts for incoming payments
-    if (category && directionSource === 'category' && direction === 'in' && amountDirection === 'out') {
-      // Category says incoming, trust it even if amount is negative
-      direction = 'in';
+    // EXCEPTION: Some banks show incoming payments with negative sign in CSV
+    // Only apply name pattern logic if:
+    // 1. Amount sign says "out" (negative)
+    // 2. Category doesn't specify direction
+    // 3. It's not a refund pattern
+    // 4. Description starts with person name pattern
+    // 5. Description doesn't contain expense keywords
+    if (directionSource === 'amount' && amountDirection === 'out' && description) {
+      const descUpper = description.toUpperCase().trim();
+      
+      // Check if description starts with what looks like a person name (2-3 words, all caps, no numbers)
+      const namePattern = /^[A-ZĄĆĘŁŃÓŚŹŻ]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,}(\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,})?(\s|,|$)/;
+      
+      // Exclude common expense patterns
+      const isExpensePattern = descUpper.includes('PRZELEW WYCHODZĄCY') || 
+                                descUpper.includes('PRZELEW WYCHODZACY') ||
+                                descUpper.includes('ZAKUP') ||
+                                descUpper.includes('OPŁATA') ||
+                                descUpper.includes('PŁATNOŚĆ') ||
+                                descUpper.includes('KARTA') ||
+                                descUpper.includes('BLIK');
+      
+      // Only override if it looks like a person name AND no expense patterns AND not already handled as refund
+      if (namePattern.test(descUpper) && !isExpensePattern && directionSource === 'amount') {
+        // This might be an incoming payment shown with negative sign by the bank
+        // But ONLY if amount is negative - if amount is positive, it's definitely income
+        direction = 'in';
+        directionSource = 'description_name_exception';
+      }
+    }
+    
+    // Final safety check: if category explicitly says direction, trust it over amount sign
+    // This handles cases where bank shows wrong sign in CSV
+    if (category && directionSource === 'category') {
+      // Category is already applied above, keep it
     }
 
     const payer = extractPayer(description);
