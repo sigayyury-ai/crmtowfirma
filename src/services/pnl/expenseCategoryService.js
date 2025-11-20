@@ -212,6 +212,14 @@ class ExpenseCategoryService {
         // Only add management_type if column exists (migration may not be run yet)
         updateData.management_type = categoryData.management_type;
       }
+      if (categoryData.display_order !== undefined) {
+        // Validate display_order
+        if (!Number.isFinite(categoryData.display_order) || categoryData.display_order < 0) {
+          throw new Error('display_order must be a non-negative number');
+        }
+        // Only add display_order if column exists (migration may not be run yet)
+        updateData.display_order = categoryData.display_order;
+      }
 
       const { data, error } = await supabase
         .from(this.tableName)

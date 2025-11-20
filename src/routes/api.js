@@ -2130,12 +2130,13 @@ router.put('/pnl/expense-categories/:id', async (req, res) => {
       });
     }
 
-    const { name, description, management_type } = req.body;
+    const { name, description, management_type, display_order } = req.body;
 
     const category = await expenseCategoryService.updateCategory(id, {
       name,
       description,
-      management_type
+      management_type,
+      display_order
     });
 
     res.json({
