@@ -197,13 +197,34 @@ class SchedulerService {
 
     try {
       invoiceResult = await this.invoiceProcessing.processPendingInvoices();
-      // Stripe payments: обрабатываем только существующие сессии (fallback)
-      // Checkout Sessions создаются через webhooks, не через polling
-      stripeResult = await this.stripeProcessor.processPendingPayments({
-        trigger,
-        runId,
-        skipTriggers: true // Пропускаем создание новых Checkout Sessions (они создаются через webhooks)
-      });
+      
+      // Stripe payments: обрабатываем только в cron (раз в час) как fallback для пропущенных webhooks
+      // При старте системы пропускаем обработку Stripe, так как:
+      // 1. Webhooks обрабатывают платежи в реальном времени
+      // 2. Cron раз в час все равно проверит пропущенные платежи
+      // 3. При старте все платежи уже обработаны и будут пропущены
+      if (trigger !== 'startup') {
+        // Stripe payments: обрабатываем только существующие сессии (fallback)
+        // Checkout Sessions создаются через webhooks, не через polling
+        stripeResult = await this.stripeProcessor.processPendingPayments({
+          trigger,
+          runId,
+          skipTriggers: true // Пропускаем создание новых Checkout Sessions (они создаются через webhooks)
+        });
+      } else {
+        // При старте пропускаем обработку Stripe - webhooks уже обработали все платежи
+        stripeResult = {
+          success: true,
+          summary: { total: 0, successful: 0, errors: 0 },
+          skipped: true,
+          reason: 'skipped_on_startup',
+          note: 'Stripe payments are processed via webhooks, startup processing skipped'
+        };
+        logger.info('Skipping Stripe processing on startup (webhooks handle payments in real-time)', {
+          trigger,
+          runId
+        });
+      }
 
       // Рефанды для потерянных сделок теперь обрабатываются через webhooks
       // (при изменении статуса на "lost" с reason "Refund")
