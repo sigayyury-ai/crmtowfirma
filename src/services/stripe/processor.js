@@ -2754,43 +2754,68 @@ class StripeProcessorService {
       };
 
       // 10. Set customer (B2B) or customer_email (B2C)
+      // Для B2C тоже создаем invoice, чтобы показать VAT breakdown в footer
+      // Receipt не поддерживает кастомные поля, поэтому используем invoice
       if (stripeCustomerId) {
         // B2B: Use Customer object to ensure company details appear in invoice
         sessionParams.customer = stripeCustomerId;
-        // Enable invoice creation ONLY for B2B companies
-        // Add payment part information for partial payments (50/50)
-        // Use product name instead of deal ID in description
-        let invoiceDescription = productName || 'Camp / Tourist service';
-        if (paymentSchedule === '50/50') {
-          if (paymentType === 'deposit') {
-            invoiceDescription = `${productName || 'Camp / Tourist service'} - Part 1 of 2 (Deposit 50%)`;
-          } else if (paymentType === 'rest') {
-            invoiceDescription = `${productName || 'Camp / Tourist service'} - Part 2 of 2 (Final payment 50%)`;
-          }
+      } else {
+        // B2C: Create customer for invoice (to show VAT breakdown)
+        // Это позволяет показать VAT breakdown в invoice footer
+        const b2cCustomer = await this.ensureStripeCustomer({
+          email: customerEmail,
+          name: customerName,
+          taxId: null,
+          address: addressParts,
+          dealId
+        });
+        if (b2cCustomer) {
+          sessionParams.customer = b2cCustomer;
+        } else {
+          // Fallback to customer_email if customer creation fails
+          sessionParams.customer_email = customerEmail;
         }
-        
-        // Calculate VAT for display in invoice (if applicable)
-        let vatInfo = '';
-        if (shouldApplyVat && countryCode === 'PL') {
-          const vatRate = 0.23; // 23%
-          const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
-          const amountExcludingVat = roundBankers(productPrice - vatAmount);
-          vatInfo = `\n\nVAT breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency}\nVAT (23%): ${vatAmount.toFixed(2)} ${currency}\nTotal (including VAT): ${productPrice.toFixed(2)} ${currency}\n\nNote: VAT is included in the price. Stripe does not collect VAT separately.`;
+      }
+      
+      // Enable invoice creation for BOTH B2B and B2C to show VAT breakdown
+      // Add payment part information for partial payments (50/50)
+      // Use product name instead of deal ID in description
+      let invoiceDescription = productName || 'Camp / Tourist service';
+      if (paymentSchedule === '50/50') {
+        if (paymentType === 'deposit') {
+          invoiceDescription = `${productName || 'Camp / Tourist service'} - Part 1 of 2 (Deposit 50%)`;
+        } else if (paymentType === 'rest') {
+          invoiceDescription = `${productName || 'Camp / Tourist service'} - Part 2 of 2 (Final payment 50%)`;
         }
-        
-        sessionParams.invoice_creation = {
-          enabled: true,
-          invoice_data: {
-            description: invoiceDescription + (vatInfo || ''),
-            footer: vatInfo ? 'VAT is included in the total amount. Stripe does not collect VAT separately.' : null
-          }
-        };
-        // Allow Stripe to update customer name/address if needed
-        sessionParams.customer_update = {
-          name: 'auto',
-          address: 'auto'
-        };
-        // Add company details to metadata
+      }
+      
+      // Calculate VAT for display in invoice (if applicable)
+      let vatInfo = '';
+      let vatFooter = null;
+      if (shouldApplyVat && countryCode === 'PL') {
+        const vatRate = 0.23; // 23%
+        const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
+        const amountExcludingVat = roundBankers(productPrice - vatAmount);
+        vatInfo = `\n\nVAT breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency}\nVAT (23%): ${vatAmount.toFixed(2)} ${currency}\nTotal (including VAT): ${productPrice.toFixed(2)} ${currency}\n\nNote: VAT is included in the price. Stripe does not collect VAT separately.`;
+        vatFooter = `VAT Breakdown:\nAmount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency}\nVAT (23%): ${vatAmount.toFixed(2)} ${currency}\nTotal (including VAT): ${productPrice.toFixed(2)} ${currency}\n\nNote: VAT is included in the total amount. Stripe does not collect VAT separately.`;
+      }
+      
+      sessionParams.invoice_creation = {
+        enabled: true,
+        invoice_data: {
+          description: invoiceDescription + (vatInfo || ''),
+          footer: vatFooter
+        }
+      };
+      
+      // Allow Stripe to update customer name/address if needed
+      sessionParams.customer_update = {
+        name: 'auto',
+        address: 'auto'
+      };
+      
+      // Add company details to metadata (for B2B)
+      if (crmContext?.isB2B) {
         if (crmContext.companyName) {
           sessionParams.metadata.company_name = crmContext.companyName;
         }
@@ -2799,25 +2824,6 @@ class StripeProcessorService {
         }
         if (crmContext.companyAddress) {
           sessionParams.metadata.company_address = crmContext.companyAddress;
-        }
-      } else {
-        // B2C: Use customer_email (no invoice creation - receipt is enough)
-        sessionParams.customer_email = customerEmail;
-        // B2C doesn't need invoice_creation - Stripe will send receipt automatically
-        // receipt_email is set via customer_email, Stripe will send receipt automatically
-        
-        // Add VAT breakdown to payment intent metadata for B2C (for display in receipt)
-        if (shouldApplyVat && countryCode === 'PL') {
-          if (!sessionParams.payment_intent_data) {
-            sessionParams.payment_intent_data = {};
-          }
-          if (!sessionParams.payment_intent_data.metadata) {
-            sessionParams.payment_intent_data.metadata = {};
-          }
-          sessionParams.payment_intent_data.metadata = {
-            ...sessionParams.payment_intent_data.metadata,
-            ...metadata
-          };
         }
       }
 
