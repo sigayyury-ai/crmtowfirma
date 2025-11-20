@@ -396,6 +396,11 @@ class StripeProcessorService {
       crmContext
     });
 
+    // Extract country code for VAT calculations
+    const addressParts = this.extractAddressParts(crmContext);
+    const countryCode = this.extractCountryCode(addressParts);
+    const isB2B = crmContext?.isB2B || false;
+
     // Get product_link_id from metadata, or try to find it by crm_product_id for old sessions
     let productLinkId = session.metadata?.product_link_id || null;
     if (!productLinkId && session.metadata?.product_id) {
