@@ -815,31 +815,43 @@ class StripeProcessorService {
             
             // Check if receipt email was sent
             const charge = paymentIntent.charges?.data?.[0];
-            if (charge && !charge.receipt_email) {
-              // Receipt email not set, update charge to send receipt
+            if (charge) {
+              // Always set receipt_email to ensure receipt is sent
+              // Stripe sends receipt automatically when receipt_email is set
               try {
-                await this.stripe.charges.update(charge.id, {
-                  receipt_email: receiptEmail
-                });
-                this.logger.info('Receipt email sent to customer', {
-                  dealId,
-                  sessionId: session.id,
-                  email: receiptEmail,
-                  chargeId: charge.id
-                });
+                if (!charge.receipt_email || charge.receipt_email !== receiptEmail) {
+                  await this.stripe.charges.update(charge.id, {
+                    receipt_email: receiptEmail
+                  });
+                  this.logger.info(`📧 [Deal #${dealId}] Receipt email set on charge - Stripe will send receipt automatically`, {
+                    dealId,
+                    sessionId: session.id,
+                    email: receiptEmail,
+                    chargeId: charge.id,
+                    note: 'Stripe will send receipt email automatically. Check Stripe Dashboard → Payments → [charge] → Receipt to verify.'
+                  });
+                } else {
+                  this.logger.info(`📧 [Deal #${dealId}] Receipt email already set on charge`, {
+                    dealId,
+                    sessionId: session.id,
+                    email: charge.receipt_email,
+                    chargeId: charge.id
+                  });
+                }
               } catch (receiptError) {
-                this.logger.warn('Failed to send receipt email', {
+                this.logger.warn(`⚠️  [Deal #${dealId}] Failed to set receipt email on charge`, {
                   dealId,
                   sessionId: session.id,
                   email: receiptEmail,
+                  chargeId: charge.id,
                   error: receiptError.message
                 });
               }
-            } else if (charge?.receipt_email) {
-              this.logger.info('Receipt email already set', {
+            } else {
+              this.logger.warn(`⚠️  [Deal #${dealId}] No charge found in payment intent`, {
                 dealId,
                 sessionId: session.id,
-                email: charge.receipt_email
+                paymentIntentId
               });
             }
           } catch (piError) {
