@@ -134,3 +134,4 @@ ALTER TABLE stripe_payments ADD COLUMN income_category_id INTEGER REFERENCES pnl
 
 
 
+
