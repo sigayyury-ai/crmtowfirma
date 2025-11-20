@@ -28,7 +28,14 @@ const { getScheduler } = require('./services/scheduler');
 const app = express();
 // Доверяем цепочке прокси (Cloudflare → Render), чтобы secure-cookie сессии корректно работал в production.
 app.set('trust proxy', true);
-const PORT = process.env.PORT || 3000;
+// Render требует использовать PORT из переменной окружения без fallback
+// В development используем 3000, в production - только из env
+const PORT = process.env.PORT || (process.env.NODE_ENV === 'production' ? undefined : 3000);
+
+if (!PORT) {
+  logger.error('PORT environment variable is not set. Render requires PORT to be set.');
+  process.exit(1);
+}
 
 // Создаем/получаем singleton планировщика
 console.log('📋 Initializing scheduler...');
