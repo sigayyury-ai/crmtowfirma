@@ -2750,16 +2750,8 @@ class StripeProcessorService {
       // 9. Prepare Checkout Session parameters
       const amountInMinorUnits = toMinorUnit(productPrice, currency);
       
-      // Calculate VAT for display in line item description (if applicable)
-      let lineItemDescription = null;
-      if (shouldApplyVat && countryCode === 'PL') {
-        const vatRate = 0.23; // 23%
-        const vatAmount = roundBankers(productPrice * vatRate / (1 + vatRate));
-        const amountExcludingVat = roundBankers(productPrice - vatAmount);
-        lineItemDescription = `Amount excluding VAT: ${amountExcludingVat.toFixed(2)} ${currency} | VAT (23%): ${vatAmount.toFixed(2)} ${currency} | Total: ${productPrice.toFixed(2)} ${currency}`;
-      }
-      
-      // Prepare line item (VAT не применяется в Stripe, только для расчетов и отображения)
+      // Prepare line item using price_data (required by Stripe API)
+      // Note: description cannot be added to line_item directly - VAT breakdown is shown in invoice footer instead
       const lineItem = {
         price_data: {
           currency: currency.toLowerCase(),
@@ -2769,10 +2761,8 @@ class StripeProcessorService {
         quantity: quantity
       };
       
-      // Add VAT breakdown to line item description if applicable
-      if (lineItemDescription) {
-        lineItem.description = lineItemDescription;
-      }
+      // VAT breakdown is displayed in invoice footer (see invoice_creation.invoice_data.footer below)
+      // This is the correct way to show VAT information in Stripe Checkout Sessions
 
       // ВАЖНО: Проверка что Tax Rate НЕ добавляется к line_item
       // Stripe НЕ будет удерживать VAT - это только для расчетов и отображения
