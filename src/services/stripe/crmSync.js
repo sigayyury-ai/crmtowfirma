@@ -63,10 +63,17 @@ class StripeCrmSyncService {
         return;
       }
 
-      await this.pipedriveClient.updateDealStage(dealId, stageId);
-      this.logger.info('Updated deal stage via Stripe processor', {
+      this.logger.info(`🔄 [Deal #${dealId}] Updating deal stage to ${stageId} (using stage ID, not name)`, {
         dealId,
         stageId,
+        stageName: stageId === 18 ? 'First Payment' : stageId === 32 ? 'Second Payment' : stageId === 27 ? 'Camp Waiter' : 'Unknown',
+        context
+      });
+      await this.pipedriveClient.updateDealStage(dealId, stageId);
+      this.logger.info(`✅ [Deal #${dealId}] Deal stage updated successfully`, {
+        dealId,
+        stageId,
+        stageName: stageId === 18 ? 'First Payment' : stageId === 32 ? 'Second Payment' : stageId === 27 ? 'Camp Waiter' : 'Unknown',
         context
       });
     } catch (error) {

@@ -629,10 +629,14 @@ class StripeProcessorService {
         if (invoice.status === 'paid' || invoice.status === 'open') {
           try {
             // Try to send invoice - Stripe will handle if already sent
-            await this.stripe.invoices.sendInvoice(invoiceId);
-            this.logger.info('Invoice sent to customer', {
+            this.logger.info(`📧 [Deal #${dealId}] Sending invoice to customer via Stripe API`, {
               invoiceId,
-              dealId,
+              customerEmail: invoiceEmail,
+              invoiceStatus: invoice.status
+            });
+            await this.stripe.invoices.sendInvoice(invoiceId);
+            this.logger.info(`✅ [Deal #${dealId}] Invoice sent successfully`, {
+              invoiceId,
               customerEmail: invoiceEmail,
               invoiceUrl
             });
@@ -680,11 +684,14 @@ class StripeProcessorService {
           }
         } else if (invoice.status === 'draft') {
           // Finalize draft invoice first, then send
+          this.logger.info(`📧 [Deal #${dealId}] Finalizing and sending draft invoice`, {
+            invoiceId,
+            customerEmail: invoice.customer_email || (typeof invoice.customer === 'object' ? invoice.customer.email : null)
+          });
           await this.stripe.invoices.finalizeInvoice(invoiceId);
           await this.stripe.invoices.sendInvoice(invoiceId);
-          this.logger.info('Invoice finalized and sent to customer', {
+          this.logger.info(`✅ [Deal #${dealId}] Draft invoice finalized and sent successfully`, {
             invoiceId,
-            dealId,
             customerEmail: invoice.customer_email || (typeof invoice.customer === 'object' ? invoice.customer.email : null)
           });
         }
@@ -833,6 +840,88 @@ class StripeProcessorService {
       // 'single' payment type means it's the only payment (should go to Camp Waiter)
       const isFirst = paymentType === 'deposit' || paymentType === 'first' || paymentType === 'single';
       const isRest = paymentType === 'rest' || paymentType === 'second';
+      
+      // First, check if both payments are already paid (for any payment type)
+      // This handles the case where both payments are paid but stage wasn't updated
+      try {
+        const allPayments = await this.repository.listPayments({ dealId: String(dealId) });
+        const paidPayments = allPayments.filter(p => 
+          p.payment_status === 'paid' || p.session_id === session.id
+        );
+        
+        // Add current payment if it's paid but not yet in DB
+        if (session.payment_status === 'paid' && !allPayments.some(p => p.session_id === session.id)) {
+          paidPayments.push({
+            session_id: session.id,
+            payment_type: paymentType,
+            payment_status: 'paid',
+            deal_id: String(dealId)
+          });
+        }
+        
+        const depositPayment = paidPayments.find(p => 
+          (p.payment_type === 'deposit' || p.payment_type === 'first') && 
+          (p.payment_status === 'paid' || (p.session_id === session.id && isFirst && session.payment_status === 'paid'))
+        );
+        const restPayment = paidPayments.find(p => 
+          (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') && 
+          (p.payment_status === 'paid' || (p.session_id === session.id && isRest && session.payment_status === 'paid'))
+        );
+        
+        // Check if both payments are paid (including current payment if it's paid)
+        const hasDeposit = !!depositPayment || (isFirst && session.payment_status === 'paid');
+        const hasRest = !!restPayment || (isRest && session.payment_status === 'paid');
+        const hasBothPayments = hasDeposit && hasRest;
+        
+        if (hasBothPayments) {
+          // Both payments are paid - move to Camp Waiter regardless of current payment type
+          const depositSessionId = depositPayment?.session_id || (isFirst ? session.id : null);
+          const restSessionId = restPayment?.session_id || (isRest ? session.id : null);
+          
+          this.logger.info(`✅ [Deal #${dealId}] Both payments confirmed paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+            depositPaymentId: depositSessionId,
+            restPaymentId: restSessionId,
+            currentPaymentType: paymentType,
+            stageId: STAGES.CAMP_WAITER_ID,
+            hasDeposit,
+            hasRest
+          });
+          
+          await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
+            type: 'both_payments_complete',
+            sessionId: session.id,
+            paymentType,
+            depositPaymentId: depositSessionId,
+            restPaymentId: restSessionId
+          });
+          
+          await this.closeAddressTasks(dealId);
+          
+          // Add note and return early (skip individual payment logic below)
+          await this.addPaymentNoteToDeal(dealId, {
+            paymentType: isRest ? 'rest' : 'deposit',
+            amount: paymentRecord.original_amount,
+            currency: paymentRecord.currency,
+            amountPln: paymentRecord.amount_pln,
+            sessionId: session.id
+          });
+          
+          // Exit early - stage already updated to Camp Waiter
+          return;
+        } else {
+          this.logger.debug(`ℹ️  [Deal #${dealId}] Not all payments paid yet, continuing with individual payment logic`, {
+            hasDeposit,
+            hasRest,
+            currentPaymentType: paymentType,
+            currentPaymentStatus: session.payment_status
+          });
+        }
+      } catch (checkError) {
+        this.logger.warn(`⚠️  [Deal #${dealId}] Failed to check both payments status, continuing with individual payment logic`, {
+          error: checkError.message
+        });
+        // Continue with individual payment logic below
+      }
 
       // Get deal to check close_date for single payment logic and current stage
       let isSinglePaymentExpected = false;
@@ -884,15 +973,111 @@ class StripeProcessorService {
           sessionId: session.id
         });
       } else if (isFinal || isRest) {
-        // Second payment (rest) or final payment - move to Camp Waiter (второй платеж получен)
-        await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-          type: 'final_payment',
+        // Second payment (rest) or final payment - check if both payments are paid before moving to Camp Waiter
+        this.logger.info(`🔍 [Deal #${dealId}] Checking if both payments are paid before moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})...`, {
+          paymentType,
           sessionId: session.id,
-          paymentType
+          isRest,
+          isFinal
         });
         
-        // Close address tasks if payment received
-        await this.closeAddressTasks(dealId);
+        // Check if both deposit and rest payments are paid
+        // Include current payment in check (it's being processed now and will be saved)
+        const allPayments = await this.repository.listPayments({ dealId: String(dealId) });
+        
+        // Add current payment to the list if it's not already there (it might not be saved yet)
+        const currentPaymentIncluded = allPayments.some(p => p.session_id === session.id);
+        if (!currentPaymentIncluded && session.payment_status === 'paid') {
+          // Current payment is paid but not yet in DB - add it to check
+          allPayments.push({
+            session_id: session.id,
+            payment_type: paymentType,
+            payment_status: 'paid',
+            deal_id: String(dealId)
+          });
+        }
+        
+        const paidPayments = allPayments.filter(p => 
+          p.payment_status === 'paid' || p.session_id === session.id
+        );
+        
+        const depositPayment = paidPayments.find(p => 
+          (p.payment_type === 'deposit' || p.payment_type === 'first') && 
+          p.payment_status === 'paid'
+        );
+        const restPayment = paidPayments.find(p => 
+          (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') && 
+          (p.payment_status === 'paid' || p.session_id === session.id)
+        );
+        
+        const hasDeposit = !!depositPayment;
+        const hasRest = !!restPayment || (isRest && session.payment_status === 'paid');
+        
+        this.logger.info(`📊 [Deal #${dealId}] Payment status check for Camp Waiter transition`, {
+          totalPayments: allPayments.length,
+          paidPayments: paidPayments.length,
+          hasDeposit,
+          hasRest,
+          depositPaymentId: depositPayment?.session_id || null,
+          restPaymentId: restPayment?.session_id || (isRest ? session.id : null),
+          currentPaymentType: paymentType,
+          currentPaymentStatus: session.payment_status,
+          currentSessionId: session.id
+        });
+        
+        // Only move to Camp Waiter if both payments are paid
+        if (hasDeposit && hasRest) {
+          this.logger.info(`✅ [Deal #${dealId}] Both payments paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+            depositPaymentId: depositPayment.session_id,
+            restPaymentId: restPayment?.session_id || session.id,
+            stageId: STAGES.CAMP_WAITER_ID
+          });
+          await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
+            type: 'final_payment',
+            sessionId: session.id,
+            paymentType,
+            depositPaymentId: depositPayment.session_id,
+            restPaymentId: restPayment?.session_id || session.id
+          });
+          
+          // Close address tasks if payment received
+          await this.closeAddressTasks(dealId);
+        } else {
+          this.logger.warn(`⚠️  [Deal #${dealId}] Cannot move to Camp Waiter - missing payments`, {
+            hasDeposit,
+            hasRest,
+            expectedPayments: 2,
+            currentPaymentType: paymentType,
+            allPaymentsDetails: allPayments.map(p => ({
+              sessionId: p.session_id,
+              paymentType: p.payment_type,
+              paymentStatus: p.payment_status,
+              isCurrent: p.session_id === session.id
+            }))
+          });
+          
+          // If deposit is missing but rest is paid, something is wrong - log it
+          if (!hasDeposit && hasRest) {
+            this.logger.error(`❌ [Deal #${dealId}] Rest payment received but deposit payment not found!`, {
+              allPayments: allPayments.map(p => ({
+                sessionId: p.session_id,
+                paymentType: p.payment_type,
+                paymentStatus: p.payment_status
+              }))
+            });
+          }
+          
+          // If rest payment is received but deposit is missing, stay in Second Payment stage
+          // If both are missing (shouldn't happen), also stay in Second Payment
+          if (!hasDeposit) {
+            this.logger.info(`⏸️  [Deal #${dealId}] Waiting for deposit payment - staying in Second Payment stage (${STAGES.SECOND_PAYMENT_ID})`);
+            await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
+              type: 'rest_payment_waiting_deposit',
+              sessionId: session.id,
+              paymentType
+            });
+          }
+        }
       } else if (isFirst) {
         // For 'single' payment type, always go to Camp Waiter (it's the only payment)
         if (paymentType === 'single' || isSinglePaymentExpected) {
@@ -2049,9 +2234,20 @@ class StripeProcessorService {
   async createCheckoutSessionForDeal(deal, context = {}) {
     let { trigger, runId, paymentType, customAmount, paymentSchedule, paymentIndex, skipNotification } = context;
     const dealId = deal.id;
+    const startTime = Date.now();
+    let apiCallCount = 0;
 
     try {
+      this.logger.info(`🔄 [Deal #${dealId}] Creating Checkout Session`, {
+        paymentType,
+        paymentSchedule,
+        paymentIndex,
+        trigger
+      });
+
       // 1. Fetch full deal data with related entities
+      apiCallCount++;
+      this.logger.debug(`📡 [Deal #${dealId}] API Call #${apiCallCount}: Fetching deal with related data from Pipedrive...`);
       const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       if (!fullDealResult.success || !fullDealResult.deal) {
         return {
@@ -2131,6 +2327,8 @@ class StripeProcessorService {
       const organization = fullDealResult.organization;
 
       // 2. Get deal products
+      apiCallCount++;
+      this.logger.debug(`📡 [Deal #${dealId}] API Call #${apiCallCount}: Fetching deal products from Pipedrive...`);
       const dealProductsResult = await this.pipedriveClient.getDealProducts(dealId);
       if (!dealProductsResult.success || !dealProductsResult.products || dealProductsResult.products.length === 0) {
         return {
@@ -2468,20 +2666,23 @@ class StripeProcessorService {
       });
 
       // 12. Create Checkout Session in Stripe
-      this.logger.info('💳 Создание Checkout Session в Stripe (без VAT)', {
-        dealId,
+      apiCallCount++;
+      this.logger.info(`💳 [Deal #${dealId}] API Call #${apiCallCount}: Creating Checkout Session in Stripe`, {
         amount: productPrice,
         currency,
         paymentSchedule,
         paymentType,
+        totalApiCalls: apiCallCount,
         note: 'Сумма платежа в Stripe = сумме из CRM, VAT не удерживается'
       });
       const session = await this.stripe.checkout.sessions.create(sessionParams);
       
       // ВАЖНО: Проверка что сессия создана без налога от Stripe
-      this.logger.info('✅ Checkout Session создан - проверка отсутствия налога от Stripe', {
-        dealId,
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      this.logger.info(`✅ [Deal #${dealId}] Checkout Session создан успешно`, {
         sessionId: session.id,
+        duration: `${duration}s`,
+        totalApiCalls: apiCallCount,
         amountTotal: session.amount_total,
         amountSubtotal: session.amount_subtotal,
         amountTax: session.total_details?.amount_tax || 0,
@@ -2502,10 +2703,12 @@ class StripeProcessorService {
       // 14. Update deal invoice_type to "Stripe" (75) in CRM after creating Checkout Session
       // "Done" (73) will be set only after successful payment via webhook
       try {
+        apiCallCount++;
+        this.logger.debug(`📡 [Deal #${dealId}] API Call #${apiCallCount}: Updating deal invoice_type to Stripe in Pipedrive...`);
         await this.pipedriveClient.updateDeal(dealId, {
           [this.invoiceTypeFieldKey]: this.stripeTriggerValue
         });
-        this.logger.info('Updated deal invoice_type to Stripe', { dealId });
+        this.logger.info(`✅ [Deal #${dealId}] Updated deal invoice_type to Stripe`, { totalApiCalls: apiCallCount });
       } catch (updateError) {
         this.logger.warn('Failed to update deal invoice_type to Stripe', {
           dealId,
@@ -2548,16 +2751,22 @@ class StripeProcessorService {
         });
       }
 
-      // 14. Log session creation
-      this.logger.info('Stripe Checkout Session created', {
-        dealId,
+      // 14. Log session creation with final statistics
+      const finalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+      this.logger.info(`✅ [Deal #${dealId}] Checkout Session creation completed`, {
         sessionId: session.id,
         sessionUrl: session.url,
         amount: productPrice,
         currency,
         customerEmail,
         customerType,
-        shouldApplyVat
+        shouldApplyVat,
+        duration: `${finalDuration}s`,
+        totalApiCalls: apiCallCount,
+        apiBreakdown: {
+          pipedrive: apiCallCount - 1, // Все кроме последнего (Stripe)
+          stripe: 1 // Создание checkout session
+        }
       });
 
       // Output session URL to console for easy access
@@ -2583,9 +2792,17 @@ class StripeProcessorService {
         totalAmount: itemPrice || sumPrice || parseFloat(fullDeal.value) || 0
       };
     } catch (error) {
+      const errorDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+      this.logger.error(`❌ [Deal #${dealId}] Failed to create Checkout Session`, {
+        error: error.message,
+        duration: `${errorDuration}s`,
+        totalApiCalls: apiCallCount,
+        stack: error.stack
+      });
       logStripeError(error, {
         scope: 'createCheckoutSessionForDeal',
-        dealId
+        dealId,
+        totalApiCalls: apiCallCount
       });
       return {
         success: false,

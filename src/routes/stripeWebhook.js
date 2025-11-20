@@ -219,6 +219,138 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       }
     }
 
+    // Обрабатываем события Charge Updated (обновление статуса платежа)
+    if (event.type === 'charge.updated') {
+      const charge = event.data.object;
+      const paymentIntentId = charge.payment_intent;
+      
+      if (paymentIntentId) {
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          const sessionId = paymentIntent.metadata?.session_id;
+          
+          if (sessionId) {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            const dealId = session.metadata?.deal_id;
+            
+            if (dealId) {
+              logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
+              
+              // Обновляем статус платежа в базе данных на основе статуса charge
+              const paymentStatus = charge.status === 'succeeded' ? 'paid' : 
+                                   charge.status === 'pending' ? 'pending' : 
+                                   charge.status === 'failed' ? 'unpaid' : 'unpaid';
+              
+              await stripeProcessor.repository.updatePaymentStatus(sessionId, paymentStatus);
+              
+              logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
+            }
+          }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки обновления платежа | Charge: ${charge.id}`, { error: error.message });
+        }
+      }
+    }
+
+    // Обрабатываем события Charge Succeeded (успешный платеж)
+    if (event.type === 'charge.succeeded') {
+      const charge = event.data.object;
+      const paymentIntentId = charge.payment_intent;
+      
+      if (paymentIntentId) {
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          const sessionId = paymentIntent.metadata?.session_id;
+          
+          if (sessionId) {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            const dealId = session.metadata?.deal_id;
+            
+            if (dealId) {
+              logger.info(`✅ Обработка успешного платежа | Deal: ${dealId} | Charge: ${charge.id} | Amount: ${charge.amount / 100} ${charge.currency.toUpperCase()}`);
+              
+              // Обновляем статус платежа в базе данных
+              await stripeProcessor.repository.updatePaymentStatus(sessionId, 'paid');
+              
+              // Обрабатываем платеж через processor (если еще не обработан)
+              await stripeProcessor.persistSession(session);
+              
+              logger.info(`✅ Успешный платеж обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+            }
+          }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки успешного платежа | Charge: ${charge.id}`, { error: error.message });
+        }
+      }
+    }
+
+    // Обрабатываем события Payment Intent Created (создание платежа)
+    if (event.type === 'payment_intent.created') {
+      const paymentIntent = event.data.object;
+      const sessionId = paymentIntent.metadata?.session_id;
+      
+      if (sessionId) {
+        try {
+          const session = await stripe.checkout.sessions.retrieve(sessionId);
+          const dealId = session.metadata?.deal_id;
+          
+          if (dealId) {
+            logger.info(`🆕 Создан новый платеж | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id} | Amount: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
+            
+            // Логируем создание платежа (статус еще не обновляем, так как платеж еще не завершен)
+            logger.debug(`📋 Payment Intent создан для Deal #${dealId}`, {
+              paymentIntentId: paymentIntent.id,
+              sessionId,
+              amount: paymentIntent.amount,
+              currency: paymentIntent.currency,
+              status: paymentIntent.status
+            });
+          }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
+        }
+      }
+    }
+
+    // Обрабатываем события Invoice Sent (отправка инвойса)
+    if (event.type === 'invoice.sent') {
+      const invoice = event.data.object;
+      const subscriptionId = invoice.subscription;
+      const customerId = invoice.customer;
+      
+      logger.info(`📧 Инвойс отправлен | Invoice: ${invoice.id} | Customer: ${customerId} | Amount: ${invoice.amount_due / 100} ${invoice.currency.toUpperCase()}`);
+      
+      // Логируем отправку инвойса (для B2B сделок)
+      logger.debug(`📋 Invoice sent event`, {
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.number,
+        customerId,
+        subscriptionId,
+        amountDue: invoice.amount_due,
+        currency: invoice.currency,
+        hostedInvoiceUrl: invoice.hosted_invoice_url
+      });
+    }
+
+    // Логируем необработанные события (для отладки)
+    const handledEvents = [
+      'checkout.session.completed',
+      'checkout.session.async_payment_succeeded',
+      'checkout.session.async_payment_failed',
+      'checkout.session.expired',
+      'payment_intent.succeeded',
+      'payment_intent.payment_failed',
+      'payment_intent.created',
+      'charge.refunded',
+      'charge.updated',
+      'charge.succeeded',
+      'invoice.sent'
+    ];
+    
+    if (!handledEvents.includes(event.type)) {
+      logger.debug(`ℹ️  Необработанное событие Stripe | Тип: ${event.type} | ID: ${event.id}`);
+    }
+
     res.status(200).json({ received: true });
   } catch (error) {
     logger.error('❌ Ошибка обработки Stripe webhook', { 

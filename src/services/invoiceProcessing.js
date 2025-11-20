@@ -53,6 +53,9 @@ class InvoiceProcessingService {
       this.sendpulseClient = null;
     }
     
+    // Счетчики для отслеживания API запросов и статистики обработки
+    this.resetStats();
+    
     // Конфигурация
     this.ADVANCE_PERCENT = 50; // 50% предоплата
     this.PAYMENT_TERMS_DAYS = 3; // Срок оплаты 3 дня
@@ -99,6 +102,50 @@ class InvoiceProcessingService {
       invoiceTypes: Object.keys(this.INVOICE_TYPES),
       invoiceTypeFieldKey: this.INVOICE_TYPE_FIELD_KEY,
       invoiceNumberFieldKey: this.INVOICE_NUMBER_FIELD_KEY
+    });
+  }
+
+  /**
+   * Сброс статистики обработки
+   */
+  resetStats() {
+    this.stats = {
+      startTime: null,
+      endTime: null,
+      dealsProcessed: 0,
+      dealsSuccessful: 0,
+      dealsFailed: 0,
+      dealsSkipped: 0,
+      pipedriveApiCalls: 0,
+      wfirmaApiCalls: 0,
+      otherApiCalls: 0,
+      totalApiCalls: 0,
+      errors: []
+    };
+  }
+
+  /**
+   * Логирование статистики обработки
+   */
+  logStats() {
+    const duration = this.stats.endTime 
+      ? ((this.stats.endTime - this.stats.startTime) / 1000).toFixed(2)
+      : ((Date.now() - this.stats.startTime) / 1000).toFixed(2);
+    
+    logger.info('📊 Invoice Processing Statistics', {
+      duration: `${duration}s`,
+      dealsProcessed: this.stats.dealsProcessed,
+      dealsSuccessful: this.stats.dealsSuccessful,
+      dealsFailed: this.stats.dealsFailed,
+      dealsSkipped: this.stats.dealsSkipped,
+      apiCalls: {
+        pipedrive: this.stats.pipedriveApiCalls,
+        wfirma: this.stats.wfirmaApiCalls,
+        other: this.stats.otherApiCalls,
+        total: this.stats.totalApiCalls
+      },
+      errorsCount: this.stats.errors.length,
+      errors: this.stats.errors.length > 0 ? this.stats.errors.slice(0, 5) : [] // Первые 5 ошибок
     });
   }
 
@@ -206,17 +253,27 @@ class InvoiceProcessingService {
    * @returns {Promise<Object>} - Результат обработки
    */
   async processPendingInvoices() {
+    // Сброс и инициализация статистики
+    this.resetStats();
+    this.stats.startTime = Date.now();
+    
     try {
-      logger.info('Starting invoice processing for pending deals...');
+      logger.info('🚀 Starting invoice processing for pending deals...', {
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development'
+      });
 
+      // Обработка запросов на удаление
+      logger.info('📋 Step 1: Processing deletion requests...');
       const deletionResult = await this.processDeletionRequests();
       if (!deletionResult.success) {
-        logger.warn('Deletion trigger processing finished with errors', {
+        logger.warn('⚠️  Deletion trigger processing finished with errors', {
           error: deletionResult.error,
           details: deletionResult.details
         });
+        this.stats.errors.push(`Deletion processing: ${deletionResult.error}`);
       } else if (deletionResult.total > 0) {
-        logger.info('Deletion trigger processing summary', {
+        logger.info('✅ Deletion trigger processing summary', {
           processed: deletionResult.processed,
           errors: deletionResult.errors,
           total: deletionResult.total
@@ -224,41 +281,100 @@ class InvoiceProcessingService {
       }
       
       // 1. Получаем все сделки с измененным полем Invoice type
+      logger.info('📋 Step 2: Fetching pending deals from Pipedrive...');
       const pendingDeals = await this.getPendingInvoiceDeals();
       
       if (!pendingDeals.success) {
+        this.stats.endTime = Date.now();
+        this.stats.errors.push(`Failed to get pending deals: ${pendingDeals.error}`);
+        this.logStats();
         return pendingDeals;
       }
       
-      logger.info(`Found ${pendingDeals.deals.length} deals with pending invoices`);
+      logger.info(`📊 Found ${pendingDeals.deals.length} deals with pending invoices`, {
+        dealIds: pendingDeals.deals.map(d => d.id).slice(0, 10) // Первые 10 ID для примера
+      });
       
+      this.stats.dealsProcessed = pendingDeals.deals.length;
       const results = [];
       
       // 2. Обрабатываем каждую сделку
-      for (const deal of pendingDeals.deals) {
+      logger.info(`📋 Step 3: Processing ${pendingDeals.deals.length} deals...`);
+      for (let i = 0; i < pendingDeals.deals.length; i++) {
+        const deal = pendingDeals.deals[i];
+        const dealStartTime = Date.now();
+        
+        logger.info(`🔄 Processing deal ${i + 1}/${pendingDeals.deals.length}: Deal #${deal.id} - ${deal.title || 'Untitled'}`);
+        
         try {
           const result = await this.processDealInvoice(deal);
+          const dealDuration = ((Date.now() - dealStartTime) / 1000).toFixed(2);
+          
+          if (result.success) {
+            if (result.skipped) {
+              this.stats.dealsSkipped++;
+              logger.info(`⏭️  Deal #${deal.id} skipped (${dealDuration}s): ${result.message}`);
+            } else {
+              this.stats.dealsSuccessful++;
+              logger.info(`✅ Deal #${deal.id} processed successfully (${dealDuration}s): ${result.message}`);
+            }
+          } else {
+            this.stats.dealsFailed++;
+            logger.error(`❌ Deal #${deal.id} failed (${dealDuration}s): ${result.error}`);
+            this.stats.errors.push(`Deal #${deal.id}: ${result.error}`);
+          }
+          
           results.push({
             dealId: deal.id,
             success: result.success,
             message: result.message,
             invoiceType: result.invoiceType,
-            error: result.error
+            error: result.error,
+            duration: dealDuration
           });
         } catch (error) {
-          logger.error(`Error processing deal ${deal.id}:`, error);
+          const dealDuration = ((Date.now() - dealStartTime) / 1000).toFixed(2);
+          logger.error(`❌ Error processing deal ${deal.id} (${dealDuration}s):`, {
+            error: error.message,
+            stack: error.stack
+          });
+          this.stats.dealsFailed++;
+          this.stats.errors.push(`Deal #${deal.id}: ${error.message}`);
           results.push({
             dealId: deal.id,
             success: false,
-            error: error.message
+            error: error.message,
+            duration: dealDuration
+          });
+        }
+        
+        // Промежуточная статистика каждые 10 сделок
+        if ((i + 1) % 10 === 0) {
+          logger.info(`📊 Progress: ${i + 1}/${pendingDeals.deals.length} deals processed`, {
+            successful: this.stats.dealsSuccessful,
+            failed: this.stats.dealsFailed,
+            skipped: this.stats.dealsSkipped,
+            apiCalls: {
+              pipedrive: this.stats.pipedriveApiCalls,
+              wfirma: this.stats.wfirmaApiCalls,
+              total: this.stats.totalApiCalls
+            }
           });
         }
       }
       
-      const successCount = results.filter(r => r.success).length;
-      const errorCount = results.filter(r => !r.success).length;
+      this.stats.endTime = Date.now();
       
-      logger.info(`Invoice processing completed: ${successCount} successful, ${errorCount} errors`);
+      // Финальная статистика
+      logger.info(`✅ Invoice processing completed`, {
+        total: pendingDeals.deals.length,
+        successful: this.stats.dealsSuccessful,
+        failed: this.stats.dealsFailed,
+        skipped: this.stats.dealsSkipped
+      });
+      
+      // Детальная статистика
+      this.logStats();
       
       return {
         success: true,
@@ -266,13 +382,29 @@ class InvoiceProcessingService {
         results: results,
         summary: {
           total: pendingDeals.deals.length,
-          successful: successCount,
-          errors: errorCount
+          successful: this.stats.dealsSuccessful,
+          errors: this.stats.dealsFailed,
+          skipped: this.stats.dealsSkipped
+        },
+        stats: {
+          duration: ((this.stats.endTime - this.stats.startTime) / 1000).toFixed(2),
+          apiCalls: {
+            pipedrive: this.stats.pipedriveApiCalls,
+            wfirma: this.stats.wfirmaApiCalls,
+            other: this.stats.otherApiCalls,
+            total: this.stats.totalApiCalls
+          }
         }
       };
       
     } catch (error) {
-      logger.error('Error in processPendingInvoices:', error);
+      this.stats.endTime = Date.now();
+      this.stats.errors.push(`Fatal error: ${error.message}`);
+      logger.error('❌ Fatal error in processPendingInvoices:', {
+        error: error.message,
+        stack: error.stack
+      });
+      this.logStats();
       return {
         success: false,
         error: error.message
@@ -342,6 +474,11 @@ class InvoiceProcessingService {
 
   async getDealsMarkedForDeletion() {
     try {
+      logger.debug('📡 Fetching deals marked for deletion from Pipedrive...');
+      if (this.stats) {
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       const dealsResult = await this.pipedriveClient.getDeals({
         limit: 500,
         start: 0,
@@ -1248,6 +1385,7 @@ class InvoiceProcessingService {
    */
   async getPendingInvoiceDeals() {
     try {
+      logger.debug('📡 Fetching pending invoice deals from Pipedrive...');
       // Значение для Stripe из переменной окружения
       const STRIPE_INVOICE_TYPE_VALUE = process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75';
       const validTypes = Object.values(this.INVOICE_TYPES);
@@ -1255,6 +1393,10 @@ class InvoiceProcessingService {
       
       // Получаем все открытые сделки (Pipedrive API не поддерживает фильтрацию по кастомным полям напрямую)
       // Фильтрация выполняется на клиенте для экономии токенов
+      if (this.stats) {
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       const dealsResult = await this.pipedriveClient.getDeals({
         limit: 500,
         start: 0,
@@ -1377,16 +1519,21 @@ class InvoiceProcessingService {
    * @returns {Promise<Object>} - Результат обработки
    */
   async processDealInvoice(deal, person = null, organization = null) {
+    const dealStartTime = Date.now();
     try {
-      logger.info(`Processing invoice for deal ${deal.id}: ${deal.title}`);
+      logger.info(`🔄 Processing invoice for deal ${deal.id}: ${deal.title || 'Untitled'}`);
       
       // 1. Получаем полные данные сделки с связанными объектами (если не переданы)
       let fullDeal, fullPerson, fullOrganization;
       
       if (person === null || organization === null) {
+        logger.debug(`📡 [Deal #${deal.id}] Fetching deal with related data from Pipedrive...`);
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
         const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(deal.id);
         
         if (!fullDealResult.success) {
+          logger.error(`❌ [Deal #${deal.id}] Failed to get deal data: ${fullDealResult.error}`);
           return {
             success: false,
             error: `Failed to get deal data: ${fullDealResult.error}`
@@ -1396,27 +1543,36 @@ class InvoiceProcessingService {
         fullDeal = fullDealResult.deal;
         fullPerson = fullDealResult.person;
         fullOrganization = fullDealResult.organization;
+        logger.debug(`✅ [Deal #${deal.id}] Deal data fetched successfully`);
       } else {
         fullDeal = deal;
         fullPerson = person;
         fullOrganization = organization;
+        logger.debug(`📋 [Deal #${deal.id}] Using provided deal data (skipping API call)`);
       }
       
       // 2. Определяем тип счета из кастомного поля
+      logger.debug(`📋 [Deal #${deal.id}] Step 2: Determining invoice type...`);
       const invoiceType = this.getInvoiceTypeFromDeal(fullDeal);
       
       if (!invoiceType) {
+        logger.warn(`⚠️  [Deal #${deal.id}] No invoice type specified in deal`);
         return {
           success: false,
           error: 'No invoice type specified in deal'
         };
       }
+      logger.debug(`✅ [Deal #${deal.id}] Invoice type: ${invoiceType}`);
       
       // 3. Проверяем, что проформа еще не создана для этой сделки
+      logger.debug(`📋 [Deal #${deal.id}] Step 3: Checking for existing proforma...`);
+      if (this.wfirmaLookup) {
+        this.stats.otherApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       const existingProforma = await this.findExistingProformaForDeal(fullDeal);
       if (existingProforma?.found) {
-        logger.warn('Proforma already exists for deal, skipping duplicate creation', {
-          dealId: fullDeal.id,
+        logger.warn(`⏭️  [Deal #${fullDeal.id}] Proforma already exists, skipping duplicate creation`, {
           invoiceId: existingProforma.invoiceId || null,
           invoiceNumber: existingProforma.invoiceNumber || null,
           source: existingProforma.source || null
@@ -1425,17 +1581,19 @@ class InvoiceProcessingService {
         // НЕ обновляем Invoice number автоматически - это может вызвать бесконечный цикл webhooks
         // Если номер нужно обновить, это должно делаться вручную или при создании новой проформы
 
+        logger.debug(`📋 [Deal #${fullDeal.id}] Clearing invoice trigger for existing proforma...`);
         const clearResult = await this.clearInvoiceTrigger(
           fullDeal.id,
           existingProforma.invoiceId || null
         );
         if (!clearResult.success) {
-          logger.warn('Failed to clear invoice trigger while skipping duplicate creation', {
-            dealId: fullDeal.id,
-            invoiceId: existingProforma.invoiceId || null,
-            error: clearResult.error
-          });
+          logger.warn(`⚠️  [Deal #${fullDeal.id}] Failed to clear invoice trigger while skipping duplicate creation: ${clearResult.error}`);
+        } else {
+          logger.debug(`✅ [Deal #${fullDeal.id}] Invoice trigger cleared for existing proforma`);
         }
+
+        const dealDuration = ((Date.now() - dealStartTime) / 1000).toFixed(2);
+        logger.info(`⏭️  [Deal #${fullDeal.id}] Deal skipped (${dealDuration}s): Proforma already exists`);
 
         return {
           success: true,
@@ -1443,49 +1601,61 @@ class InvoiceProcessingService {
           invoiceType,
           invoiceId: existingProforma.invoiceId || null,
           invoiceNumber: existingProforma.invoiceNumber || null,
-          message: 'Proforma already exists for this deal, skipping duplicate creation'
+          message: 'Proforma already exists for this deal, skipping duplicate creation',
+          duration: dealDuration
         };
       }
       
       // 4. Валидация данных сделки
+      logger.debug(`📋 [Deal #${deal.id}] Step 4: Validating deal data...`);
       const validationResult = await this.validateDealForInvoice(fullDeal, fullPerson, fullOrganization);
       
       if (!validationResult.success) {
+        logger.warn(`⚠️  [Deal #${deal.id}] Validation failed: ${validationResult.error}`);
         return validationResult;
       }
+      logger.debug(`✅ [Deal #${deal.id}] Deal data validated`);
       
       if (!existingProforma?.found && Array.isArray(existingProforma?.staleInvoiceIds) && existingProforma.staleInvoiceIds.length > 0) {
         if (this.WFIRMA_INVOICE_ID_FIELD_KEY) {
           try {
+            logger.debug(`📋 [Deal #${deal.id}] Clearing stale invoice ID reference...`);
+            this.stats.pipedriveApiCalls++;
+            this.stats.totalApiCalls++;
             await this.ensureInvoiceId(fullDeal.id, null, {
               currentValue: fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY],
               reason: 'stale_reference'
             });
             fullDeal[this.WFIRMA_INVOICE_ID_FIELD_KEY] = null;
           } catch (error) {
-            logger.warn('Failed to clear stale WFIRMA invoice id reference before processing', {
-              dealId: fullDeal.id,
-              error: error.message
-            });
+            logger.warn(`⚠️  [Deal #${deal.id}] Failed to clear stale WFIRMA invoice id reference: ${error.message}`);
           }
         }
       }
 
       // 5. Извлекаем email клиента
+      logger.debug(`📋 [Deal #${deal.id}] Step 5: Extracting customer email...`);
       const email = this.getCustomerEmail(fullPerson, fullOrganization);
       if (!email) {
+        logger.warn(`⚠️  [Deal #${deal.id}] Customer email is required but not found`);
         return {
           success: false,
           error: 'Customer email is required for invoice creation'
         };
       }
+      logger.debug(`✅ [Deal #${deal.id}] Customer email: ${email}`);
       
       // 6. Подготавливаем данные контрагента
+      logger.debug(`📋 [Deal #${deal.id}] Step 6: Preparing contractor data...`);
       const contractorData = this.prepareContractorData(fullPerson, fullOrganization, email);
 
       // 7. Ищем или создаем контрагента в wFirma
+      logger.debug(`📋 [Deal #${deal.id}] Step 7: Finding or creating contractor in wFirma...`);
+      this.stats.wfirmaApiCalls++;
+      this.stats.totalApiCalls++;
       const contractorResult = await this.userManagement.findOrCreateContractor(contractorData);
       if (!contractorResult.success) {
+        logger.error(`❌ [Deal #${deal.id}] Failed to find or create contractor: ${contractorResult.error}`);
         return {
           success: false,
           error: `Failed to find or create contractor: ${contractorResult.error}`
@@ -1493,9 +1663,12 @@ class InvoiceProcessingService {
       }
 
       const contractor = contractorResult.contractor;
-      logger.info(`Using contractor: ${contractor.name} (ID: ${contractor.id})`);
+      logger.info(`✅ [Deal #${deal.id}] Using contractor: ${contractor.name} (ID: ${contractor.id})`);
 
       // 8. Получаем продукты из сделки Pipedrive
+      logger.debug(`📋 [Deal #${deal.id}] Step 8: Fetching deal products from Pipedrive...`);
+      this.stats.pipedriveApiCalls++;
+      this.stats.totalApiCalls++;
       const dealProducts = await this.getDealProducts(fullDeal.id);
       let product;
       const defaultProductName = fullDeal.title || 'Camp / Tourist service';
@@ -1555,6 +1728,9 @@ class InvoiceProcessingService {
       }
 
       // 9. Создаем документ в wFirma с существующим контрагентом и продуктом
+      logger.debug(`📋 [Deal #${deal.id}] Step 9: Creating invoice in wFirma...`);
+      this.stats.wfirmaApiCalls++;
+      this.stats.totalApiCalls++;
       const invoiceResult = await this.createInvoiceInWfirma(
         fullDeal,
         contractor,
@@ -1563,19 +1739,20 @@ class InvoiceProcessingService {
       );
       
       if (!invoiceResult.success) {
+        logger.error(`❌ [Deal #${deal.id}] Failed to create invoice in wFirma: ${invoiceResult.error}`);
         return invoiceResult;
       }
       
       // Проверяем, что проформа действительно создана (invoiceId существует)
       if (!invoiceResult.invoiceId) {
-        logger.error(`Invoice creation returned success but invoiceId is missing for deal ${fullDeal.id}`);
+        logger.error(`❌ [Deal #${deal.id}] Invoice creation returned success but invoiceId is missing`);
         return {
           success: false,
           error: 'Invoice creation failed: invoiceId is missing'
         };
       }
       
-      logger.info(`Invoice successfully created in wFirma: ${invoiceResult.invoiceId} for deal ${fullDeal.id}`);
+      logger.info(`✅ [Deal #${deal.id}] Invoice successfully created in wFirma: ${invoiceResult.invoiceId}`);
       
       const fallbackBuyerData = this.buildBuyerFallback(fullPerson, fullOrganization, contractor);
       logger.info('Prepared fallback buyer data for persistence', {
@@ -1810,6 +1987,22 @@ class InvoiceProcessingService {
 
       // Invoice ID уже синхронизирован в clearInvoiceTrigger, дополнительная синхронизация не требуется
 
+      const dealDuration = ((Date.now() - dealStartTime) / 1000).toFixed(2);
+      const dealApiCalls = {
+        pipedrive: this.stats?.pipedriveApiCalls || 0,
+        wfirma: this.stats?.wfirmaApiCalls || 0,
+        other: this.stats?.otherApiCalls || 0
+      };
+
+      logger.info(`✅ [Deal #${deal.id}] Invoice processing completed successfully`, {
+        duration: `${dealDuration}s`,
+        invoiceId: invoiceResult.invoiceId,
+        invoiceNumber: invoiceResult.invoiceNumber,
+        invoiceType,
+        apiCalls: dealApiCalls,
+        contractor: contractorData.name
+      });
+
       const result = {
         success: true,
         message: `Invoice ${invoiceType} created and sent successfully`,
@@ -1822,16 +2015,23 @@ class InvoiceProcessingService {
         dealId: fullDeal.id,
         tasks: tasksResult,
         telegramNotification: telegramResult,
-        emailSent: emailResult?.success || false
+        emailSent: emailResult?.success || false,
+        duration: dealDuration,
+        apiCalls: dealApiCalls
       };
 
       return result;
       
     } catch (error) {
-      logger.error(`Error processing deal ${deal.id}:`, error);
+      const dealDuration = ((Date.now() - dealStartTime) / 1000).toFixed(2);
+      logger.error(`❌ [Deal #${deal.id}] Error processing deal (${dealDuration}s):`, {
+        error: error.message,
+        stack: error.stack
+      });
       return {
         success: false,
-        error: error.message
+        error: error.message,
+        duration: dealDuration
       };
     }
   }
@@ -1919,6 +2119,7 @@ class InvoiceProcessingService {
    */
   async clearInvoiceTrigger(dealId, invoiceId = null, additionalFields = {}) {
     try {
+      logger.debug(`📡 [Deal #${dealId}] Clearing invoice trigger (updating Pipedrive deal)...`);
       const payload = {
         [`${this.INVOICE_TYPE_FIELD_KEY}`]: this.INVOICE_DONE_VALUE
       };
@@ -1930,16 +2131,21 @@ class InvoiceProcessingService {
       // Добавляем дополнительные поля в payload
       Object.assign(payload, additionalFields);
 
+      if (this.stats) {
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       const updateResult = await this.pipedriveClient.updateDeal(dealId, payload);
 
       if (!updateResult.success) {
+        logger.error(`❌ [Deal #${dealId}] Failed to clear invoice trigger: ${updateResult.error}`);
         return {
           success: false,
           error: updateResult.error || 'Failed to update deal in Pipedrive'
         };
       }
 
-      logger.info(`Invoice trigger cleared for deal ${dealId}`, {
+      logger.info(`✅ [Deal #${dealId}] Invoice trigger cleared successfully`, {
         invoiceId: invoiceId || null,
         additionalFieldsCount: Object.keys(additionalFields).length
       });
@@ -1948,7 +2154,7 @@ class InvoiceProcessingService {
         deal: updateResult.deal
       };
     } catch (error) {
-      logger.error('Error clearing invoice trigger:', error);
+      logger.error(`❌ [Deal #${dealId}] Error clearing invoice trigger:`, error);
       return {
         success: false,
         error: error.message
@@ -2077,20 +2283,23 @@ class InvoiceProcessingService {
     };
 
     try {
+      logger.debug(`📡 [Deal #${dealId}] Syncing invoice ID to Pipedrive...`);
+      if (this.stats) {
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       const result = await this.pipedriveClient.updateDeal(dealId, payload);
       if (!result.success) {
         throw new Error(result.error || 'Pipedrive update failed');
       }
 
-      logger.info('WFIRMA invoice id synced to Pipedrive', {
-        dealId,
+      logger.info(`✅ [Deal #${dealId}] WFIRMA invoice id synced to Pipedrive`, {
         invoiceId: normalizedInvoiceId
       });
 
       return { success: true, skipped: false, value: normalizedInvoiceId, deal: result.deal };
     } catch (error) {
-      logger.error('Failed to sync WFIRMA invoice id in Pipedrive', {
-        dealId,
+      logger.error(`❌ [Deal #${dealId}] Failed to sync WFIRMA invoice id in Pipedrive:`, {
         invoiceId: normalizedInvoiceId,
         error: error.message
       });
@@ -3804,7 +4013,11 @@ class InvoiceProcessingService {
    */
   async getDealProducts(dealId) {
     try {
-      logger.info('Fetching products for deal', { dealId: dealId });
+      logger.debug(`📡 [Deal #${dealId}] Fetching products from Pipedrive...`);
+      if (this.stats) {
+        this.stats.pipedriveApiCalls++;
+        this.stats.totalApiCalls++;
+      }
       
       // Используем прямой вызов axios клиента
       const response = await this.pipedriveClient.client.get(`/deals/${dealId}/products`, {
