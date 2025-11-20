@@ -27,12 +27,15 @@ class ExpenseCategoryService {
 
       // Sort by display_order if it exists, otherwise by name
       const categories = (data || []).sort((a, b) => {
-        // If display_order exists, use it
-        if (a.display_order !== undefined && b.display_order !== undefined) {
-          if (a.display_order !== b.display_order) {
-            return a.display_order - b.display_order;
-          }
+        // Handle display_order: null/undefined values go to the end
+        const orderA = a.display_order != null ? a.display_order : 999999;
+        const orderB = b.display_order != null ? b.display_order : 999999;
+        
+        // Primary sort by display_order
+        if (orderA !== orderB) {
+          return orderA - orderB;
         }
+        
         // Secondary sort by name
         return (a.name || '').localeCompare(b.name || '');
       });
@@ -360,8 +363,8 @@ class ExpenseCategoryService {
         throw new Error('Category not found');
       }
 
-      // Check if display_order column exists
-      if (currentCategory.display_order === undefined) {
+      // Check if display_order column exists (null is valid, undefined means column doesn't exist)
+      if (currentCategory.display_order === undefined && !('display_order' in currentCategory)) {
         throw new Error('Category ordering is not available. Please run migration to add display_order column.');
       }
 

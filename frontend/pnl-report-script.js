@@ -973,8 +973,8 @@ function renderExpenseCategories(categories) {
     return;
   }
 
-  // Check if display_order is available
-  const hasDisplayOrder = categories.some(cat => cat.display_order !== undefined);
+  // Check if display_order is available (at least one category should have it)
+  const hasDisplayOrder = categories.some(cat => cat.display_order != null);
 
   const html = `
     <div class="categories-list">
