@@ -2248,12 +2248,14 @@ router.post('/payments/import-expenses', upload.single('file'), async (req, res)
       size: req.file.buffer.length
     });
 
-    // Get auto-match threshold from query parameter (default: 90%)
+    // Get auto-match threshold from query parameter (default: 100% = disabled)
+    // Set to 100 to disable auto-categorization - all expenses require manual selection
     const autoMatchThreshold = req.query.autoMatchThreshold 
       ? parseInt(req.query.autoMatchThreshold, 10) 
-      : 90;
+      : 100; // Default: 100% = auto-categorization disabled
     
     // Validate threshold (0-100)
+    // If threshold is 100, auto-categorization is effectively disabled
     const validThreshold = Math.max(0, Math.min(100, autoMatchThreshold));
     
     const stats = await paymentService.ingestExpensesCsv(req.file.buffer, {

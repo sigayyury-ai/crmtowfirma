@@ -491,8 +491,9 @@ class PaymentService {
           logger.debug(`Generated ${suggestions.length} suggestions for expense: ${expense.description?.substring(0, 50)}...`);
           
           // Check if best suggestion meets auto-match threshold
+          // If autoMatchThreshold >= 100, auto-categorization is disabled (all require manual selection)
           const bestSuggestion = suggestions[0];
-          if (bestSuggestion && bestSuggestion.confidence >= autoMatchThreshold) {
+          if (autoMatchThreshold < 100 && bestSuggestion && bestSuggestion.confidence >= autoMatchThreshold) {
             autoMatchedCategoryId = bestSuggestion.categoryId;
             autoMatchConfidence = bestSuggestion.confidence;
             autoMatchedCount++;
@@ -507,6 +508,12 @@ class PaymentService {
               categoryId: autoMatchedCategoryId,
               confidence: autoMatchConfidence,
               hadExistingCategory: !!existingCategoryId
+            });
+          } else if (autoMatchThreshold >= 100) {
+            // Auto-categorization is disabled - all expenses require manual selection
+            logger.debug('Auto-categorization disabled (threshold >= 100), skipping auto-match', {
+              description: expense.description?.substring(0, 50),
+              threshold: autoMatchThreshold
             });
           }
         }

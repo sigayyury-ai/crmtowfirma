@@ -169,13 +169,14 @@
                 <input type="file" id="expensesCsvInput" accept=".csv">
                 <label style="display: flex; align-items: center; gap: 5px;">
                     Порог автокатегоризации:
-                    <input type="number" id="autoMatchThreshold" value="90" min="0" max="100" style="width: 60px; padding: 5px;">
+                    <input type="number" id="autoMatchThreshold" value="100" min="0" max="100" style="width: 60px; padding: 5px;">
                     <span style="color: #666;">%</span>
+                    <span style="color: #999; font-size: 0.9em;">(100% = отключено, все вручную)</span>
                 </label>
                 <button class="btn btn-primary" onclick="handleExpensesCsvUpload()">📤 Загрузить CSV</button>
             </div>
             <div style="font-size: 0.9em; color: #666; margin-bottom: 10px;">
-                Расходы с уверенностью >= порога будут автоматически категоризированы. Остальные требуют ручного выбора.
+                Порог автокатегоризации: 100% = отключено (все расходы требуют ручного выбора). Установите значение < 100 для включения автокатегоризации.
             </div>
             <div id="uploadLog" style="margin-top: 10px;"></div>
         </div>
