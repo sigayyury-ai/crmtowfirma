@@ -153,13 +153,19 @@ class StripeProcessorService {
             }
             if (!this.shouldProcessSession(session)) continue;
             
+            // Check if payment was already processed (skip if exists in database)
+            const existingPayment = await this.repository.findPaymentBySessionId(session.id);
+            if (existingPayment) {
+              // Payment already processed, skip to avoid duplicate processing on startup
+              continue;
+            }
+            
             // Check if payment was paid but not processed (webhook might have failed)
             const isPaid = session.payment_status === 'paid';
-            const existingPayment = await this.repository.findPaymentBySessionId(session.id);
             const dealId = session.metadata?.deal_id;
             
             // If paid but not processed and more than 1 hour old, create task
-            if (isPaid && !existingPayment && dealId) {
+            if (isPaid && dealId) {
               const sessionCreated = session.created ? new Date(session.created * 1000) : null;
               if (sessionCreated) {
                 const hoursSinceCreated = (Date.now() - sessionCreated.getTime()) / (1000 * 60 * 60);
