@@ -566,13 +566,13 @@ class StripeProcessorService {
     await this.repository.savePayment(paymentRecord);
     await this.paymentPlanService.updatePlanFromSession(paymentRecord, session);
 
-    // Send invoice to customer ONLY for B2B deals (B2C gets receipt automatically)
-    // Check if this is B2B by looking for customer object (not just customer_email)
-    // Also check if invoice was created (invoice_creation.enabled)
-    const isB2B = session.customer && typeof session.customer === 'string';
-    const hasInvoice = session.invoice || (session.payment_status === 'paid' && isB2B);
+    // Send invoice to customer for BOTH B2B and B2C deals
+    // Invoice is created for all deals to show VAT breakdown in footer
+    // Check if invoice was created (invoice_creation.enabled)
+    const hasCustomer = session.customer && typeof session.customer === 'string';
+    const hasInvoice = session.invoice || (session.payment_status === 'paid' && hasCustomer);
     
-    if (isB2B && session.payment_status === 'paid') {
+    if (hasInvoice && session.payment_status === 'paid') {
       try {
         let invoiceId = null;
         
