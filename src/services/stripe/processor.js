@@ -816,19 +816,38 @@ class StripeProcessorService {
             // Check if receipt email was sent
             const charge = paymentIntent.charges?.data?.[0];
             if (charge) {
+              // Get VAT breakdown from metadata if available
+              const vatMetadata = paymentIntent.metadata || {};
+              const shouldApplyVat = vatMetadata.vat_applicable === 'true';
+              let chargeDescription = charge.description || '';
+              
+              // Add VAT breakdown to charge description if applicable
+              if (shouldApplyVat && vatMetadata.vat_rate && vatMetadata.amount_excluding_vat && vatMetadata.vat_amount) {
+                const vatBreakdown = `\n\nVAT Breakdown:\nAmount excluding VAT: ${vatMetadata.amount_excluding_vat} ${vatMetadata.vat_currency || 'PLN'}\nVAT (${vatMetadata.vat_rate}): ${vatMetadata.vat_amount} ${vatMetadata.vat_currency || 'PLN'}\nTotal (including VAT): ${vatMetadata.total_including_vat} ${vatMetadata.vat_currency || 'PLN'}\n\nNote: VAT is included in the price. Stripe does not collect VAT separately.`;
+                chargeDescription = (chargeDescription || 'Payment receipt') + vatBreakdown;
+              }
+              
               // Always set receipt_email to ensure receipt is sent
               // Stripe sends receipt automatically when receipt_email is set
               try {
-                if (!charge.receipt_email || charge.receipt_email !== receiptEmail) {
-                  await this.stripe.charges.update(charge.id, {
-                    receipt_email: receiptEmail
-                  });
-                  this.logger.info(`📧 [Deal #${dealId}] Receipt email set on charge - Stripe will send receipt automatically`, {
+                const updateParams = {
+                  receipt_email: receiptEmail
+                };
+                
+                // Add description with VAT breakdown if applicable
+                if (chargeDescription && chargeDescription !== charge.description) {
+                  updateParams.description = chargeDescription;
+                }
+                
+                if (!charge.receipt_email || charge.receipt_email !== receiptEmail || (chargeDescription && chargeDescription !== charge.description)) {
+                  await this.stripe.charges.update(charge.id, updateParams);
+                  this.logger.info(`📧 [Deal #${dealId}] Receipt email and VAT breakdown set on charge`, {
                     dealId,
                     sessionId: session.id,
                     email: receiptEmail,
                     chargeId: charge.id,
-                    note: 'Stripe will send receipt email automatically. Check Stripe Dashboard → Payments → [charge] → Receipt to verify.'
+                    hasVatBreakdown: shouldApplyVat,
+                    note: 'Stripe will send receipt email automatically. VAT breakdown added to charge description. Check Stripe Dashboard → Payments → [charge] → Receipt to verify.'
                   });
                 } else {
                   this.logger.info(`📧 [Deal #${dealId}] Receipt email already set on charge`, {
@@ -839,7 +858,7 @@ class StripeProcessorService {
                   });
                 }
               } catch (receiptError) {
-                this.logger.warn(`⚠️  [Deal #${dealId}] Failed to set receipt email on charge`, {
+                this.logger.warn(`⚠️  [Deal #${dealId}] Failed to set receipt email/VAT on charge`, {
                   dealId,
                   sessionId: session.id,
                   email: receiptEmail,
