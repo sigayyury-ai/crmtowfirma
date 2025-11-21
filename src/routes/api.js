@@ -70,7 +70,13 @@ const ExpenseCategoryMappingService = require('../services/pnl/expenseCategoryMa
 const expenseCategoryMappingService = new ExpenseCategoryMappingService();
 const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
-const upload = multer();
+// Configure multer with memory storage and size limits
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
 
 /**
  * POST /api/contractors
@@ -1298,41 +1304,144 @@ router.get('/vat-margin/payment-report/export', async (req, res) => {
 });
 
 router.get('/vat-margin/payments', async (req, res) => {
+  let direction, limit, uncategorized;
+  
   try {
-    const { direction, limit, uncategorized } = req.query;
+    ({ direction, limit, uncategorized } = req.query);
+    
+    logger.info('GET /vat-margin/payments', {
+      direction,
+      limit,
+      uncategorized,
+      query: req.query
+    });
+    
+    // DEBUG: Check total payments count in database
+    try {
+      const { count: totalCount } = await supabase
+        .from('payments')
+        .select('*', { count: 'exact', head: true });
+      
+      const { count: outCount } = await supabase
+        .from('payments')
+        .select('*', { count: 'exact', head: true })
+        .eq('direction', 'out');
+      
+      const { count: inCount } = await supabase
+        .from('payments')
+        .select('*', { count: 'exact', head: true })
+        .eq('direction', 'in');
+      
+      // Also check for null direction
+      const { count: nullDirectionCount } = await supabase
+        .from('payments')
+        .select('*', { count: 'exact', head: true })
+        .is('direction', null);
+      
+      // Get sample payments to see their directions
+      const { data: samplePayments } = await supabase
+        .from('payments')
+        .select('id, direction, amount, description, expense_category_id')
+        .limit(10);
+      
+      logger.info('Database payment counts', {
+        total: totalCount,
+        direction_out: outCount,
+        direction_in: inCount,
+        direction_null: nullDirectionCount,
+        samplePayments: samplePayments?.map(p => ({
+          id: p.id,
+          direction: p.direction,
+          amount: p.amount,
+          hasExpenseCategory: !!p.expense_category_id,
+          description: p.description?.substring(0, 50)
+        })) || []
+      });
+    } catch (debugError) {
+      logger.warn('Failed to get payment counts for debugging', { error: debugError.message });
+    }
     
     // If uncategorized=true, filter for expenses without category
-    let expenseCategoryId = undefined;
+    // expenseCategoryId === undefined means "all expenses"
+    // expenseCategoryId === null means "only uncategorized expenses"
+    // expenseCategoryId === number means "only expenses with this category"
+    let expenseCategoryId = undefined; // Default: show all expenses
     if (uncategorized === 'true' && direction === 'out') {
-      expenseCategoryId = null; // null means IS NULL in Supabase
+      expenseCategoryId = null; // null means IS NULL in Supabase (only uncategorized)
     }
     
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    
+    logger.info('Calling paymentService.listPayments', {
+      direction,
+      limit: parsedLimit,
+      expenseCategoryId,
+      expenseCategoryIdType: typeof expenseCategoryId,
+      note: expenseCategoryId === undefined ? 'Will show ALL expenses' : expenseCategoryId === null ? 'Will show only uncategorized expenses' : 'Will show expenses with specific category'
+    });
+    
     const { payments, history } = await paymentService.listPayments({ 
       direction, 
       limit: parsedLimit,
-      expenseCategoryId 
+      expenseCategoryId: expenseCategoryId // Pass undefined to show all, null to show only uncategorized
+    });
+    
+    logger.info('listPayments returned', {
+      direction,
+      paymentsCount: payments?.length || 0,
+      historyCount: history?.length || 0,
+      samplePayments: payments?.slice(0, 3).map(p => ({
+        id: p?.id,
+        direction: p?.direction,
+        expense_category_id: p?.expense_category_id,
+        description: p?.description?.substring(0, 50)
+      })) || []
     });
     
     // Additional safety: filter out any payments with wrong direction if direction was specified
-    let filteredPayments = payments;
+    let filteredPayments = payments || [];
     if (direction) {
-      filteredPayments = payments.filter(p => p.direction === direction);
+      filteredPayments = (payments || []).filter(p => p && p.direction === direction);
+      logger.info('After direction filter', {
+        originalCount: payments?.length || 0,
+        filteredCount: filteredPayments.length
+      });
     }
+    
+    // Ensure we have valid arrays
+    const safePayments = Array.isArray(filteredPayments) ? filteredPayments : [];
+    const safeHistory = Array.isArray(history) ? history : [];
+    
+    logger.info('Sending response', {
+      paymentsCount: safePayments.length,
+      historyCount: safeHistory.length
+    });
     
     res.json({
       success: true,
-      data: filteredPayments,
-      payments: filteredPayments, // Also include for backward compatibility
-      history
+      data: safePayments,
+      payments: safePayments, // Also include for backward compatibility
+      history: safeHistory
     });
   } catch (error) {
-    logger.error('Error loading payments:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Не удалось загрузить платежи',
-      message: error.message
+    logger.error('Error loading payments:', {
+      error: error.message,
+      stack: error.stack,
+      direction,
+      limit,
+      uncategorized
     });
+    
+    // Ensure we always send a response
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        error: 'Не удалось загрузить платежи',
+        message: error.message || 'Unknown error'
+      });
+    } else {
+      logger.error('Response already sent, cannot send error response');
+    }
   }
 });
 
@@ -1367,14 +1476,20 @@ router.post('/vat-margin/payments/upload', upload.single('file'), async (req, re
 
     const uploadedBy = req.session?.user?.email || req.user?.email || null;
 
-    const stats = await paymentService.ingestCsv(req.file.buffer, {
+    // Use unified CSV import handler
+    const stats = await paymentService.ingestCsvUnified(req.file.buffer, {
       filename: req.file.originalname,
-      uploadedBy
+      uploadedBy,
+      autoMatchThreshold: 100 // Disable auto-categorization for expenses
     });
 
     res.json({
       success: true,
-      ...stats,
+      total: stats.total,
+      matched: stats.income?.matched || 0,
+      needs_review: stats.income?.needs_review || 0,
+      unmatched: stats.income?.unmatched || 0,
+      ignored: stats.total - (stats.expenses?.processed || 0) - (stats.income?.processed || 0),
       message: 'Файл обработан'
     });
   } catch (error) {
@@ -1503,6 +1618,173 @@ router.delete('/vat-margin/payments/:id', async (req, res) => {
   }
 });
 
+/**
+ * PUT /api/vat-margin/payments/:id/direction
+ * Change payment direction (in/out)
+ * Body: { direction: 'in' | 'out' }
+ */
+router.put('/vat-margin/payments/:id/direction', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment ID'
+      });
+    }
+
+    const { direction } = req.body;
+    
+    if (direction !== 'in' && direction !== 'out') {
+      return res.status(400).json({
+        success: false,
+        error: 'direction must be either "in" or "out"'
+      });
+    }
+
+    // Get payment to verify it exists
+    const payment = await paymentService.fetchPaymentRaw(paymentId);
+
+    // Update payment direction
+    const { data: updatedPayment, error: updateError } = await supabase
+      .from('payments')
+      .update({ 
+        direction: direction,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', paymentId)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      logger.error('Error updating payment direction:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update payment direction',
+        message: updateError.message
+      });
+    }
+
+    // If changing to 'out', clear proforma matching (expenses don't match to proformas)
+    if (direction === 'out') {
+      await supabase
+        .from('payments')
+        .update({
+          match_status: 'unmatched',
+          proforma_id: null,
+          proforma_fullnumber: null,
+          manual_proforma_id: null,
+          manual_proforma_fullnumber: null,
+          manual_status: null
+        })
+        .eq('id', paymentId);
+    }
+    
+    // If changing to 'in', clear expense category (income doesn't have expense categories)
+    if (direction === 'in') {
+      await supabase
+        .from('payments')
+        .update({
+          expense_category_id: null
+        })
+        .eq('id', paymentId);
+    }
+
+    // Return updated payment with details
+    const result = await paymentService.getPaymentDetails(paymentId);
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      message: `Направление платежа изменено на "${direction === 'out' ? 'расход' : 'доход'}"`
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error updating payment direction:', error);
+    res.status(status).json({
+      success: false,
+      error: 'Не удалось изменить направление платежа',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/vat-margin/payments/:id/expense-category
+ * Update expense category for a payment
+ * Body: { expense_category_id: number | null }
+ */
+router.put('/vat-margin/payments/:id/expense-category', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment ID'
+      });
+    }
+
+    const { expense_category_id } = req.body;
+    
+    // Validate expense_category_id (can be null to remove category)
+    if (expense_category_id !== null && expense_category_id !== undefined) {
+      if (!Number.isFinite(expense_category_id) || expense_category_id <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'expense_category_id must be a positive number or null'
+        });
+      }
+    }
+
+    // Get payment to verify it exists and is an expense
+    const payment = await paymentService.fetchPaymentRaw(paymentId);
+    
+    if (payment.direction !== 'out') {
+      return res.status(400).json({
+        success: false,
+        error: 'This endpoint is only for expense payments (direction = "out")'
+      });
+    }
+
+    // Update payment category
+    const { data: updatedPayment, error: updateError } = await supabase
+      .from('payments')
+      .update({ 
+        expense_category_id: expense_category_id || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', paymentId)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      logger.error('Error updating payment expense category:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update payment category',
+        message: updateError.message
+      });
+    }
+
+    // Return updated payment with details
+    const result = await paymentService.getPaymentDetails(paymentId);
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      message: expense_category_id ? 'Категория обновлена' : 'Категория удалена'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error updating payment expense category:', error);
+    res.status(status).json({
+      success: false,
+      error: 'Не удалось обновить категорию',
+      message: error.message
+    });
+  }
+});
+
 router.post('/vat-margin/payments/reset', async (_req, res) => {
   try {
     await paymentService.resetMatches();
@@ -1515,6 +1797,132 @@ router.post('/vat-margin/payments/reset', async (_req, res) => {
     res.status(500).json({
       success: false,
       error: 'Не удалось сбросить сопоставления',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/vat-margin/payments/:id/income-category
+ * Update income category for a payment
+ * Body: { income_category_id: number | null }
+ */
+router.put('/vat-margin/payments/:id/income-category', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment ID'
+      });
+    }
+
+    const { income_category_id } = req.body;
+    
+    // Validate income_category_id (can be null to remove category)
+    if (income_category_id !== null && income_category_id !== undefined) {
+      if (!Number.isFinite(income_category_id) || income_category_id <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'income_category_id must be a positive number or null'
+        });
+      }
+    }
+
+    // Get payment to verify it exists and is an income payment
+    const payment = await paymentService.fetchPaymentRaw(paymentId);
+    
+    if (payment.direction !== 'in') {
+      return res.status(400).json({
+        success: false,
+        error: 'This endpoint is only for income payments (direction = "in")'
+      });
+    }
+
+    // Update payment category
+    const { data: updatedPayment, error: updateError } = await supabase
+      .from('payments')
+      .update({ 
+        income_category_id: income_category_id || null,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', paymentId)
+      .select('*')
+      .single();
+
+    if (updateError) {
+      logger.error('Error updating payment income category:', updateError);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update payment income category',
+        message: updateError.message
+      });
+    }
+
+    // Return updated payment with details
+    const result = await paymentService.getPaymentDetails(paymentId);
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      message: income_category_id ? 'Категория дохода обновлена' : 'Категория дохода удалена'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error updating payment income category:', error);
+    res.status(status).json({
+      success: false,
+      error: 'Не удалось обновить категорию дохода',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/vat-margin/payments/:id/mark-as-refund
+ * Mark payment as refund - send to PNL refunds section
+ * This sets income_category_id to "Возвраты" category and prevents matching to proformas
+ */
+router.post('/vat-margin/payments/:id/mark-as-refund', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment } = req.body || {};
+    const user = req.session?.user?.email || req.user?.email || null;
+
+    // Get or create "Возвраты" income category
+    const IncomeCategoryService = require('../services/pnl/incomeCategoryService');
+    const incomeCategoryService = new IncomeCategoryService();
+    
+    // Try to find existing "Возвраты" category
+    const categories = await incomeCategoryService.listCategories();
+    let refundsCategory = categories.find(cat => cat.name === 'Возвраты');
+    
+    // Create if doesn't exist
+    if (!refundsCategory) {
+      refundsCategory = await incomeCategoryService.createCategory({
+        name: 'Возвраты',
+        description: 'Возвраты за аренду и другие услуги'
+      });
+      logger.info('Created "Возвраты" income category', { categoryId: refundsCategory.id });
+    }
+
+    // Update payment to mark as refund
+    const result = await paymentService.markPaymentAsRefund(id, refundsCategory.id, {
+      user,
+      comment
+    });
+
+    res.json({
+      success: true,
+      payment: result.payment,
+      message: 'Платеж помечен как возврат и отправлен в PNL отчет'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error marking payment as refund:', error);
+    res.status(status).json({
+      success: false,
+      error: 'Не удалось пометить платеж как возврат',
       message: error.message
     });
   }
@@ -2234,9 +2642,47 @@ router.post('/pnl/expense-categories/:id/reorder', async (req, res) => {
  * Import expenses from CSV file
  * Upload: CSV file with bank statement (expenses only, direction = 'out')
  */
-router.post('/payments/import-expenses', upload.single('file'), async (req, res) => {
+router.post('/payments/import-expenses', (req, res, next) => {
+  // Wrap multer middleware with error handling
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      logger.error('Multer error during CSV upload:', {
+        code: err.code,
+        message: err.message,
+        fieldName: err.field,
+        fileSizeLimit: err.code === 'LIMIT_FILE_SIZE' ? '10MB' : undefined,
+        stack: err.stack
+      });
+      
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({
+          success: false,
+          error: `Ошибка загрузки файла: ${err.message}`,
+          message: err.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой (макс. 10MB)' : err.message
+        });
+      } else {
+        return res.status(500).json({
+          success: false,
+          error: 'Неизвестная ошибка при загрузке файла',
+          message: err.message
+        });
+      }
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
+    logger.info('CSV upload request received', {
+      hasFile: !!req.file,
+      filename: req.file?.originalname,
+      fileSize: req.file?.buffer?.length,
+      mimetype: req.file?.mimetype,
+      user: req.user?.email || req.user?.name || 'unknown',
+      query: req.query
+    });
+
     if (!req.file) {
+      logger.warn('CSV upload failed: no file in request');
       return res.status(400).json({
         success: false,
         error: 'No file uploaded'
@@ -2245,42 +2691,101 @@ router.post('/payments/import-expenses', upload.single('file'), async (req, res)
 
     logger.info('Importing expenses CSV', {
       filename: req.file.originalname,
-      size: req.file.buffer.length
+      size: req.file.buffer.length,
+      mimetype: req.file.mimetype,
+      user: req.user?.email || req.user?.name || 'unknown'
     });
 
     // Get auto-match threshold from query parameter (default: 100% = disabled)
-    // Set to 100 to disable auto-categorization - all expenses require manual selection
     const autoMatchThreshold = req.query.autoMatchThreshold 
       ? parseInt(req.query.autoMatchThreshold, 10) 
       : 100; // Default: 100% = auto-categorization disabled
     
     // Validate threshold (0-100)
-    // If threshold is 100, auto-categorization is effectively disabled
     const validThreshold = Math.max(0, Math.min(100, autoMatchThreshold));
     
-    const stats = await paymentService.ingestExpensesCsv(req.file.buffer, {
+    logger.info('Starting CSV processing', {
       filename: req.file.originalname,
-      uploadedBy: req.user?.email || req.user?.name || null,
-      autoMatchThreshold: validThreshold
+      autoMatchThreshold: validThreshold,
+      bufferSize: req.file.buffer.length
     });
 
-    logger.info('Expenses CSV imported successfully', stats);
+    let stats;
+    try {
+      // Use unified CSV import handler - it processes both expenses and income automatically
+      stats = await paymentService.ingestCsvUnified(req.file.buffer, {
+        filename: req.file.originalname,
+        uploadedBy: req.user?.email || req.user?.name || null,
+        autoMatchThreshold: validThreshold
+      });
+    } catch (processingError) {
+      logger.error('Error during CSV processing', {
+        error: processingError.message,
+        stack: processingError.stack,
+        name: processingError.name,
+        filename: req.file.originalname
+      });
+      throw processingError; // Re-throw to be caught by outer catch
+    }
+
+    logger.info('CSV imported successfully (unified)', stats);
+
+    // Get uncategorized expenses from the last import
+    let uncategorizedExpenses = [];
+    if (stats.importId && stats.expenses?.uncategorized > 0) {
+      try {
+        const { data: expenses, error: expensesError } = await supabase
+          .from('payments')
+          .select('id, operation_date, description, payer_name, amount, currency, expense_category_id')
+          .eq('import_id', stats.importId)
+          .eq('direction', 'out')
+          .is('expense_category_id', null)
+          .order('operation_date', { ascending: false })
+          .limit(1000);
+        
+        if (!expensesError && expenses) {
+          uncategorizedExpenses = expenses;
+        } else if (expensesError) {
+          logger.warn('Failed to fetch uncategorized expenses', { error: expensesError });
+        }
+      } catch (error) {
+        logger.warn('Error fetching uncategorized expenses', { error: error.message });
+      }
+    }
 
     res.json({
       success: true,
-      data: stats
+      data: {
+        total: stats.total,
+        processed: stats.expenses?.processed || 0,
+        categorized: stats.expenses?.categorized || 0,
+        uncategorized: stats.expenses?.uncategorized || 0,
+        ignored: stats.total - (stats.expenses?.processed || 0) - (stats.income?.processed || 0),
+        autoMatchThreshold: validThreshold,
+        importId: stats.importId,
+        uncategorizedExpenses: uncategorizedExpenses
+      },
+      expenses: stats.expenses,
+      income: stats.income
     });
   } catch (error) {
     logger.error('Error importing expenses CSV:', {
       error: error.message,
       stack: error.stack,
-      name: error.name
+      name: error.name,
+      filename: req.file?.originalname
     });
-    res.status(500).json({
-      success: false,
-      error: 'Failed to import expenses CSV',
-      message: error.message
-    });
+    
+    // Ensure response is sent even if error occurs
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        error: 'Failed to import expenses CSV',
+        message: error.message
+      });
+    } else {
+      logger.error('Response already sent, cannot send error response');
+    }
   }
 });
 

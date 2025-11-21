@@ -1343,8 +1343,9 @@ async function loadPaymentsData({ silent = false } = {}) {
   if (!elements.paymentsTable) return;
 
   try {
-    if (!silent) addLog('info', 'Загрузка платежей...');
-    const result = await apiCall('/vat-margin/payments');
+    if (!silent) addLog('info', 'Загрузка приходных платежей...');
+    // Загружаем только приходные платежи (direction='in')
+    const result = await apiCall('/vat-margin/payments?direction=in');
 
     if (!result?.success) {
       throw new Error(result?.error || 'Не удалось получить платежи');
@@ -1352,8 +1353,16 @@ async function loadPaymentsData({ silent = false } = {}) {
 
     const previousSelectedId = paymentsState.selectedId;
 
+    // Фильтруем только приходные платежи (direction='in'), не подтвержденные вручную,
+    // и не являющиеся возвратами (income_category_id не должен быть установлен)
+    // Примечание: основная фильтрация возвратов происходит на бэкенде в SQL запросе, это дополнительная защита
     paymentsState.items = (Array.isArray(result.data) ? result.data : [])
-      .filter((item) => item.manual_status !== 'approved');
+      .filter((item) => {
+        // Дополнительная проверка на клиенте для безопасности
+        // Если есть income_category_id, это может быть возврат (возвраты исключаются из списка приходных платежей)
+        const isRefund = !!item.income_category_id;
+        return item.direction === 'in' && item.manual_status !== 'approved' && !isRefund;
+      });
     paymentsState.history = Array.isArray(result.history) ? result.history : [];
 
     const pendingIds = new Set(paymentsState.items.map((item) => String(item.id)));
@@ -1782,6 +1791,8 @@ function renderPaymentDetail(data, target = paymentsState.detailCellEl) {
         <div class="manual-match-actions">
           <button class="btn btn-primary" id="payment-manual-save">💾 Сохранить</button>
           <button class="btn btn-secondary" id="payment-manual-reset">↩️ Очистить</button>
+          ${payment.direction === 'in' ? '<button class="btn btn-warning" id="payment-move-to-expense" style="background: #f59e0b; color: white;">📤 Перекинуть в расходы</button>' : ''}
+          ${payment.direction === 'in' ? '<button class="btn btn-info" id="payment-send-to-pnl" style="background: #0ea5e9; color: white;">📊 Отправить в PNL (возвраты)</button>' : ''}
         </div>
       </div>
       <div class="candidate-panel">
@@ -1803,6 +1814,8 @@ function setupPaymentDetailHandlers(paymentId, root = paymentsState.detailCellEl
   const comment = root.querySelector('#payment-comment-input');
   const saveButton = root.querySelector('#payment-manual-save');
   const resetButton = root.querySelector('#payment-manual-reset');
+  const moveToExpenseButton = root.querySelector('#payment-move-to-expense');
+  const sendToPnlButton = root.querySelector('#payment-send-to-pnl');
   const candidateCards = root.querySelectorAll('.candidate-card');
 
   candidateCards.forEach((card) => {
@@ -1883,23 +1896,99 @@ function setupPaymentDetailHandlers(paymentId, root = paymentsState.detailCellEl
       setButtonLoading(resetButton, false, '↩️ Очистить');
     }
   });
+
+  // Handle "Move to Expense" button
+  moveToExpenseButton?.addEventListener('click', async () => {
+    if (!confirm(`Вы уверены, что хотите перекинуть этот платёж в расходы?\n\nПлатёж будет перемещен из раздела приходных платежей в раздел расходов. Привязка к проформам будет удалена.`)) {
+      return;
+    }
+
+    try {
+      setButtonLoading(moveToExpenseButton, true, 'Перенос...');
+      
+      const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}/direction`, 'PUT', {
+        direction: 'out'
+      });
+
+      if (!result?.success || !result?.payment) {
+        throw new Error(result?.error || 'Не удалось изменить направление платежа');
+      }
+
+      // Удаляем платеж из деталей
+      paymentsState.details.delete(String(paymentId));
+      
+      // Удаляем из списка приходных платежей (теперь это расход)
+      paymentsState.items = paymentsState.items.filter((item) => String(item.id) !== String(paymentId));
+      paymentsState.selectedId = null;
+      clearPaymentDetailRow();
+      
+      // Перезагружаем список приходных платежей с сервера для обновления
+      await loadPaymentsData({ silent: true });
+      
+      addLog('success', `Платёж ${paymentId} перекинут в расходы`);
+    } catch (error) {
+      addLog('error', `Не удалось перекинуть платёж в расходы: ${error.message}`);
+    } finally {
+      setButtonLoading(moveToExpenseButton, false, '📤 Перекинуть в расходы');
+    }
+  });
+
+  // Handle "Send to PNL" button (for refunds)
+  sendToPnlButton?.addEventListener('click', async () => {
+    if (!confirm('Отправить этот платеж в раздел "Возвраты" PNL отчета? Платеж не будет сопоставлен с проформами.')) {
+      return;
+    }
+
+    try {
+      setButtonLoading(sendToPnlButton, true, 'Отправка...');
+      
+      // Mark payment as refund by setting it to a special income category "Возвраты"
+      const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(paymentId)}/mark-as-refund`, 'POST', {
+        comment: comment?.value?.trim() || null
+      });
+
+      paymentsState.details.set(String(paymentId), result);
+      updatePaymentInState(result.payment);
+      renderPaymentsTable(paymentsState.items);
+      
+      // Remove from list (refunds are shown separately in PNL)
+      paymentsState.items = paymentsState.items.filter((item) => String(item.id) !== String(paymentId));
+      paymentsState.selectedId = null;
+      clearPaymentDetailRow();
+      
+      addLog('success', `Платеж ${paymentId} отправлен в раздел "Возвраты" PNL отчета`);
+    } catch (error) {
+      addLog('error', `Не удалось отправить платеж в PNL: ${error.message}`);
+    } finally {
+      setButtonLoading(sendToPnlButton, false, '📊 Отправить в PNL (возвраты)');
+    }
+  });
 }
 
 function updatePaymentInState(payment) {
   if (!payment) return;
   const idKey = String(payment.id);
 
-  if (payment.manual_status === 'approved') {
+  // Удаляем платеж, если он подтвержден вручную, если это не приходной платеж,
+  // или если он помечен как возврат (имеет income_category_id - возвраты исключаются из списка приходных платежей)
+  // Примечание: основная фильтрация возвратов происходит на бэкенде в SQL запросе
+  const isRefund = !!payment.income_category_id; // Если есть income_category_id, это может быть возврат
+
+  if (payment.manual_status === 'approved' || payment.direction !== 'in' || isRefund) {
     paymentsState.items = paymentsState.items.filter((item) => String(item.id) !== idKey);
     paymentsState.details.delete(idKey);
     return;
   }
 
+  // Обновляем только приходные платежи (direction='in'), которые не являются возвратами
   const index = paymentsState.items.findIndex((item) => String(item.id) === idKey);
   if (index !== -1) {
     paymentsState.items[index] = payment;
   } else {
-    paymentsState.items.unshift(payment);
+    // Добавляем только если это приходной платеж и не возврат
+    if (payment.direction === 'in' && !isRefund) {
+      paymentsState.items.unshift(payment);
+    }
   }
 }
 

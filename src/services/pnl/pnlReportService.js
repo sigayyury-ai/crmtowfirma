@@ -112,13 +112,32 @@ class PnlReportService {
 
   /**
    * Filter processed payments (approved or matched)
+   * Also includes refunds (payments with income_category_id = "Возвраты") regardless of match status
    * @param {Array} payments - Array of payment objects
+   * @param {Map} categoriesMap - Map of income categories (categoryId -> category)
    * @returns {Array} Filtered payments
    */
-  filterProcessedPayments(payments) {
+  filterProcessedPayments(payments, categoriesMap = null) {
     if (!Array.isArray(payments)) return [];
     
+    // Get "Возвраты" category ID if categoriesMap is provided
+    let refundsCategoryId = null;
+    if (categoriesMap) {
+      for (const [id, category] of categoriesMap.entries()) {
+        if (category && category.name === 'Возвраты') {
+          refundsCategoryId = id;
+          break;
+        }
+      }
+    }
+    
     return payments.filter((payment) => {
+      // Always include refunds (payments with income_category_id = "Возвраты")
+      // Refunds are marked as unmatched but should still appear in PNL report
+      if (refundsCategoryId !== null && payment.income_category_id === refundsCategoryId) {
+        return true;
+      }
+      
       // Bank payments: must be approved or matched
       if (payment.source === 'bank' || !payment.source) {
         return payment.manual_status === 'approved' || payment.match_status === 'matched';
@@ -234,15 +253,17 @@ class PnlReportService {
         logger.warn('Failed to load income categories', { error: catError.message });
       }
 
-      // Load manual entries for manual categories
-      const manualCategories = Array.from(categoriesMap.values())
-        .filter(cat => cat.id !== null && cat.management_type === 'manual')
+      // Load manual entries for ALL categories (both auto and manual)
+      // For auto categories, manual entries will be added to automatic payments
+      // For manual categories, only manual entries will be used
+      const allCategories = Array.from(categoriesMap.values())
+        .filter(cat => cat.id !== null)
         .map(cat => cat.id);
       
       let manualEntriesMap = new Map();
-      if (manualCategories.length > 0) {
+      if (allCategories.length > 0) {
         try {
-          manualEntriesMap = await this.manualEntryService.getEntriesByCategoriesAndYear(manualCategories, targetYear);
+          manualEntriesMap = await this.manualEntryService.getEntriesByCategoriesAndYear(allCategories, targetYear);
         } catch (manualError) {
           logger.warn('Failed to load manual entries', { error: manualError.message });
         }
@@ -326,8 +347,8 @@ class PnlReportService {
       // Combine all payments
       const allPayments = [...bankPayments, ...stripePayments];
 
-      // Filter processed payments
-      const processedPayments = this.filterProcessedPayments(allPayments);
+      // Filter processed payments (pass categoriesMap to include refunds)
+      const processedPayments = this.filterProcessedPayments(allPayments, categoriesMap);
 
       // Filter out refunded payments
       const nonRefundedPayments = processedPayments.filter((payment) => {
@@ -343,15 +364,15 @@ class PnlReportService {
       // Aggregate by category and month
       const categoryMonthlyData = {}; // { categoryId: { month: { amountPln, paymentCount, currencyBreakdown } } }
 
-      // Process automatic payments (only for auto categories)
+      // Process automatic payments for ALL categories
+      // For auto categories: payments are the primary source
+      // For manual categories: payments are added to manual entries
       nonRefundedPayments.forEach((payment) => {
         const categoryId = payment.income_category_id || null;
         const category = categoriesMap.get(categoryId);
         
-        // Skip payments for manual categories (they use manual entries instead)
-        if (category && category.management_type === 'manual') {
-          return;
-        }
+        // Process payments for all categories (both auto and manual)
+        // Manual entries will be added later and summed with payments
 
         const month = extractMonthFromDate(payment.operation_date);
         if (!month || month < 1 || month > 12) {
@@ -420,8 +441,13 @@ class PnlReportService {
         }
       });
 
-      // Process manual entries for manual categories
+      // Process manual entries for ALL categories
+      // For auto categories: manual entries are added to automatic payments
+      // For manual categories: manual entries replace automatic payments (which were skipped above)
       manualEntriesMap.forEach((monthEntries, categoryId) => {
+        const category = categoriesMap.get(categoryId);
+        const isManualCategory = category && category.management_type === 'manual';
+        
         // Initialize category data if needed
         if (!categoryMonthlyData[categoryId]) {
           categoryMonthlyData[categoryId] = {};
@@ -435,11 +461,19 @@ class PnlReportService {
         }
 
         // Add manual entries to category/month
+        // For auto categories: this adds to existing payment data
+        // For manual categories: this is the only data (payments were skipped)
         monthEntries.forEach((entry, month) => {
           const amountPln = toNumber(entry.amount_pln) || 0;
-          if (amountPln > 0) {
+          if (amountPln !== 0) { // Allow negative values for refunds
             categoryMonthlyData[categoryId][month].amountPln += amountPln;
-            categoryMonthlyData[categoryId][month].paymentCount += 1; // Count as 1 entry
+            if (!isManualCategory) {
+              // For auto categories, count manual entries separately
+              categoryMonthlyData[categoryId][month].paymentCount += 1;
+            } else {
+              // For manual categories, manual entries are the primary source
+              categoryMonthlyData[categoryId][month].paymentCount += 1;
+            } // Count as 1 entry
 
             // Add currency breakdown if available
             if (includeBreakdown && entry.currency_breakdown && typeof entry.currency_breakdown === 'object') {
@@ -732,15 +766,17 @@ class PnlReportService {
         }
       }
 
-      // Load manual entries for expense categories
-      const manualExpenseCategories = Array.from(expenseCategoriesMap.values())
-        .filter(cat => cat.id !== null && cat.management_type === 'manual')
+      // Load manual entries for ALL expense categories (both auto and manual)
+      // For auto categories, manual entries will be added to automatic payments
+      // For manual categories, only manual entries will be used
+      const allExpenseCategories = Array.from(expenseCategoriesMap.values())
+        .filter(cat => cat.id !== null)
         .map(cat => cat.id);
       
       let manualExpenseEntriesMap = new Map();
-      if (manualExpenseCategories.length > 0) {
+      if (allExpenseCategories.length > 0) {
         try {
-          manualExpenseEntriesMap = await this.manualEntryService.getEntriesByCategoriesAndYear(manualExpenseCategories, targetYear, 'expense');
+          manualExpenseEntriesMap = await this.manualEntryService.getEntriesByCategoriesAndYear(allExpenseCategories, targetYear, 'expense');
         } catch (manualError) {
           logger.warn('Failed to load manual expense entries', { error: manualError.message });
         }
@@ -864,6 +900,191 @@ class PnlReportService {
       response.expensesTotal = {
         amountPln: Math.round(totalExpenses * 100) / 100,
         paymentCount: totalExpensePaymentCount
+      };
+
+      // Calculate profit/loss (Доход / Убыток) for each month
+      // Profit/Loss = Revenue - Expenses for each month
+      const profitLossMonthly = [];
+      for (let month = 1; month <= 12; month++) {
+        // Get revenue for this month
+        const monthRevenueEntry = monthlyArray.find(m => m.month === month);
+        const monthRevenue = monthRevenueEntry?.amountPln || 0;
+
+        // Get expenses for this month
+        const monthExpenseTotal = expenses.reduce((sum, cat) => {
+          const monthEntry = cat.monthly?.find(m => m.month === month);
+          return sum + (monthEntry?.amountPln || 0);
+        }, 0);
+
+        // Calculate profit/loss
+        const profitLoss = monthRevenue - monthExpenseTotal;
+
+        profitLossMonthly.push({
+          month,
+          amountPln: Math.round(profitLoss * 100) / 100
+        });
+      }
+
+      // Calculate total profit/loss for the year
+      const totalProfitLoss = totalRevenue - totalExpenses;
+
+      // Add profit/loss to response
+      response.profitLoss = {
+        monthly: profitLossMonthly,
+        total: {
+          amountPln: Math.round(totalProfitLoss * 100) / 100
+        }
+      };
+
+      // Calculate balance (Баланс) - cumulative running total
+      // Balance for month N = Balance for month (N-1) + Profit/Loss for month N
+      // Start from 0 at the beginning of the year
+      // 
+      // Example:
+      //   January: profitLoss = +1000 → balance = 0 + 1000 = 1000
+      //   February: profitLoss = -500 → balance = 1000 + (-500) = 500
+      //   March: profitLoss = -200 → balance = 500 + (-200) = 300
+      // 
+      // If profitLoss is negative (loss), it correctly subtracts from balance:
+      //   runningBalance += (-500) is equivalent to runningBalance -= 500
+      const balanceMonthly = [];
+      let runningBalance = 0; // Start from 0 at the beginning of the year
+
+      // Find the first month with data (to avoid starting balance from 0 when there's no data)
+      const firstMonthWithData = profitLossMonthly.find(p => p.amountPln !== 0)?.month || 1;
+
+      for (let month = 1; month <= 12; month++) {
+        const profitLossEntry = profitLossMonthly.find(p => p.month === month);
+        const profitLossAmount = profitLossEntry?.amountPln || 0;
+
+        // Only add to balance if we have data for this month or if it's after the first month with data
+        // This ensures that if data starts from February (like 2024), balance starts from February
+        if (month >= firstMonthWithData) {
+          // Add profit/loss to running balance
+          // If profitLossAmount is negative (loss), it will subtract from balance
+          // If profitLossAmount is positive (profit), it will add to balance
+          runningBalance += profitLossAmount;
+        }
+
+        balanceMonthly.push({
+          month,
+          amountPln: Math.round(runningBalance * 100) / 100
+        });
+      }
+
+      // Total balance at the end of the year equals cumulative profit/loss
+      const totalBalance = runningBalance;
+
+      // Add balance to response
+      response.balance = {
+        monthly: balanceMonthly,
+        total: {
+          amountPln: Math.round(totalBalance * 100) / 100
+        }
+      };
+
+      // Calculate ROI (Return on Investment) for each month
+      // ROI = ((Revenue - Expenses) / Expenses) × 100% = (Profit/Loss / Expenses) × 100%
+      // If expenses = 0, ROI is undefined (cannot divide by zero)
+      const roiMonthly = [];
+      for (let month = 1; month <= 12; month++) {
+        // Get revenue for this month
+        const monthRevenueEntry = monthlyArray.find(m => m.month === month);
+        const monthRevenue = monthRevenueEntry?.amountPln || 0;
+
+        // Get expenses for this month
+        const monthExpenseTotal = expenses.reduce((sum, cat) => {
+          const monthEntry = cat.monthly?.find(m => m.month === month);
+          return sum + (monthEntry?.amountPln || 0);
+        }, 0);
+
+        // Calculate ROI
+        let roi = null; // null means ROI cannot be calculated (no expenses)
+        if (monthExpenseTotal > 0) {
+          const profitLoss = monthRevenue - monthExpenseTotal;
+          roi = (profitLoss / monthExpenseTotal) * 100;
+          roi = Math.round(roi * 100) / 100; // Round to 2 decimal places
+        }
+
+        roiMonthly.push({
+          month,
+          roi: roi // null if expenses = 0, otherwise percentage value
+        });
+      }
+
+      // Calculate total ROI for the year
+      let totalROI = null;
+      if (totalExpenses > 0) {
+        totalROI = (totalProfitLoss / totalExpenses) * 100;
+        totalROI = Math.round(totalROI * 100) / 100;
+      }
+
+      // Add ROI to response
+      response.roi = {
+        monthly: roiMonthly,
+        total: {
+          roi: totalROI // null if total expenses = 0, otherwise percentage value
+        }
+      };
+
+      // Calculate EBITDA (Earnings Before Interest, Taxes, Depreciation, and Amortization)
+      // EBITDA = Revenue - Operating Expenses (excluding Interest, Taxes, Depreciation, Amortization)
+      // 
+      // Note: We have data for Taxes (categories: "Налоги" ID:38, "ВАТ" ID:39, "ЗУС" ID:40)
+      // But we don't have separate categories for Interest, Depreciation, Amortization
+      // So we calculate: EBITDA = Revenue - Expenses (excluding Taxes)
+      // 
+      // Find tax category IDs
+      const taxCategoryIds = new Set();
+      expenseCategories.forEach(cat => {
+        const catName = (cat.name || '').toUpperCase();
+        if (catName === 'НАЛОГИ' || catName === 'ВАТ' || catName === 'ЗУС' || 
+            catName.includes('TAX') || catName.includes('PIT') || catName.includes('CIT')) {
+          taxCategoryIds.add(cat.id);
+        }
+      });
+
+      const ebitdaMonthly = [];
+      for (let month = 1; month <= 12; month++) {
+        // Get revenue for this month
+        const monthRevenueEntry = monthlyArray.find(m => m.month === month);
+        const monthRevenue = monthRevenueEntry?.amountPln || 0;
+
+        // Get operating expenses for this month (excluding taxes)
+        const monthOperatingExpenses = expenses.reduce((sum, cat) => {
+          // Skip tax categories
+          if (taxCategoryIds.has(cat.id)) {
+            return sum;
+          }
+          const monthEntry = cat.monthly?.find(m => m.month === month);
+          return sum + (monthEntry?.amountPln || 0);
+        }, 0);
+
+        // Calculate EBITDA
+        const ebitda = monthRevenue - monthOperatingExpenses;
+
+        ebitdaMonthly.push({
+          month,
+          amountPln: Math.round(ebitda * 100) / 100
+        });
+      }
+
+      // Calculate total EBITDA for the year
+      const totalOperatingExpenses = expenses.reduce((sum, cat) => {
+        // Skip tax categories
+        if (taxCategoryIds.has(cat.id)) {
+          return sum;
+        }
+        return sum + (cat.total?.amountPln || 0);
+      }, 0);
+      const totalEBITDA = totalRevenue - totalOperatingExpenses;
+
+      // Add EBITDA to response
+      response.ebitda = {
+        monthly: ebitdaMonthly,
+        total: {
+          amountPln: Math.round(totalEBITDA * 100) / 100
+        }
       };
 
       logger.info('Returning PNL report response', {

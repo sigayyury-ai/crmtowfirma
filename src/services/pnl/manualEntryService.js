@@ -121,8 +121,12 @@ class ManualEntryService {
       if (!Number.isFinite(month) || month < 1 || month > 12) {
         throw new Error('Month must be a number between 1 and 12');
       }
-      if (!Number.isFinite(amountPln) || amountPln < 0) {
-        throw new Error('amountPln must be a non-negative number');
+      // Allow negative values for expenses (e.g., tax refunds), but require non-negative for revenue
+      if (entryType === 'revenue' && (!Number.isFinite(amountPln) || amountPln < 0)) {
+        throw new Error('amountPln must be a non-negative number for revenue entries');
+      }
+      if (entryType === 'expense' && !Number.isFinite(amountPln)) {
+        throw new Error('amountPln must be a valid number for expense entries (negative values allowed for refunds)');
       }
       if (entryType !== 'revenue' && entryType !== 'expense') {
         throw new Error('entryType must be either "revenue" or "expense"');
@@ -162,20 +166,30 @@ class ManualEntryService {
         upsertData.expense_category_id = null;
       }
 
-      // Use appropriate conflict resolution based on entry type
-      // For revenue: conflict on category_id, year, month
-      // For expense: conflict on expense_category_id, year, month
-      const conflictColumns = isExpense 
-        ? 'expense_category_id,year,month' 
-        : 'category_id,year,month';
-
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .upsert(upsertData, {
-          onConflict: conflictColumns
-        })
-        .select()
-        .single();
+      // Check if entry already exists (because partial unique indexes don't work with onConflict in Supabase)
+      const existingEntry = await this.getEntry(finalCategoryId, year, month, entryType);
+      
+      let data, error;
+      if (existingEntry) {
+        // Update existing entry
+        const { data: updateData, error: updateError } = await supabase
+          .from(this.tableName)
+          .update(upsertData)
+          .eq('id', existingEntry.id)
+          .select()
+          .single();
+        data = updateData;
+        error = updateError;
+      } else {
+        // Insert new entry
+        const { data: insertData, error: insertError } = await supabase
+          .from(this.tableName)
+          .insert(upsertData)
+          .select()
+          .single();
+        data = insertData;
+        error = insertError;
+      }
 
       if (error) {
         logger.error('Error upserting manual entry:', error);
