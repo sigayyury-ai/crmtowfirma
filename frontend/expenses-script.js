@@ -1,6 +1,7 @@
 const API_BASE = window.location.origin;
 
 let expenseCategoriesMap = {};
+let incomeCategoriesMap = {};
 
 // State for expense details (similar to paymentsState in vat-margin-script.js)
 const expensesState = {
@@ -23,6 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   
   loadExpenseCategories();
+  loadIncomeCategories();
   loadExpenses();
   
   // Handle CSV file input change
@@ -54,6 +56,16 @@ function addLog(type, message) {
   logEntry.className = `log-entry ${type}`;
   logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   logContainer.appendChild(logEntry);
+  
+  // Ограничиваем количество логов до 3 последних записей
+  const logEntries = logContainer.querySelectorAll('.log-entry');
+  if (logEntries.length > 3) {
+    // Удаляем самые старые записи, оставляя только 3 последние
+    for (let i = 0; i < logEntries.length - 3; i++) {
+      logEntries[i].remove();
+    }
+  }
+  
   logContainer.scrollTop = logContainer.scrollHeight;
 }
 
@@ -69,11 +81,27 @@ async function loadExpenseCategories() {
     }
   } catch (error) {
     console.error('Failed to load expense categories:', error);
-    addLog('error', `Ошибка загрузки категорий: ${error.message}`);
+    addLog('error', `Ошибка загрузки категорий расходов: ${error.message}`);
   }
 }
 
-// Load expenses
+// Load income categories
+async function loadIncomeCategories() {
+  try {
+    const response = await fetch(`${API_BASE}/api/pnl/categories`);
+    const payload = await response.json();
+    if (payload.success && payload.data) {
+      payload.data.forEach(cat => {
+        incomeCategoriesMap[cat.id] = cat;
+      });
+    }
+  } catch (error) {
+    console.error('Failed to load income categories:', error);
+    addLog('error', `Ошибка загрузки категорий доходов: ${error.message}`);
+  }
+}
+
+// Load expenses/income - show payments based on filter
 async function loadExpenses() {
   const tbody = document.getElementById('expensesTableBody');
   if (!tbody) {
@@ -86,42 +114,166 @@ async function loadExpenses() {
     tbody.innerHTML = `
       <tr>
         <td colspan="6" style="text-align: center; padding: 40px;">
-          Загрузка расходов...
+          Загрузка платежей...
         </td>
       </tr>
     `;
 
-    const cacheBuster = `&_t=${Date.now()}`;
-    const url = `${API_BASE}/api/vat-margin/payments?direction=out&limit=1000${cacheBuster}`;
+    // Get current direction filter
+    const directionFilter = document.getElementById('directionFilter');
+    const directionFilterValue = directionFilter?.value || 'out';
     
-    console.log('Loading expenses from:', url);
-    const response = await fetch(url);
+    const cacheBuster = `&_t=${Date.now()}`;
+    let url;
+    let logMessage;
+    const currentDirection = directionFilterValue;
+    
+    // Load payments based on filter
+    if (currentDirection === 'in') {
+      // Load income payments
+      url = `${API_BASE}/api/vat-margin/payments?direction=in&limit=10000${cacheBuster}`;
+      logMessage = 'Загрузка доходов из:';
+    } else if (currentDirection === 'all') {
+      // Load all payments (no direction filter)
+      url = `${API_BASE}/api/vat-margin/payments?limit=10000${cacheBuster}`;
+      logMessage = 'Загрузка всех платежей из:';
+    } else {
+      // Load expenses (default)
+      url = `${API_BASE}/api/vat-margin/payments?direction=out&limit=10000${cacheBuster}`;
+      logMessage = 'Загрузка расходов из:';
+    }
+    
+    console.log('Loading payments from:', url);
+    addLog('info', `${logMessage} ${url}`);
+    
+    let response;
+    try {
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 seconds timeout
+      
+      response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+    } catch (fetchError) {
+      console.error('Fetch error:', fetchError);
+      if (fetchError.name === 'AbortError') {
+        throw new Error('Превышено время ожидания ответа от сервера (30 секунд)');
+      } else if (fetchError.message && (fetchError.message.includes('Failed to fetch') || fetchError.message.includes('ERR_EMPTY_RESPONSE'))) {
+        throw new Error('Сервер не отвечает. Проверьте, что сервер запущен и доступен. Возможно, сервер упал с ошибкой - проверьте логи сервера.');
+      }
+      throw fetchError;
+    }
     
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      let errorText = '';
+      try {
+        errorText = await response.text();
+        console.error('API error response:', errorText);
+      } catch (e) {
+        errorText = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorText || `HTTP ${response.status}: ${response.statusText}`);
     }
     
     const payload = await response.json();
-    console.log('API response:', { success: payload.success, dataLength: payload.data?.length, paymentsLength: payload.payments?.length });
+    console.log('API response:', { 
+      success: payload.success, 
+      error: payload.error,
+      dataLength: payload.data?.length, 
+      paymentsLength: payload.payments?.length,
+      fullPayload: payload
+    });
+    
+    addLog('info', `API ответ: success=${payload.success}, data.length=${payload.data?.length || 0}, payments.length=${payload.payments?.length || 0}`);
     
     if (!payload.success) {
       throw new Error(payload.error || 'Не удалось загрузить расходы');
     }
     
-    let expenses = payload.data || payload.payments || [];
-    console.log('Raw expenses count:', expenses.length);
+    let payments = payload.data || payload.payments || [];
+    console.log('Raw payments count:', payments.length);
+    console.log('Sample payments:', payments.slice(0, 3));
     
-    // Ensure only expenses (direction = 'out') are shown
-    expenses = expenses.filter(e => e.direction === 'out');
-    console.log('Filtered expenses count (direction=out):', expenses.length);
+    if (currentDirection === 'in') {
+      addLog('info', `Получено доходов: ${payments.length}`);
+    } else if (currentDirection === 'all') {
+      addLog('info', `Получено платежей: ${payments.length}`);
+    } else {
+      addLog('info', `Получено расходов: ${payments.length}`);
+    }
     
-    expensesState.items = expenses;
+    if (payments.length === 0) {
+      const message = currentDirection === 'in' 
+        ? 'Нет доходов в базе данных' 
+        : currentDirection === 'all'
+        ? 'Нет платежей в базе данных'
+        : 'Нет расходов в базе данных';
+      
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="6" style="text-align: center; padding: 40px; color: #666;">
+            <strong style="font-size: 1.2em;">${message}</strong>
+          </td>
+        </tr>
+      `;
+      expensesState.items = [];
+      updateStatistics([]);
+      return;
+    }
     
-    // Update statistics
-    updateStatistics(expenses);
+    // Store all payments in state (for filtering)
+    expensesState.items = payments;
     
-    // Render table
-    renderExpensesTable(expenses);
+    // Update category filter dropdown based on direction
+    updateCategoryFilter(currentDirection);
+    
+    // Apply current filters
+    const categoryFilter = document.getElementById('categoryFilter');
+    const filterValue = categoryFilter?.value || '';
+    
+    let filteredPayments = payments;
+    
+    // Filter by category based on direction
+    if (directionFilterValue === 'in') {
+      // For income: filter by income_category_id
+      if (filterValue === 'null') {
+        filteredPayments = payments.filter(p => !p.income_category_id);
+      } else if (filterValue) {
+        const categoryId = parseInt(filterValue, 10);
+        filteredPayments = payments.filter(p => p.income_category_id === categoryId);
+      }
+    } else if (directionFilterValue === 'out') {
+      // For expenses: filter by expense_category_id
+      if (filterValue === 'null') {
+        filteredPayments = payments.filter(p => !p.expense_category_id);
+      } else if (filterValue) {
+        const categoryId = parseInt(filterValue, 10);
+        filteredPayments = payments.filter(p => p.expense_category_id === categoryId);
+      }
+    } else {
+      // For 'all': filter by both categories (show uncategorized)
+      if (filterValue === 'null') {
+        filteredPayments = payments.filter(p => !p.expense_category_id && !p.income_category_id);
+      } else if (filterValue) {
+        const categoryId = parseInt(filterValue, 10);
+        filteredPayments = payments.filter(p => 
+          p.expense_category_id === categoryId || p.income_category_id === categoryId
+        );
+      }
+    }
+    
+    // Update statistics based on direction
+    updateStatistics(payments, currentDirection);
+    
+    // Render table with filtered payments
+    renderExpensesTable(filteredPayments, currentDirection);
     
   } catch (error) {
     console.error('Failed to load expenses:', error);
@@ -140,56 +292,186 @@ async function loadExpenses() {
 }
 
 // Update statistics
-function updateStatistics(expenses) {
-  const total = expenses.length;
-  const uncategorized = expenses.filter(e => !e.expense_category_id).length;
-  const categorized = total - uncategorized;
+function updateStatistics(payments, direction = 'out') {
+  let total, uncategorized, categorized;
+  
+  if (direction === 'in') {
+    // For income: count by income_category_id
+    total = payments.length;
+    uncategorized = payments.filter(p => !p.income_category_id).length;
+    categorized = total - uncategorized;
+  } else if (direction === 'out') {
+    // For expenses: count by expense_category_id
+    total = payments.length;
+    uncategorized = payments.filter(p => !p.expense_category_id).length;
+    categorized = total - uncategorized;
+  } else {
+    // For 'all': count expenses and income separately
+    const expenses = payments.filter(p => p.direction === 'out');
+    const income = payments.filter(p => p.direction === 'in');
+    total = payments.length;
+    uncategorized = expenses.filter(p => !p.expense_category_id).length + income.filter(p => !p.income_category_id).length;
+    categorized = total - uncategorized;
+  }
   
   document.getElementById('totalExpenses').textContent = total;
   document.getElementById('uncategorizedExpenses').textContent = uncategorized;
   document.getElementById('categorizedExpenses').textContent = categorized;
 }
 
-// Render expenses table (without action buttons)
-function renderExpensesTable(expenses) {
+// Update category filter dropdown based on direction
+function updateCategoryFilter(direction) {
+  const categoryFilter = document.getElementById('categoryFilter');
+  if (!categoryFilter) return;
+  
+  // Keep "Все категории" and "Без категории" options
+  categoryFilter.innerHTML = `
+    <option value="">Все категории</option>
+    <option value="null">Без категории</option>
+  `;
+  
+  if (direction === 'in') {
+    // Show income categories
+    Object.values(incomeCategoriesMap).forEach(cat => {
+      const option = document.createElement('option');
+      option.value = cat.id;
+      option.textContent = cat.name;
+      categoryFilter.appendChild(option);
+    });
+  } else if (direction === 'out') {
+    // Show expense categories
+    Object.values(expenseCategoriesMap).forEach(cat => {
+      const option = document.createElement('option');
+      option.value = cat.id;
+      option.textContent = cat.name;
+      categoryFilter.appendChild(option);
+    });
+  } else {
+    // Show both categories (for 'all')
+    const allCategories = [
+      ...Object.values(expenseCategoriesMap).map(cat => ({ ...cat, type: 'expense' })),
+      ...Object.values(incomeCategoriesMap).map(cat => ({ ...cat, type: 'income' }))
+    ];
+    allCategories.forEach(cat => {
+      const option = document.createElement('option');
+      option.value = cat.id;
+      option.textContent = `${cat.name} (${cat.type === 'expense' ? 'расход' : 'доход'})`;
+      categoryFilter.appendChild(option);
+    });
+  }
+}
+
+// Render expenses/income table
+function renderExpensesTable(payments, direction = 'out') {
   const tbody = document.getElementById('expensesTableBody');
   
-  if (expenses.length === 0) {
+  if (payments.length === 0) {
+    const message = direction === 'in' 
+      ? 'Нет доходов для отображения'
+      : direction === 'all'
+      ? 'Нет платежей для отображения'
+      : 'Нет расходов для отображения';
+    
     tbody.innerHTML = `
       <tr>
         <td colspan="6" style="text-align: center; padding: 40px;">
-          Нет расходов для отображения
+          ${message}
         </td>
       </tr>
     `;
     return;
   }
   
-  tbody.innerHTML = expenses.map(expense => {
-    const categoryName = expense.expense_category_id 
-      ? (expenseCategoriesMap[expense.expense_category_id]?.name || `ID: ${expense.expense_category_id}`)
-      : '<span style="color: #999;">Без категории</span>';
+  tbody.innerHTML = payments.map(payment => {
+    const isIncome = payment.direction === 'in';
+    const isExpense = payment.direction === 'out';
     
-    const confidenceBadge = expense.match_confidence && expense.match_confidence >= 90
-      ? `<span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 5px;" title="Автоматически категоризировано с уверенностью ${expense.match_confidence}%">${expense.match_confidence}%</span>`
+    // Get category name based on direction
+    let categoryName = '';
+    let categoryId = null;
+    let categorySelect = '';
+    
+    if (isIncome) {
+      categoryId = payment.income_category_id;
+      categoryName = categoryId 
+        ? (incomeCategoriesMap[categoryId]?.name || `ID: ${categoryId}`)
+        : '<span style="color: #999;">Без категории</span>';
+      
+      // Build income category select dropdown
+      const categoryOptions = Object.values(incomeCategoriesMap).map(cat => 
+        `<option value="${cat.id}" ${cat.id === categoryId ? 'selected' : ''}>${escapeHtml(cat.name)}</option>`
+      ).join('');
+      
+      categorySelect = `
+        <select 
+          class="category-select-inline" 
+          data-payment-id="${payment.id}"
+          data-category-type="income"
+          style="min-width: 180px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em;"
+          onchange="handleQuickCategoryChange(event, ${payment.id}, 'income')"
+          onclick="event.stopPropagation();"
+          autocomplete="off"
+          data-lpignore="true"
+        >
+          <option value="">-- Без категории --</option>
+          ${categoryOptions}
+        </select>
+      `;
+    } else if (isExpense) {
+      categoryId = payment.expense_category_id;
+      categoryName = categoryId 
+        ? (expenseCategoriesMap[categoryId]?.name || `ID: ${categoryId}`)
+        : '<span style="color: #999;">Без категории</span>';
+      
+      // Build expense category select dropdown
+      const categoryOptions = Object.values(expenseCategoriesMap).map(cat => 
+        `<option value="${cat.id}" ${cat.id === categoryId ? 'selected' : ''}>${escapeHtml(cat.name)}</option>`
+      ).join('');
+      
+      categorySelect = `
+        <select 
+          class="category-select-inline" 
+          data-payment-id="${payment.id}"
+          data-category-type="expense"
+          style="min-width: 180px; padding: 4px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em;"
+          onchange="handleQuickCategoryChange(event, ${payment.id}, 'expense')"
+          onclick="event.stopPropagation();"
+          autocomplete="off"
+          data-lpignore="true"
+        >
+          <option value="">-- Без категории --</option>
+          ${categoryOptions}
+        </select>
+      `;
+    }
+    
+    const confidenceBadge = payment.match_confidence && payment.match_confidence >= 90
+      ? `<span style="background: #10b981; color: white; padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-left: 5px;" title="Автоматически категоризировано с уверенностью ${payment.match_confidence}%">${payment.match_confidence}%</span>`
       : '';
     
-    const date = expense.operation_date || expense.date || '';
+    const date = payment.operation_date || payment.date || '';
     const formattedDate = date ? new Date(date).toLocaleDateString('ru-RU') : '';
     
+    const amountClass = isIncome ? 'expense-amount income' : 'expense-amount';
+    const amountColor = isIncome ? '#10b981' : '#dc3545';
+    
     return `
-      <tr class="expense-row" data-expense-id="${expense.id}" style="cursor: pointer;">
+      <tr class="expense-row" data-expense-id="${payment.id}" style="cursor: pointer;">
         <td>${formattedDate}</td>
-        <td class="expense-description" title="${escapeHtml(expense.description || '')}">
-          ${escapeHtml(expense.description || 'Без описания')}
+        <td class="expense-description" title="${escapeHtml(payment.description || '')}">
+          ${escapeHtml(payment.description || 'Без описания')}
         </td>
-        <td>${escapeHtml(expense.payer_name || expense.payer || '')}</td>
-        <td class="expense-amount">
-          ${expense.amount ? `${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : ''}
+        <td>${escapeHtml(payment.payer_name || payment.payer || '')}</td>
+        <td class="${amountClass}" style="color: ${amountColor}; font-weight: 600;">
+          ${payment.amount_raw || (payment.amount ? `${isIncome ? '+' : '-'}${payment.amount.toFixed(2)} ${payment.currency || 'PLN'}` : '')}
         </td>
-        <td>${categoryName}${confidenceBadge}</td>
         <td>
-          ${expense.expense_category_id ? '' : '<span style="color: #999;">Кликните для категоризации</span>'}
+          ${categorySelect}
+          ${confidenceBadge}
+          ${isIncome ? `<span style="color: #10b981; font-size: 0.85em; margin-left: 5px;">💰 Доход</span>` : ''}
+        </td>
+        <td>
+          <span style="color: #666; font-size: 0.9em;">Кликните для деталей</span>
         </td>
       </tr>
     `;
@@ -215,6 +497,176 @@ function renderExpensesTable(expenses) {
   } else {
     clearExpenseDetailRow();
   }
+}
+
+// Handle quick category change from inline select
+async function handleQuickCategoryChange(event, paymentId, categoryType = 'expense') {
+  event.stopPropagation();
+  const select = event.target;
+  const categoryId = select.value.trim() || null;
+  
+  try {
+    // Disable select while saving
+    select.disabled = true;
+    select.style.opacity = '0.6';
+    
+    // Get payment data to check direction
+    const currentPayment = expensesState.items.find(p => p.id === paymentId);
+    const isIncomePayment = currentPayment?.direction === 'in';
+    
+    let endpoint, body;
+    if (categoryType === 'income') {
+      // For income: use mark-as-refund endpoint if category is "Возвраты", otherwise update directly
+      const refundsCategoryId = Object.values(incomeCategoriesMap).find(cat => cat.name === 'Возвраты')?.id;
+      if (categoryId && parseInt(categoryId, 10) === refundsCategoryId && isIncomePayment) {
+        // Mark as refund (only for income payments)
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/mark-as-refund`;
+        body = { comment: 'Категория установлена через UI' };
+      } else {
+        // Update income category directly
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/income-category`;
+        body = {
+          income_category_id: categoryId ? parseInt(categoryId, 10) : null
+        };
+      }
+    } else {
+      // Update expense category
+      endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`;
+      body = {
+        expense_category_id: categoryId ? parseInt(categoryId, 10) : null
+      };
+    }
+    
+    const response = await fetch(endpoint, {
+      method: categoryType === 'income' && body.comment ? 'POST' : 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    
+    if (!response.ok) {
+      const payload = await response.json();
+      throw new Error(payload.error || payload.message || 'Не удалось обновить категорию');
+    }
+    
+    const payload = await response.json();
+    
+    // Update local state
+    const payment = expensesState.items.find(p => p.id === paymentId);
+    if (payment) {
+      if (categoryType === 'income') {
+        payment.income_category_id = categoryId ? parseInt(categoryId, 10) : null;
+      } else {
+        payment.expense_category_id = categoryId ? parseInt(categoryId, 10) : null;
+      }
+    }
+    
+    // Update statistics
+    const directionFilter = document.getElementById('directionFilter');
+    const direction = directionFilter?.value || 'out';
+    updateStatistics(expensesState.items, direction);
+    
+    // Show success message
+    const paymentType = categoryType === 'income' ? 'дохода' : 'расхода';
+    addLog('success', `Категория обновлена для ${paymentType} ${paymentId}`);
+    
+    // Reload detail if selected
+    if (expensesState.selectedId === String(paymentId)) {
+      const updatedRow = getExpenseRowElement(paymentId);
+      if (updatedRow) {
+        selectExpenseRow(updatedRow, { skipScroll: true, forceReload: true }).catch(() => clearExpenseDetailRow());
+      }
+    }
+    
+    // Re-render table to update category display
+    const categoryFilter = document.getElementById('categoryFilter');
+    if (categoryFilter && directionFilter) {
+      filterExpenses();
+    }
+    
+  } catch (error) {
+    console.error('Failed to update category:', error);
+    addLog('error', `Ошибка обновления категории: ${error.message}`);
+    
+    // Revert select value
+    const payment = expensesState.items.find(p => p.id === paymentId);
+    if (payment) {
+      if (categoryType === 'income') {
+        select.value = payment.income_category_id || '';
+      } else {
+        select.value = payment.expense_category_id || '';
+      }
+    }
+  } finally {
+    select.disabled = false;
+    select.style.opacity = '1';
+  }
+}
+
+// Filter expenses/income by category and direction
+function filterExpenses() {
+  const categoryFilter = document.getElementById('categoryFilter');
+  const directionFilter = document.getElementById('directionFilter');
+  if (!categoryFilter || !directionFilter) return;
+  
+  const categoryFilterValue = categoryFilter.value;
+  const directionFilterValue = directionFilter.value;
+  
+  // If direction changed, reload from server
+  // This ensures we have the correct data for the selected direction
+  const currentDirection = directionFilter.value;
+  if (currentDirection !== 'out' && expensesState.items.length > 0 && expensesState.items[0]?.direction === 'out') {
+    // Direction changed, reload
+    loadExpenses();
+    return;
+  }
+  
+  // Start with all payments
+  let filteredPayments = expensesState.items;
+  
+  // Filter by direction
+  if (directionFilterValue === 'out') {
+    filteredPayments = filteredPayments.filter(p => p.direction === 'out');
+  } else if (directionFilterValue === 'in') {
+    filteredPayments = filteredPayments.filter(p => p.direction === 'in');
+  }
+  // 'all' means show all directions
+  
+  // Filter by category based on direction
+  if (directionFilterValue === 'in') {
+    // For income: filter by income_category_id
+    if (categoryFilterValue === 'null') {
+      filteredPayments = filteredPayments.filter(p => !p.income_category_id);
+    } else if (categoryFilterValue) {
+      const categoryId = parseInt(categoryFilterValue, 10);
+      filteredPayments = filteredPayments.filter(p => p.income_category_id === categoryId);
+    }
+  } else if (directionFilterValue === 'out') {
+    // For expenses: filter by expense_category_id
+    if (categoryFilterValue === 'null') {
+      filteredPayments = filteredPayments.filter(p => !p.expense_category_id);
+    } else if (categoryFilterValue) {
+      const categoryId = parseInt(categoryFilterValue, 10);
+      filteredPayments = filteredPayments.filter(p => p.expense_category_id === categoryId);
+    }
+  } else {
+    // For 'all': filter by both categories
+    if (categoryFilterValue === 'null') {
+      filteredPayments = filteredPayments.filter(p => !p.expense_category_id && !p.income_category_id);
+    } else if (categoryFilterValue) {
+      const categoryId = parseInt(categoryFilterValue, 10);
+      filteredPayments = filteredPayments.filter(p => 
+        p.expense_category_id === categoryId || p.income_category_id === categoryId
+      );
+    }
+  }
+  
+  // Render filtered payments
+  renderExpensesTable(filteredPayments, directionFilterValue);
+  
+  // Update statistics based on direction
+  updateStatistics(expensesState.items, directionFilterValue);
 }
 
 // Handle expense row click
@@ -328,31 +780,51 @@ async function selectExpenseRow(row, { forceReload = false, skipScroll = false }
   }
 }
 
-// Load expense details (with suggestions from OpenAI)
-async function loadExpenseDetails(expenseId, { forceReload = false } = {}) {
-  const cacheKey = String(expenseId);
+// Load expense/income details (with suggestions from OpenAI for expenses only)
+async function loadExpenseDetails(paymentId, { forceReload = false } = {}) {
+  const cacheKey = String(paymentId);
   if (!forceReload && expensesState.details.has(cacheKey)) {
     return expensesState.details.get(cacheKey);
   }
 
-  // Load expense data
-  const expenseResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(cacheKey)}`);
-  const expensePayload = await expenseResponse.json();
+  // Load payment data
+  const paymentResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(cacheKey)}`);
+  const paymentPayload = await paymentResponse.json();
   
-  if (!expensePayload.success || !expensePayload.data) {
-    throw new Error(expensePayload.error || 'Не удалось получить данные расхода');
+  if (!paymentPayload.success || !paymentPayload.data) {
+    throw new Error(paymentPayload.error || 'Не удалось получить данные платежа');
   }
 
-  const expense = expensePayload.data;
+  const payment = paymentPayload.data;
 
-  // Load suggestions (this will trigger OpenAI if no rules match)
-  const suggestionsResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(cacheKey)}/expense-category-suggestions`);
-  const suggestionsPayload = await suggestionsResponse.json();
-  
-  const suggestions = suggestionsPayload.success ? (suggestionsPayload.data || []) : [];
+  // Load suggestions only for expenses (direction='out')
+  // Income payments don't need expense category suggestions
+  let suggestions = [];
+  if (payment.direction === 'out') {
+    try {
+      const suggestionsResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(cacheKey)}/expense-category-suggestions`);
+      
+      // Check if response is ok before parsing JSON
+      if (!suggestionsResponse.ok) {
+        // If server returns error, just skip suggestions (non-critical)
+        console.debug(`Suggestions endpoint returned ${suggestionsResponse.status} for payment ${cacheKey}, skipping suggestions`);
+      } else {
+        const suggestionsPayload = await suggestionsResponse.json();
+        
+        if (suggestionsPayload.success) {
+          suggestions = suggestionsPayload.data || [];
+        }
+      }
+    } catch (suggestionsError) {
+      // If suggestions fail (network error, connection refused, etc.), continue without them (non-critical)
+      // Only log in debug mode, not as warning, since this is expected behavior
+      console.debug('Failed to load expense category suggestions (non-critical):', suggestionsError.name || suggestionsError.message);
+    }
+  }
 
   const result = {
-    expense,
+    expense: payment, // Keep 'expense' key for backward compatibility
+    payment: payment, // Also include 'payment' key
     suggestions
   };
 
@@ -360,85 +832,141 @@ async function loadExpenseDetails(expenseId, { forceReload = false } = {}) {
   return result;
 }
 
-// Render expense detail (similar to renderPaymentDetail)
+// Render expense/income detail
 function renderExpenseDetail(data, target = expensesState.detailCellEl) {
   if (!target) return;
   if (!data || !data.expense) {
-    target.innerHTML = '<div class="payment-detail-placeholder">Не удалось загрузить данные расхода</div>';
+    target.innerHTML = '<div class="payment-detail-placeholder">Не удалось загрузить данные платежа</div>';
     return;
   }
 
   const { expense, suggestions = [] } = data;
-  const categoryName = expense.expense_category_id 
-    ? (expenseCategoriesMap[expense.expense_category_id]?.name || `ID: ${expense.expense_category_id}`)
-    : 'Без категории';
+  const isIncome = expense.direction === 'in';
+  const isExpense = expense.direction === 'out';
+  
+  // Get category name based on direction
+  let categoryName = '';
+  if (isIncome) {
+    categoryName = expense.income_category_id 
+      ? (incomeCategoriesMap[expense.income_category_id]?.name || `ID: ${expense.income_category_id}`)
+      : 'Без категории';
+  } else if (isExpense) {
+    categoryName = expense.expense_category_id 
+      ? (expenseCategoriesMap[expense.expense_category_id]?.name || `ID: ${expense.expense_category_id}`)
+      : 'Без категории';
+  }
 
   const date = expense.operation_date || expense.date || '';
   const formattedDate = date ? new Date(date).toLocaleDateString('ru-RU') : '';
 
+  const paymentType = isIncome ? 'Доход' : 'Расход';
+  const amountColor = isIncome ? '#10b981' : '#dc3545';
+
+  // Используем amount_raw для отображения оригинальной суммы с плюсом/минусом
+  const originalAmount = expense.amount_raw || (expense.amount ? `${isIncome ? '+' : '-'}${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : '—');
+  
   const metaRows = [
     renderExpenseMeta('ID платежа', escapeHtml(String(expense.id))),
     renderExpenseMeta('Дата', formattedDate || '—'),
-    renderExpenseMeta('Сумма', expense.amount ? `${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : '—'),
+    renderExpenseMeta('Сумма (оригинальная)', originalAmount),
     renderExpenseMeta('Плательщик', escapeHtml(expense.payer_name || expense.payer || '—')),
     renderExpenseMeta('Описание', escapeHtml(expense.description || '—')),
+    renderExpenseMeta('Направление', isIncome ? '💰 Доход (in)' : '💸 Расход (out)'),
     renderExpenseMeta('Категория', categoryName),
     renderExpenseMeta('Уверенность', expense.match_confidence ? `${Math.round(expense.match_confidence)}%` : '—')
   ];
 
-  const suggestionItems = suggestions.length > 0
-    ? suggestions.map((suggestion) => {
-      const isSelected = suggestion.categoryId === expense.expense_category_id;
-      const categoryName = expenseCategoriesMap[suggestion.categoryId]?.name || `ID: ${suggestion.categoryId}`;
-      const isPerfectMatch = suggestion.confidence >= 100;
-      const cardClass = `candidate-card${isSelected ? ' selected' : ''}`;
-      
-      return `
-        <li
-          class="${cardClass}"
-          data-category-id="${escapeHtml(String(suggestion.categoryId))}"
-        >
-          <div class="candidate-title">${escapeHtml(categoryName)}</div>
-          <div class="candidate-meta">
-            <span>⭐ ${suggestion.confidence}% уверенности</span>
-            ${isPerfectMatch ? '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">100% - правило будет создано</span>' : ''}
-            ${suggestion.matchDetails ? `<span class="candidate-reason">${escapeHtml(suggestion.matchDetails)}</span>` : ''}
-            ${suggestion.patternType === 'ai' ? '<span style="background: #6366f1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">AI</span>' : ''}
-          </div>
-        </li>
-      `;
-    }).join('')
-    : '<li class="candidate-card disabled">Предложения не найдены. Выберите категорию вручную.</li>';
-
-  target.innerHTML = `
-    <div class="payment-detail" data-expense-id="${escapeHtml(String(expense.id))}">
-      <header>
-        <h3>Расход ${expense.amount ? `${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : ''}</h3>
-      </header>
-      <div class="payment-meta">
-        ${metaRows.join('')}
-      </div>
-      <div class="manual-match-panel">
-        <label for="expense-category-select">Категория расходов</label>
-        <select id="expense-category-select" class="form-control">
-          <option value="">Выберите категорию...</option>
-          ${Object.values(expenseCategoriesMap).map(cat => 
-            `<option value="${cat.id}" ${cat.id === expense.expense_category_id ? 'selected' : ''}>${escapeHtml(cat.name)}</option>`
-          ).join('')}
-        </select>
-        <span class="manual-match-hint">Выберите категорию из списка или кликните на предложение ниже.</span>
-        <div class="manual-match-actions">
-          <button class="btn btn-primary" id="expense-save">💾 Сохранить</button>
-          <button class="btn btn-secondary" id="expense-reset">↩️ Очистить</button>
-          <button class="btn btn-danger" id="expense-delete">🗑️ Удалить</button>
-        </div>
-      </div>
+  // Build category select based on direction
+  let categorySelectHTML = '';
+  let categoryPanelHTML = '';
+  
+  if (isIncome) {
+    // For income: show income category select
+    const incomeCategoryOptions = Object.values(incomeCategoriesMap).map(cat => 
+      `<option value="${cat.id}" ${cat.id === expense.income_category_id ? 'selected' : ''}>${escapeHtml(cat.name)}</option>`
+    ).join('');
+    
+    categorySelectHTML = `
+      <label for="income-category-select">Категория доходов</label>
+      <select id="income-category-select" class="form-control">
+        <option value="">Выберите категорию...</option>
+        ${incomeCategoryOptions}
+      </select>
+      <span class="manual-match-hint">Выберите категорию дохода из списка.</span>
+    `;
+    
+    categoryPanelHTML = ''; // No suggestions for income
+  } else if (isExpense) {
+    // For expenses: show expense category select with suggestions
+    const expenseCategoryOptions = Object.values(expenseCategoriesMap).map(cat => 
+      `<option value="${cat.id}" ${cat.id === expense.expense_category_id ? 'selected' : ''}>${escapeHtml(cat.name)}</option>`
+    ).join('');
+    
+    const suggestionItems = suggestions.length > 0
+      ? suggestions.map((suggestion) => {
+        const isSelected = suggestion.categoryId === expense.expense_category_id;
+        const suggestionCategoryName = expenseCategoriesMap[suggestion.categoryId]?.name || `ID: ${suggestion.categoryId}`;
+        const isPerfectMatch = suggestion.confidence >= 100;
+        const cardClass = `candidate-card${isSelected ? ' selected' : ''}`;
+        
+        return `
+          <li
+            class="${cardClass}"
+            data-category-id="${escapeHtml(String(suggestion.categoryId))}"
+          >
+            <div class="candidate-title">${escapeHtml(suggestionCategoryName)}</div>
+            <div class="candidate-meta">
+              <span>⭐ ${suggestion.confidence}% уверенности</span>
+              ${isPerfectMatch ? '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">100% - правило будет создано</span>' : ''}
+              ${suggestion.matchDetails ? `<span class="candidate-reason">${escapeHtml(suggestion.matchDetails)}</span>` : ''}
+              ${suggestion.patternType === 'ai' ? '<span style="background: #6366f1; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">AI</span>' : ''}
+            </div>
+          </li>
+        `;
+      }).join('')
+      : '<li class="candidate-card disabled">Предложения не найдены. Выберите категорию вручную.</li>';
+    
+    categorySelectHTML = `
+      <label for="expense-category-select">Категория расходов</label>
+      <select id="expense-category-select" class="form-control">
+        <option value="">Выберите категорию...</option>
+        ${expenseCategoryOptions}
+      </select>
+      <span class="manual-match-hint">Выберите категорию из списка или кликните на предложение ниже.</span>
+    `;
+    
+    categoryPanelHTML = `
       <div class="candidate-panel">
         <h4>Возможные совпадения</h4>
         <ul class="candidate-list">
           ${suggestionItems}
         </ul>
       </div>
+    `;
+  }
+
+  // Используем amount_raw для заголовка
+  const headerAmount = expense.amount_raw || (expense.amount ? `${isIncome ? '+' : '-'}${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : '');
+  
+  target.innerHTML = `
+    <div class="payment-detail" data-expense-id="${escapeHtml(String(expense.id))}">
+      <header>
+        <h3>${paymentType} ${headerAmount}</h3>
+      </header>
+      <div class="payment-meta">
+        ${metaRows.join('')}
+      </div>
+      <div class="manual-match-panel">
+        ${categorySelectHTML}
+        <div class="manual-match-actions">
+          <button class="btn btn-primary" id="expense-save">💾 Сохранить</button>
+          <button class="btn btn-secondary" id="expense-reset">↩️ Очистить</button>
+          <button class="btn btn-danger" id="expense-delete">🗑️ Удалить</button>
+          ${isExpense ? '<button class="btn btn-info" id="expense-move-to-income" style="background: #0ea5e9; color: white;">📥 Перенести в приход</button>' : ''}
+          ${isIncome ? '<button class="btn btn-info" id="expense-move-to-expense" style="background: #dc3545; color: white;">📤 Переместить в расходы</button>' : ''}
+        </div>
+      </div>
+      ${categoryPanelHTML}
     </div>
   `;
 
@@ -455,17 +983,48 @@ function renderExpenseMeta(label, value) {
   `;
 }
 
-// Setup expense detail handlers
-function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl) {
+// Setup expense/income detail handlers
+function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl) {
   if (!root) return;
 
-  const categorySelect = root.querySelector('#expense-category-select');
+  // Get payment data to determine direction
+  // Try to get from state first, then from detail data
+  let payment = expensesState.items.find(p => p.id === paymentId);
+  if (!payment) {
+    // Try to get from details cache
+    const detailData = expensesState.details.get(String(paymentId));
+    if (detailData && detailData.expense) {
+      payment = detailData.expense;
+    } else if (detailData && detailData.payment) {
+      payment = detailData.payment;
+    }
+  }
+  
+  const isIncome = payment?.direction === 'in';
+  const isExpense = payment?.direction === 'out';
+  
+  // Log for debugging
+  console.log('setupExpenseDetailHandlers', {
+    paymentId,
+    paymentDirection: payment?.direction,
+    isIncome,
+    isExpense,
+    hasPayment: !!payment
+  });
+
+  // Get the correct category select based on direction
+  const expenseCategorySelect = root.querySelector('#expense-category-select');
+  const incomeCategorySelect = root.querySelector('#income-category-select');
+  const categorySelect = isIncome ? incomeCategorySelect : expenseCategorySelect;
+  
   const saveButton = root.querySelector('#expense-save');
   const resetButton = root.querySelector('#expense-reset');
   const deleteButton = root.querySelector('#expense-delete');
+  const moveToIncomeButton = root.querySelector('#expense-move-to-income');
+  const moveToExpenseButton = root.querySelector('#expense-move-to-expense');
   const candidateCards = root.querySelectorAll('.candidate-card');
 
-  // Handle candidate card clicks
+  // Handle candidate card clicks (only for expenses with suggestions)
   candidateCards.forEach((card) => {
     if (card.classList.contains('disabled')) return;
     card.addEventListener('click', () => {
@@ -493,53 +1052,120 @@ function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl
     try {
       setButtonLoading(saveButton, true, 'Сохранение...');
       
-      // Find the selected suggestion to get pattern info
-      const selectedCard = root.querySelector('.candidate-card.selected');
-      let patternType = null;
-      let patternValue = '';
-      let confidence = 0;
+      // Determine direction from the select element itself
+      // If income-category-select exists, it's income; if expense-category-select exists, it's expense
+      const hasIncomeSelect = !!incomeCategorySelect;
+      const hasExpenseSelect = !!expenseCategorySelect;
+      const paymentIsIncome = hasIncomeSelect || (payment && payment.direction === 'in');
+      const paymentIsExpense = hasExpenseSelect || (payment && payment.direction === 'out');
       
-      if (selectedCard) {
-        const suggestion = expensesState.details.get(String(expenseId))?.suggestions?.find(
-          s => String(s.categoryId) === selectedCard.dataset.categoryId
-        );
-        if (suggestion) {
-          patternType = suggestion.patternType;
-          patternValue = suggestion.patternValue || '';
-          confidence = suggestion.confidence || 0;
+      console.log('Save button clicked', {
+        paymentId,
+        categoryId,
+        hasIncomeSelect,
+        hasExpenseSelect,
+        paymentDirection: payment?.direction,
+        paymentIsIncome,
+        paymentIsExpense
+      });
+      
+      let endpoint, body;
+      
+      if (paymentIsIncome) {
+        // For income: use income-category endpoint
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/income-category`;
+        body = {
+          income_category_id: parseInt(categoryId, 10)
+        };
+      } else if (paymentIsExpense) {
+        // For expenses: use expense-category endpoint with pattern info
+        // Find the selected suggestion to get pattern info
+        const selectedCard = root.querySelector('.candidate-card.selected');
+        let patternType = null;
+        let patternValue = '';
+        let confidence = 0;
+        
+        if (selectedCard) {
+          const suggestion = expensesState.details.get(String(paymentId))?.suggestions?.find(
+            s => String(s.categoryId) === selectedCard.dataset.categoryId
+          );
+          if (suggestion) {
+            patternType = suggestion.patternType;
+            patternValue = suggestion.patternValue || '';
+            confidence = suggestion.confidence || 0;
+          }
         }
-      }
 
-      const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(expenseId)}/expense-category`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expenseCategoryId: parseInt(categoryId),
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`;
+        body = {
+          expenseCategoryId: parseInt(categoryId, 10),
           createMapping: patternType !== null,
           patternType: patternType,
           patternValue: patternValue,
           priority: confidence >= 100 ? 10 : Math.round(confidence / 10)
-        })
+        };
+      } else {
+        // Fallback: try to determine from payment data in details
+        const detailData = expensesState.details.get(String(paymentId));
+        const detailPayment = detailData?.expense || detailData?.payment;
+        if (detailPayment && detailPayment.direction === 'in') {
+          // It's income, use income endpoint
+          endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/income-category`;
+          body = {
+            income_category_id: parseInt(categoryId, 10)
+          };
+        } else {
+          throw new Error(`Неизвестное направление платежа. Payment ID: ${paymentId}, direction: ${detailPayment?.direction || 'unknown'}`);
+        }
+      }
+
+      console.log('Saving category', { endpoint, body, paymentId });
+
+      const response = await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
       });
 
       const payload = await response.json();
 
       if (!response.ok || !payload.success) {
-        throw new Error(payload.error || payload.message || 'Не удалось сохранить категорию');
+        const errorMsg = payload.error || payload.message || 'Не удалось сохранить категорию';
+        console.error('Failed to save category', { endpoint, body, response: payload, paymentId });
+        throw new Error(errorMsg);
       }
 
+      // Сохраняем текущие фильтры перед перезагрузкой
+      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
+      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      
       // Reload expenses
       await loadExpenses();
       
+      // Восстанавливаем фильтры после загрузки
+      setTimeout(() => {
+        const directionFilter = document.getElementById('directionFilter');
+        const categoryFilter = document.getElementById('categoryFilter');
+        if (directionFilter && directionFilter.value !== currentDirection) {
+          directionFilter.value = currentDirection;
+        }
+        if (categoryFilter && categoryFilter.value !== currentCategory) {
+          categoryFilter.value = currentCategory;
+        }
+        // Применяем фильтры
+        filterExpenses();
+      }, 100);
+      
       // Reload detail if still selected
-      if (expensesState.selectedId === String(expenseId)) {
-        const updatedRow = getExpenseRowElement(expenseId);
+      if (expensesState.selectedId === String(paymentId)) {
+        const updatedRow = getExpenseRowElement(paymentId);
         if (updatedRow) {
           selectExpenseRow(updatedRow, { skipScroll: true, forceReload: true }).catch(() => clearExpenseDetailRow());
         }
       }
 
-      addLog('success', `Категория присвоена расходу ${expenseId}`);
+      const paymentType = isIncome ? 'доходу' : 'расходу';
+      addLog('success', `Категория присвоена ${paymentType} ${paymentId}`);
     } catch (error) {
       addLog('error', `Не удалось сохранить категорию: ${error.message}`);
     } finally {
@@ -549,15 +1175,26 @@ function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl
 
   // Handle reset button
   resetButton?.addEventListener('click', async () => {
+    if (!categorySelect) return;
+    
     try {
       setButtonLoading(resetButton, true, 'Очистка...');
       
-      const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(expenseId)}/expense-category`, {
+      let endpoint, body;
+      if (isIncome) {
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/income-category`;
+        body = { income_category_id: null };
+      } else if (isExpense) {
+        endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`;
+        body = { expenseCategoryId: null };
+      } else {
+        throw new Error('Неизвестное направление платежа');
+      }
+
+      const response = await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          expenseCategoryId: null
-        })
+        body: JSON.stringify(body)
       });
 
       const payload = await response.json();
@@ -566,18 +1203,37 @@ function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl
         throw new Error(payload.error || payload.message || 'Не удалось очистить категорию');
       }
 
-      // Reload expenses
+      // Сохраняем текущие фильтры перед перезагрузкой
+      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
+      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      
+      // Reload payments
       await loadExpenses();
       
+      // Восстанавливаем фильтры после загрузки
+      setTimeout(() => {
+        const directionFilter = document.getElementById('directionFilter');
+        const categoryFilter = document.getElementById('categoryFilter');
+        if (directionFilter && directionFilter.value !== currentDirection) {
+          directionFilter.value = currentDirection;
+        }
+        if (categoryFilter && categoryFilter.value !== currentCategory) {
+          categoryFilter.value = currentCategory;
+        }
+        // Применяем фильтры
+        filterExpenses();
+      }, 100);
+      
       // Reload detail if still selected
-      if (expensesState.selectedId === String(expenseId)) {
-        const updatedRow = getExpenseRowElement(expenseId);
+      if (expensesState.selectedId === String(paymentId)) {
+        const updatedRow = getExpenseRowElement(paymentId);
         if (updatedRow) {
           selectExpenseRow(updatedRow, { skipScroll: true, forceReload: true }).catch(() => clearExpenseDetailRow());
         }
       }
 
-      addLog('info', `Категория расхода ${expenseId} очищена`);
+      const paymentType = isIncome ? 'дохода' : 'расхода';
+      addLog('info', `Категория ${paymentType} ${paymentId} очищена`);
     } catch (error) {
       addLog('error', `Не удалось очистить категорию: ${error.message}`);
     } finally {
@@ -594,7 +1250,7 @@ function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl
     try {
       setButtonLoading(deleteButton, true, 'Удаление...');
       
-      const response = await fetch(`${API_BASE}/api/vat-margin/payments/${encodeURIComponent(expenseId)}`, {
+      const response = await fetch(`${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}`, {
         method: 'DELETE'
       });
 
@@ -616,11 +1272,107 @@ function setupExpenseDetailHandlers(expenseId, root = expensesState.detailCellEl
       // Reload expenses
       await loadExpenses();
 
-      addLog('success', `Расход ${expenseId} удален`);
+      addLog('success', `Расход ${paymentId} удален`);
     } catch (error) {
       addLog('error', `Не удалось удалить расход: ${error.message}`);
     } finally {
       setButtonLoading(deleteButton, false, '🗑️ Удалить');
+    }
+  });
+
+  // Handle move to income button (for expenses)
+  moveToIncomeButton?.addEventListener('click', async () => {
+    try {
+      setButtonLoading(moveToIncomeButton, true, 'Перенос...');
+      
+      const response = await fetch(`${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/direction`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction: 'in'
+        })
+      });
+
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || payload.message || 'Не удалось перенести платёж');
+      }
+
+      const payload = await response.json();
+      
+      addLog('success', `Платёж ${paymentId} перенесен в приходы (доходы)`);
+      
+      // Сохраняем текущие фильтры
+      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
+      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      
+      // Восстанавливаем фильтры ПЕРЕД загрузкой данных
+      const directionFilter = document.getElementById('directionFilter');
+      const categoryFilter = document.getElementById('categoryFilter');
+      if (directionFilter && directionFilter.value !== currentDirection) {
+        directionFilter.value = currentDirection;
+      }
+      if (categoryFilter && categoryFilter.value !== currentCategory) {
+        categoryFilter.value = currentCategory;
+      }
+      
+      // Close detail view and reload expenses list
+      clearExpenseDetailRow();
+      await loadExpenses();
+      
+    } catch (error) {
+      console.error('Failed to move expense to income:', error);
+      addLog('error', `Не удалось перенести платёж: ${error.message}`);
+    } finally {
+      setButtonLoading(moveToIncomeButton, false, '📥 Перенести в приход');
+    }
+  });
+
+  // Handle move to expense button (for income)
+  moveToExpenseButton?.addEventListener('click', async () => {
+    try {
+      setButtonLoading(moveToExpenseButton, true, 'Перенос...');
+      
+      const response = await fetch(`${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/direction`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          direction: 'out'
+        })
+      });
+
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || payload.message || 'Не удалось переместить платёж');
+      }
+
+      const payload = await response.json();
+      
+      addLog('success', `Платёж ${paymentId} перемещен в расходы`);
+      
+      // Сохраняем текущие фильтры
+      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
+      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      
+      // Восстанавливаем фильтры ПЕРЕД загрузкой данных
+      const directionFilter = document.getElementById('directionFilter');
+      const categoryFilter = document.getElementById('categoryFilter');
+      if (directionFilter && directionFilter.value !== currentDirection) {
+        directionFilter.value = currentDirection;
+      }
+      if (categoryFilter && categoryFilter.value !== currentCategory) {
+        categoryFilter.value = currentCategory;
+      }
+      
+      // Close detail view and reload expenses list
+      clearExpenseDetailRow();
+      await loadExpenses();
+      
+    } catch (error) {
+      console.error('Failed to move income to expense:', error);
+      addLog('error', `Не удалось переместить платёж: ${error.message}`);
+    } finally {
+      setButtonLoading(moveToExpenseButton, false, '📤 Переместить в расходы');
     }
   });
 }
@@ -632,10 +1384,117 @@ function setButtonLoading(button, loading, text) {
   button.textContent = text;
 }
 
+// Display unmatched expenses from last CSV upload
+function displayUnmatchedExpenses(expenses) {
+  const section = document.getElementById('unmatchedExpensesSection');
+  const container = document.getElementById('unmatchedExpensesContainer');
+  
+  if (!section || !container) return;
+  
+  if (expenses.length === 0) {
+    hideUnmatchedExpenses();
+    return;
+  }
+  
+  section.style.display = 'block';
+  
+  const tableHtml = `
+    <table class="expenses-table" style="margin-top: 10px;">
+      <thead>
+        <tr>
+          <th>Дата</th>
+          <th>Описание</th>
+          <th>Плательщик</th>
+          <th>Сумма</th>
+          <th>Действия</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${expenses.map(expense => {
+          const date = expense.operation_date || expense.date || '';
+          const formattedDate = date ? new Date(date).toLocaleDateString('ru-RU') : '';
+          const isIncome = expense.direction === 'in';
+          const amountColor = isIncome ? '#10b981' : '#dc3545';
+          const originalAmount = expense.amount_raw || (expense.amount ? `${isIncome ? '+' : '-'}${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : '');
+          return `
+            <tr class="expense-row" data-expense-id="${expense.id}" style="cursor: pointer;">
+              <td>${formattedDate}</td>
+              <td class="expense-description" title="${escapeHtml(expense.description || '')}">
+                ${escapeHtml(expense.description || 'Без описания')}
+              </td>
+              <td>${escapeHtml(expense.payer_name || expense.payer || '')}</td>
+              <td class="expense-amount" style="color: ${amountColor}; font-weight: 600;">
+                ${originalAmount}
+              </td>
+              <td>
+                <button class="btn btn-primary" onclick="selectUnmatchedExpense(${expense.id})" style="padding: 5px 10px; font-size: 0.9em;">
+                  Выбрать категорию
+                </button>
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+  
+  container.innerHTML = `
+    <p style="color: #666; margin-bottom: 10px;">
+      Найдено <strong>${expenses.length}</strong> расходов без категории из последней загрузки CSV.
+      Кликните на строку или кнопку "Выбрать категорию" для назначения категории.
+    </p>
+    ${tableHtml}
+  `;
+  
+  // Add click handlers to rows
+  container.querySelectorAll('tr[data-expense-id]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.tagName !== 'BUTTON') {
+        const expenseId = row.dataset.expenseId;
+        selectUnmatchedExpense(expenseId);
+      }
+    });
+  });
+}
+
+// Hide unmatched expenses section
+function hideUnmatchedExpenses() {
+  const section = document.getElementById('unmatchedExpensesSection');
+  if (section) {
+    section.style.display = 'none';
+  }
+}
+
+// Select unmatched expense and show detail panel
+function selectUnmatchedExpense(expenseId) {
+  const row = getExpenseRowElement(expenseId);
+  if (row) {
+    selectExpenseRow(row).catch((error) => {
+      console.warn('selectExpenseRow error:', error);
+    });
+  } else {
+    // If row not found in main table, load it
+    loadExpenses().then(() => {
+      const row = getExpenseRowElement(expenseId);
+      if (row) {
+        selectExpenseRow(row).catch((error) => {
+          console.warn('selectExpenseRow error:', error);
+        });
+      }
+    });
+  }
+}
+
 // Handle CSV upload
 async function handleExpensesCsvUpload() {
   const fileInput = document.getElementById('expensesCsvInput');
   const thresholdInput = document.getElementById('autoMatchThreshold');
+  const uploadButton = document.getElementById('uploadCsvButton');
+  const uploadButtonText = document.getElementById('uploadButtonText');
+  const uploadButtonSpinner = document.getElementById('uploadButtonSpinner');
+  const uploadProgress = document.getElementById('uploadProgress');
+  const uploadProgressText = document.getElementById('uploadProgressText');
+  const uploadProgressDetails = document.getElementById('uploadProgressDetails');
   const file = fileInput.files?.[0];
   
   if (!file) {
@@ -651,43 +1510,136 @@ async function handleExpensesCsvUpload() {
   const threshold = parseInt(thresholdInput.value, 10) || 90;
   const validThreshold = Math.max(0, Math.min(100, threshold));
   
-  addLog('info', `Загрузка файла ${file.name}... (порог автокатегоризации: ${validThreshold}%)`);
+  // Show loading state
+  fileInput.disabled = true;
+  thresholdInput.disabled = true;
+  uploadButton.disabled = true;
+  uploadButtonText.style.display = 'none';
+  uploadButtonSpinner.style.display = 'inline-block';
+  uploadProgress.style.display = 'block';
+  uploadProgressText.textContent = 'Обработка файла...';
+  uploadProgressDetails.textContent = `Файл: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+  
+  addLog('info', `Загрузка файла ${file.name} (${(file.size / 1024).toFixed(2)} KB)... (порог автокатегоризации: ${validThreshold}%)`);
   
   const formData = new FormData();
   formData.append('file', file);
   
   try {
-    const response = await fetch(`${API_BASE}/api/payments/import-expenses?autoMatchThreshold=${validThreshold}`, {
-      method: 'POST',
-      body: formData
-    });
+    // Add timeout and better error handling
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes timeout
+    
+    // Update progress message
+    uploadProgressText.textContent = 'Отправка файла на сервер...';
+    uploadProgressDetails.textContent = 'Пожалуйста, подождите...';
+    
+    let response;
+    try {
+      response = await fetch(`${API_BASE}/api/payments/import-expenses?autoMatchThreshold=${validThreshold}`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      if (fetchError.name === 'AbortError') {
+        throw new Error('Превышено время ожидания ответа сервера (5 минут). Файл слишком большой или сервер не отвечает.');
+      }
+      if (fetchError.message.includes('Failed to fetch') || fetchError.message.includes('ERR_CONNECTION_RESET')) {
+        throw new Error('Соединение с сервером разорвано. Возможно, файл слишком большой или произошла ошибка на сервере. Проверьте логи сервера.');
+      }
+      throw fetchError;
+    }
+    
+    // Update progress message
+    uploadProgressText.textContent = 'Обработка данных...';
+    uploadProgressDetails.textContent = 'Анализ CSV файла и категоризация расходов...';
+    
+    if (!response.ok) {
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errorPayload = await response.json();
+        errorMessage = errorPayload.error || errorPayload.message || errorMessage;
+      } catch (e) {
+        // Response is not JSON
+      }
+      throw new Error(errorMessage);
+    }
     
     const payload = await response.json();
     
-    if (!response.ok || !payload.success) {
+    if (!payload.success) {
       throw new Error(payload.error || payload.message || 'Не удалось загрузить файл');
     }
     
-    const stats = payload.data || {};
-    const autoMatched = stats.autoMatched || stats.categorized || 0;
-    const uncategorized = stats.uncategorized || 0;
-    const threshold = stats.autoMatchThreshold || 90;
+    // Update progress message
+    uploadProgressText.textContent = 'Завершение обработки...';
+    uploadProgressDetails.textContent = 'Сохранение результатов...';
     
-    if (autoMatched > 0) {
-      addLog('success', `Файл загружен. Обработано: ${stats.processed || 0}, автоматически категоризировано: ${autoMatched} (>=${threshold}%), без категории: ${uncategorized}`);
+    const stats = payload.data || {};
+    const total = stats.total || 0;
+    const expensesProcessed = stats.processed || stats.expenses?.processed || 0;
+    const incomeProcessed = stats.income?.processed || 0;
+    const autoMatched = stats.categorized || stats.expenses?.categorized || 0;
+    const uncategorized = stats.uncategorized || stats.expenses?.uncategorized || 0;
+    const threshold = stats.autoMatchThreshold || 90;
+    const uncategorizedExpenses = payload.data?.uncategorizedExpenses || [];
+    
+    // Hide progress indicator
+    setTimeout(() => {
+      uploadProgress.style.display = 'none';
+    }, 500);
+    
+    addLog('success', `Файл загружен успешно!`);
+    addLog('info', `Всего записей в CSV: ${total}`);
+    addLog('info', `Расходов обработано: ${expensesProcessed} (отрицательные суммы)`);
+    addLog('info', `Доходов обработано: ${incomeProcessed} (положительные суммы)`);
+    
+    if (expensesProcessed > 0) {
+      if (autoMatched > 0) {
+        addLog('success', `Автоматически категоризировано: ${autoMatched} (>=${threshold}%), без категории: ${uncategorized}`);
+      } else {
+        addLog('info', `Без категории: ${uncategorized} (требуют ручного выбора)`);
+      }
     } else {
-      addLog('success', `Файл загружен. Обработано: ${stats.processed || 0}, без категории: ${uncategorized}`);
+      addLog('warning', `⚠️ В CSV файле не найдено расходов (отрицательных сумм).`);
+      addLog('info', `Проверьте формат CSV: расходы должны иметь знак минус перед суммой (например: "-100.00 PLN")`);
+    }
+    
+    // Show unmatched expenses section if there are uncategorized expenses
+    if (uncategorizedExpenses.length > 0) {
+      displayUnmatchedExpenses(uncategorizedExpenses);
+    } else {
+      hideUnmatchedExpenses();
     }
     
     // Clear file input
     fileInput.value = '';
     
     // Reload expenses
-    loadExpenses();
+    uploadProgressText.textContent = 'Обновление списка расходов...';
+    uploadProgressDetails.textContent = 'Загрузка обновленных данных...';
+    await loadExpenses();
+    
+    // Hide progress after reload
+    uploadProgress.style.display = 'none';
     
   } catch (error) {
     console.error('CSV upload error:', error);
     addLog('error', `Ошибка загрузки CSV: ${error.message}`);
+    
+    // Hide progress on error
+    uploadProgress.style.display = 'none';
+  } finally {
+    // Restore UI state
+    fileInput.disabled = false;
+    thresholdInput.disabled = false;
+    uploadButton.disabled = false;
+    uploadButtonText.style.display = 'inline';
+    uploadButtonSpinner.style.display = 'none';
   }
 }
+
 

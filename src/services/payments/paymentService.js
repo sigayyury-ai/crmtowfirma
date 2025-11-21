@@ -102,58 +102,91 @@ class PaymentService {
   }
 
   resolvePaymentRecord(record) {
-    const manualStatus = record.manual_status || null;
-    let status = record.match_status || 'unmatched';
-    let matchedProformaId = record.proforma_id || null;
-    let matchedProformaFullnumber = record.proforma_fullnumber || null;
-    let origin = 'auto';
-
-    if (manualStatus === MANUAL_STATUS_APPROVED) {
-      status = 'matched';
-      matchedProformaId = record.manual_proforma_id || matchedProformaId;
-      matchedProformaFullnumber = record.manual_proforma_fullnumber || matchedProformaFullnumber;
-      origin = 'manual';
-    } else if (manualStatus === MANUAL_STATUS_REJECTED) {
-      status = 'unmatched';
-      matchedProformaId = null;
-      matchedProformaFullnumber = null;
-      origin = 'manual';
+    if (!record) {
+      logger.warn('resolvePaymentRecord called with null/undefined record');
+      return null;
     }
 
-    return {
-      id: record.id,
-      date: record.operation_date,
-      operation_date: record.operation_date, // Keep original for compatibility
-      description: record.description,
-      amount: record.amount,
-      currency: record.currency,
-      direction: record.direction,
-      payer: record.payer_name,
-      payer_name: record.payer_name, // Keep original for compatibility
-      payer_normalized_name: record.payer_normalized_name,
-      status,
-      origin,
-      confidence: record.match_confidence || 0,
-      match_confidence: record.match_confidence || 0, // Keep original for compatibility
-      reason: record.match_reason || null,
-      matched_proforma: matchedProformaFullnumber,
-      matched_proforma_id: matchedProformaId,
-      manual_status: manualStatus,
-      manual_comment: record.manual_comment || null,
-      manual_user: record.manual_user || null,
-      manual_updated_at: record.manual_updated_at || null,
-      match_metadata: record.match_metadata || null,
-      source: record.source || null,
-      auto_proforma_id: record.proforma_id || null,
-      auto_proforma_fullnumber: record.proforma_fullnumber || null,
-      expense_category_id: record.expense_category_id || null // Include expense category ID
-    };
+    try {
+      const manualStatus = record.manual_status || null;
+      let status = record.match_status || 'unmatched';
+      let matchedProformaId = record.proforma_id || null;
+      let matchedProformaFullnumber = record.proforma_fullnumber || null;
+      let origin = 'auto';
+
+      if (manualStatus === MANUAL_STATUS_APPROVED) {
+        status = 'matched';
+        matchedProformaId = record.manual_proforma_id || matchedProformaId;
+        matchedProformaFullnumber = record.manual_proforma_fullnumber || matchedProformaFullnumber;
+        origin = 'manual';
+      } else if (manualStatus === MANUAL_STATUS_REJECTED) {
+        status = 'unmatched';
+        matchedProformaId = null;
+        matchedProformaFullnumber = null;
+        origin = 'manual';
+      }
+
+      return {
+        id: record.id,
+        date: record.operation_date,
+        operation_date: record.operation_date, // Keep original for compatibility
+        description: record.description || null,
+        amount: record.amount || 0,
+        currency: record.currency || 'PLN',
+        direction: record.direction || null,
+        payer: record.payer_name || null,
+        payer_name: record.payer_name || null, // Keep original for compatibility
+        payer_normalized_name: record.payer_normalized_name || null,
+        status,
+        origin,
+        confidence: record.match_confidence || 0,
+        match_confidence: record.match_confidence || 0, // Keep original for compatibility
+        reason: record.match_reason || null,
+        matched_proforma: matchedProformaFullnumber,
+        matched_proforma_id: matchedProformaId,
+        manual_status: manualStatus,
+        manual_comment: record.manual_comment || null,
+        manual_user: record.manual_user || null,
+        manual_updated_at: record.manual_updated_at || null,
+        match_metadata: record.match_metadata || null,
+        source: record.source || null,
+        auto_proforma_id: record.proforma_id || null,
+        auto_proforma_fullnumber: record.proforma_fullnumber || null,
+        expense_category_id: record.expense_category_id || null, // Include expense category ID
+        income_category_id: record.income_category_id || null // Include income category ID (for refunds)
+      };
+    } catch (error) {
+      logger.error('Error in resolvePaymentRecord', {
+        paymentId: record?.id,
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
   }
 
-  async listPayments({ direction = null, limit = 500, expenseCategoryId = null } = {}) {
+  async listPayments({ direction = null, limit = 500, expenseCategoryId = undefined } = {}) {
     if (!supabase) {
       logger.warn('Supabase client is not configured for listPayments');
       return { payments: [], history: [] };
+    }
+
+    // Get "Возвраты" income category ID to exclude refunds from income payments list
+    let refundsCategoryId = null;
+    if (direction === 'in') {
+      try {
+        const IncomeCategoryService = require('./pnl/incomeCategoryService');
+        const incomeCategoryService = new IncomeCategoryService();
+        const categories = await incomeCategoryService.listCategories();
+        const refundsCategory = categories.find(cat => cat.name === 'Возвраты');
+        if (refundsCategory) {
+          refundsCategoryId = refundsCategory.id;
+          logger.debug('Found "Возвраты" category ID for filtering', { refundsCategoryId });
+        }
+      } catch (categoryError) {
+        logger.warn('Failed to get "Возвраты" category for filtering', { error: categoryError.message });
+        // Continue without filtering - better to show refunds than to fail
+      }
     }
 
     let query = supabase
@@ -180,13 +213,21 @@ class PaymentService {
         manual_user,
         manual_updated_at,
         source,
-        expense_category_id
+        expense_category_id,
+        income_category_id
       `)
+      .is('deleted_at', null) // Фильтруем удаленные платежи
       .order('operation_date', { ascending: false });
 
     // Filter by direction if provided
     if (direction) {
       query = query.eq('direction', direction);
+    }
+
+    // For income payments (direction='in'), exclude refunds (payments with income_category_id = "Возвраты")
+    if (direction === 'in' && refundsCategoryId !== null) {
+      query = query.or(`income_category_id.is.null,income_category_id.neq.${refundsCategoryId}`);
+      logger.debug('Filtering out refunds from income payments', { refundsCategoryId });
     }
 
     // Filter by expense_category_id if provided
@@ -207,6 +248,21 @@ class PaymentService {
       throw paymentsError;
     }
 
+    // Debug logging
+    logger.info('listPayments query result', {
+      direction,
+      limit,
+      expenseCategoryId,
+      refundsCategoryId,
+      paymentsCount: paymentsData?.length || 0,
+      sampleIds: paymentsData?.slice(0, 5).map(p => ({ 
+        id: p.id, 
+        direction: p.direction, 
+        expense_category_id: p.expense_category_id,
+        income_category_id: p.income_category_id
+      })) || []
+    });
+
     const { data: historyData, error: historyError } = await supabase
       .from('payment_imports')
       .select('id, filename, uploaded_at, total_records, matched, needs_review, user_name')
@@ -220,11 +276,35 @@ class PaymentService {
 
     // For expenses (direction='out'), show ALL payments regardless of manual_status
     // For income (direction='in'), filter out approved payments (they are matched to proformas)
+    // Note: Refunds are already filtered out in the SQL query above
     const pendingPayments = direction === 'out'
       ? (paymentsData || []) // Show all expenses
       : (paymentsData || []).filter((item) => item.manual_status !== MANUAL_STATUS_APPROVED); // Filter approved income payments
 
-    const payments = pendingPayments.map((item) => this.resolvePaymentRecord(item));
+    // Resolve payment records with error handling
+    const payments = [];
+    for (const item of pendingPayments) {
+      try {
+        const resolved = this.resolvePaymentRecord(item);
+        if (resolved) {
+          payments.push(resolved);
+        }
+      } catch (resolveError) {
+        logger.error('Error resolving payment record', {
+          paymentId: item?.id,
+          error: resolveError.message,
+          stack: resolveError.stack,
+          item: {
+            id: item?.id,
+            direction: item?.direction,
+            operation_date: item?.operation_date,
+            amount: item?.amount
+          }
+        });
+        // Skip this payment but continue processing others
+        continue;
+      }
+    }
 
     const history = (historyData || []).map((item) => ({
       id: item.id,
@@ -326,8 +406,365 @@ class PaymentService {
   }
 
   /**
+   * Unified CSV import handler - processes both expenses and income
+   * Automatically determines direction based on amount sign
+   * - Expenses (direction='out'): categorizes by expense categories
+   * - Income (direction='in'): matches to proformas
+   * - Refunds: positive amounts with refund keywords, marked as refunds for PNL
+   * 
+   * @param {Buffer} buffer - CSV file buffer
+   * @param {Object} options - Import options
+   * @param {string} [options.filename='bank.csv'] - Filename
+   * @param {string} [options.uploadedBy=null] - User who uploaded the file
+   * @param {number} [options.autoMatchThreshold=100] - Minimum confidence threshold for automatic expense category assignment (0-100). Default: 100 (disabled)
+   * @returns {Promise<Object>} Import statistics
+   */
+  async ingestCsvUnified(buffer, { filename = 'bank.csv', uploadedBy = null, autoMatchThreshold = 100 } = {}) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    let content;
+    try {
+      content = buffer.toString('utf-8');
+    } catch (error) {
+      logger.error('Failed to convert buffer to string', {
+        error: error.message,
+        stack: error.stack,
+        filename
+      });
+      throw new Error(`Failed to read CSV file: ${error.message}`);
+    }
+
+    let records;
+    try {
+      records = parseBankStatement(content);
+    } catch (error) {
+      logger.error('Failed to parse CSV file', {
+        error: error.message,
+        stack: error.stack,
+        filename,
+        contentLength: content?.length
+      });
+      throw new Error(`Failed to parse CSV file: ${error.message}`);
+    }
+
+    logger.info('Parsed CSV file (unified import)', {
+      filename,
+      totalRecords: records.length,
+      recordsByDirection: {
+        in: records.filter(r => r.direction === 'in').length,
+        out: records.filter(r => r.direction === 'out').length,
+        unknown: records.filter(r => !r.direction || (r.direction !== 'in' && r.direction !== 'out')).length
+      }
+    });
+
+    if (!records.length) {
+      return {
+        total: 0,
+        expenses: { processed: 0, categorized: 0, uncategorized: 0 },
+        income: { processed: 0, matched: 0, needs_review: 0, unmatched: 0 },
+        refunds: { processed: 0 }
+      };
+    }
+
+    // Separate records by type
+    // Direction is automatically determined by amount sign (negative = out, positive = in)
+    const expenses = records.filter(r => r.direction === 'out');
+    const income = records.filter(r => r.direction === 'in');
+    
+    // All income payments will be matched to proformas
+    // Refunds can be manually marked via UI button "Отправить в PNL"
+    const regularIncome = income;
+
+    logger.info('CSV records separated', {
+      expenses: expenses.length,
+      income: regularIncome.length,
+      total: records.length
+    });
+
+    // Create import record
+    const insertImportResult = await supabase
+      .from('payment_imports')
+      .insert({
+        filename,
+        total_records: records.length,
+        user_name: uploadedBy,
+        matched: 0,
+        needs_review: 0
+      })
+      .select('id')
+      .single();
+
+    if (insertImportResult.error) {
+      logger.error('Supabase error while creating payment import:', insertImportResult.error);
+      throw insertImportResult.error;
+    }
+
+    const importId = insertImportResult.data?.id || null;
+    const enrichedPayments = [];
+
+    // Process expenses (direction='out') - categorize
+    // For now, use existing ingestExpensesCsv logic but filter only expenses
+    let expenseStats = { processed: 0, categorized: 0, uncategorized: 0 };
+    if (expenses.length > 0) {
+      // Create temporary buffer with only expenses for existing method
+      // This is a temporary solution - will refactor later
+      const expenseResults = await this._processExpenses(expenses, importId, autoMatchThreshold);
+      enrichedPayments.push(...expenseResults.enriched);
+      expenseStats = expenseResults.stats || expenseStats;
+    }
+
+    // Process regular income (direction='in', not refunds) - match to proformas
+    let incomeStats = { processed: 0, matched: 0, needs_review: 0, unmatched: 0 };
+    if (regularIncome.length > 0) {
+      const incomeResults = await this._processIncome(regularIncome, importId);
+      enrichedPayments.push(...incomeResults.enriched);
+      incomeStats = incomeResults.stats || incomeStats;
+    }
+
+    // Refunds are handled manually via UI button "Отправить в PNL"
+    // No automatic detection - user marks them manually
+
+    // Save all payments to database
+    // ВАЖНО: Не восстанавливаем удаленные платежи при повторной загрузке CSV
+    if (enrichedPayments.length > 0) {
+      // Проверяем, какие платежи уже существуют и были ли они удалены
+      const allOperationHashes = enrichedPayments.map(p => p.operation_hash).filter(Boolean);
+      const deletedPaymentsMap = new Map();
+      
+      if (allOperationHashes.length > 0) {
+        const { data: existingPayments, error: fetchError } = await supabase
+          .from('payments')
+          .select('operation_hash, deleted_at')
+          .in('operation_hash', allOperationHashes);
+        
+        if (!fetchError && existingPayments) {
+          existingPayments.forEach(p => {
+            if (p.operation_hash) {
+              deletedPaymentsMap.set(p.operation_hash, p.deleted_at !== null);
+            }
+          });
+          logger.info(`Found ${deletedPaymentsMap.size} existing payments (out of ${allOperationHashes.length} hashes)`);
+        }
+      }
+      
+      // Фильтруем платежи, которые были удалены - не восстанавливаем их
+      const paymentsToUpsert = enrichedPayments.filter(p => {
+        if (!p.operation_hash) return true; // Если нет hash, создаем новый
+        const wasDeleted = deletedPaymentsMap.get(p.operation_hash);
+        if (wasDeleted) {
+          logger.info(`Skipping deleted payment with operation_hash: ${p.operation_hash?.substring(0, 8)}...`);
+          return false; // Не восстанавливаем удаленные платежи
+        }
+        return true;
+      });
+      
+      if (paymentsToUpsert.length === 0) {
+        logger.info('All payments were deleted, skipping upsert');
+        return {
+          total: records.length,
+          expenses: expenseStats,
+          income: incomeStats
+        };
+      }
+      
+      const { data: upserted, error } = await supabase
+        .from('payments')
+        .upsert(paymentsToUpsert, { 
+          onConflict: 'operation_hash',
+          ignoreDuplicates: false
+        })
+        .select('id, direction, expense_category_id, income_category_id, match_status');
+
+      if (error) {
+        logger.error('Supabase error while upserting payments:', error);
+        throw error;
+      }
+
+      logger.info('Upserted payments', {
+        total: enrichedPayments.length,
+        upserted: upserted?.length || 0
+      });
+    }
+
+    return {
+      total: records.length,
+      expenses: expenseStats,
+      income: incomeStats,
+      importId: importId
+    };
+  }
+
+  /**
+   * Process expenses - categorize by expense categories
+   * @private
+   */
+  async _processExpenses(expenses, importId, autoMatchThreshold) {
+    if (!expenses || expenses.length === 0) {
+      return { enriched: [], stats: { processed: 0, categorized: 0, uncategorized: 0 } };
+    }
+
+    // Fetch existing payments to preserve their categories
+    const operationHashes = expenses.map(e => e.operation_hash).filter(Boolean);
+    const existingPaymentsMap = new Map();
+    
+    if (operationHashes.length > 0) {
+      const { data: existingPayments, error: fetchError } = await supabase
+        .from('payments')
+        .select('operation_hash, expense_category_id')
+        .in('operation_hash', operationHashes)
+        .eq('direction', 'out');
+      
+      if (!fetchError && existingPayments) {
+        existingPayments.forEach(p => {
+          if (p.operation_hash && p.expense_category_id !== null) {
+            existingPaymentsMap.set(p.operation_hash, p.expense_category_id);
+          }
+        });
+        logger.info(`Found ${existingPaymentsMap.size} existing payments with categories (out of ${operationHashes.length} total)`);
+      }
+    }
+
+    // Generate suggestions and auto-assign categories
+    const enriched = [];
+    let uncategorizedCount = expenses.length;
+    let autoMatchedCount = 0;
+    let preservedCount = 0;
+
+    for (const expense of expenses) {
+      const existingCategoryId = existingPaymentsMap.get(expense.operation_hash);
+      
+      let suggestions = [];
+      let autoMatchedCategoryId = null;
+      let autoMatchConfidence = 0;
+      
+      try {
+        suggestions = await this.expenseMappingService.findCategorySuggestions({
+          category: expense.category,
+          description: expense.description,
+          payer_name: expense.payer_name
+        }, 3);
+        
+        if (suggestions.length > 0 && autoMatchThreshold < 100) {
+          const bestSuggestion = suggestions[0];
+          if (bestSuggestion && bestSuggestion.confidence >= autoMatchThreshold) {
+            autoMatchedCategoryId = bestSuggestion.categoryId;
+            autoMatchConfidence = bestSuggestion.confidence;
+            autoMatchedCount++;
+            if (!existingCategoryId) {
+              uncategorizedCount--;
+            }
+          }
+        }
+      } catch (mappingError) {
+        logger.warn('Failed to generate suggestions for expense', {
+          description: expense.description,
+          error: mappingError.message
+        });
+      }
+
+      const finalCategoryId = autoMatchedCategoryId !== null 
+        ? autoMatchedCategoryId
+        : (existingCategoryId !== undefined ? existingCategoryId : null);
+      
+      if (existingCategoryId && !autoMatchedCategoryId) {
+        preservedCount++;
+      }
+
+      // Normalize operation_date
+      let normalizedOperationDate = expense.operation_date;
+      if (expense.operation_date && typeof expense.operation_date === 'string') {
+        try {
+          const dateObj = new Date(expense.operation_date);
+          if (!isNaN(dateObj.getTime())) {
+            normalizedOperationDate = dateObj.toISOString();
+          } else {
+            const polishFormatMatch = expense.operation_date.match(/^(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})/);
+            if (polishFormatMatch) {
+              const [, day, month, year] = polishFormatMatch;
+              const dateObj = new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`);
+              if (!isNaN(dateObj.getTime())) {
+                normalizedOperationDate = dateObj.toISOString();
+              }
+            }
+          }
+        } catch (dateError) {
+          // Keep original date
+        }
+      }
+
+      const paymentRecord = {
+        operation_date: normalizedOperationDate,
+        payment_date: normalizedOperationDate,
+        description: expense.description,
+        account: expense.account,
+        amount: expense.amount,
+        currency: expense.currency || 'PLN',
+        direction: 'out',
+        payer_name: expense.payer_name,
+        payer_normalized_name: expense.payer_normalized_name,
+        operation_hash: expense.operation_hash,
+        source: PAYMENT_SOURCE_BANK,
+        import_id: importId,
+        match_status: 'unmatched',
+        manual_status: null,
+        match_confidence: autoMatchConfidence,
+        expense_category_id: finalCategoryId
+      };
+
+      enriched.push(paymentRecord);
+    }
+
+    return {
+      enriched,
+      stats: {
+        processed: expenses.length,
+        categorized: autoMatchedCount + preservedCount,
+        uncategorized: uncategorizedCount
+      }
+    };
+  }
+
+  /**
+   * Process income - match to proformas
+   * @private
+   */
+  async _processIncome(income, importId) {
+    if (!income || income.length === 0) {
+      return { enriched: [], stats: { processed: 0, matched: 0, needs_review: 0, unmatched: 0 } };
+    }
+
+    const matchingContext = await this.buildMatchingContext(income);
+    const enriched = this.applyMatching(income, matchingContext).map((item) => ({
+      ...item,
+      source: PAYMENT_SOURCE_BANK,
+      import_id: importId
+    }));
+
+    // Count statuses
+    const statusCounts = enriched.reduce((acc, item) => {
+      const status = item.match_status || 'needs_review';
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
+
+    return {
+      enriched,
+      stats: {
+        processed: income.length,
+        matched: statusCounts.matched || 0,
+        needs_review: statusCounts.needs_review || 0,
+        unmatched: statusCounts.unmatched || 0
+      }
+    };
+  }
+
+
+  /**
    * Import expenses from CSV file
    * Separate handler for expenses (direction = 'out') to avoid breaking existing income logic
+   * @deprecated Use ingestCsvUnified instead
    * @param {Buffer} buffer - CSV file buffer
    * @param {Object} options - Import options
    * @param {string} [options.filename='bank.csv'] - Filename
@@ -616,20 +1053,62 @@ class PaymentService {
     });
 
     // Save expenses to database
-    // IMPORTANT: For existing records, we need to explicitly reset expense_category_id to null
-    // Supabase upsert may not update null fields for existing records by default
+    // ВАЖНО: Не восстанавливаем удаленные платежи при повторной загрузке CSV
     logger.info('Upserting expenses to database', {
       totalToUpsert: enriched.length,
       sampleHashes: enriched.slice(0, 5).map(e => e.operation_hash?.substring(0, 8) + '...')
     });
     
+    // Проверяем, какие платежи уже существуют и были ли они удалены
+    // Используем другое имя переменной, чтобы избежать конфликта с operationHashes выше
+    const enrichedOperationHashes = enriched.map(e => e.operation_hash).filter(Boolean);
+    const deletedPaymentsMap = new Map();
+    
+    if (enrichedOperationHashes.length > 0) {
+      const { data: existingPayments, error: fetchError } = await supabase
+        .from('payments')
+        .select('operation_hash, deleted_at')
+        .in('operation_hash', enrichedOperationHashes);
+      
+      if (!fetchError && existingPayments) {
+        existingPayments.forEach(p => {
+          if (p.operation_hash) {
+            deletedPaymentsMap.set(p.operation_hash, p.deleted_at !== null);
+          }
+        });
+        logger.info(`Found ${deletedPaymentsMap.size} existing payments (out of ${enrichedOperationHashes.length} hashes)`);
+      }
+    }
+    
+    // Фильтруем платежи, которые были удалены - не восстанавливаем их
+    const expensesToUpsert = enriched.filter(e => {
+      if (!e.operation_hash) return true; // Если нет hash, создаем новый
+      const wasDeleted = deletedPaymentsMap.get(e.operation_hash);
+      if (wasDeleted) {
+        logger.info(`Skipping deleted expense payment with operation_hash: ${e.operation_hash?.substring(0, 8)}...`);
+        return false; // Не восстанавливаем удаленные платежи
+      }
+      return true;
+    });
+    
+    if (expensesToUpsert.length === 0) {
+      logger.info('All expense payments were deleted, skipping upsert');
+      return {
+        total: records.length,
+        processed: 0,
+        categorized: 0,
+        uncategorized: 0,
+        ignored: records.length - expenses.length
+      };
+    }
+    
     const { data: upserted, error } = await supabase
       .from('payments')
-      .upsert(enriched, { 
+      .upsert(expensesToUpsert, { 
         onConflict: 'operation_hash',
         ignoreDuplicates: false // Update existing records
       })
-      .select('id, expense_category_id, description, payer_name, operation_date, amount, currency, operation_hash');
+      .select('id, expense_category_id, description, payer_name, operation_date, amount, currency, operation_hash, direction');
 
     if (error) {
       logger.error('Supabase error while upserting expenses:', {
@@ -796,6 +1275,9 @@ class PaymentService {
   }
 
   applyMatching(payments, context) {
+    // ID категории "На счет" для автоматического присвоения при метчинге проформ
+    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
+    
     return payments.map((payment) => {
       const enriched = { ...payment };
       const candidates = this.createMatchingCandidates(enriched, context);
@@ -817,6 +1299,10 @@ class PaymentService {
       const diffAcceptable = best.amountDiff <= AMOUNT_TOLERANCE;
       const matchStatus = diffAcceptable ? 'matched' : 'needs_review';
 
+      // Автоматически присваиваем категорию "На счет" при успешном метчинге проформы
+      // Только для доходов (direction='in') и только если метчинг успешен (matchStatus='matched')
+      const shouldAssignCategory = enriched.direction === 'in' && matchStatus === 'matched' && best.proformaId;
+      
       return {
         ...enriched,
         payment_date: enriched.operation_date || null,
@@ -837,7 +1323,9 @@ class PaymentService {
           }))
         },
         proforma_id: best.proformaId,
-        proforma_fullnumber: best.proformaFullnumber
+        proforma_fullnumber: best.proformaFullnumber,
+        // Автоматически присваиваем категорию "На счет" при успешном метчинге
+        income_category_id: shouldAssignCategory ? INCOME_CATEGORY_ON_ACCOUNT_ID : (enriched.income_category_id || null)
       };
     });
   }
@@ -1070,6 +1558,7 @@ class PaymentService {
       .from('payments')
       .select('*')
       .eq('id', paymentId)
+      .is('deleted_at', null) // Не возвращаем удаленные платежи
       .single();
 
     if (error) {
@@ -1166,7 +1655,7 @@ class PaymentService {
       throw new Error('Supabase client is not configured');
     }
 
-    await this.fetchPaymentRaw(paymentId);
+    const raw = await this.fetchPaymentRaw(paymentId);
 
     const normalizedNumber = this.normalizeProformaNumber(fullnumber);
     if (!normalizedNumber) {
@@ -1182,7 +1671,14 @@ class PaymentService {
       throw notFoundError;
     }
 
+    // ID категории "На счет" для автоматического присвоения при ручном назначении проформы
+    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
+    
     const now = new Date().toISOString();
+    
+    // Автоматически присваиваем категорию "На счет" при ручном назначении проформы
+    // Только для доходов (direction='in') и только если категория еще не присвоена
+    const shouldAssignCategory = raw.direction === 'in' && !raw.income_category_id;
 
     const { error } = await supabase
       .from('payments')
@@ -1192,7 +1688,9 @@ class PaymentService {
         manual_proforma_fullnumber: proforma.fullnumber,
         manual_comment: comment || null,
         manual_user: user || null,
-        manual_updated_at: now
+        manual_updated_at: now,
+        // Автоматически присваиваем категорию "На счет" при ручном назначении проформы
+        income_category_id: shouldAssignCategory ? INCOME_CATEGORY_ON_ACCOUNT_ID : (raw.income_category_id || null)
       })
       .eq('id', paymentId);
 
@@ -1211,9 +1709,12 @@ class PaymentService {
       throw new Error('Supabase client is not configured');
     }
 
+    // ID категории "На счет" для автоматического присвоения при одобрении метчинга
+    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
+
     const { data, error } = await supabase
       .from('payments')
-      .select('id, proforma_id, proforma_fullnumber, match_confidence, match_status, match_reason')
+      .select('id, proforma_id, proforma_fullnumber, match_confidence, match_status, match_reason, direction, income_category_id')
       .is('manual_status', null)
       .in('match_status', ['matched', 'needs_review'])
       .gte('match_confidence', minConfidence)
@@ -1238,6 +1739,10 @@ class PaymentService {
         continue;
       }
 
+      // Автоматически присваиваем категорию "На счет" при одобрении метчинга проформы
+      // Только для доходов (direction='in') и только если категория еще не присвоена
+      const shouldAssignCategory = payment.direction === 'in' && !payment.income_category_id;
+
       updates.push({
         id: payment.id,
         manual_status: MANUAL_STATUS_APPROVED,
@@ -1245,7 +1750,9 @@ class PaymentService {
         manual_proforma_fullnumber: payment.proforma_fullnumber,
         manual_user: user || 'bulk-auto',
         manual_comment: payment.match_reason || null,
-        manual_updated_at: now
+        manual_updated_at: now,
+        // Автоматически присваиваем категорию "На счет" при одобрении метчинга
+        income_category_id: shouldAssignCategory ? INCOME_CATEGORY_ON_ACCOUNT_ID : (payment.income_category_id || null)
       });
     }
 
@@ -1296,7 +1803,15 @@ class PaymentService {
       throw validationError;
     }
 
+    // ID категории "На счет" для автоматического присвоения при одобрении метчинга
+    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
+    
     const now = new Date().toISOString();
+    
+    // Автоматически присваиваем категорию "На счет" при одобрении метчинга проформы
+    // Только для доходов (direction='in')
+    const shouldAssignCategory = raw.direction === 'in';
+    
     const { error } = await supabase
       .from('payments')
       .update({
@@ -1305,7 +1820,11 @@ class PaymentService {
         manual_proforma_fullnumber: raw.proforma_fullnumber,
         manual_comment: raw.match_reason || null,
         manual_user: user || 'quick-auto',
-        manual_updated_at: now
+        manual_updated_at: now,
+        // Автоматически присваиваем категорию "На счет" при одобрении метчинга
+        income_category_id: shouldAssignCategory && !raw.income_category_id 
+          ? INCOME_CATEGORY_ON_ACCOUNT_ID 
+          : raw.income_category_id || null
       })
       .eq('id', paymentId);
 
@@ -1317,6 +1836,66 @@ class PaymentService {
     await this.updateProformaPaymentAggregates(raw.proforma_id);
 
     return this.getPaymentDetails(paymentId);
+  }
+
+  /**
+   * Mark payment as refund - send to PNL refunds section
+   * Sets income_category_id to refunds category and prevents matching to proformas
+   * @param {string|number} paymentId - Payment ID
+   * @param {number} refundsCategoryId - Income category ID for refunds
+   * @param {Object} options - Options
+   * @param {string} [options.user=null] - User who marked as refund
+   * @param {string} [options.comment=null] - Comment
+   * @returns {Promise<Object>} Updated payment with candidates
+   */
+  async markPaymentAsRefund(paymentId, refundsCategoryId, { user = null, comment = null } = {}) {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const raw = await this.fetchPaymentRaw(paymentId);
+    
+    if (raw.direction !== 'in') {
+      throw new Error('Only income payments (direction=in) can be marked as refunds');
+    }
+
+    const now = new Date().toISOString();
+    
+    // Update payment: set income_category_id to refunds category, clear proforma matching
+    const { data: updated, error } = await supabase
+      .from('payments')
+      .update({
+        income_category_id: refundsCategoryId,
+        match_status: 'unmatched', // Don't match to proformas
+        manual_status: null, // Clear manual matching
+        manual_proforma_id: null,
+        manual_proforma_fullnumber: null,
+        manual_comment: comment || null,
+        manual_user: user || null,
+        manual_updated_at: now,
+        updated_at: now
+      })
+      .eq('id', paymentId)
+      .select('*')
+      .single();
+
+    if (error) {
+      logger.error('Supabase error while marking payment as refund:', error);
+      throw error;
+    }
+
+    logger.info(`Payment ${paymentId} marked as refund`, {
+      refundsCategoryId,
+      user,
+      comment
+    });
+
+    // Return updated payment with candidates (empty since it won't match to proformas)
+    const resolved = this.resolvePaymentRecord(updated);
+    return {
+      payment: resolved,
+      candidates: []
+    };
   }
 
   async clearManualMatch(paymentId, { user = null, comment = null } = {}) {
@@ -1365,13 +1944,19 @@ class PaymentService {
     const raw = await this.fetchPaymentRaw(paymentId);
     const targetProformaId = raw.manual_proforma_id || raw.proforma_id;
 
+    // Мягкое удаление: помечаем платеж как удаленный вместо реального удаления
+    // Это предотвращает восстановление платежа при повторной загрузке CSV
     const { error } = await supabase
       .from('payments')
-      .delete()
-      .eq('id', paymentId);
+      .update({ 
+        deleted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', paymentId)
+      .is('deleted_at', null); // Только если еще не удален
 
     if (error) {
-      logger.error('Supabase error while deleting payment:', error);
+      logger.error('Supabase error while soft-deleting payment:', error);
       throw error;
     }
 

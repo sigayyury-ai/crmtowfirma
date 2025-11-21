@@ -363,6 +363,11 @@ h2 {
 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+.tab-content#tab-expenses {
+    padding: 0;
+    margin: 0;
+    background: transparent;
+}
 
 .vat-margin-section,
 .payments-section {
@@ -2055,11 +2060,45 @@ h2 {
 .pnl-table .category-header-row {
     border-top: 2px solid #cbd5e1;
     background: #f8fafc;
+    cursor: pointer;
+    user-select: none;
+}
+
+.pnl-table .category-header-row:hover {
+    background: #e2e8f0;
 }
 
 .pnl-table .category-header-row .row-label {
     font-weight: 700;
     background: #f8fafc;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pnl-table .category-header-row .collapse-toggle {
+    background: none;
+    border: none;
+    padding: 4px 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    font-size: 0.9em;
+    margin-left: -4px;
+}
+
+.pnl-table .category-header-row .collapse-toggle:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+.pnl-table .category-header-row .collapse-icon {
+    display: inline-block;
+    transition: transform 0.2s;
+    font-size: 0.8em;
+    color: #475569;
 }
 
 .pnl-table .category-header-row td {
@@ -2070,11 +2109,45 @@ h2 {
 .pnl-table .expense-header-row {
     border-top: 2px solid #cbd5e1;
     background: #f8fafc;
+    cursor: pointer;
+    user-select: none;
+}
+
+.pnl-table .expense-header-row:hover {
+    background: #e2e8f0;
 }
 
 .pnl-table .expense-header-row .row-label {
     font-weight: 700;
     background: #f8fafc;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pnl-table .expense-header-row .collapse-toggle {
+    background: none;
+    border: none;
+    padding: 4px 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: background-color 0.2s;
+    font-size: 0.9em;
+    margin-left: -4px;
+}
+
+.pnl-table .expense-header-row .collapse-toggle:hover {
+    background-color: rgba(0, 0, 0, 0.1);
+}
+
+.pnl-table .expense-header-row .collapse-icon {
+    display: inline-block;
+    transition: transform 0.2s;
+    font-size: 0.8em;
+    color: #475569;
 }
 
 .pnl-table .expense-header-row td {

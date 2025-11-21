@@ -13,7 +13,6 @@
         <nav class="main-nav">
             <a href="/vat-margin.html" class="nav-link">Отчеты</a>
             <a href="/pnl-report.html" class="nav-link active">PNL Отчет</a>
-            <a href="/expenses.html" class="nav-link">Расходы</a>
             <a href="/" class="nav-link">Автоматизация и интеграции</a>
         </nav>
         <header>
@@ -25,6 +24,7 @@
         <div class="tab-container">
             <div class="tab-header">
                 <button class="tab-button active" data-tab="report">Отчет</button>
+                <button class="tab-button" data-tab="expenses">Расходы</button>
                 <button class="tab-button" data-tab="settings">Настройки</button>
             </div>
         </div>
@@ -38,6 +38,7 @@
                     <div class="year-selector-group">
                         <label for="year-select" class="year-label">Год:</label>
                         <select id="year-select" class="year-select" aria-label="Выберите год для отчета">
+                            <option value="2024">2024</option>
                             <option value="2025">2025</option>
                             <option value="2026">2026</option>
                             <option value="2027">2027</option>
@@ -59,6 +60,11 @@
                 <div class="placeholder">Нажмите "Обновить" для загрузки данных...</div>
             </div>
         </div>
+        </div>
+
+        <!-- Expenses Tab -->
+        <div class="tab-content" id="tab-expenses" style="padding: 0; margin: 0;">
+            <iframe src="expenses.html" style="width: 100%; height: calc(100vh - 200px); border: none; background: transparent;"></iframe>
         </div>
 
         <!-- Settings Tab -->

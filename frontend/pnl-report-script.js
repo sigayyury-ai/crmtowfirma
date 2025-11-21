@@ -171,7 +171,7 @@ function renderReport(data) {
     return;
   }
 
-  const { monthly, total, year, categories, expenses, expensesTotal } = data;
+  const { monthly, total, year, categories, expenses, expensesTotal, profitLoss, balance, roi, ebitda } = data;
   const hasCategories = categories && Array.isArray(categories) && categories.length > 0;
   const hasExpenses = expenses && Array.isArray(expenses) && expenses.length > 0;
   
@@ -215,10 +215,15 @@ function renderReport(data) {
   // Build expense rows if expenses are available (display above revenue)
   let expenseRowsHtml = '';
   if (hasExpenses) {
-    // Header row: "Расходы" (sum of all expense categories)
+    // Header row: "Расходы" (sum of all expense categories) with collapse button
     const expenseHeaderRowHtml = `
-      <tr class="category-header-row expense-header-row">
-        <td class="row-label"><strong>Расходы</strong></td>
+      <tr class="category-header-row expense-header-row collapsible-header" data-section="expenses">
+        <td class="row-label">
+          <button class="collapse-toggle" aria-label="Свернуть/развернуть категории расходов" title="Нажмите для просмотра деталей">
+            <span class="collapse-icon">▶</span>
+          </button>
+          <strong>Расходы</strong>
+        </td>
         ${monthly.map(entry => {
           // Calculate expense total for this month
           const monthExpenseTotal = expenses.reduce((sum, cat) => {
@@ -233,14 +238,14 @@ function renderReport(data) {
       </tr>
     `;
 
-    // Expense category rows
+    // Expense category rows (collapsed by default)
     const expenseCategoryRows = expenses.map(category => {
       const categoryMonthly = category.monthly || [];
       const categoryTotal = category.total?.amountPln || 0;
       const isManual = expenseCategoryMap.get(category.id)?.management_type === 'manual';
       
       return `
-        <tr class="expense-row">
+        <tr class="expense-row collapsible-content" style="display: none;">
           <td class="row-label category-indent">${escapeHtml(category.name)}</td>
           ${monthly.map(entry => {
             const monthEntry = categoryMonthly.find(m => m.month === entry.month);
@@ -271,10 +276,15 @@ function renderReport(data) {
   // Build category rows if categories are available
   let categoryRowsHtml = '';
   if (hasCategories) {
-    // Header row: "Приходы" (sum of all categories)
+    // Header row: "Приходы" (sum of all categories) with collapse button
     const headerRowHtml = `
-      <tr class="category-header-row">
-        <td class="row-label"><strong>Приходы</strong></td>
+      <tr class="category-header-row collapsible-header" data-section="income">
+        <td class="row-label">
+          <button class="collapse-toggle" aria-label="Свернуть/развернуть категории доходов" title="Нажмите для просмотра деталей">
+            <span class="collapse-icon">▶</span>
+          </button>
+          <strong>Приходы</strong>
+        </td>
         ${monthly.map(entry => {
           const amount = entry.amountPln || 0;
           const amountDisplay = amount > 0 ? formatCurrency(amount) : '—';
@@ -294,14 +304,14 @@ function renderReport(data) {
       </tr>
     `;
 
-    // Category rows
+    // Category rows (collapsed by default)
     const categoryRows = categories.map(category => {
       const categoryMonthly = category.monthly || [];
       const categoryTotal = category.total?.amountPln || 0;
       const isManual = categoryMap.get(category.id)?.management_type === 'manual';
       
       return `
-        <tr>
+        <tr class="collapsible-content" style="display: none;">
           <td class="row-label category-indent">${escapeHtml(category.name)}</td>
           ${monthly.map(entry => {
             const monthEntry = categoryMonthly.find(m => m.month === entry.month);
@@ -352,6 +362,111 @@ function renderReport(data) {
     `;
   }
 
+  // Build profit/loss row (Доход / Убыток) - displayed at the bottom
+  let profitLossRowHtml = '';
+  if (profitLoss && profitLoss.monthly && Array.isArray(profitLoss.monthly)) {
+    profitLossRowHtml = `
+      <tr class="profit-loss-row" style="background-color: #f8f9fa; border-top: 2px solid #333;">
+        <td class="row-label"><strong>Доход / Убыток</strong></td>
+        ${monthly.map(entry => {
+          const profitLossEntry = profitLoss.monthly.find(p => p.month === entry.month);
+          const profitLossAmount = profitLossEntry?.amountPln || 0;
+          
+          // Color: green for profit, red for loss
+          const colorClass = profitLossAmount >= 0 ? 'profit' : 'loss';
+          const color = profitLossAmount >= 0 ? '#10b981' : '#dc3545';
+          const sign = profitLossAmount >= 0 ? '+' : '-';
+          const amountDisplay = profitLossAmount !== 0 ? `${sign}${formatCurrency(Math.abs(profitLossAmount))}` : '—';
+          
+          return `<td class="amount-cell" style="color: ${color}; font-weight: 600;">${amountDisplay}</td>`;
+        }).join('')}
+        <td class="amount-cell total-cell" style="color: ${(profitLoss.total?.amountPln || 0) >= 0 ? '#10b981' : '#dc3545'}; font-weight: 600;">
+          <strong>${(profitLoss.total?.amountPln || 0) >= 0 ? '+' : '-'}${formatCurrency(Math.abs(profitLoss.total?.amountPln || 0))}</strong>
+        </td>
+      </tr>
+    `;
+  }
+
+  // Build balance row (Баланс) - cumulative running total, displayed after profit/loss
+  let balanceRowHtml = '';
+  if (balance && balance.monthly && Array.isArray(balance.monthly)) {
+    balanceRowHtml = `
+      <tr class="balance-row" style="background-color: #e8f5e9; border-top: 2px solid #4caf50;">
+        <td class="row-label"><strong>Баланс</strong></td>
+        ${monthly.map(entry => {
+          const balanceEntry = balance.monthly.find(b => b.month === entry.month);
+          const balanceAmount = balanceEntry?.amountPln || 0;
+          
+          // Color: green for positive balance, red for negative balance
+          const color = balanceAmount >= 0 ? '#10b981' : '#dc3545';
+          const sign = balanceAmount >= 0 ? '+' : '-';
+          const amountDisplay = balanceAmount !== 0 ? `${sign}${formatCurrency(Math.abs(balanceAmount))}` : '—';
+          
+          return `<td class="amount-cell" style="color: ${color}; font-weight: 700;">${amountDisplay}</td>`;
+        }).join('')}
+        <td class="amount-cell total-cell" style="color: ${(balance.total?.amountPln || 0) >= 0 ? '#10b981' : '#dc3545'}; font-weight: 700;">
+          <strong>${(balance.total?.amountPln || 0) >= 0 ? '+' : '-'}${formatCurrency(Math.abs(balance.total?.amountPln || 0))}</strong>
+        </td>
+      </tr>
+    `;
+  }
+
+  // Build ROI row (ROI - Return on Investment) - displayed after balance
+  // ROI = ((Revenue - Expenses) / Expenses) × 100% = (Profit/Loss / Expenses) × 100%
+  let roiRowHtml = '';
+  if (roi && roi.monthly && Array.isArray(roi.monthly)) {
+    roiRowHtml = `
+      <tr class="roi-row" style="background-color: #fff3cd; border-top: 2px solid #ffc107;">
+        <td class="row-label"><strong>ROI (%)</strong></td>
+        ${monthly.map(entry => {
+          const roiEntry = roi.monthly.find(r => r.month === entry.month);
+          const roiValue = roiEntry?.roi;
+          
+          // ROI can be null if expenses = 0 (cannot calculate)
+          if (roiValue === null || roiValue === undefined) {
+            return `<td class="amount-cell" style="color: #999;">—</td>`;
+          }
+          
+          // Color: green for positive ROI, red for negative ROI
+          const color = roiValue >= 0 ? '#10b981' : '#dc3545';
+          const sign = roiValue >= 0 ? '+' : '';
+          const roiDisplay = `${sign}${roiValue.toFixed(2)}%`;
+          
+          return `<td class="amount-cell" style="color: ${color}; font-weight: 600;">${roiDisplay}</td>`;
+        }).join('')}
+        <td class="amount-cell total-cell" style="color: ${(roi.total?.roi !== null && roi.total?.roi !== undefined && roi.total.roi >= 0) ? '#10b981' : '#dc3545'}; font-weight: 600;">
+          <strong>${roi.total?.roi !== null && roi.total?.roi !== undefined ? `${roi.total.roi >= 0 ? '+' : ''}${roi.total.roi.toFixed(2)}%` : '—'}</strong>
+        </td>
+      </tr>
+    `;
+  }
+
+  // Build EBITDA row (Earnings Before Interest, Taxes, Depreciation, and Amortization)
+  // EBITDA = Revenue - Operating Expenses (excluding Taxes)
+  // Note: We exclude taxes but don't have separate data for Interest, Depreciation, Amortization
+  let ebitdaRowHtml = '';
+  if (ebitda && ebitda.monthly && Array.isArray(ebitda.monthly)) {
+    ebitdaRowHtml = `
+      <tr class="ebitda-row" style="background-color: #e3f2fd; border-top: 2px solid #2196f3;">
+        <td class="row-label"><strong>EBITDA</strong></td>
+        ${monthly.map(entry => {
+          const ebitdaEntry = ebitda.monthly.find(e => e.month === entry.month);
+          const ebitdaAmount = ebitdaEntry?.amountPln || 0;
+          
+          // Color: green for positive EBITDA, red for negative EBITDA
+          const color = ebitdaAmount >= 0 ? '#10b981' : '#dc3545';
+          const sign = ebitdaAmount >= 0 ? '+' : '';
+          const ebitdaDisplay = ebitdaAmount !== 0 ? `${sign}${formatCurrency(Math.abs(ebitdaAmount))}` : '—';
+          
+          return `<td class="amount-cell" style="color: ${color}; font-weight: 600;">${ebitdaDisplay}</td>`;
+        }).join('')}
+        <td class="amount-cell total-cell" style="color: ${(ebitda.total?.amountPln || 0) >= 0 ? '#10b981' : '#dc3545'}; font-weight: 600;">
+          <strong>${(ebitda.total?.amountPln || 0) >= 0 ? '+' : ''}${formatCurrency(Math.abs(ebitda.total?.amountPln || 0))}</strong>
+        </td>
+      </tr>
+    `;
+  }
+
   // Calculate margin
   const revenue = (total && total.amountPln) ? Number(total.amountPln) : 0;
   const expensesAmount = expensesTotal?.amountPln ? Number(expensesTotal.amountPln) : 0;
@@ -396,6 +511,10 @@ function renderReport(data) {
         <tbody>
           ${expenseRowsHtml}
           ${categoryRowsHtml}
+          ${profitLossRowHtml}
+          ${balanceRowHtml}
+          ${roiRowHtml}
+          ${ebitdaRowHtml}
         </tbody>
       </table>
     </div>
@@ -407,6 +526,61 @@ function renderReport(data) {
   if (hasCategories || hasExpenses) {
     attachEditableCellListeners();
   }
+  
+  // Attach collapse/expand handlers for category sections
+  attachCollapseHandlers();
+}
+
+function attachCollapseHandlers() {
+  const headers = document.querySelectorAll('.collapsible-header');
+  headers.forEach(header => {
+    const toggleBtn = header.querySelector('.collapse-toggle');
+    if (!toggleBtn) return;
+    
+    // Make entire header row clickable
+    header.addEventListener('click', (e) => {
+      // Don't trigger if clicking on editable cell
+      if (e.target.closest('.editable')) return;
+      
+      const icon = toggleBtn.querySelector('.collapse-icon');
+      // Find all collapsible content rows after this header until next header or summary row
+      const allRows = Array.from(header.parentElement.querySelectorAll('tr'));
+      const headerIndex = allRows.indexOf(header);
+      const contentRows = [];
+      
+      for (let i = headerIndex + 1; i < allRows.length; i++) {
+        const row = allRows[i];
+        // Stop at next header or summary rows (profit/loss, balance, ROI, EBITDA)
+        if (row.classList.contains('collapsible-header') || 
+            row.classList.contains('profit-loss-row') ||
+            row.classList.contains('balance-row') ||
+            row.classList.contains('roi-row') ||
+            row.classList.contains('ebitda-row')) {
+          break;
+        }
+        if (row.classList.contains('collapsible-content')) {
+          contentRows.push(row);
+        }
+      }
+      
+      if (contentRows.length === 0) return;
+      
+      // Toggle visibility
+      const isExpanded = contentRows[0]?.style.display !== 'none';
+      
+      contentRows.forEach(row => {
+        row.style.display = isExpanded ? 'none' : '';
+      });
+      
+      // Update icon
+      if (icon) {
+        icon.textContent = isExpanded ? '▶' : '▼';
+      }
+      
+      // Update button title
+      toggleBtn.setAttribute('title', isExpanded ? 'Нажмите для просмотра деталей' : 'Нажмите для скрытия деталей');
+    });
+  });
 }
 
 function attachEditableCellListeners() {

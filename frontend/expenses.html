@@ -6,9 +6,12 @@
     <title>Управление расходами - PNL</title>
     <link rel="stylesheet" href="style.css">
     <style>
+        body {
+            background: transparent !important;
+        }
         .expenses-container {
-            max-width: 1400px;
-            margin: 0 auto;
+            max-width: 100%;
+            margin: 0;
             padding: 20px;
         }
         .expenses-header {
@@ -83,6 +86,14 @@
         .expense-amount {
             font-weight: 600;
             color: #dc3545;
+            white-space: nowrap;
+            min-width: 120px;
+        }
+        /* Увеличиваем ширину столбца "Сумма" в таблице */
+        .expenses-table th:nth-child(4),
+        .expenses-table td:nth-child(4) {
+            min-width: 140px;
+            white-space: nowrap;
         }
         .expense-actions {
             display: flex;
@@ -113,6 +124,23 @@
         }
         .category-select {
             min-width: 200px;
+        }
+        .category-select-inline {
+            min-width: 180px;
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 0.9em;
+            background: white;
+            cursor: pointer;
+        }
+        .category-select-inline:hover {
+            border-color: #2196f3;
+        }
+        .category-select-inline:focus {
+            outline: none;
+            border-color: #2196f3;
+            box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
         }
         .upload-section {
             background: white;
@@ -153,6 +181,25 @@
             border-color: #10b981;
             background: #f0fdf4;
         }
+        .upload-spinner {
+            display: inline-block;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .spinner {
+            animation: spin 1s linear infinite;
+        }
+        #uploadCsvButton:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        #expensesCsvInput:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -166,19 +213,40 @@
         <div class="upload-section">
             <h3>Загрузка CSV файла с расходами</h3>
             <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
-                <input type="file" id="expensesCsvInput" accept=".csv">
+                <input type="file" id="expensesCsvInput" accept=".csv" autocomplete="off" data-lpignore="true">
                 <label style="display: flex; align-items: center; gap: 5px;">
                     Порог автокатегоризации:
-                    <input type="number" id="autoMatchThreshold" value="100" min="0" max="100" style="width: 60px; padding: 5px;">
+                    <input type="number" id="autoMatchThreshold" value="100" min="0" max="100" style="width: 60px; padding: 5px;" autocomplete="off" data-lpignore="true">
                     <span style="color: #666;">%</span>
                     <span style="color: #999; font-size: 0.9em;">(100% = отключено, все вручную)</span>
                 </label>
-                <button class="btn btn-primary" onclick="handleExpensesCsvUpload()">📤 Загрузить CSV</button>
+                <button class="btn btn-primary" id="uploadCsvButton" onclick="handleExpensesCsvUpload()">
+                    <span id="uploadButtonText">📤 Загрузить CSV</span>
+                    <span id="uploadButtonSpinner" class="upload-spinner" style="display: none;">⏳</span>
+                </button>
             </div>
             <div style="font-size: 0.9em; color: #666; margin-bottom: 10px;">
                 Порог автокатегоризации: 100% = отключено (все расходы требуют ручного выбора). Установите значение < 100 для включения автокатегоризации.
             </div>
+            <!-- Loading indicator -->
+            <div id="uploadProgress" style="display: none; margin-top: 15px; padding: 15px; background: #f0f7ff; border-left: 4px solid #2196f3; border-radius: 4px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="spinner" style="width: 20px; height: 20px; border: 3px solid #e3f2fd; border-top-color: #2196f3; border-radius: 50%; animation: spin 1s linear infinite;"></div>
+                    <div>
+                        <strong id="uploadProgressText">Обработка файла...</strong>
+                        <div id="uploadProgressDetails" style="font-size: 0.9em; color: #666; margin-top: 5px;"></div>
+                    </div>
+                </div>
+            </div>
             <div id="uploadLog" style="margin-top: 10px;"></div>
+        </div>
+
+        <!-- Unmatched Expenses Section (shown after CSV upload) -->
+        <div id="unmatchedExpensesSection" class="upload-section" style="display: none;">
+            <h3>Необработанные расходы из последней загрузки</h3>
+            <div id="unmatchedExpensesContainer">
+                <p style="color: #666;">Загрузка...</p>
+            </div>
         </div>
 
         <!-- Statistics -->
@@ -197,9 +265,24 @@
             </div>
         </div>
 
-        <!-- Refresh button -->
+        <!-- Filters -->
         <div class="expenses-filters">
             <button class="btn btn-secondary" onclick="loadExpenses()">🔄 Обновить</button>
+            <label style="display: flex; align-items: center; gap: 10px;">
+                Фильтр по категории:
+                <select id="categoryFilter" class="form-control" style="min-width: 200px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
+                    <option value="">Все категории</option>
+                    <option value="null">Без категории</option>
+                </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px;">
+                Показать:
+                <select id="directionFilter" class="form-control" style="min-width: 150px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
+                    <option value="out">Только расходы (out)</option>
+                    <option value="all">Все платежи</option>
+                    <option value="in">Только доходы (in)</option>
+                </select>
+            </label>
         </div>
 
         <!-- Expenses Table -->
