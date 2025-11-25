@@ -607,7 +607,8 @@ class PaymentRevenueReportService {
     }
 
     if (statusScope !== 'all') {
-      query.eq('manual_status', 'approved');
+      // show manually approved and auto-matched payments to include bank + Stripe flows
+      query.or('manual_status.eq.approved,match_status.eq.matched');
     }
 
     const { data, error } = await query.limit(5000);
@@ -1023,5 +1024,4 @@ class PaymentRevenueReportService {
 }
 
 module.exports = PaymentRevenueReportService;
-
 
