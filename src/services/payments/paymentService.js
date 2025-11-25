@@ -602,39 +602,32 @@ class PaymentService {
    */
   async _processExpenses(expenses, importId, autoMatchThreshold) {
     if (!expenses || expenses.length === 0) {
-      return { enriched: [], stats: { processed: 0, categorized: 0, uncategorized: 0 } };
+      return { enriched: [], stats: { processed: 0, categorized: 0, uncategorized: 0, skipped: 0 } };
     }
 
-    // Fetch existing payments to preserve their categories
+    const totalExpenses = expenses.length;
     const operationHashes = expenses.map(e => e.operation_hash).filter(Boolean);
-    const existingPaymentsMap = new Map();
-    
-    if (operationHashes.length > 0) {
-      const { data: existingPayments, error: fetchError } = await supabase
-        .from('payments')
-        .select('operation_hash, expense_category_id')
-        .in('operation_hash', operationHashes)
-        .eq('direction', 'out');
-      
-      if (!fetchError && existingPayments) {
-        existingPayments.forEach(p => {
-          if (p.operation_hash && p.expense_category_id !== null) {
-            existingPaymentsMap.set(p.operation_hash, p.expense_category_id);
-          }
-        });
-        logger.info(`Found ${existingPaymentsMap.size} existing payments with categories (out of ${operationHashes.length} total)`);
-      }
+    const existingHashes = await this.getExistingOperationHashes(operationHashes, 'out');
+    if (existingHashes.size > 0) {
+      logger.info('Skipping already imported expense payments', {
+        skipped: existingHashes.size
+      });
+    }
+    expenses = expenses.filter((expense) => {
+      if (!expense.operation_hash) return true;
+      return !existingHashes.has(expense.operation_hash);
+    });
+
+    if (!expenses.length) {
+      return { enriched: [], stats: { processed: 0, categorized: 0, uncategorized: 0, skipped: totalExpenses } };
     }
 
     // Generate suggestions and auto-assign categories
     const enriched = [];
     let uncategorizedCount = expenses.length;
     let autoMatchedCount = 0;
-    let preservedCount = 0;
 
     for (const expense of expenses) {
-      const existingCategoryId = existingPaymentsMap.get(expense.operation_hash);
-      
       let suggestions = [];
       let autoMatchedCategoryId = null;
       let autoMatchConfidence = 0;
@@ -652,9 +645,7 @@ class PaymentService {
             autoMatchedCategoryId = bestSuggestion.categoryId;
             autoMatchConfidence = bestSuggestion.confidence;
             autoMatchedCount++;
-            if (!existingCategoryId) {
-              uncategorizedCount--;
-            }
+            uncategorizedCount--;
           }
         }
       } catch (mappingError) {
@@ -666,11 +657,7 @@ class PaymentService {
 
       const finalCategoryId = autoMatchedCategoryId !== null 
         ? autoMatchedCategoryId
-        : (existingCategoryId !== undefined ? existingCategoryId : null);
-      
-      if (existingCategoryId && !autoMatchedCategoryId) {
-        preservedCount++;
-      }
+        : null;
 
       // Normalize operation_date
       let normalizedOperationDate = expense.operation_date;
@@ -720,8 +707,9 @@ class PaymentService {
       enriched,
       stats: {
         processed: expenses.length,
-        categorized: autoMatchedCount + preservedCount,
-        uncategorized: uncategorizedCount
+        categorized: autoMatchedCount,
+        uncategorized: uncategorizedCount,
+        skipped: totalExpenses - expenses.length
       }
     };
   }
@@ -732,7 +720,24 @@ class PaymentService {
    */
   async _processIncome(income, importId) {
     if (!income || income.length === 0) {
-      return { enriched: [], stats: { processed: 0, matched: 0, needs_review: 0, unmatched: 0 } };
+      return { enriched: [], stats: { processed: 0, matched: 0, needs_review: 0, unmatched: 0, skipped: 0 } };
+    }
+
+    const totalIncome = income.length;
+    const operationHashes = income.map(item => item.operation_hash).filter(Boolean);
+    const existingHashes = await this.getExistingOperationHashes(operationHashes, 'in');
+    if (existingHashes.size > 0) {
+      logger.info('Skipping already imported income payments', {
+        skipped: existingHashes.size
+      });
+    }
+    income = income.filter((item) => {
+      if (!item.operation_hash) return true;
+      return !existingHashes.has(item.operation_hash);
+    });
+
+    if (!income.length) {
+      return { enriched: [], stats: { processed: 0, matched: 0, needs_review: 0, unmatched: 0, skipped: totalIncome } };
     }
 
     const matchingContext = await this.buildMatchingContext(income);
@@ -755,9 +760,40 @@ class PaymentService {
         processed: income.length,
         matched: statusCounts.matched || 0,
         needs_review: statusCounts.needs_review || 0,
-        unmatched: statusCounts.unmatched || 0
+        unmatched: statusCounts.unmatched || 0,
+        skipped: totalIncome - income.length
       }
     };
+  }
+
+  async getExistingOperationHashes(operationHashes = [], direction = null) {
+    if (!operationHashes || operationHashes.length === 0) {
+      return new Set();
+    }
+
+    let query = supabase
+      .from('payments')
+      .select('operation_hash')
+      .in('operation_hash', operationHashes);
+
+    if (direction) {
+      query = query.eq('direction', direction);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      logger.warn('Failed to fetch existing operation hashes', {
+        direction,
+        error: error.message
+      });
+      return new Set();
+    }
+
+    return new Set(
+      (data || [])
+        .map((row) => row.operation_hash)
+        .filter(Boolean)
+    );
   }
 
 
