@@ -1,7 +1,7 @@
 require('dotenv').config();
 
-const supabase = require('../src/services/supabaseClient');
-const logger = require('../src/utils/logger');
+const supabase = require('../../src/services/supabaseClient');
+const logger = require('../../src/utils/logger');
 
 async function run() {
   if (!supabase) {

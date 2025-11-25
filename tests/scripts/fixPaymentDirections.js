@@ -4,10 +4,10 @@
  * Script to fix payment directions based on amount_raw sign
  * 
  * Usage:
- *   node scripts/fixPaymentDirections.js --dry-run  # Preview changes
- *   node scripts/fixPaymentDirections.js --fix       # Apply fixes
- *   node scripts/fixPaymentDirections.js --fix --direction=out  # Only fix payments that should be 'out'
- *   node scripts/fixPaymentDirections.js --fix --direction=in   # Only fix payments that should be 'in'
+ *   node tests/scripts/fixPaymentDirections.js --dry-run  # Preview changes
+ *   node tests/scripts/fixPaymentDirections.js --fix       # Apply fixes
+ *   node tests/scripts/fixPaymentDirections.js --fix --direction=out  # Only fix payments that should be 'out'
+ *   node tests/scripts/fixPaymentDirections.js --fix --direction=in   # Only fix payments that should be 'in'
  */
 
 require('dotenv').config();
@@ -44,7 +44,7 @@ if (!argv.dryRun && !argv.fix) {
 }
 
 // Use supabaseClient from the project
-const supabase = require('../src/services/supabaseClient');
+const supabase = require('../../src/services/supabaseClient');
 
 if (!supabase) {
   console.error('Error: Could not initialize Supabase client');
