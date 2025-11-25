@@ -937,6 +937,102 @@ router.get('/server-ip', async (req, res) => {
  * GET /api/vat-margin/monthly-proformas
  * Получить проформы текущего месяца, сгруппированные по продуктам
  */
+function mergeStripeWithProformas(proformaData = [], stripeItems = []) {
+  // Group proformas by product
+  const proformaMap = new Map();
+  proformaData.forEach(item => {
+    const productKey = item.product_id ? `id:${item.product_id}` : (item.product_key || `key:${item.name?.toLowerCase() || 'без названия'}`);
+    if (!proformaMap.has(productKey)) {
+      proformaMap.set(productKey, {
+        ...item,
+        proformas: [],
+        stripe_payments: []
+      });
+    }
+    const group = proformaMap.get(productKey);
+    if (item.fullnumber) {
+      group.proformas.push({
+        id: item.proforma_id,
+        fullnumber: item.fullnumber,
+        date: item.date,
+        total: item.total,
+        currency: item.currency,
+        payments_total_pln: item.payments_total_pln
+      });
+    }
+  });
+
+  // Merge Stripe payments by product
+  stripeItems.forEach(stripeItem => {
+    const productId = stripeItem.campProductId || stripeItem.crmProductId;
+    const productKey = productId ? `id:${productId}` : `key:${(stripeItem.productName || 'Без названия').toLowerCase()}`;
+    
+    if (!proformaMap.has(productKey)) {
+      // Create new entry for Stripe-only product
+      const stripeTotalPln = stripeItem.grossRevenuePln || 0;
+      const stripeTotal = stripeItem.grossRevenue || 0;
+      proformaMap.set(productKey, {
+        product_id: productId,
+        product_key: productKey,
+        name: stripeItem.productName || 'Без названия',
+        currency: stripeItem.currency || 'PLN',
+        total: stripeTotal,
+        proforma_total: stripeTotal,
+        currency_exchange: stripeItem.currency === 'PLN' ? 1 : (stripeTotalPln / stripeTotal) || 1,
+        payments_total_pln: stripeTotalPln,
+        payments_total: stripeTotal,
+        proformas: [],
+        stripe_payments: []
+      });
+    }
+    
+    const group = proformaMap.get(productKey);
+    // Add Stripe payment data
+    group.stripe_payments.push({
+      total_pln: stripeItem.grossRevenuePln || 0,
+      total: stripeItem.grossRevenue || 0,
+      currency: stripeItem.currency || 'PLN',
+      payments_count: stripeItem.paymentsCount || 0
+    });
+    
+    // Update totals to include Stripe
+    const stripeTotalPln = stripeItem.grossRevenuePln || 0;
+    const stripeTotal = stripeItem.grossRevenue || 0;
+    group.total = (group.total || 0) + stripeTotal;
+    group.proforma_total = (group.proforma_total || 0) + stripeTotal;
+    group.payments_total_pln = (group.payments_total_pln || 0) + stripeTotalPln;
+    
+    // Recalculate total_pln if needed
+    const currency = group.currency || 'PLN';
+    const exchange = group.currency_exchange || (currency === 'PLN' ? 1 : null);
+    if (exchange && group.total) {
+      group.total_pln = group.total * exchange;
+    } else if (currency === 'PLN') {
+      group.total_pln = group.total;
+    }
+    
+    // Update name if Stripe has better name
+    if (stripeItem.productName && (!group.name || group.name === 'Без названия')) {
+      group.name = stripeItem.productName;
+    }
+  });
+
+  // Ensure total_pln is calculated for all groups
+  proformaMap.forEach((group, key) => {
+    if (group.total_pln === null || group.total_pln === undefined) {
+      const currency = group.currency || 'PLN';
+      const exchange = group.currency_exchange || (currency === 'PLN' ? 1 : null);
+      if (exchange && group.total) {
+        group.total_pln = group.total * exchange;
+      } else if (currency === 'PLN' && group.total) {
+        group.total_pln = group.total;
+      }
+    }
+  });
+
+  return Array.from(proformaMap.values());
+}
+
 function computeSummary(data = []) {
   const totalsByCurrency = {};
   const proformas = new Set();
@@ -953,6 +1049,12 @@ function computeSummary(data = []) {
     totalsByCurrency[currency] = (totalsByCurrency[currency] || 0) + amount;
     if (item.fullnumber || item.number || item.id) {
       proformas.add(item.fullnumber || item.number || item.id);
+    }
+    // Also count Stripe payments as "proformas" for summary
+    if (item.stripe_payments && item.stripe_payments.length > 0) {
+      item.stripe_payments.forEach((sp, idx) => {
+        proformas.add(`stripe_${item.product_id || item.product_key}_${idx}`);
+      });
     }
 
     const amountPln = exchange ? amount * exchange : amount;
@@ -1020,25 +1122,28 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
     const range = lookup.resolveDateRange(options);
     const resolvedDateFrom = range.dateFrom;
     const resolvedDateTo = range.dateTo;
-    const data = await lookup.getMonthlyProformasByProduct({ ...options, dateFrom: resolvedDateFrom, dateTo: resolvedDateTo });
-    const summary = computeSummary(data);
+    const proformaData = await lookup.getMonthlyProformasByProduct({ ...options, dateFrom: resolvedDateFrom, dateTo: resolvedDateTo });
     const stripeData = await stripeAnalyticsService.getMonthlyStripeSummary({
       dateFrom: resolvedDateFrom,
       dateTo: resolvedDateTo
     });
 
-    if (Array.isArray(data) && data.length > 0) {
-      const missingDealCount = data.filter((item) => !item.pipedrive_deal_id).length;
+    // Merge Stripe payments with proformas by product
+    const mergedData = mergeStripeWithProformas(proformaData, stripeData.items || []);
+    const summary = computeSummary(mergedData);
+
+    if (Array.isArray(proformaData) && proformaData.length > 0) {
+      const missingDealCount = proformaData.filter((item) => !item.pipedrive_deal_id).length;
       logger.info('Monthly proformas deal link coverage', {
-        total: data.length,
+        total: proformaData.length,
         missing: missingDealCount
       });
     }
 
     res.json({
       success: true,
-      data,
-      count: data.length,
+      data: mergedData,
+      count: mergedData.length,
       summary,
       stripe: stripeData,
       period: {

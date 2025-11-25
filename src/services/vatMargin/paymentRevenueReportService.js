@@ -169,25 +169,34 @@ class PaymentRevenueReportService {
   }
 
   extractProformaIds(payments) {
-    const set = new Set();
+    const ids = new Set();
+    const fullnumbers = new Set();
     payments.forEach((payment) => {
       if (payment.manual_proforma_id) {
-        set.add(String(payment.manual_proforma_id));
+        ids.add(String(payment.manual_proforma_id));
       } else if (payment.proforma_id) {
-        set.add(String(payment.proforma_id));
+        ids.add(String(payment.proforma_id));
+      }
+      // Also collect fullnumbers for Stripe payments that may not have proforma_id
+      if (payment.manual_proforma_fullnumber) {
+        fullnumbers.add(String(payment.manual_proforma_fullnumber).trim());
+      } else if (payment.proforma_fullnumber) {
+        fullnumbers.add(String(payment.proforma_fullnumber).trim());
       }
     });
-    return Array.from(set);
+    return { ids: Array.from(ids), fullnumbers: Array.from(fullnumbers) };
   }
 
   mapProformas(records = []) {
-    const map = new Map();
+    const mapById = new Map();
+    const mapByFullnumber = new Map();
     records.forEach((record) => {
       if (!record || !record.id) {
         return;
       }
 
       const id = String(record.id);
+      const fullnumber = record.fullnumber ? String(record.fullnumber).trim() : null;
       const currency = record.currency || 'PLN';
       const currencyExchange = toNumber(record.currency_exchange);
       const total = toNumber(record.total) ?? 0;
@@ -221,7 +230,7 @@ class PaymentRevenueReportService {
         };
       }
 
-      map.set(id, {
+      const proformaData = {
         id,
         fullnumber: record.fullnumber || null,
         issued_at: record.issued_at || null,
@@ -244,9 +253,14 @@ class PaymentRevenueReportService {
         pipedrive_deal_id: record.pipedrive_deal_id || null,
         pipedrive_deal_url: buildDealUrl(record.pipedrive_deal_id),
         product: primaryProduct
-      });
+      };
+
+      mapById.set(id, proformaData);
+      if (fullnumber) {
+        mapByFullnumber.set(fullnumber, proformaData);
+      }
     });
-    return map;
+    return { byId: mapById, byFullnumber: mapByFullnumber };
   }
 
   buildPaymentEntry(payment, proforma) {
@@ -344,7 +358,14 @@ class PaymentRevenueReportService {
       }
 
       const proformaId = payment.manual_proforma_id || payment.proforma_id || null;
-      const proformaInfo = proformaId ? proformaMap.get(String(proformaId)) || null : null;
+      const proformaFullnumber = payment.manual_proforma_fullnumber || payment.proforma_fullnumber || null;
+      let proformaInfo = null;
+      if (proformaId) {
+        proformaInfo = proformaMap.byId.get(String(proformaId)) || null;
+      }
+      if (!proformaInfo && proformaFullnumber) {
+        proformaInfo = proformaMap.byFullnumber.get(String(proformaFullnumber).trim()) || null;
+      }
       const paymentEntry = this.buildPaymentEntry(payment, proformaInfo);
       if (Number.isFinite(paymentEntry.amount_pln)) {
         summary.total_pln += paymentEntry.amount_pln;
@@ -708,12 +729,12 @@ class PaymentRevenueReportService {
     return [...bankPayments, ...stripePayments];
   }
 
-  async loadProformas(ids = []) {
-    if (!this.supabase || ids.length === 0) {
+  async loadProformas({ ids = [], fullnumbers = [] } = {}) {
+    if (!this.supabase || (ids.length === 0 && fullnumbers.length === 0)) {
       return [];
     }
 
-    const { data, error } = await this.supabase
+    let query = this.supabase
       .from('proformas')
       .select(`
         id,
@@ -747,8 +768,18 @@ class PaymentRevenueReportService {
           )
         )
       `)
-      .in('id', ids)
       .eq('status', 'active');
+
+    // Build OR condition for IDs and fullnumbers
+    if (ids.length > 0 && fullnumbers.length > 0) {
+      query = query.or(`id.in.(${ids.join(',')}),fullnumber.in.(${fullnumbers.map(fn => `"${fn}"`).join(',')})`);
+    } else if (ids.length > 0) {
+      query = query.in('id', ids);
+    } else if (fullnumbers.length > 0) {
+      query = query.in('fullnumber', fullnumbers);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       logger.error('Supabase error while fetching proformas for payment report:', error);
@@ -800,16 +831,17 @@ class PaymentRevenueReportService {
         payments = [];
       }
 
-      const proformaIds = this.extractProformaIds(payments);
+      const { ids: proformaIds, fullnumbers: proformaFullnumbers } = this.extractProformaIds(payments);
       
       // Load proformas - handle errors gracefully
       let proformas = [];
       try {
-        proformas = await this.loadProformas(proformaIds);
+        proformas = await this.loadProformas({ ids: proformaIds, fullnumbers: proformaFullnumbers });
       } catch (error) {
         logger.warn('Failed to load proformas for report', {
           error: error.message,
-          proformaIdsCount: proformaIds.length
+          proformaIdsCount: proformaIds.length,
+          proformaFullnumbersCount: proformaFullnumbers.length
         });
         proformas = [];
       }

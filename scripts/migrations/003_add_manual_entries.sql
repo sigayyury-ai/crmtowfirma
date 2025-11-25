@@ -59,3 +59,6 @@ COMMENT ON COLUMN pnl_manual_entries.notes IS 'Optional notes for the entry';
 
 
 
+
+
+

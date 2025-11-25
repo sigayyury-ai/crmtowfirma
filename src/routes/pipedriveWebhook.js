@@ -821,8 +821,28 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 type: p.payment_type,
                 status: p.payment_status || p.status
               })),
-              note: 'Все платежи созданы и оплачены, пропускаем создание новых'
+              note: 'Все платежи созданы и оплачены, отправляем уведомление'
           });
+
+            // Собираем существующие сессии для уведомления
+            const existingSessions = existingPayments.map(p => ({
+              id: p.session_id,
+              url: `https://checkout.stripe.com/c/pay/${p.session_id}#fidnandhYHdWcXxpYCc/J2FgY2RwaXEnKSdkdWxOYHwnPyd1blppbHNgWjA0SmpRY3dHXVUyX0M1TT1XSn9zYWNraFFwQDBCU2FnfzZqYXRCQTczf1NfUlFJRF1jM1diSjdoS3dOV0BpS0ZcRm0xY208QHMyPHN/SDREMzdnQE50VU9TNTUyZHM2djV3cycpJ2N3amhWYHdzYHcnP3F3cGApJ2dkZm5id2pwa2FGamlqdyc/JyZjY2NjY2MnKSdpZHxqcHFRfHVgJz8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl`,
+              type: p.payment_type,
+              amount: p.original_amount
+            }));
+
+            // Отправляем уведомление для существующих сессий
+            logger.info(`📧 Отправка уведомления для существующих сессий | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${existingSessions.length}`);
+            const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+              paymentSchedule,
+              sessions: existingSessions,
+              currency,
+              totalAmount
+            });
+
+            logger.info(`📧 Результат отправки уведомления для существующих сессий | Deal: ${dealId} | Успех: ${notificationResult.success} | Ошибка: ${notificationResult.error || 'нет'}`);
+
           return res.status(200).json({
               success: true,
               message: 'All required Stripe Checkout Sessions already exist and are paid',
@@ -830,6 +850,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               paymentSchedule,
               existingCount: existingPayments.length,
               sessionIds: existingPayments.map(p => p.session_id).slice(0, 5),
+              notificationSent: notificationResult.success,
               allPaid: true
             });
           }

@@ -2297,16 +2297,8 @@ class StripeProcessorService {
               }
             }
 
-            // Send notification if we have at least one session
-            if (sessionsToNotify.length > 0) {
-              const firstSession = sessionsToNotify[0];
-              await this.sendPaymentNotificationForDeal(deal.id, {
-                paymentSchedule: '50/50',
-                sessions: sessionsToNotify,
-                currency: firstSession.currency || 'PLN',
-                totalAmount: sessionsToNotify.reduce((sum, s) => sum + (s.amount || 0), 0) * 2 // Total is sum of both payments
-              });
-            }
+            // Уведомления теперь отправляются только после создания ВСЕХ сессий
+            // (в pipedriveWebhook.js после цикла создания сессий)
           } else {
             // Create single payment (100%)
             const result = await this.createCheckoutSessionForDeal(deal, {
@@ -2983,40 +2975,8 @@ class StripeProcessorService {
         });
       }
 
-      // 15. Send SendPulse notification with payment schedule and links (unless skipped)
-      if (!skipNotification) {
-        this.logger.info(`📧 Отправка уведомления о создании Checkout Session | Deal ID: ${dealId} | Session ID: ${session.id}`, {
-          dealId,
-          sessionId: session.id,
-          paymentSchedule: paymentSchedule || '100%',
-          skipNotification: false
-        });
-        
-        const notificationResult = await this.sendPaymentNotificationForDeal(dealId, {
-          paymentSchedule: paymentSchedule || '100%',
-          sessions: [{ id: session.id, url: session.url, type: paymentType || 'single', amount: productPrice }],
-          currency,
-          totalAmount: itemPrice || sumPrice || parseFloat(fullDeal.value) || 0
-        });
-        
-        if (notificationResult.success) {
-          this.logger.info(`✅ Уведомление о платеже отправлено | Deal ID: ${dealId} | Session ID: ${session.id}`, {
-            dealId,
-            sessionId: session.id
-          });
-        } else {
-          this.logger.warn(`⚠️  Не удалось отправить уведомление о платеже | Deal ID: ${dealId} | Session ID: ${session.id} | Ошибка: ${notificationResult.error}`, {
-            dealId,
-            sessionId: session.id,
-            error: notificationResult.error
-          });
-        }
-      } else {
-        this.logger.info(`ℹ️  Уведомление пропущено (skipNotification=true) | Deal ID: ${dealId} | Session ID: ${session.id}`, {
-          dealId,
-          sessionId: session.id
-        });
-      }
+      // Уведомления теперь отправляются только после создания ВСЕХ сессий
+      // (в pipedriveWebhook.js после цикла создания сессий)
 
       // 14. Log session creation with final statistics
       const finalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
