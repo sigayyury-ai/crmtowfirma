@@ -25,8 +25,7 @@ const productStatusLabels = {
 const paymentReportState = {
   groups: [],
   summary: null,
-  filters: null,
-  includeAllStatuses: false
+  filters: null
 };
 
 const deletedProformasState = {
@@ -91,7 +90,6 @@ function cacheDom() {
     paymentsTable: document.getElementById('payments-table'),
     paymentReportContainer: document.getElementById('payment-report-container'),
     paymentReportSummary: document.getElementById('payment-report-summary'),
-    togglePaymentStatus: document.getElementById('toggle-payment-status'),
     exportPaymentReport: document.getElementById('export-payment-report'),
     refreshDeleted: document.getElementById('refresh-deleted'),
     exportDeleted: document.getElementById('export-deleted'),
@@ -120,10 +118,6 @@ function bindEvents() {
   elements.clearLogs?.addEventListener('click', clearLogs);
   elements.refreshProducts?.addEventListener('click', () => {
     loadProductSummary();
-  });
-  elements.togglePaymentStatus?.addEventListener('change', (event) => {
-    paymentReportState.includeAllStatuses = !!event.target.checked;
-    loadPaymentReportData();
   });
   elements.exportPaymentReport?.addEventListener('click', exportPaymentReportCsv);
   elements.bulkApproveMatches?.addEventListener('click', bulkApproveMatches);
@@ -1146,9 +1140,7 @@ async function loadPaymentReportData({ silent = false } = {}) {
     const params = new URLSearchParams();
     if (Number.isFinite(month)) params.set('month', month);
     if (Number.isFinite(year)) params.set('year', year);
-    if (paymentReportState.includeAllStatuses) {
-      params.set('status', 'all');
-    }
+    params.set('status', 'all');
 
     if (!silent && elements.loadPaymentReport) {
       setButtonLoading(elements.loadPaymentReport, true, 'Загрузка...');
@@ -1332,9 +1324,7 @@ function exportPaymentReportCsv() {
   const params = new URLSearchParams();
   if (Number.isFinite(month)) params.set('month', month);
   if (Number.isFinite(year)) params.set('year', year);
-  if (paymentReportState.includeAllStatuses) {
-    params.set('status', 'all');
-  }
+  params.set('status', 'all');
   window.open(`${API_BASE}/vat-margin/payment-report/export?${params.toString()}`, '_blank');
   addLog('info', 'Экспорт платежного отчёта запрошен');
 }

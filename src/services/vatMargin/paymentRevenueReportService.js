@@ -1,6 +1,7 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
 const StripeRepository = require('../stripe/repository');
+const IncomeCategoryService = require('../pnl/incomeCategoryService');
 
 const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
 const DEFAULT_STATUS_SCOPE = 'approved';
@@ -131,6 +132,32 @@ class PaymentRevenueReportService {
     }
     this.supabase = supabase;
     this.stripeRepository = new StripeRepository();
+    this.incomeCategoryService = new IncomeCategoryService();
+    this.refundsIncomeCategoryId = null;
+  }
+
+  async getRefundsIncomeCategoryId() {
+    if (this.refundsIncomeCategoryId !== null) {
+      return this.refundsIncomeCategoryId;
+    }
+
+    if (!this.incomeCategoryService) {
+      this.refundsIncomeCategoryId = undefined;
+      return this.refundsIncomeCategoryId;
+    }
+
+    try {
+      const categories = await this.incomeCategoryService.listCategories();
+      const refundsCategory = categories.find(
+        (category) => typeof category.name === 'string'
+          && /возврат/i.test(category.name)
+      );
+      this.refundsIncomeCategoryId = refundsCategory ? refundsCategory.id : undefined;
+    } catch (error) {
+      logger.warn('Failed to resolve refunds income category id', { error: error.message });
+      this.refundsIncomeCategoryId = undefined;
+    }
+    return this.refundsIncomeCategoryId;
   }
 
   resolveDateRange({ dateFrom, dateTo, month, year } = {}) {
@@ -573,6 +600,8 @@ class PaymentRevenueReportService {
       throw new Error('Supabase client is not configured');
     }
 
+    const refundsIncomeCategoryId = await this.getRefundsIncomeCategoryId();
+
     const fromIso = toIsoDate(dateFrom);
     const toIso = toIsoDate(dateTo);
     const query = this.supabase
@@ -594,9 +623,11 @@ class PaymentRevenueReportService {
         match_status,
         match_confidence,
         match_reason,
-        source
+        source,
+        income_category_id
       `)
       .eq('direction', 'in')
+      .is('deleted_at', null)
       .order('operation_date', { ascending: false });
 
     if (fromIso) {
@@ -618,7 +649,13 @@ class PaymentRevenueReportService {
       throw new Error('Не удалось получить платежи из базы');
     }
 
-    const bankPayments = Array.isArray(data) ? data : [];
+    let bankPayments = Array.isArray(data) ? data : [];
+    if (refundsIncomeCategoryId) {
+      bankPayments = bankPayments.filter(
+        (payment) => payment.income_category_id === null
+          || String(payment.income_category_id) !== String(refundsIncomeCategoryId)
+      );
+    }
 
     // Load Stripe payments
     let stripePayments = [];
@@ -769,7 +806,7 @@ class PaymentRevenueReportService {
           )
         )
       `)
-      .eq('status', 'active');
+      .in('status', ['active', 'deleted']);
 
     // Build OR condition for IDs and fullnumbers
     if (ids.length > 0 && fullnumbers.length > 0) {
@@ -1024,4 +1061,3 @@ class PaymentRevenueReportService {
 }
 
 module.exports = PaymentRevenueReportService;
-
