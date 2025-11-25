@@ -175,7 +175,7 @@ class PaymentService {
     let refundsCategoryId = null;
     if (direction === 'in') {
       try {
-        const IncomeCategoryService = require('./pnl/incomeCategoryService');
+        const IncomeCategoryService = require('../pnl/incomeCategoryService');
         const incomeCategoryService = new IncomeCategoryService();
         const categories = await incomeCategoryService.listCategories();
         const refundsCategory = categories.find(cat => cat.name === 'Возвраты');
@@ -2078,4 +2078,3 @@ class PaymentService {
 }
 
 module.exports = PaymentService;
-
