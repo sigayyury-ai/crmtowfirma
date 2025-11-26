@@ -331,6 +331,15 @@ class StripeProcessorService {
     const participant = this.getParticipant(session);
     const dealId = session.metadata?.deal_id || null;
     const crmContext = await this.getCrmContext(dealId);
+
+    // Если сделка удалена или отсутствует, не пытаемся сохранять платёж/обновлять стадии
+    if (dealId && (!crmContext || crmContext.deal?.status === 'deleted' || crmContext.deal?.deleted === true)) {
+      this.logger.warn('Skipping Stripe payment for deleted or missing deal', {
+        dealId,
+        sessionId: session.id
+      });
+      return;
+    }
     const customerType = crmContext?.isB2B ? 'organization' : 'person';
     
     // Определяем, должен ли применяться VAT (для расчета)
@@ -4272,4 +4281,3 @@ class StripeProcessorService {
 }
 
 module.exports = StripeProcessorService;
-
