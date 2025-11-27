@@ -77,6 +77,8 @@ const paymentProductLinkService = new PaymentProductLinkService();
 const cashPnlSyncService = require('../services/cash/cashPnlSyncService');
 const cashPaymentsRepository = new CashPaymentsRepository();
 const { createCashReminder } = require('../services/cash/cashReminderService');
+const CrmStatusAutomationService = require('../services/crm/statusAutomationService');
+const crmStatusAutomationService = new CrmStatusAutomationService();
 
 const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
 const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
@@ -3966,6 +3968,44 @@ router.get('/products/:id/linked-payments', async (req, res) => {
     res.status(400).json({
       success: false,
       error: error.message || 'Не удалось получить связанные платежи'
+    });
+  }
+});
+
+/**
+ * POST /api/crm/status-automation/sync
+ * Ручной запуск пересчёта статуса сделки на основе платежей
+ */
+router.post('/crm/status-automation/sync', async (req, res) => {
+  try {
+    const { dealId, force = false } = req.body || {};
+    if (!dealId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Необходимо указать dealId'
+      });
+    }
+
+    if (!crmStatusAutomationService.isEnabled()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase не сконфигурирован, автоматизация статусов недоступна'
+      });
+    }
+
+    const result = await crmStatusAutomationService.syncDealStage(dealId, { force });
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    logger.error('Failed to sync CRM deal status', {
+      error: error.message,
+      requestBody: req.body
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось синхронизировать статус сделки'
     });
   }
 });

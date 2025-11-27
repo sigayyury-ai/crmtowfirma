@@ -216,11 +216,9 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             if (dealId) {
               logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
               
-              // Обрабатываем возврат через CRM sync (автоматически обновляет стадии)
-              await stripeProcessor.crmSyncService.handleRefund({
-                id: charge.id,
-                amount: charge.amount,
-                metadata: session.metadata
+              // Пересчитываем стадию сделки через новый сервис автоматизации
+              await stripeProcessor.triggerCrmStatusAutomation(dealId, {
+                reason: 'stripe:webhook-refund'
               });
               
               logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);

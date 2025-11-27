@@ -8,7 +8,8 @@ const {
 const { fromMinorUnit, normaliseCurrency, roundBankers, toMinorUnit } = require('../../utils/currency');
 const { logStripeError } = require('../../utils/logging/stripe');
 const ParticipantPaymentPlanService = require('./participantPaymentPlanService');
-const { StripeCrmSyncService, STAGES } = require('./crmSync');
+const { STAGE_IDS: STAGES } = require('../crm/statusCalculator');
+const CrmStatusAutomationService = require('../crm/statusAutomationService');
 const PipedriveClient = require('../pipedrive');
 const { getRate } = require('./exchangeRateService');
 const { getStripeClient } = require('./client');
@@ -20,7 +21,8 @@ class StripeProcessorService {
     this.logger = options.logger || logger;
     this.repository = options.repository || new StripeRepository();
     this.paymentPlanService = options.paymentPlanService || new ParticipantPaymentPlanService();
-    this.crmSyncService = options.crmSyncService || new StripeCrmSyncService();
+    this.crmStatusAutomationService =
+      options.crmStatusAutomationService || new CrmStatusAutomationService();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     // Force recreate Stripe client to pick up current STRIPE_MODE
     this.stripe = options.stripe || getStripeClient();
@@ -65,6 +67,27 @@ class StripeProcessorService {
     
     // SendPulse ID field key in Pipedrive (same as invoiceProcessing)
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+  }
+
+  async triggerCrmStatusAutomation(dealId, context = {}) {
+    if (!dealId || !this.crmStatusAutomationService) {
+      return;
+    }
+    if (
+      typeof this.crmStatusAutomationService.isEnabled === 'function' &&
+      !this.crmStatusAutomationService.isEnabled()
+    ) {
+      return;
+    }
+    try {
+      await this.crmStatusAutomationService.syncDealStage(dealId, context);
+    } catch (error) {
+      this.logger.warn('CRM status automation failed after Stripe processor event', {
+        dealId,
+        context,
+        error: error.message
+      });
+    }
   }
 
   /**
@@ -1024,12 +1047,8 @@ class StripeProcessorService {
             hasRest
           });
           
-          await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-            type: 'both_payments_complete',
-            sessionId: session.id,
-            paymentType,
-            depositPaymentId: depositSessionId,
-            restPaymentId: restSessionId
+          await this.triggerCrmStatusAutomation(dealId, {
+            reason: 'stripe:both-payments-complete'
           });
           
           await this.closeAddressTasks(dealId);
@@ -1092,10 +1111,8 @@ class StripeProcessorService {
 
       // Если сделка уже в стадии "First payment" и приходит оплата → Camp Waiter (один платеж)
       if (currentDealStageId === STAGES.FIRST_PAYMENT_ID) {
-        await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-          type: 'first_payment_stage_paid',
-          sessionId: session.id,
-          paymentType
+        await this.triggerCrmStatusAutomation(dealId, {
+          reason: 'stripe:first-stage-paid'
         });
         
         // Close address tasks if payment received
@@ -1169,12 +1186,8 @@ class StripeProcessorService {
             restPaymentId: restPayment?.session_id || session.id,
             stageId: STAGES.CAMP_WAITER_ID
           });
-          await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-            type: 'final_payment',
-            sessionId: session.id,
-            paymentType,
-            depositPaymentId: depositPayment.session_id,
-            restPaymentId: restPayment?.session_id || session.id
+          await this.triggerCrmStatusAutomation(dealId, {
+            reason: 'stripe:final-payment'
           });
           
           // Close address tasks if payment received
@@ -1208,10 +1221,8 @@ class StripeProcessorService {
           // If both are missing (shouldn't happen), also stay in Second Payment
           if (!hasDeposit) {
             this.logger.info(`⏸️  [Deal #${dealId}] Waiting for deposit payment - staying in Second Payment stage (${STAGES.SECOND_PAYMENT_ID})`);
-            await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
-              type: 'rest_payment_waiting_deposit',
-              sessionId: session.id,
-              paymentType
+            await this.triggerCrmStatusAutomation(dealId, {
+              reason: 'stripe:rest-awaits-deposit'
             });
           }
         }
@@ -1219,19 +1230,16 @@ class StripeProcessorService {
         // For 'single' payment type, always go to Camp Waiter (it's the only payment)
         if (paymentType === 'single' || isSinglePaymentExpected) {
           // Single payment expected (< 30 days) or 'single' type - move directly to Camp Waiter
-          await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-            type: 'first_payment_single',
-            sessionId: session.id,
-            paymentType
+          await this.triggerCrmStatusAutomation(dealId, {
+            reason: 'stripe:single-payment'
           });
           
           // Close address tasks if payment received
           await this.closeAddressTasks(dealId);
         } else {
           // First payment of two (>= 30 days) - move to Second Payment stage (ждем второй платеж)
-          await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
-            type: 'first_payment',
-            sessionId: session.id
+          await this.triggerCrmStatusAutomation(dealId, {
+            reason: 'stripe:first-payment'
           });
         }
 
@@ -1245,9 +1253,8 @@ class StripeProcessorService {
         });
       } else {
         // Fallback: unknown payment type, move to Second Payment stage
-        await this.crmSyncService.updateDealStage(dealId, STAGES.SECOND_PAYMENT_ID, {
-          type: 'second_payment',
-          sessionId: session.id
+        await this.triggerCrmStatusAutomation(dealId, {
+          reason: 'stripe:unknown-payment-type'
         });
       }
     } else if (dealId && !isNewPayment && !isRefunded) {
@@ -1267,10 +1274,8 @@ class StripeProcessorService {
                 currentStage: currentStageId,
                 expectedStage: STAGES.CAMP_WAITER_ID
               });
-              await this.crmSyncService.updateDealStage(dealId, STAGES.CAMP_WAITER_ID, {
-                type: 'single_payment_correction',
-                sessionId: session.id,
-                paymentType
+              await this.triggerCrmStatusAutomation(dealId, {
+                reason: 'stripe:single-payment-correction'
               });
               
               // Also add note if it doesn't exist (always add for single payment correction)
@@ -3096,7 +3101,10 @@ class StripeProcessorService {
         summary.amount = (summary.amount || 0) + values.amount;
         summary.amountPln = (summary.amountPln || 0) + values.amountPln;
         await this.paymentPlanService.applyRefund(refund, values);
-        await this.crmSyncService.handleRefund(refund);
+        const refundDealId = refund?.metadata?.deal_id || refund?.metadata?.dealId || null;
+        if (refundDealId) {
+          await this.triggerCrmStatusAutomation(refundDealId, { reason: 'stripe:refund' });
+        }
       } catch (error) {
         logStripeError(error, { scope: 'persistRefund', refundId: refund.id });
       }

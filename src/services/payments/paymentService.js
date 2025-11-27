@@ -4,6 +4,7 @@ const { parseBankStatement } = require('./bankStatementParser');
 const ProformaRepository = require('../proformaRepository');
 const { normalizeName, normalizeWhitespace } = require('../../utils/normalize');
 const ExpenseCategoryMappingService = require('../pnl/expenseCategoryMappingService');
+const CrmStatusAutomationService = require('../crm/statusAutomationService');
 
 const AMOUNT_TOLERANCE = 5; // PLN/EUR tolerance
 const MANUAL_STATUS_APPROVED = 'approved';
@@ -11,9 +12,11 @@ const MANUAL_STATUS_REJECTED = 'rejected';
 const PAYMENT_SOURCE_BANK = 'bank_statement';
 
 class PaymentService {
-  constructor() {
+  constructor(options = {}) {
     this.proformaRepository = new ProformaRepository();
     this.expenseMappingService = new ExpenseCategoryMappingService();
+    this.crmStatusAutomationService =
+      options.crmStatusAutomationService || new CrmStatusAutomationService();
   }
 
   async updateProformaPaymentAggregates(proformaId) {
@@ -49,7 +52,7 @@ class PaymentService {
 
     const { data: proforma, error: proformaError } = await supabase
       .from('proformas')
-      .select('id, currency, currency_exchange')
+      .select('id, currency, currency_exchange, pipedrive_deal_id')
       .eq('id', targetId)
       .single();
 
@@ -98,6 +101,14 @@ class PaymentService {
 
     if (updateError) {
       logger.error('Supabase error while updating proforma payment totals:', updateError);
+    }
+
+    const dealId = proforma?.pipedrive_deal_id;
+    if (dealId) {
+      await this.triggerCrmStatusAutomation({
+        dealIds: [dealId],
+        reason: 'payments:update-aggregates'
+      });
     }
   }
 
@@ -1869,6 +1880,13 @@ class PaymentService {
       throw error;
     }
 
+    logger.info('Payment manually linked to proforma', {
+      paymentId,
+      proformaId: raw.proforma_id,
+      proformaFullnumber: raw.proforma_fullnumber,
+      user: user || 'quick-auto'
+    });
+
     await this.updateProformaPaymentAggregates(raw.proforma_id);
 
     return this.getPaymentDetails(paymentId);
@@ -1961,6 +1979,13 @@ class PaymentService {
       throw error;
     }
 
+    logger.info('Payment manual link cleared', {
+      paymentId,
+      previousProformaId: targetProformaId,
+      previousProformaFullnumber: raw.manual_proforma_fullnumber || null,
+      user
+    });
+    
     if (targetProformaId) {
       await this.updateProformaPaymentAggregates(targetProformaId);
     }
@@ -2002,6 +2027,51 @@ class PaymentService {
 
     if (raw.manual_proforma_id && raw.manual_proforma_id !== targetProformaId) {
       await this.updateProformaPaymentAggregates(raw.manual_proforma_id);
+    }
+  }
+
+  async triggerCrmStatusAutomation({ dealIds = [], proformaIds = [], reason = 'payments' } = {}) {
+    const service = this.crmStatusAutomationService;
+    if (!service || (typeof service.isEnabled === 'function' && !service.isEnabled())) {
+      return;
+    }
+
+    const normalizedDealIds = new Set(
+      (dealIds || [])
+        .map((id) => String(id).trim())
+        .filter((id) => id.length > 0)
+    );
+
+    if (Array.isArray(proformaIds) && proformaIds.length > 0) {
+      try {
+        const proformas = await this.proformaRepository.findByIds(proformaIds);
+        for (const proforma of proformas) {
+          if (proforma?.pipedrive_deal_id) {
+            normalizedDealIds.add(String(proforma.pipedrive_deal_id).trim());
+          }
+        }
+      } catch (error) {
+        logger.warn('Failed to load proformas for CRM automation trigger', {
+          reason,
+          error: error.message
+        });
+      }
+    }
+
+    if (normalizedDealIds.size === 0) {
+      return;
+    }
+
+    for (const dealId of normalizedDealIds) {
+      try {
+        await service.syncDealStage(dealId, { reason });
+      } catch (error) {
+        logger.warn('CRM status automation failed', {
+          dealId,
+          reason,
+          error: error.message
+        });
+      }
     }
   }
 
