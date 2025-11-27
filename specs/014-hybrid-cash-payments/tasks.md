@@ -72,6 +72,7 @@ Phase 7 (Deploy/Ops)
 - [ ] **T032** Endpoint `POST /api/cash-refunds` + `PATCH /api/cash-payments/:id/reopen` для возвратов/коррекции.
 - [ ] **T033** Middleware аудита: все действия с cash пишутся в `cash_payment_events` (источник, payload snapshot).
 - [ ] **T034** Хуки стадии сделок: при подтверждении наличных обновлять stage/labels в Pipedrive (если в конфиге включено).
+- [ ] **T035** Обработка Pipedrive Activity: при закрытии задачи «Получить наличные» определять связанный `cash_payment` и автоматически ставить `status=received` (с фиксацией пользователя и даты).
 
 **Independent test**: Через API создать cash-платёж, подтвердить, взять лог аудита (должна быть запись create+confirm). Провести возврат — статус меняется, stage в CRM обновляется.
 
