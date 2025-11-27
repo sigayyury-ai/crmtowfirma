@@ -70,6 +70,8 @@ const ExpenseCategoryMappingService = require('../services/pnl/expenseCategoryMa
 const expenseCategoryMappingService = new ExpenseCategoryMappingService();
 const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
+const PaymentProductLinkService = require('../services/payments/paymentProductLinkService');
+const paymentProductLinkService = new PaymentProductLinkService();
 // Configure multer with memory storage and size limits
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -866,6 +868,26 @@ router.post('/products/find-or-create', async (req, res) => {
       success: false,
       error: 'Internal server error',
       message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/products/in-progress
+ * Получить продукты в статусе In Progress (для ручной привязки платежей)
+ */
+router.get('/products/in-progress', async (req, res) => {
+  try {
+    const products = await paymentProductLinkService.listInProgressProducts();
+    res.json({
+      success: true,
+      data: products
+    });
+  } catch (error) {
+    logger.error('Error getting in-progress products:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить список продуктов'
     });
   }
 });
@@ -3352,7 +3374,104 @@ router.get('/payments/:id/expense-category-suggestions', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/payments/:id/link-product
+ * Связать платеж с продуктом
+ */
+router.post('/payments/:id/link-product', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    const { productId } = req.body || {};
+
+    if (Number.isNaN(paymentId) || !Number.isInteger(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор платежа'
+      });
+    }
+
+    const numericProductId = Number(productId);
+    if (!Number.isInteger(numericProductId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор продукта'
+      });
+    }
+
+    const linkedBy = req.user?.email || req.user?.id || null;
+    const link = await paymentProductLinkService.createLink({
+      paymentId,
+      productId: numericProductId,
+      linkedBy
+    });
+
+    res.json({
+      success: true,
+      data: link
+    });
+  } catch (error) {
+    logger.error('Error linking payment to product:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось связать платеж с продуктом'
+    });
+  }
+});
+
+/**
+ * DELETE /api/payments/:id/link-product
+ * Удалить связь платежа с продуктом
+ */
+router.delete('/payments/:id/link-product', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(paymentId) || !Number.isInteger(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор платежа'
+      });
+    }
+
+    await paymentProductLinkService.removeLink({ paymentId });
+
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    logger.error('Error unlinking payment from product:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось удалить связь платежа'
+    });
+  }
+});
+
+/**
+ * GET /api/products/:id/linked-payments
+ * Получить платежи, связанные с продуктом
+ */
+router.get('/products/:id/linked-payments', async (req, res) => {
+  try {
+    const productId = parseInt(req.params.id, 10);
+    if (Number.isNaN(productId) || !Number.isInteger(productId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор продукта'
+      });
+    }
+
+    const links = await paymentProductLinkService.getLinkedPayments(productId);
+    res.json({
+      success: true,
+      data: links
+    });
+  } catch (error) {
+    logger.error('Error loading linked payments:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось получить связанные платежи'
+    });
+  }
+});
+
 module.exports = router;
-
-
-
