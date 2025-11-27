@@ -13,6 +13,7 @@ const { createCashReminder, closeCashReminders } = require('../services/cash/cas
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 const cashPaymentsRepository = new CashPaymentsRepository();
+const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
 const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
 const STRIPE_DASHBOARD_ACCOUNT_PATH = process.env.STRIPE_DASHBOARD_ACCOUNT_PATH || '';
 const STRIPE_DASHBOARD_WORKSPACE_ID = process.env.STRIPE_DASHBOARD_WORKSPACE_ID || '';
@@ -61,6 +62,27 @@ async function updateInvoiceNumberField(dealId, value) {
     return true;
   } catch (error) {
     logger.warn('Failed to update invoice number field', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
+
+async function updateInvoiceTypeField(dealId, value) {
+  const client = resolvePipedriveClient();
+  if (!client || !dealId || !INVOICE_TYPE_FIELD_KEY) {
+    return false;
+  }
+
+  try {
+    await client.updateDeal(dealId, {
+      [INVOICE_TYPE_FIELD_KEY]: value
+    });
+    logger.info('Invoice field updated', { dealId, value });
+    return true;
+  } catch (error) {
+    logger.warn('Failed to update invoice field', {
       dealId,
       error: error.message
     });
@@ -124,9 +146,8 @@ async function cleanupDealArtifacts(dealId) {
     }
   }
 
-  if (INVOICE_NUMBER_FIELD_KEY) {
-    await updateInvoiceNumberField(dealId, 'Done');
-  }
+  await updateInvoiceTypeField(dealId, 'Done');
+  await updateInvoiceNumberField(dealId, null);
 
   return result;
 }
