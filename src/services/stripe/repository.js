@@ -404,7 +404,57 @@ class StripeRepository {
 
     return data || [];
   }
+
+  async deletePaymentsByDealId(dealId) {
+    if (!this.isEnabled() || !dealId) {
+      return { deleted: 0, sessions: [] };
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('stripe_payments')
+        .select('session_id')
+        .eq('deal_id', String(dealId));
+
+      if (error) {
+        if (isTableMissing(error)) {
+          logger.warn('stripe_payments table missing, cannot delete by deal');
+          return { deleted: 0, sessions: [] };
+        }
+        logger.error('Failed to fetch stripe payments before deletion', { error, dealId });
+        return { deleted: 0, sessions: [] };
+      }
+
+      if (!data || data.length === 0) {
+        return { deleted: 0, sessions: [] };
+      }
+
+      const { error: deleteError } = await this.supabase
+        .from('stripe_payments')
+        .delete()
+        .eq('deal_id', String(dealId));
+
+      if (deleteError) {
+        if (isTableMissing(deleteError)) {
+          logger.warn('stripe_payments table missing during deletion');
+          return { deleted: 0, sessions: [] };
+        }
+        logger.error('Failed to delete stripe payments by deal', { error: deleteError, dealId });
+        return { deleted: 0, sessions: [] };
+      }
+
+      return {
+        deleted: data.length,
+        sessions: data.map((row) => row.session_id).filter(Boolean)
+      };
+    } catch (err) {
+      logger.error('Exception while deleting stripe payments by deal', {
+        error: err.message,
+        dealId
+      });
+      return { deleted: 0, sessions: [] };
+    }
+  }
 }
 
 module.exports = StripeRepository;
-

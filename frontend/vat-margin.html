@@ -13,21 +13,16 @@
         <nav class="main-nav">
             <a href="/vat-margin.html" class="nav-link active">Отчеты</a>
             <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
-            <a href="/expenses.html" class="nav-link">Расходы</a>
-            <a href="/" class="nav-link">Автоматизация и интеграции</a>
+            <a href="/" class="nav-link">Настройки</a>
         </nav>
-        <header>
-            <h1>📊 VAT Margin Tracker</h1>
-            <p>Отслеживание проформ с VAT margin по продуктам</p>
-        </header>
-
         <div class="tab-container">
             <div class="tab-header">
-                <button class="tab-button active" data-tab="report2">💳 Отчёт по платежам</button>
-                <button class="tab-button" data-tab="stripe">🎟 Отчёт по мероприятиям</button>
-                <button class="tab-button" data-tab="products">🛍 Продукты</button>
-                <button class="tab-button" data-tab="payments">💳 Приходные платежи</button>
-                <button class="tab-button" data-tab="deleted">🧾 Удалённые проформы</button>
+                <button class="tab-button active" data-tab="report2">Отчёт по месяцам</button>
+                <button class="tab-button" data-tab="products">Продукты</button>
+                <button class="tab-button" data-tab="payments">Платежи</button>
+                <button class="tab-button" data-tab="stripe">Мероприятия</button>
+                <button class="tab-button" data-tab="deleted">Удалённые проформы</button>
+                <button class="tab-button" data-tab="cash-journal">Cash Journal</button>
             </div>
 
             <div class="tab-content" id="tab-deleted">
@@ -175,9 +170,13 @@
             </div>
 
             <div class="tab-content" id="tab-payments">
-                <section class="payments-section">
+                <div class="payments-subnav">
+                    <button class="subtab-button active" data-payments-tab="incoming">Входящие</button>
+                    <button class="subtab-button" data-payments-tab="outgoing">Исходящие</button>
+                </div>
+                <section class="payments-section payments-subtab-content active" id="payments-incoming">
                     <div class="section-header">
-                        <h2>💳 Приходные платежи и сопоставление</h2>
+                        <h2>Входящие платежи и сопоставление</h2>
                         <div class="controls">
                             <label class="upload-btn">
                                 <input type="file" id="bank-csv-input" accept=".csv" hidden>
@@ -191,6 +190,80 @@
 
                     <div class="payments-table-container" id="payments-table">
                         <div class="placeholder">Пока нет загруженных платежей</div>
+                    </div>
+                </section>
+                <section class="payments-section payments-subtab-content" id="payments-outgoing">
+                    <div class="section-header">
+                        <h2>Исходящие платежи (расходы)</h2>
+                    </div>
+                    <div class="outgoing-iframe-wrapper">
+                        <iframe src="expenses.html" title="Исходящие платежи" loading="lazy"></iframe>
+                    </div>
+                </section>
+            </div>
+            <div class="tab-content" id="tab-cash-journal">
+                <section class="status-section">
+                    <h2>Сводка наличных</h2>
+                    <div class="status-grid">
+                        <div class="status-card">
+                            <h3>Ожидаем (PLN)</h3>
+                            <div class="status-indicator" id="cashSummaryExpected">0.00 PLN</div>
+                        </div>
+                        <div class="status-card">
+                            <h3>Получено (PLN)</h3>
+                            <div class="status-indicator" id="cashSummaryReceived">0.00 PLN</div>
+                        </div>
+                        <div class="status-card">
+                            <h3>В ожидании</h3>
+                            <div class="status-indicator" id="cashSummaryPending">0.00 PLN</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="controls-section filters-section">
+                    <h2>Фильтры</h2>
+                    <div class="filters-grid">
+                        <div class="filter-field">
+                            <label>Продукт</label>
+                            <select id="cashFilterProduct">
+                                <option value="">Все продукты</option>
+                            </select>
+                        </div>
+                        <div class="filter-field">
+                            <label>Статус</label>
+                            <select id="cashFilterStatus">
+                                <option value="">Все</option>
+                                <option value="pending">Ожидается</option>
+                                <option value="pending_confirmation">На подтверждении</option>
+                                <option value="received">Получено</option>
+                                <option value="refunded">Возврат</option>
+                            </select>
+                        </div>
+                        <div class="filter-field filter-actions">
+                            <label>&nbsp;</label>
+                            <button id="cashFiltersApply" class="btn btn-primary">🔄 Обновить</button>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="results-section">
+                    <h2>Журнал наличных</h2>
+                    <div class="table-wrapper">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Клиент</th>
+                                    <th>Сумма</th>
+                                    <th>Дата ожидания</th>
+                                    <th>Статус</th>
+                                    <th>Подтверждено</th>
+                                    <th class="actions-header">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cashTableBody">
+                                <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </section>
             </div>

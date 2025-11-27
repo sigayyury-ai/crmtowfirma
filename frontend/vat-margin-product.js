@@ -40,6 +40,7 @@ function cacheDom() {
     saveButton: document.getElementById('product-save-status'),
     summaryContainer: document.getElementById('product-summary'),
     proformasContainer: document.getElementById('product-proformas'),
+    linkedPaymentsContainer: document.getElementById('product-linked-payments'),
     stripePaymentsContainer: document.getElementById('product-stripe-payments'),
     alertBox: document.getElementById('product-alert')
   };
@@ -173,6 +174,7 @@ function renderProductDetail() {
 
   renderSummaryCards(productDetail);
   renderProformasTable(productDetail.proformas || []);
+  renderLinkedPaymentsTables(productDetail.linkedPayments || {});
   renderStripePaymentsTable(productDetail.stripePayments || []);
 }
 
@@ -285,6 +287,79 @@ function renderProformasTable(items) {
       </thead>
       <tbody>${rows}</tbody>
     </table>
+  `;
+}
+
+function renderLinkedPaymentsTables(linkedPayments) {
+  if (!elements.linkedPaymentsContainer) return;
+
+  const incoming = linkedPayments?.incoming || [];
+  const outgoing = linkedPayments?.outgoing || [];
+
+  if (incoming.length === 0 && outgoing.length === 0) {
+    elements.linkedPaymentsContainer.innerHTML = '<div class="placeholder">Связанных платежей пока нет</div>';
+    return;
+  }
+
+  const sections = [];
+
+  if (incoming.length) {
+    sections.push(createLinkedPaymentsSection('Входящие платежи', incoming, { showHeader: true }));
+  }
+
+  if (outgoing.length) {
+    sections.push(createLinkedPaymentsSection('Исходящие платежи', outgoing, { showHeader: false }));
+  }
+
+  elements.linkedPaymentsContainer.innerHTML = sections.join('');
+}
+
+function createLinkedPaymentsSection(title, items, options = {}) {
+  const showHeader = options.showHeader !== false && Boolean(title);
+  const rows = items
+    .map((item) => {
+      const description = item.description || '—';
+      const counterparty = item.payerName || '—';
+      const operationDate = item.operationDate ? formatDate(item.operationDate) : '—';
+      const linkedAt = item.linkedAt ? formatDate(item.linkedAt) : '—';
+      const linkedBy = item.linkedBy || '—';
+      const amount = formatCurrency(item.amount || 0, item.currency || 'PLN');
+      const source = item.source || '—';
+
+      return `
+        <tr>
+          <td>${escapeHtml(operationDate)}</td>
+          <td>${escapeHtml(description)}</td>
+          <td>${escapeHtml(counterparty)}</td>
+          <td class="numeric">${escapeHtml(amount)}</td>
+          <td>${escapeHtml(source)}</td>
+          <td>${escapeHtml(linkedBy)}</td>
+          <td>${escapeHtml(linkedAt)}</td>
+        </tr>
+      `;
+    })
+    .join('');
+
+  return `
+    <div class="linked-payments-group">
+      ${showHeader ? `<h3>${escapeHtml(title)}</h3>` : ''}
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Дата операции</th>
+            <th>Описание</th>
+            <th>Контрагент</th>
+            <th class="numeric">Сумма</th>
+            <th>Источник</th>
+            <th>Связал</th>
+            <th>Дата связи</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+    </div>
   `;
 }
 
@@ -495,4 +570,3 @@ function setButtonLoading(button, loading, loadingText = 'Загрузка...') 
     delete button.dataset.originalText;
   }
 }
-

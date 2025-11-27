@@ -118,8 +118,10 @@ class ProductReportService {
     }
   }
 
-  async getProductSummary() {
-    const { products, totalGrossPln } = await this.loadAggregatedData();
+  async getProductSummary({ includeStripeData = true } = {}) {
+    const { products, totalGrossPln } = includeStripeData
+      ? await this.loadAggregatedData()
+      : await this.loadDatabaseOnlyData();
 
     const summary = Array.from(products.values())
       .map((entry) => {
@@ -262,6 +264,18 @@ class ProductReportService {
       }))
       : [];
 
+    let linkedPayments = { incoming: [], outgoing: [] };
+    if (entry.productId) {
+      try {
+        linkedPayments = await this.loadLinkedPayments(entry.productId);
+      } catch (error) {
+        logger.warn('Failed to load linked payments for product detail', {
+          productId: entry.productId,
+          error: error.message
+        });
+      }
+    }
+
     const grossPln = Number(entry.totals.grossPln.toFixed(2));
     const netPln = grossPln; // net = gross для проформ без VAT
     const marginPln = netPln; // margin = net для проформ
@@ -288,7 +302,8 @@ class ProductReportService {
       revenueShare,
       proformas,
       stripeTotals,
-      stripePayments
+      stripePayments,
+      linkedPayments
     };
   }
 
@@ -370,6 +385,20 @@ class ProductReportService {
       });
       aggregation.stripeSummary = null;
     }
+
+    return aggregation;
+  }
+
+  async loadDatabaseOnlyData() {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const rows = await this.fetchAllProductRows();
+    const aggregation = this.aggregateRows(rows);
+
+    // Не добавляем Stripe данные - только продукты из базы данных
+    aggregation.stripeSummary = null;
 
     return aggregation;
   }
@@ -910,7 +939,74 @@ class ProductReportService {
     const fallbackKey = `key:${normalizeProductName(normalized)}`;
     return products.get(fallbackKey) || null;
   }
+
+  async loadLinkedPayments(productId) {
+    if (!supabase || !productId) {
+      return { incoming: [], outgoing: [] };
+    }
+
+    const { data, error } = await supabase
+      .from('payment_product_links')
+      .select(`
+        id,
+        payment_id,
+        product_id,
+        direction,
+        linked_by,
+        linked_at,
+        payment:payment_id (
+          id,
+          operation_date,
+          description,
+          amount,
+          currency,
+          direction,
+          payer_name,
+          manual_status,
+          manual_proforma_fullnumber,
+          income_category_id,
+          expense_category_id,
+          source
+        )
+      `)
+      .eq('product_id', productId)
+      .order('linked_at', { ascending: false });
+
+    if (error) {
+      logger.error('Failed to load payment-product links for detail', {
+        productId,
+        error: error.message
+      });
+      return { incoming: [], outgoing: [] };
+    }
+
+    const mapped = (data || [])
+      .map((row) => {
+        const payment = row.payment || {};
+        const amount = toNumber(payment.amount);
+        return {
+          linkId: row.id,
+          paymentId: row.payment_id,
+          direction: payment.direction || row.direction || null,
+          amount: Number((amount || 0).toFixed(2)),
+          currency: (payment.currency || 'PLN').toUpperCase(),
+          description: payment.description || null,
+          payerName: payment.payer_name || null,
+          operationDate: payment.operation_date || null,
+          manualStatus: payment.manual_status || null,
+          manualProforma: payment.manual_proforma_fullnumber || null,
+          source: payment.source || null,
+          linkedBy: row.linked_by || null,
+          linkedAt: row.linked_at || null
+        };
+      })
+      .filter((item) => Number.isFinite(item.amount));
+
+    return {
+      incoming: mapped.filter((item) => item.direction === 'in'),
+      outgoing: mapped.filter((item) => item.direction === 'out')
+    };
+  }
 }
 
 module.exports = ProductReportService;
-

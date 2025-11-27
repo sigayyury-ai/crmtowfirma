@@ -164,6 +164,169 @@ class PipedriveClient {
   }
 
   /**
+   * Создать новую сделку
+   * @param {Object} data - Поля сделки (title, value, currency, person_id, stage_id и т.д.)
+   * @returns {Promise<Object>} - Результат создания сделки
+   */
+  async createDeal(data = {}) {
+    try {
+      const response = await this.client.post('/deals', data, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          deal: response.data.data
+        };
+      }
+
+      throw new Error('Failed to create deal');
+    } catch (error) {
+      logger.error('Error creating deal:', {
+        error: error.message,
+        payload: data,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Получить список продуктов (кемпов) из Pipedrive
+   * @param {Object} options
+   * @param {number} [options.limit=20]
+   * @param {number} [options.start=0]
+   * @param {string} [options.search] - Поиск по названию
+   * @returns {Promise<Object>} - Результат с массивом продуктов
+   */
+  async listProducts(options = {}) {
+    try {
+      const params = {
+        api_token: this.apiToken,
+        limit: options.limit || 20,
+        start: options.start || 0
+      };
+
+      if (options.search) {
+        params.term = options.search;
+      }
+
+      const response = await this.client.get('/products', { params });
+      if (response.data?.success) {
+        return {
+          success: true,
+          products: response.data.data || [],
+          pagination: response.data.additional_data?.pagination || null
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to fetch products',
+        products: []
+      };
+    } catch (error) {
+      logger.error('Error listing Pipedrive products', {
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null,
+        products: []
+      };
+    }
+  }
+
+  /**
+   * Получить продукт по ID
+   * @param {number|string} productId
+   * @returns {Promise<Object>}
+   */
+  async getProduct(productId) {
+    if (!productId) {
+      throw new Error('productId is required');
+    }
+
+    try {
+      const response = await this.client.get(`/products/${productId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          product: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to fetch product'
+      };
+    } catch (error) {
+      logger.error('Error fetching Pipedrive product', {
+        productId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Добавить продукт к сделке
+   * @param {number} dealId
+   * @param {Object} productData
+   * @returns {Promise<Object>}
+   */
+  async addProductToDeal(dealId, productData = {}) {
+    if (!dealId) {
+      throw new Error('dealId is required to add product');
+    }
+
+    try {
+      const response = await this.client.post(`/deals/${dealId}/products`, productData, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          item: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to add product to deal'
+      };
+    } catch (error) {
+      logger.error('Error adding product to deal', {
+        dealId,
+        error: error.message,
+        payload: productData,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
    * Получить продукты, привязанные к сделке
    * @param {number} dealId - ID сделки
    * @returns {Promise<Object>} - Результат с массивом продуктов
@@ -567,6 +730,49 @@ class PipedriveClient {
     }
   }
 
+  /**
+   * Создать заметку в сделке
+   * @param {Object} payload
+   * @param {number} payload.deal_id
+   * @param {string} payload.content
+   * @param {number} [payload.person_id]
+   * @returns {Promise<Object>}
+   */
+  async createDealNote(payload = {}) {
+    if (!payload.deal_id || !payload.content) {
+      throw new Error('deal_id and content are required to add note');
+    }
+
+    try {
+      const response = await this.client.post('/notes', payload, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          note: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to create note'
+      };
+    } catch (error) {
+      logger.error('Failed to create note in Pipedrive', {
+        payload,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
   async addNoteToDeal(dealId, content) {
     if (!dealId || !content) {
       throw new Error('dealId and content are required to add note');
@@ -676,6 +882,40 @@ class PipedriveClient {
         activityId,
         error: error.message,
         details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  async deleteNote(noteId) {
+    if (!noteId) {
+      throw new Error('noteId is required to delete note');
+    }
+
+    try {
+      const response = await this.client.delete(`/notes/${noteId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to delete note'
+      };
+    } catch (error) {
+      logger.error('Failed to delete note in Pipedrive', {
+        noteId,
+        error: error.message,
+        response: error.response?.data
       });
       return {
         success: false,

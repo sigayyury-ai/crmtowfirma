@@ -3,9 +3,13 @@ const router = express.Router();
 const logger = require('../utils/logger');
 const StripeProcessorService = require('../services/stripe/processor');
 const { getStripeClient } = require('../services/stripe/client');
+const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
+const { ensureCashStatus } = require('../services/cash/cashStatusSync');
 
 const stripeProcessor = new StripeProcessorService();
 const stripe = getStripeClient();
+const cashPaymentsRepository = new CashPaymentsRepository();
+const { createCashReminder } = require('../services/cash/cashReminderService');
 
 /**
  * POST /api/webhooks/stripe
@@ -57,6 +61,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           // - Второй платеж (rest) → Camp Waiter (ID: 27)
           // - Единый платеж (single) → Camp Waiter (ID: 27)
           await stripeProcessor.persistSession(session);
+          await syncCashExpectationFromStripeSession(session);
+          await syncCashExpectationFromStripeSession(session);
           
           logger.info(`✅ Checkout Session обработан | Deal: ${dealId} | Session: ${session.id}`);
         } catch (error) {
@@ -151,6 +157,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             
             // Обрабатываем платеж через processor (автоматически обновляет стадии)
             await stripeProcessor.persistSession(session);
+            await syncCashExpectationFromStripeSession(session);
             
             logger.info(`✅ Payment Intent обработан | Deal: ${dealId} | Session: ${sessionId}`);
           } else {
@@ -373,5 +380,131 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });
+
+async function syncCashExpectationFromStripeSession(session) {
+  if (!cashPaymentsRepository.isEnabled() || !session?.metadata) {
+    return;
+  }
+
+  const metadata = session.metadata || {};
+  const dealId = metadata.deal_id || metadata.dealId;
+  const cashAmountRaw =
+    metadata.cash_amount_expected ||
+    metadata.cashAmountExpected ||
+    metadata.cash_expected_amount;
+
+  const cashAmount = parseCashAmount(cashAmountRaw);
+
+  if (!dealId || !Number.isFinite(cashAmount) || cashAmount <= 0) {
+    return;
+  }
+
+  const normalizedDealId = Number(dealId);
+  if (!Number.isFinite(normalizedDealId)) {
+    return;
+  }
+
+  const currency = normalizeCurrencyCode(metadata.cash_currency || session.currency || 'PLN');
+  const expectedDate = normalizeDateInput(metadata.cash_expected_date);
+
+  const existing = await cashPaymentsRepository.findByStripeSession(session.id);
+  const isNewExpectation = !existing;
+  const payload = {
+    cash_expected_amount: roundCurrency(cashAmount),
+    currency,
+    amount_pln: currency === 'PLN'
+      ? roundCurrency(cashAmount)
+      : existing?.amount_pln ?? null,
+    expected_date: expectedDate,
+    status: existing?.status || 'pending_confirmation',
+    source: 'stripe',
+    note: metadata.cash_note || 'Ожидание наличного остатка после Stripe',
+    metadata: {
+      ...(existing?.metadata || {}),
+      session_id: session.id,
+      payment_type: metadata.payment_type || null,
+      stripe_checkout_mode: session.mode || null
+    }
+  };
+
+  let record;
+  if (existing) {
+    record = await cashPaymentsRepository.updatePayment(existing.id, payload);
+  } else {
+    record = await cashPaymentsRepository.createPayment({
+      deal_id: normalizedDealId,
+      proforma_id: null,
+      product_id: null,
+      created_by: 'stripe_webhook',
+      ...payload
+    });
+  }
+
+  if (record && record.id) {
+    await cashPaymentsRepository.logEvent(record.id, existing ? 'stripe:update' : 'stripe:create', {
+      source: 'stripe_webhook',
+      payload: {
+        session_id: session.id,
+        cash_amount: payload.cash_expected_amount
+      },
+      createdBy: 'stripe_webhook'
+    });
+
+    await ensureCashStatus({
+      pipedriveClient: stripeProcessor.pipedriveClient,
+      dealId: normalizedDealId,
+      currentStatus: metadata.cash_status || null,
+      targetStatus: 'PENDING'
+    });
+
+    if (isNewExpectation) {
+      await createCashReminder(stripeProcessor.pipedriveClient, {
+        dealId: normalizedDealId,
+        amount: payload.cash_expected_amount,
+        currency: payload.currency,
+        expectedDate: payload.expected_date,
+        closeDate: metadata.close_date || metadata.expected_close_date,
+        source: 'Stripe',
+        buyerName: metadata.customer_name || metadata.buyer_name || `Deal #${normalizedDealId}`,
+        personId: metadata.person_id || metadata.personId || null,
+        sendpulseClient: stripeProcessor.sendpulseClient
+      });
+    }
+  }
+}
+
+function parseCashAmount(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const sanitized = value.replace(/,/g, '.').replace(/[^\d.-]/g, '');
+    const parsed = parseFloat(sanitized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeCurrencyCode(value) {
+  if (typeof value !== 'string') {
+    return 'PLN';
+  }
+  const trimmed = value.trim().toUpperCase();
+  return trimmed || 'PLN';
+}
+
+function normalizeDateInput(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function roundCurrency(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
 
 module.exports = router;

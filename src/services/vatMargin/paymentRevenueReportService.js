@@ -423,7 +423,7 @@ class PaymentRevenueReportService {
             // Priority 2: Find product in proformaMap by matching product ID from proformas
             // Look for proformas that have products matching this crm_product_id
             // We need to find the camp_product_id by looking at proforma products
-            for (const [proformaId, proforma] of proformaMap.entries()) {
+            for (const [, proforma] of proformaMap.byId.entries()) {
               if (proforma.product && proforma.product.id) {
                 // Check if this proforma's product matches by name (temporary until camp_product_id is set)
                 // But prefer to find by ID if we can match crm_product_id somehow
@@ -461,6 +461,23 @@ class PaymentRevenueReportService {
               productKey = `key:${normalizeProductKey(productName)}`;
             }
           }
+        }
+      }
+
+      if (productKey === 'unmatched' && payment.source === 'stripe') {
+        if (payment.stripe_crm_product_id) {
+          productId = Number(payment.stripe_crm_product_id);
+          if (Number.isFinite(productId)) {
+            productKey = `id:${productId}`;
+          } else {
+            productKey = `crm:${payment.stripe_crm_product_id}`;
+            productId = null;
+          }
+          productName = payment.stripe_product_name || `CRM продукт ${payment.stripe_crm_product_id}`;
+        } else if (payment.stripe_product_name) {
+          const normalizedName = normalizeProductKey(payment.stripe_product_name);
+          productKey = `stripe-name:${normalizedName}`;
+          productName = payment.stripe_product_name;
         }
       }
 
@@ -642,6 +659,9 @@ class PaymentRevenueReportService {
       query.or('manual_status.eq.approved,match_status.eq.matched');
     }
 
+    // Always exclude manually rejected payments from reports
+    query.neq('manual_status', 'rejected');
+
     const { data, error } = await query.limit(5000);
 
     if (error) {
@@ -705,11 +725,9 @@ class PaymentRevenueReportService {
             if (sp.session_id && refundedPaymentIds.has(String(sp.session_id))) {
               return false;
             }
-            // Exclude payments without deal_id (event payments that shouldn't be in monthly report)
-            if (!sp.deal_id) {
-              return false;
-            }
-            return true;
+            const metadata = (sp.raw_payload && sp.raw_payload.metadata) || {};
+            // Include Stripe payments if we can derive product linkage (product link, CRM product or deal)
+            return sp.product_id || sp.deal_id || metadata.product_id || metadata.product_name;
           })
           .map((sp) => {
             // Use processed_at as payment date, fallback to created_at
@@ -727,6 +745,10 @@ class PaymentRevenueReportService {
               : ((sp.receipt_number !== undefined && sp.receipt_number !== null) 
                 ? sp.receipt_number 
                 : null);
+            
+            const metadata = (sp.raw_payload && sp.raw_payload.metadata) || {};
+            const stripeCrmProductId = metadata.product_id ? String(metadata.product_id) : null;
+            const stripeProductName = metadata.product_name || metadata.crm_product_name || null;
             
             return {
               id: `stripe_${sp.session_id || sp.id}`,
@@ -753,7 +775,9 @@ class PaymentRevenueReportService {
               stripe_amount_pln: sp.amount_pln || null,
               stripe_payment_status: sp.payment_status || null, // 'paid', 'pending', etc.
               stripe_invoice_number: sp.invoice_number || null,
-              stripe_receipt_number: sp.receipt_number || null
+              stripe_receipt_number: sp.receipt_number || null,
+              stripe_crm_product_id: stripeCrmProductId,
+              stripe_product_name: stripeProductName
             };
           });
       }

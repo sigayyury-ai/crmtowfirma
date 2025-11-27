@@ -88,7 +88,10 @@ class PaymentProductLinkService {
 
     const { data, error } = await supabase
       .from('payment_product_links')
-      .select('*')
+      .select(`
+        *,
+        product:product_id(id, name, normalized_name)
+      `)
       .eq('payment_id', paymentId)
       .single();
 
@@ -119,18 +122,16 @@ class PaymentProductLinkService {
       linked_by: linkedBy || null
     };
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('payment_product_links')
-      .insert(payload)
-      .select()
-      .single();
+      .insert(payload);
 
     if (error) {
       logger.error('Failed to create payment/product link', { error: error.message, payload });
       throw new Error('Не удалось создать связь платежа с продуктом');
     }
 
-    return data;
+    return this.getLinkByPayment(paymentId);
   }
 
   async removeLink({ paymentId }) {

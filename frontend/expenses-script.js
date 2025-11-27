@@ -12,6 +12,15 @@ const expensesState = {
   detailCellEl: null
 };
 
+// State for product list (used for linking expenses to products)
+const expenseProductLinkState = {
+  products: [],
+  loaded: false,
+  isLoading: false,
+  error: null,
+  loadPromise: null
+};
+
 // Initialize page
 document.addEventListener('DOMContentLoaded', () => {
   console.log('Expenses page loaded, initializing...');
@@ -67,6 +76,44 @@ function addLog(type, message) {
   }
   
   logContainer.scrollTop = logContainer.scrollHeight;
+}
+
+async function ensureExpenseProductsLoaded({ force = false } = {}) {
+  if (expenseProductLinkState.loaded && !force) {
+    return expenseProductLinkState.products;
+  }
+
+  if (expenseProductLinkState.loadPromise && !force) {
+    return expenseProductLinkState.loadPromise;
+  }
+
+  expenseProductLinkState.isLoading = true;
+  expenseProductLinkState.error = null;
+
+  const loader = fetch(`${API_BASE}/api/products/in-progress`)
+    .then((response) => response.json())
+    .then((payload) => {
+      if (!payload.success) {
+        throw new Error(payload.error || 'Не удалось получить продукты');
+      }
+      const products = Array.isArray(payload.data) ? payload.data : [];
+      expenseProductLinkState.products = products;
+      expenseProductLinkState.loaded = true;
+      expenseProductLinkState.error = null;
+      return products;
+    })
+    .catch((error) => {
+      expenseProductLinkState.error = error.message || 'Не удалось получить продукты';
+      addLog('warning', `Не удалось получить список продуктов: ${expenseProductLinkState.error}`);
+      throw error;
+    })
+    .finally(() => {
+      expenseProductLinkState.isLoading = false;
+      expenseProductLinkState.loadPromise = null;
+    });
+
+  expenseProductLinkState.loadPromise = loader;
+  return loader;
 }
 
 // Load expense categories
@@ -773,6 +820,13 @@ async function selectExpenseRow(row, { forceReload = false, skipScroll = false }
 
   try {
     const detail = await loadExpenseDetails(idKey, { forceReload });
+    if (detail?.expense?.direction === 'out') {
+      try {
+        await ensureExpenseProductsLoaded();
+      } catch (productError) {
+        console.debug('Failed to pre-load products for expense linking:', productError.message);
+      }
+    }
     renderExpenseDetail(detail, detailCell);
   } catch (error) {
     addLog('error', `Не удалось получить детали расхода: ${error.message}`);
@@ -822,10 +876,24 @@ async function loadExpenseDetails(paymentId, { forceReload = false } = {}) {
     }
   }
 
+  let link = null;
+  try {
+    const linkResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(cacheKey)}/link-product`);
+    if (linkResponse.ok) {
+      const linkPayload = await linkResponse.json();
+      if (linkPayload.success) {
+        link = linkPayload.data || null;
+      }
+    }
+  } catch (linkError) {
+    console.debug('Failed to load product link info (non-critical):', linkError.message);
+  }
+
   const result = {
-    expense: payment, // Keep 'expense' key for backward compatibility
-    payment: payment, // Also include 'payment' key
-    suggestions
+    expense: payment,
+    payment,
+    suggestions,
+    link
   };
 
   expensesState.details.set(cacheKey, result);
@@ -840,9 +908,10 @@ function renderExpenseDetail(data, target = expensesState.detailCellEl) {
     return;
   }
 
-  const { expense, suggestions = [] } = data;
+  const { expense, suggestions = [], link } = data;
   const isIncome = expense.direction === 'in';
   const isExpense = expense.direction === 'out';
+  const linkedProductIdAttr = link?.product_id ? escapeHtml(String(link.product_id)) : '';
   
   // Get category name based on direction
   let categoryName = '';
@@ -948,8 +1017,10 @@ function renderExpenseDetail(data, target = expensesState.detailCellEl) {
   // Используем amount_raw для заголовка
   const headerAmount = expense.amount_raw || (expense.amount ? `${isIncome ? '+' : '-'}${expense.amount.toFixed(2)} ${expense.currency || 'PLN'}` : '');
   
+  const productLinkPanelHTML = isExpense ? renderExpenseProductLinkPanel(link) : '';
+
   target.innerHTML = `
-    <div class="payment-detail" data-expense-id="${escapeHtml(String(expense.id))}">
+    <div class="payment-detail" data-expense-id="${escapeHtml(String(expense.id))}" data-linked-product="${linkedProductIdAttr}">
       <header>
         <h3>${paymentType} ${headerAmount}</h3>
       </header>
@@ -967,6 +1038,7 @@ function renderExpenseDetail(data, target = expensesState.detailCellEl) {
         </div>
       </div>
       ${categoryPanelHTML}
+      ${productLinkPanelHTML}
     </div>
   `;
 
@@ -979,6 +1051,74 @@ function renderExpenseMeta(label, value) {
     <div class="payment-meta-row">
       <span class="payment-meta-label">${escapeHtml(label)}</span>
       <span class="payment-meta-value">${value}</span>
+    </div>
+  `;
+}
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleString('ru-RU');
+}
+
+function renderExpenseProductLinkPanel(link) {
+  if (expenseProductLinkState.isLoading && !expenseProductLinkState.loaded) {
+    return `
+      <div class="product-link-panel">
+        <label>Привязка к продукту</label>
+        <div class="product-link-placeholder">Загружаю список продуктов...</div>
+      </div>
+    `;
+  }
+
+  if (expenseProductLinkState.error) {
+    return `
+      <div class="product-link-panel error">
+        <label>Привязка к продукту</label>
+        <div class="product-link-placeholder">
+          ${escapeHtml(expenseProductLinkState.error)}
+          <button class="btn btn-secondary" id="expense-products-reload">↻ Повторить</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const products = expenseProductLinkState.products || [];
+  const linkedProductId = link?.product_id ? String(link.product_id) : '';
+  const options = [
+    '<option value="">Не выбрано</option>',
+    ...products.map((product) => {
+      const value = escapeHtml(String(product.id));
+      const label = escapeHtml(product.name || 'Без названия');
+      const selected = linkedProductId === String(product.id) ? 'selected' : '';
+      return `<option value="${value}" ${selected}>${label}</option>`;
+    })
+  ];
+
+  if (linkedProductId && !products.some((product) => String(product.id) === linkedProductId)) {
+    const label = escapeHtml(link?.product?.name || `Продукт #${linkedProductId}`);
+    options.splice(1, 0, `<option value="${escapeHtml(linkedProductId)}" selected>${label} (неактивный)</option>`);
+  }
+
+  const linkedMeta = link
+    ? `<div class="product-link-meta">Связано ${escapeHtml(formatDateTime(link.linked_at) || '')}${link.linked_by ? ` • ${escapeHtml(link.linked_by)}` : ''}</div>`
+    : '<div class="product-link-meta muted">Связь не установлена</div>';
+
+  return `
+    <div class="product-link-panel">
+      <label for="expense-product-select">Привязка к продукту</label>
+      <select id="expense-product-select"${products.length === 0 ? ' disabled' : ''}>
+        ${options.join('')}
+      </select>
+      <div class="product-link-actions">
+        <button class="btn btn-primary" id="expense-product-link-btn"${products.length === 0 ? ' disabled' : ''}>🔗 Связать</button>
+        <button class="btn btn-secondary" id="expense-product-unlink-btn"${link ? '' : ' disabled'}>✖ Отвязать</button>
+        <button class="btn btn-secondary" id="expense-products-reload">↻ Обновить список</button>
+      </div>
+      ${linkedMeta}
     </div>
   `;
 }
@@ -1023,6 +1163,10 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
   const moveToIncomeButton = root.querySelector('#expense-move-to-income');
   const moveToExpenseButton = root.querySelector('#expense-move-to-expense');
   const candidateCards = root.querySelectorAll('.candidate-card');
+  const productSelect = root.querySelector('#expense-product-select');
+  const productLinkBtn = root.querySelector('#expense-product-link-btn');
+  const productUnlinkBtn = root.querySelector('#expense-product-unlink-btn');
+  const reloadProductsBtn = root.querySelector('#expense-products-reload');
 
   // Handle candidate card clicks (only for expenses with suggestions)
   candidateCards.forEach((card) => {
@@ -1375,6 +1519,70 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       setButtonLoading(moveToExpenseButton, false, '📤 Переместить в расходы');
     }
   });
+
+  if (isExpense) {
+    reloadProductsBtn?.addEventListener('click', async () => {
+      try {
+        setButtonLoading(reloadProductsBtn, true, 'Обновление...');
+        await ensureExpenseProductsLoaded({ force: true });
+        const refreshed = await loadExpenseDetails(paymentId, { forceReload: true });
+        renderExpenseDetail(refreshed, root);
+      } catch (error) {
+        addLog('error', `Не удалось обновить список продуктов: ${error.message}`);
+      } finally {
+        setButtonLoading(reloadProductsBtn, false, '↻ Обновить список');
+      }
+    });
+
+    productLinkBtn?.addEventListener('click', async () => {
+      if (!productSelect) return;
+      const productId = productSelect.value;
+      if (!productId) {
+        addLog('warning', 'Выберите продукт перед привязкой');
+        productSelect.focus();
+        return;
+      }
+      try {
+        setButtonLoading(productLinkBtn, true, 'Связываю...');
+        const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(paymentId)}/link-product`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ productId: Number(productId) })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || 'Не удалось связать платеж');
+        }
+        addLog('success', `Расход ${paymentId} привязан к продукту ${productSelect.selectedOptions[0]?.textContent || productId}`);
+        const refreshed = await loadExpenseDetails(paymentId, { forceReload: true });
+        renderExpenseDetail(refreshed, root);
+      } catch (error) {
+        addLog('error', `Не удалось привязать расход: ${error.message}`);
+      } finally {
+        setButtonLoading(productLinkBtn, false, '🔗 Связать');
+      }
+    });
+
+    productUnlinkBtn?.addEventListener('click', async () => {
+      try {
+        setButtonLoading(productUnlinkBtn, true, 'Отвязываю...');
+        const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(paymentId)}/link-product`, {
+          method: 'DELETE'
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.error || 'Не удалось удалить связь');
+        }
+        addLog('info', `Связь расхода ${paymentId} с продуктом удалена`);
+        const refreshed = await loadExpenseDetails(paymentId, { forceReload: true });
+        renderExpenseDetail(refreshed, root);
+      } catch (error) {
+        addLog('error', `Не удалось удалить связь: ${error.message}`);
+      } finally {
+        setButtonLoading(productUnlinkBtn, false, '✖ Отвязать');
+      }
+    });
+  }
 }
 
 // Utility function to set button loading state
@@ -1641,5 +1849,3 @@ async function handleExpensesCsvUpload() {
     uploadButtonSpinner.style.display = 'none';
   }
 }
-
-

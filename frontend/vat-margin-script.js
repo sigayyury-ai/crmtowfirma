@@ -5,8 +5,10 @@ let paymentsLoaded = false;
 let productsLoaded = false;
 let paymentReportLoaded = false;
 let activeTab = 'report2';
+let activePaymentsSubtab = 'incoming';
 let deletedTabInitialized = false;
 let deletedTabAutoLoaded = false;
+let cashJournalInitialized = false;
 
 const paymentsState = {
   items: [],
@@ -40,6 +42,14 @@ const stripeEventsState = {
   error: null
 };
 
+const cashStatusLabels = {
+  pending: 'Ожидается',
+  pending_confirmation: 'На подтверждении',
+  received: 'Получено',
+  refunded: 'Возврат',
+  cancelled: 'Отменено'
+};
+
 function saveSelectedPeriod() {
   if (!elements.monthSelect || !elements.yearSelect) return;
   const monthValue = elements.monthSelect.value;
@@ -60,9 +70,9 @@ document.addEventListener('DOMContentLoaded', () => {
     return;
   }
 
-  initTabs();
   initMonthYearSelectors();
   bindEvents();
+  initTabs();
   applyInitialHashSelection();
 
   addLog('info', 'VAT Margin Tracker инициализирован');
@@ -104,7 +114,17 @@ function cacheDom() {
     stripeSummaryTable: document.getElementById('stripe-summary-table'),
     stripeEventsCount: document.getElementById('stripe-events-count'),
     stripeStatusIndicator: document.getElementById('stripe-status-indicator'),
-    stripeRefreshEvents: document.getElementById('stripe-refresh-events')
+    stripeRefreshEvents: document.getElementById('stripe-refresh-events'),
+    paymentsSubtabButtons: Array.from(document.querySelectorAll('[data-payments-tab]')),
+    paymentsIncomingSection: document.getElementById('payments-incoming'),
+    paymentsOutgoingSection: document.getElementById('payments-outgoing'),
+    cashSummaryExpected: document.getElementById('cashSummaryExpected'),
+    cashSummaryReceived: document.getElementById('cashSummaryReceived'),
+    cashSummaryPending: document.getElementById('cashSummaryPending'),
+    cashFilterProduct: document.getElementById('cashFilterProduct'),
+    cashFilterStatus: document.getElementById('cashFilterStatus'),
+    cashFiltersApply: document.getElementById('cashFiltersApply'),
+    cashTableBody: document.getElementById('cashTableBody')
   };
 }
 
@@ -127,6 +147,25 @@ function bindEvents() {
   elements.expensesCsvInput?.addEventListener('change', handleExpensesCsvUpload);
   elements.paymentsTable?.addEventListener('click', handlePaymentActionClick);
   elements.stripeRefreshEvents?.addEventListener('click', () => loadStripeEvents({ force: true }));
+  elements.cashFiltersApply?.addEventListener('click', () => loadCashJournal());
+  elements.cashFilterStatus?.addEventListener('change', () => loadCashJournal());
+  elements.cashFilterProduct?.addEventListener('change', () => loadCashJournal());
+  elements.cashTableBody?.addEventListener('click', (event) => {
+    const target = event.target;
+    if (target.matches('.btn-confirm')) {
+      const id = Number(target.dataset.id);
+      if (Number.isFinite(id)) {
+        confirmCashPayment(id);
+      }
+    }
+    if (target.matches('.btn-refund')) {
+      const id = Number(target.dataset.id);
+      if (Number.isFinite(id)) {
+        refundCashPayment(id);
+      }
+    }
+  });
+  initPaymentsSubtabs();
 
   initDeletedTab();
 
@@ -193,6 +232,46 @@ function switchTab(tabName) {
   }
 
   if (tabName === 'payments' && !paymentsLoaded) {
+    loadPaymentsData();
+    paymentsLoaded = true;
+    return;
+  }
+
+  if (tabName === 'cash-journal') {
+    if (!cashJournalInitialized) {
+      initCashJournalTab();
+      cashJournalInitialized = true;
+    } else {
+      loadCashJournal();
+    }
+    return;
+  }
+}
+
+function initPaymentsSubtabs() {
+  if (!elements.paymentsSubtabButtons?.length) return;
+  togglePaymentsSubtab(activePaymentsSubtab);
+  elements.paymentsSubtabButtons.forEach((btn) => {
+    btn.addEventListener('click', () => togglePaymentsSubtab(btn.dataset.paymentsTab));
+  });
+}
+
+function togglePaymentsSubtab(subtab) {
+  activePaymentsSubtab = subtab || 'incoming';
+  const sections = {
+    incoming: elements.paymentsIncomingSection,
+    outgoing: elements.paymentsOutgoingSection
+  };
+
+  elements.paymentsSubtabButtons.forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.paymentsTab === activePaymentsSubtab);
+  });
+
+  Object.entries(sections).forEach(([key, section]) => {
+    section?.classList.toggle('active', key === activePaymentsSubtab);
+  });
+
+  if (activeTab === 'payments' && activePaymentsSubtab === 'incoming' && !paymentsLoaded) {
     loadPaymentsData();
     paymentsLoaded = true;
   }
@@ -540,15 +619,11 @@ function initMonthYearSelectors() {
   if (!elements.monthSelect || !elements.yearSelect) return;
 
   const today = new Date();
-  const storedMonth = window.localStorage.getItem('vatMargin.month');
-  const storedYear = window.localStorage.getItem('vatMargin.year');
-
   const monthOptions = Array.from(elements.monthSelect.options ?? []).map((option) => option.value);
   const yearOptions = Array.from(elements.yearSelect.options ?? []).map((option) => option.value);
 
   const defaultMonth = String(today.getMonth() + 1);
-  const initialMonth = monthOptions.includes(storedMonth) ? storedMonth : defaultMonth;
-  const selectedMonth = monthOptions.includes(initialMonth) ? initialMonth : (monthOptions[0] || '');
+  const selectedMonth = monthOptions.includes(defaultMonth) ? defaultMonth : (monthOptions[0] || '');
 
   const yearFallback = (() => {
     const numericYears = yearOptions.map(Number).filter(Number.isFinite);
@@ -561,8 +636,9 @@ function initMonthYearSelectors() {
     return String(bounded);
   })();
 
-  const initialYear = yearOptions.includes(storedYear) ? storedYear : yearFallback;
-  const selectedYear = yearOptions.includes(initialYear) ? initialYear : (yearOptions[0] || '');
+  const selectedYear = yearOptions.includes(String(today.getFullYear()))
+    ? String(today.getFullYear())
+    : yearFallback;
 
   if (selectedMonth) {
     elements.monthSelect.value = selectedMonth;
@@ -2154,6 +2230,234 @@ async function deletePaymentQuick(paymentId) {
 function exportPaymentsCsv() {
   window.open(`${API_BASE}/vat-margin/payments/export`, '_blank');
   addLog('info', 'Экспорт платежей запрошен');
+}
+
+function initCashJournalTab() {
+  loadCashProductOptions().finally(() => {
+    loadCashJournal();
+  });
+}
+
+async function loadCashJournal() {
+  if (!elements.cashTableBody) return;
+
+  const filters = {
+    status: elements.cashFilterStatus?.value || '',
+    productId: elements.cashFilterProduct?.value || ''
+  };
+
+  try {
+    const [paymentsResult, summaryResult] = await Promise.allSettled([
+      fetchCashJournalPayments(filters),
+      fetchCashSummary(filters)
+    ]);
+
+    const payments = paymentsResult.status === 'fulfilled' ? paymentsResult.value : [];
+    const summary = summaryResult.status === 'fulfilled' ? summaryResult.value : [];
+
+    renderCashJournalTable(payments);
+    renderCashSummary(summary, payments);
+  } catch (error) {
+    console.error('Cash journal load failed', error);
+    renderCashJournalTable([]);
+    renderCashSummary([], []);
+  }
+}
+
+async function fetchCashJournalPayments(filters = {}) {
+  const url = new URL('/api/cash-payments', window.location.origin);
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.append(key, value);
+    }
+  });
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Не удалось загрузить наличные платежи');
+  }
+  const data = await response.json();
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+async function fetchCashSummary(filters = {}) {
+  const url = new URL('/api/cash-summary', window.location.origin);
+  if (filters.productId) {
+    url.searchParams.append('productId', filters.productId);
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Не удалось загрузить сводку наличных');
+  }
+  const data = await response.json();
+  return Array.isArray(data.summary) ? data.summary : [];
+}
+
+function renderCashJournalTable(items = []) {
+  const tbody = elements.cashTableBody;
+  if (!tbody) return;
+
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-muted">Нет данных за выбранный период</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = '';
+  items.forEach((item) => {
+    const rawBuyerName =
+      item.metadata?.buyerName ||
+      item.metadata?.buyer_name ||
+      item.metadata?.personName ||
+      item.metadata?.person_name ||
+      item.proformas?.buyer_name ||
+      item.proformas?.buyer_alt_name ||
+      item.deal_person_name ||
+      null;
+
+    const buyerName = rawBuyerName || (item.deal_id ? `Сделка #${item.deал_id}` : '—');
+    const clientCell = item.deal_id
+      ? `<a href="https://comoon.pipedrive.com/deal/${item.deal_id}" target="_blank" rel="noopener">${buyerName}</a>`
+      : buyerName;
+
+    const canConfirm = item.status === 'pending' || item.status === 'pending_confirmation';
+    const statusLabel = cashStatusLabels[item.status] || item.status || '—';
+
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${clientCell}</td>
+      <td>${formatCurrency(item.cash_expected_amount || 0, item.currency || 'PLN')}</td>
+      <td>${formatDate(item.expected_date)}</td>
+      <td><span class="tag ${item.status}">${statusLabel}</span></td>
+      <td>${item.cash_received_amount ? formatCurrency(item.cash_received_amount, item.currency || 'PLN') : '—'}</td>
+      <td class="actions-cell">
+        ${canConfirm ? `<button class="btn btn-primary btn-confirm" data-id="${item.id}">Подтвердить</button>` : ''}
+        <button class="btn btn-secondary btn-refund" data-id="${item.id}">Возврат</button>
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+
+function renderCashSummary(summaryEntries = [], fallbackItems = []) {
+  const expectedEl = elements.cashSummaryExpected;
+  const receivedEl = elements.cashSummaryReceived;
+  const pendingEl = elements.cashSummaryPending;
+  if (!expectedEl || !receivedEl || !pendingEl) return;
+
+  const totals = { expected: 0, received: 0, pending: 0 };
+
+  if (Array.isArray(summaryEntries) && summaryEntries.length > 0) {
+    summaryEntries.forEach((item) => {
+      totals.expected += item.expected_total_pln || 0;
+      totals.received += item.received_total_pln || 0;
+      totals.pending += item.pending_total_pln || 0;
+    });
+  } else if (Array.isArray(fallbackItems)) {
+    fallbackItems.forEach((item) => {
+      const expected = Number(item.cash_expected_amount) || 0;
+      const received = Number(item.cash_received_amount) || 0;
+      totals.expected += expected;
+      if (item.status === 'received') {
+        totals.received += received || expected;
+      } else if (item.status === 'pending' || item.status === 'pending_confirmation') {
+        totals.pending += Math.max(expected - received, 0);
+      }
+    });
+  }
+
+  expectedEl.textContent = `${totals.expected.toFixed(2)} PLN`;
+  receivedEl.textContent = `${totals.received.toFixed(2)} PLN`;
+  pendingEl.textContent = `${totals.pending.toFixed(2)} PLN`;
+}
+
+async function loadCashProductOptions() {
+  if (!elements.cashFilterProduct) return;
+  try {
+    const response = await fetch('/api/vat-margin/products/summary');
+    if (!response.ok) {
+      throw new Error('Не удалось загрузить продукты');
+    }
+    const payload = await response.json();
+    const items = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+    const unique = new Map();
+    items.forEach((item) => {
+      const id = item.productId;
+      const name = item.productName || `Продукт #${item.productId}`;
+      const isActive = !item.calculationStatus || item.calculationStatus === 'in_progress';
+      if (!id || unique.has(id) || !isActive) {
+        return;
+      }
+      unique.set(id, name);
+    });
+
+    elements.cashFilterProduct.innerHTML = '<option value=\"\">Все продукты</option>';
+    Array.from(unique.entries())
+      .sort((a, b) => a[1].localeCompare(b[1], 'ru'))
+      .forEach(([id, name]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = name;
+        elements.cashFilterProduct.appendChild(option);
+      });
+  } catch (error) {
+    console.warn('Не удалось загрузить список продуктов для журнала наличных', error);
+  }
+}
+
+async function confirmCashPayment(paymentId) {
+  const amountInput = window.prompt('Введите подтвержденную сумму (оставьте пустым, чтобы использовать ожидаемую):', '');
+  const payload = {};
+  if (amountInput) {
+    const parsed = parseFloat(amountInput.replace(',', '.'));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      payload.amount = parsed;
+    }
+  }
+
+  try {
+    const response = await fetch(`/api/cash-payments/${paymentId}/confirm`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error('Ошибка подтверждения');
+    }
+    await loadCashJournal();
+  } catch (error) {
+    console.error(error);
+    alert('Не удалось подтвердить платеж');
+  }
+}
+
+async function refundCashPayment(paymentId) {
+  const amountInput = window.prompt('Сумма возврата (оставьте пустым для полной):', '');
+  const reason = window.prompt('Причина возврата:', 'Клиент отказался');
+
+  const payload = {
+    cashPaymentId: paymentId,
+    reason
+  };
+  if (amountInput) {
+    const parsed = parseFloat(amountInput.replace(',', '.'));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      payload.amount = parsed;
+    }
+  }
+
+  try {
+    const response = await fetch('/api/cash-refunds', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      throw new Error('Ошибка возврата');
+    }
+    await loadCashJournal();
+  } catch (error) {
+    console.error(error);
+    alert('Не удалось выполнить возврат');
+  }
 }
 
 function addLog(type, message) {

@@ -5,9 +5,219 @@ const InvoiceProcessingService = require('../services/invoiceProcessing');
 const { STAGES } = require('../services/stripe/crmSync');
 const logger = require('../utils/logger');
 const { normaliseCurrency } = require('../utils/currency');
+const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
+const { extractCashFields, parseDateString } = require('../services/cash/cashFieldParser');
+const { ensureCashStatus } = require('../services/cash/cashStatusSync');
+const { createCashReminder, closeCashReminders } = require('../services/cash/cashReminderService');
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
+const cashPaymentsRepository = new CashPaymentsRepository();
+const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
+const STRIPE_DASHBOARD_ACCOUNT_PATH = process.env.STRIPE_DASHBOARD_ACCOUNT_PATH || '';
+const STRIPE_DASHBOARD_WORKSPACE_ID = process.env.STRIPE_DASHBOARD_WORKSPACE_ID || '';
+
+function resolvePipedriveClient() {
+  if (invoiceProcessing?.pipedriveClient) {
+    return invoiceProcessing.pipedriveClient;
+  }
+  if (stripeProcessor?.pipedriveClient) {
+    return stripeProcessor.pipedriveClient;
+  }
+  return null;
+}
+
+function formatStripeInvoiceMarker(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+  const suffix = String(sessionId).slice(-6).toUpperCase();
+  return `STR-${suffix}`;
+}
+
+function buildStripeSearchUrl(query) {
+  const stripeMode = (process.env.STRIPE_MODE || 'test').toLowerCase();
+  const baseUrl = stripeMode === 'live'
+    ? 'https://dashboard.stripe.com'
+    : 'https://dashboard.stripe.com/test';
+  const accountSegment = STRIPE_DASHBOARD_ACCOUNT_PATH ? `/${STRIPE_DASHBOARD_ACCOUNT_PATH}` : '';
+  const workspaceSegment = STRIPE_DASHBOARD_WORKSPACE_ID
+    ? `&search_context_id=${encodeURIComponent(STRIPE_DASHBOARD_WORKSPACE_ID)}`
+    : '';
+  return `${baseUrl}${accountSegment}/search?query=${encodeURIComponent(query)}${workspaceSegment}`;
+}
+
+async function updateInvoiceNumberField(dealId, value) {
+  const client = resolvePipedriveClient();
+  if (!client || !dealId || !INVOICE_NUMBER_FIELD_KEY) {
+    return false;
+  }
+
+  try {
+    await client.updateDeal(dealId, {
+      [INVOICE_NUMBER_FIELD_KEY]: value
+    });
+    logger.info('Invoice number field updated', { dealId, value });
+    return true;
+  } catch (error) {
+    logger.warn('Failed to update invoice number field', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
+
+async function updateInvoiceTypeField(dealId, value) {
+  const client = resolvePipedriveClient();
+  if (!client || !dealId || !INVOICE_TYPE_FIELD_KEY) {
+    return false;
+  }
+
+  try {
+    await client.updateDeal(dealId, {
+      [INVOICE_TYPE_FIELD_KEY]: value
+    });
+    logger.info('Invoice field updated', { dealId, value });
+    return true;
+  } catch (error) {
+    logger.warn('Failed to update invoice field', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
+
+function hasProformaCandidates(deal) {
+  if (!deal || !INVOICE_NUMBER_FIELD_KEY) {
+    return false;
+  }
+  const rawValue = deal[INVOICE_NUMBER_FIELD_KEY];
+  if (rawValue === undefined || rawValue === null) {
+    return false;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (['delete', 'done', 'stripe', 'str', 'n/a', '-'].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+async function hasStripePaymentsForDeal(dealId) {
+  if (!dealId || !stripeProcessor?.repository?.isEnabled()) {
+    return false;
+  }
+
+  try {
+    const payments = await stripeProcessor.repository.listPayments({
+      dealId: String(dealId),
+      limit: 1
+    });
+    return Array.isArray(payments) && payments.length > 0;
+  } catch (error) {
+    logger.warn('Failed to check Stripe payments for deal', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
+
+async function refundStripePayments(dealId) {
+  const summary = {
+    totalDeals: 1,
+    refundsCreated: 0,
+    errors: []
+  };
+
+  try {
+    await stripeProcessor.refundDealPayments(dealId, summary);
+    if (summary.refundsCreated > 0) {
+      logger.info('Stripe refunds processed for deal', {
+        dealId,
+        refundsCreated: summary.refundsCreated,
+        errors: summary.errors?.length || 0
+      });
+    } else {
+      logger.info('No Stripe refunds created for deal', {
+        dealId,
+        errors: summary.errors?.length || 0
+      });
+    }
+  } catch (error) {
+    logger.warn('Failed to refund Stripe payments for deal', {
+      dealId,
+      error: error.message
+    });
+  }
+}
+
+async function cleanupDealArtifacts(dealId) {
+  const result = {
+    cashDeleted: 0,
+    stripeCancelled: 0,
+    stripeRemoved: 0,
+    reminderTasksClosed: 0,
+    reminderNotesRemoved: 0
+  };
+
+  if (!dealId) {
+    return result;
+  }
+
+  if (cashPaymentsRepository.isEnabled()) {
+    try {
+      const deletion = await cashPaymentsRepository.deleteByDealId(dealId);
+      result.cashDeleted = deletion.deleted || 0;
+      if (result.cashDeleted > 0) {
+        logger.info('Removed cash payments for deleted deal', {
+          dealId,
+          deleted: result.cashDeleted
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to delete cash payments for deal', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  try {
+    const stripeResult = await stripeProcessor.cancelDealCheckoutSessions(dealId);
+    result.stripeCancelled = stripeResult.cancelled || 0;
+    result.stripeRemoved = stripeResult.removed || 0;
+  } catch (error) {
+    logger.warn('Failed to cancel Stripe sessions for deleted deal', {
+      dealId,
+      error: error.message
+    });
+  }
+
+  const pipedriveClient = resolvePipedriveClient();
+  if (pipedriveClient) {
+    try {
+      const reminderResult = await closeCashReminders(pipedriveClient, { dealId });
+      result.reminderTasksClosed = reminderResult.tasksClosed || 0;
+      result.reminderNotesRemoved = reminderResult.notesRemoved || 0;
+    } catch (error) {
+      logger.warn('Failed to cleanup cash reminders for deal', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  await updateInvoiceTypeField(dealId, 'Done');
+  await updateInvoiceNumberField(dealId, null);
+
+  return result;
+}
 
 /**
  * Нормализует invoice_type к числовому ID
@@ -44,6 +254,133 @@ function normalizeInvoiceTypeToId(invoiceType) {
   
   // Если не найдено, возвращаем оригинальное значение (может быть кастомное)
   return String(invoiceType).trim();
+}
+
+function roundCurrency(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
+
+function hasAmountChanged(currentValue, previousValue) {
+  if (!Number.isFinite(currentValue)) {
+    return false;
+  }
+  if (!Number.isFinite(previousValue)) {
+    return true;
+  }
+  return Math.abs(currentValue - previousValue) >= 0.01;
+}
+
+function resolveDealCurrency(deal) {
+  if (!deal) return 'PLN';
+  const currency = deal.currency ||
+    deal['Deal currency'] ||
+    deal['deal_currency'] ||
+    deal['Currency'];
+  if (!currency || typeof currency !== 'string') {
+    return 'PLN';
+  }
+  return currency.toUpperCase();
+}
+
+function fallbackExpectedDate(deal) {
+  if (!deal) return null;
+  return parseDateString(
+    deal.expected_close_date ||
+    deal.close_date ||
+    deal['Expected close date'] ||
+    deal['expected_close_date'] ||
+    deal['close_date']
+  );
+}
+
+async function syncCashExpectationFromDeal({ dealId, currentDeal, previousDeal }) {
+  if (!cashPaymentsRepository.isEnabled() || !dealId || !currentDeal) {
+    return;
+  }
+
+  const currentFields = extractCashFields(currentDeal);
+  if (!currentFields || !Number.isFinite(currentFields.amount) || currentFields.amount <= 0) {
+    return;
+  }
+
+  const previousFields = previousDeal ? extractCashFields(previousDeal) : null;
+  const previousAmount = previousFields?.amount;
+
+  if (!hasAmountChanged(currentFields.amount, previousAmount)) {
+    return;
+  }
+
+  const normalizedDealId = typeof dealId === 'string' ? dealId : Number(dealId);
+  const currency = resolveDealCurrency(currentDeal);
+  const expectedDate = currentFields.expectedDate || fallbackExpectedDate(currentDeal);
+  const roundedAmount = roundCurrency(currentFields.amount);
+
+  const existing = await cashPaymentsRepository.findDealExpectation(normalizedDealId);
+  const isNewExpectation = !existing;
+  const payload = {
+    cash_expected_amount: roundedAmount,
+    expected_date: expectedDate,
+    currency,
+    amount_pln: currency === 'PLN' ? roundedAmount : existing?.amount_pln ?? null,
+    status: existing && existing.status !== 'cancelled' ? existing.status : 'pending',
+    note: 'Создано из Pipedrive (cash_amount)'
+  };
+
+  let record = null;
+
+  if (existing) {
+    record = await cashPaymentsRepository.updatePayment(existing.id, payload);
+  } else {
+    record = await cashPaymentsRepository.createPayment({
+      deal_id: normalizedDealId,
+      proforma_id: null,
+      product_id: null,
+      cash_expected_amount: payload.cash_expected_amount,
+      currency: payload.currency,
+      amount_pln: currency === 'PLN' ? payload.cash_expected_amount : null,
+      expected_date: payload.expected_date,
+      status: 'pending',
+      source: 'crm',
+      created_by: 'pipedrive_webhook',
+      note: payload.note,
+      metadata: {
+        source: 'pipedrive'
+      }
+    });
+  }
+
+  if (record && record.id) {
+    await cashPaymentsRepository.logEvent(record.id, existing ? 'crm:update' : 'crm:create', {
+      source: 'pipedrive_webhook',
+      payload: {
+        amount: payload.cash_expected_amount,
+        expected_date: payload.expected_date
+      },
+      createdBy: 'pipedrive_webhook'
+    });
+
+    await ensureCashStatus({
+      pipedriveClient: invoiceProcessing.pipedriveClient,
+      dealId: normalizedDealId,
+      currentStatus: currentFields.status,
+      targetStatus: 'PENDING'
+    });
+
+    if (isNewExpectation) {
+      await createCashReminder(invoiceProcessing.pipedriveClient, {
+        dealId: normalizedDealId,
+        amount: payload.cash_expected_amount,
+        currency: payload.currency,
+        expectedDate: payload.expected_date,
+        closeDate: currentDeal.expected_close_date || currentDeal.close_date,
+        source: 'CRM',
+        buyerName: currentDeal.person_id?.name || currentDeal.person_name || currentDeal.title,
+        personId: currentDeal.person_id?.value || currentDeal.person_id,
+        sendpulseClient: invoiceProcessing.sendpulseClient
+      });
+    }
+  }
 }
 
 // Хранилище последних webhook событий для отладки (в памяти, последние 50)
@@ -440,6 +777,19 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Get lost_reason
     const lostReason = currentDeal?.lost_reason || currentDeal?.lostReason || currentDeal?.['lost_reason'] || null;
 
+    try {
+      await syncCashExpectationFromDeal({
+        dealId,
+        currentDeal,
+        previousDeal
+      });
+    } catch (cashSyncError) {
+      logger.warn('Failed to sync cash expectation from deal', {
+        dealId,
+        error: cashSyncError.message
+      });
+    }
+
     // ========== Обработка 1: Статус "lost" (приоритет) ==========
     // Проверяем статус lost ПЕРЕД обработкой invoice_type, так как это более критично
     if (currentStatus === 'lost') {
@@ -478,7 +828,19 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           }
         } else {
-        // Если lost_reason не "Refund", удаляем проформы
+        const hasStripePayments = await hasStripePaymentsForDeal(dealId);
+        if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
+          logger.info(`🗑️  Удаление Stripe платежей (без проформ) | Deal: ${dealId}`);
+          await refundStripePayments(dealId);
+          await cleanupDealArtifacts(dealId);
+          return res.status(200).json({
+            success: true,
+            message: 'Stripe payments deleted',
+            dealId
+          });
+        }
+
+        // Если lost_reason не "Refund" и Stripe-платежей нет, удаляем проформы
         logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
         try {
@@ -488,6 +850,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           } else {
             logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
           }
+          await cleanupDealArtifacts(dealId);
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Proformas deleted' : result.error,
@@ -508,29 +871,42 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Проверяем удаление ПЕРЕД обработкой стадии, чтобы удаление имело приоритет
     // Используем только ID "74" для удаления
     if (currentInvoiceType === '74') {
+      const hasStripePayments = await hasStripePaymentsForDeal(dealId);
+      if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
+        logger.info(`🗑️  Удаление Stripe платежей (invoice_type=Delete) | Deal: ${dealId}`);
+        await refundStripePayments(dealId);
+        await cleanupDealArtifacts(dealId);
+        return res.status(200).json({
+          success: true,
+          message: 'Stripe payments deleted',
+          dealId
+        });
+      }
+
       logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
-        try {
-          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+      try {
+        const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
         if (result.success) {
           logger.info(`✅ Проформы удалены | Deal: ${dealId}`);
         } else {
           logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
         }
-          return res.status(200).json({
-            success: result.success,
-            message: result.success ? 'Deletion processed' : result.error,
-            dealId
-          });
-        } catch (error) {
+        await cleanupDealArtifacts(dealId);
+        return res.status(200).json({
+          success: result.success,
+          message: result.success ? 'Deletion processed' : result.error,
+          dealId
+        });
+      } catch (error) {
         logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
-          return res.status(200).json({
-            success: false,
-            error: error.message,
-            dealId
-          });
-        }
+        return res.status(200).json({
+          success: false,
+          error: error.message,
+          dealId
+        });
       }
+    }
 
     // ========== Обработка 3: Стадия "First payment" (ID: 18) (триггер для Stripe) ==========
     // ВРЕМЕННО ОТКЛЮЧЕНО: создание Stripe Checkout Sessions через стадию "First payment"
@@ -810,6 +1186,28 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             }
           }
 
+          // Получаем сумму сделки (используется как при создании платежей, так и при повторной отправке уведомлений)
+          const dealProductsResult = await stripeProcessor.pipedriveClient.getDealProducts(dealId);
+          let totalAmount = parseFloat(dealWithWebhookData.value) || 0;
+          
+          if (dealProductsResult.success && dealProductsResult.products && dealProductsResult.products.length > 0) {
+            const firstProduct = dealProductsResult.products[0];
+            const sumPrice = typeof firstProduct.sum === 'number' 
+              ? firstProduct.sum 
+              : parseFloat(firstProduct.sum) || 0;
+            if (sumPrice > 0) {
+              totalAmount = sumPrice;
+            }
+          }
+
+          // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
+          const rawCurrency = dealWithWebhookData.currency || 'PLN';
+          const currency = normaliseCurrency(rawCurrency);
+          
+          if (rawCurrency !== currency) {
+            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
+          }
+
           if (!needToCreate && existingPayments && existingPayments.length > 0) {
             logger.info(`✅ Все необходимые Stripe сессии уже существуют И оплачены | Deal: ${dealId} | График: ${paymentSchedule} | Количество: ${existingPayments.length}`, {
             dealId,
@@ -865,28 +1263,6 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           } else {
             logger.info(`✅ Существующих сессий не найдено, создаем все | Deal: ${dealId} | График: ${paymentSchedule}`);
-          }
-
-          // Получаем сумму сделки
-          const dealProductsResult = await stripeProcessor.pipedriveClient.getDealProducts(dealId);
-          let totalAmount = parseFloat(dealWithWebhookData.value) || 0;
-          
-          if (dealProductsResult.success && dealProductsResult.products && dealProductsResult.products.length > 0) {
-            const firstProduct = dealProductsResult.products[0];
-            const sumPrice = typeof firstProduct.sum === 'number' 
-              ? firstProduct.sum 
-              : parseFloat(firstProduct.sum) || 0;
-            if (sumPrice > 0) {
-              totalAmount = sumPrice;
-            }
-          }
-
-          // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
-          const rawCurrency = dealWithWebhookData.currency || 'PLN';
-          const currency = normaliseCurrency(rawCurrency);
-          
-          if (rawCurrency !== currency) {
-            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
           }
 
           // Создаем только недостающие Stripe Checkout Sessions
@@ -1080,6 +1456,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.info(`ℹ️  Новые сессии не созданы (все уже существуют) | Deal: ${dealId} | График: ${paymentSchedule}`);
           }
 
+          if (sessions.length > 0) {
+            const marker = formatStripeInvoiceMarker(sessions[0]?.id);
+            if (marker) {
+              await updateInvoiceNumberField(dealId, marker);
+            }
+          }
+
           // Отправляем уведомление в SendPulse с графиком платежей и ссылками на сессии
           logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
           const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
@@ -1129,7 +1512,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               }
               
               noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;
-              noteContent += `📊 [Мониторинг всех платежей по сделке](${stripeBaseUrl}/payments?search=${dealId})\n`;
+              const searchLink = buildStripeSearchUrl(String(dealId));
+              noteContent += `📊 [Мониторинг всех платежей по сделке](${searchLink})\n`;
               
               await stripeProcessor.pipedriveClient.addNoteToDeal(dealId, noteContent);
               logger.info(`✅ Заметка с графиком платежей добавлена в сделку | Deal: ${dealId}`);
@@ -1274,6 +1658,12 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               });
               
               if (result.success) {
+                if (result.sessionId) {
+                  const marker = formatStripeInvoiceMarker(result.sessionId);
+                  if (marker) {
+                    await updateInvoiceNumberField(dealId, marker);
+                  }
+                }
                 return res.status(200).json({
                   success: true,
                   message: 'Checkout Sessions created via workflow automation',
@@ -1443,4 +1833,3 @@ router.delete('/webhooks/pipedrive/history', (req, res) => {
 });
 
 module.exports = router;
-

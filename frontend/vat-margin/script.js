@@ -5,6 +5,16 @@ const uploadSummary = document.getElementById('uploadSummary');
 const transactionsTable = document.querySelector('#transactionsTable tbody');
 const reportTable = document.querySelector('#reportTable tbody');
 const manualTable = document.querySelector('#manualTable tbody');
+const cashSummaryTable = document.querySelector('#cashSummaryTable tbody');
+const cashSummaryExpected = document.getElementById('cashSummaryExpected');
+const cashSummaryReceived = document.getElementById('cashSummaryReceived');
+const cashSummaryPending = document.getElementById('cashSummaryPending');
+const cashDealIdInput = document.getElementById('cashDealId');
+const cashAmountInput = document.getElementById('cashAmount');
+const cashCurrencySelect = document.getElementById('cashCurrency');
+const cashExpectedDateInput = document.getElementById('cashExpectedDate');
+const cashIndicator = document.getElementById('cashIndicator');
+const createCashPaymentBtn = document.getElementById('createCashPayment');
 
 tabs.forEach((tab) => {
   tab.addEventListener('click', () => {
@@ -82,6 +92,8 @@ function loadSample() {
   renderReport(SAMPLE_REPORT);
   renderManual(SAMPLE_MANUAL);
   showSummary(SAMPLE_TRANSACTIONS);
+  loadCashSummary();
+  refreshCashIndicator();
 }
 
 fileInput.addEventListener('change', async (event) => {
@@ -146,4 +158,138 @@ function aggregate(transactions) {
 
 loadSample();
 
+const CASH_SUMMARY_FALLBACK = [
+  {
+    period_month: '2025-11-01',
+    product_name: 'Demo Hybrid Cash',
+    expected_total_pln: 5500,
+    received_total_pln: 2300,
+    pending_total_pln: 3200
+  }
+];
 
+async function fetchCashSummaryData() {
+  const url = new URL('/api/cash-summary', window.location.origin);
+  const now = new Date();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+    .toISOString()
+    .slice(0, 10);
+  url.searchParams.append('from', monthStart);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error('Cash summary fetch failed');
+  }
+  const data = await response.json();
+  return data.summary || [];
+}
+
+function renderCashSummaryTable(data) {
+  const entries = data.length ? data : CASH_SUMMARY_FALLBACK;
+  cashSummaryTable.innerHTML = '';
+  entries.forEach((item) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${item.period_month || '—'}</td>
+      <td>${item.product_name || item.resolved_product_name || '—'}</td>
+      <td>${(item.expected_total_pln || 0).toFixed(2)}</td>
+      <td>${(item.received_total_pln || 0).toFixed(2)}</td>
+      <td>${(item.pending_total_pln || 0).toFixed(2)}</td>
+    `;
+    cashSummaryTable.appendChild(tr);
+  });
+}
+
+function renderCashSummaryCards(data) {
+  const totals = data.reduce(
+    (acc, item) => {
+      acc.expected += item.expected_total_pln || 0;
+      acc.received += item.received_total_pln || 0;
+      acc.pending += item.pending_total_pln || 0;
+      return acc;
+    },
+    { expected: 0, received: 0, pending: 0 }
+  );
+
+  cashSummaryExpected.textContent = `${totals.expected.toFixed(2)} PLN`;
+  cashSummaryReceived.textContent = `${totals.received.toFixed(2)} PLN`;
+  cashSummaryPending.textContent = `${totals.pending.toFixed(2)} PLN`;
+}
+
+async function loadCashSummary() {
+  try {
+    const data = await fetchCashSummaryData();
+    renderCashSummaryCards(data);
+    renderCashSummaryTable(data);
+  } catch (error) {
+    console.warn('Using fallback cash summary data', error);
+    renderCashSummaryCards(CASH_SUMMARY_FALLBACK);
+    renderCashSummaryTable(CASH_SUMMARY_FALLBACK);
+  }
+}
+
+async function refreshCashIndicator() {
+  try {
+    const data = await fetchCashSummaryData();
+    const pending = data.reduce((sum, item) => sum + (item.pending_total_pln || 0), 0);
+    if (pending > 0) {
+      cashIndicator.textContent = `Ожидаем кэш: ${pending.toFixed(2)} PLN`;
+      cashIndicator.classList.add('warning');
+    } else {
+      cashIndicator.textContent = 'Ожиданий наличных нет';
+      cashIndicator.classList.remove('warning');
+    }
+  } catch (error) {
+    cashIndicator.textContent = 'Не удалось получить сводку';
+    console.warn('Failed to refresh cash indicator', error);
+  }
+}
+async function createCashPayment(payload) {
+  const response = await fetch('/api/cash-payments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || 'Cash API error');
+  }
+  return response.json();
+}
+
+createCashPaymentBtn.addEventListener('click', async () => {
+  const dealId = Number(cashDealIdInput.value);
+  const amount = Number(cashAmountInput.value);
+  const currency = cashCurrencySelect.value;
+  const expectedDate = cashExpectedDateInput.value;
+
+  if (!Number.isFinite(dealId) || dealId <= 0) {
+    alert('Укажите Deal ID');
+    return;
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    alert('Введите сумму наличных');
+    return;
+  }
+
+  try {
+    createCashPaymentBtn.disabled = true;
+    createCashPaymentBtn.textContent = '⏳ Добавляем...';
+    await createCashPayment({
+      dealId,
+      amount,
+      currency,
+      expectedDate
+    });
+    cashDealIdInput.value = '';
+    cashAmountInput.value = '';
+    cashExpectedDateInput.value = '';
+    await refreshCashIndicator();
+    alert('Наличный платёж создан — задача добавлена в Pipedrive');
+  } catch (error) {
+    console.error(error);
+    alert('Не удалось создать наличный платёж');
+  } finally {
+    createCashPaymentBtn.disabled = false;
+    createCashPaymentBtn.textContent = '➕ Добавить наличный платёж';
+  }
+});

@@ -13,6 +13,7 @@ const PipedriveClient = require('../pipedrive');
 const { getRate } = require('./exchangeRateService');
 const { getStripeClient } = require('./client');
 const SendPulseClient = require('../sendpulse');
+const { extractCashFields } = require('../cash/cashFieldParser');
 
 class StripeProcessorService {
   constructor(options = {}) {
@@ -2534,6 +2535,22 @@ class StripeProcessorService {
         };
       }
       
+      const cashFields = extractCashFields(fullDeal);
+      let cashDeduction = 0;
+      if (!customAmount && cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
+        cashDeduction = roundBankers(cashFields.amount);
+        const netAmount = Math.max(basePrice - cashDeduction, 0);
+        if (netAmount !== basePrice) {
+          this.logger.info('Учитываем наличный платеж при расчете Stripe суммы', {
+            dealId,
+            basePrice,
+            cashDeduction,
+            netAmount
+          });
+        }
+        basePrice = netAmount;
+      }
+
       let productPrice = basePrice;
       
       // Override amount if customAmount is provided (for second payment)
@@ -2818,6 +2835,13 @@ class StripeProcessorService {
         metadata.vat_amount = vatAmount.toFixed(2);
         metadata.total_including_vat = productPrice.toFixed(2);
         metadata.vat_currency = currency;
+      }
+
+      if (cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
+        metadata.cash_amount_expected = roundBankers(cashFields.amount).toFixed(2);
+        if (cashFields.expectedDate) {
+          metadata.cash_expected_date = cashFields.expectedDate;
+        }
       }
       
       const sessionParams = {
@@ -3513,6 +3537,58 @@ class StripeProcessorService {
     }
   }
 
+  async cancelDealCheckoutSessions(dealId) {
+    if (!dealId) {
+      return { cancelled: 0, removed: 0 };
+    }
+
+    const payments = await this.repository.listPayments({ dealId: String(dealId) });
+    let cancelled = 0;
+
+    for (const payment of payments) {
+      if (!payment?.session_id) {
+        continue;
+      }
+      if (payment.payment_status && payment.payment_status === 'paid') {
+        continue;
+      }
+      try {
+        await this.stripe.checkout.sessions.expire(payment.session_id);
+        cancelled += 1;
+        this.logger.info('Expired Stripe Checkout Session for deleted deal', {
+          dealId,
+          sessionId: payment.session_id
+        });
+      } catch (error) {
+        if (error.code === 'resource_missing') {
+          this.logger.info('Stripe Checkout Session already missing', {
+            dealId,
+            sessionId: payment.session_id
+          });
+        } else {
+          this.logger.warn('Failed to expire Stripe Checkout Session', {
+            dealId,
+            sessionId: payment.session_id,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    const deletionResult = await this.repository.deletePaymentsByDealId(dealId);
+    if (deletionResult.deleted > 0) {
+      this.logger.info('Removed stored Stripe payments for deleted deal', {
+        dealId,
+        deleted: deletionResult.deleted
+      });
+    }
+
+    return {
+      cancelled,
+      removed: deletionResult.deleted || 0
+    };
+  }
+
   /**
    * Log deletion for a lost deal payment
    * @param {Object} payment - Payment record from database
@@ -4022,6 +4098,8 @@ class StripeProcessorService {
    */
   async sendPaymentNotificationForDeal(dealId, options = {}) {
     const { paymentSchedule, sessions = [], currency, totalAmount } = options;
+    const sessionsAmount = sessions.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+    const effectiveTotalAmount = sessions.length > 0 ? sessionsAmount : totalAmount;
 
     this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
       dealId,
@@ -4145,7 +4223,7 @@ class StripeProcessorService {
       // Если sessions пустые, отправляем только информацию о графике платежей
       if (sessions.length === 0) {
         if (paymentSchedule === '50/50') {
-          const depositAmount = totalAmount / 2;
+          const depositAmount = effectiveTotalAmount / 2;
           message = `*Привет! Для тебя определен график платежей.*\n\n`;
           message += `*График платежей:*\n\n`;
           
@@ -4160,7 +4238,7 @@ class StripeProcessorService {
           }
           message += `2️⃣ *Остаток 50%:* ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
           
-          message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+          message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
         } else {
           // Single payment
           let dateText = '';
@@ -4168,8 +4246,8 @@ class StripeProcessorService {
             dateText = ` до *${formatDate(singlePaymentDate)}*`;
           }
           message = `*Привет! Для тебя определен график платежей.*\n\n`;
-          message += `💳 *Полная оплата:* ${formatAmount(totalAmount)} ${currency}${dateText}\n\n`;
-          message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        message += `💳 *Полная оплата:* ${formatAmount(effectiveTotalAmount)} ${currency}${dateText}\n\n`;
+        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
         }
       } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
         // Two payments: deposit and rest
@@ -4197,7 +4275,7 @@ class StripeProcessorService {
           message += `   [Оплатить остаток](${restSession.url})\n\n`;
         }
 
-        message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
       } else if (paymentSchedule === '100%' && sessions.length >= 1) {
         // Single payment - different text
         const singleSession = sessions[0];
@@ -4208,7 +4286,7 @@ class StripeProcessorService {
         message = `*Привет! Для тебя создана ссылка на оплату через Stripe.*\n\n`;
         message += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}${dateText}\n`;
         message += `   [Оплатить](${singleSession.url})\n\n`;
-        message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
       } else {
         // Fallback: list all sessions
         sessions.forEach((session, index) => {
@@ -4216,7 +4294,7 @@ class StripeProcessorService {
           message += `${index + 1}. *${paymentLabel}:* ${formatAmount(session.amount)} ${currency}\n`;
           message += `   [Оплатить](${session.url})\n\n`;
         });
-        message += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n`;
+        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
       }
 
       if (sessions.length > 0) {

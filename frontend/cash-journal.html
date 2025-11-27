@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cash Journal — Comoon Finance</title>
+  <link rel="stylesheet" href="style.css">
+  <meta name="robots" content="noindex,nofollow">
+</head>
+<body>
+  <div class="container">
+    <nav class="main-nav">
+      <a href="/vat-margin.html" class="nav-link">Отчеты</a>
+      <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
+      <a href="/" class="nav-link">Настройки</a>
+    </nav>
+
+    <div class="sub-nav">
+      <a href="/cash-journal.html" class="nav-link active">Cash Journal</a>
+    </div>
+
+    <section class="status-section">
+      <h2>Сводка</h2>
+      <div class="status-grid" id="summaryCards">
+        <div class="status-card">
+          <h3>Ожидаем (PLN)</h3>
+          <div class="status-indicator" id="summaryExpected">0</div>
+        </div>
+        <div class="status-card">
+          <h3>Подтверждено (PLN)</h3>
+          <div class="status-indicator" id="summaryReceived">0</div>
+        </div>
+        <div class="status-card">
+          <h3>В ожидании</h3>
+          <div class="status-indicator" id="summaryPending">0</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="controls-section filters-section">
+      <h2>Фильтры</h2>
+      <div class="filters-grid">
+        <div class="filter-field">
+          <label>Продукт</label>
+          <select id="filterProduct">
+            <option value="">Все продукты</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Статус</label>
+          <select id="filterStatus">
+            <option value="">Все</option>
+            <option value="pending">Ожидается</option>
+            <option value="pending_confirmation">На подтверждении</option>
+            <option value="received">Получено</option>
+            <option value="refunded">Возврат</option>
+          </select>
+        </div>
+        <div class="filter-field filter-actions">
+          <label>&nbsp;</label>
+          <button id="applyFilters" class="btn btn-primary">🔄 Обновить</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="results-section">
+      <h2>Записи</h2>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Клиент</th>
+              <th>Сумма</th>
+              <th>Дата ожидания</th>
+              <th>Статус</th>
+              <th>Подтверждено</th>
+              <th class="actions-header">Действия</th>
+            </tr>
+          </thead>
+          <tbody id="cashTableBody">
+            <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script src="cash-journal.js"></script>
+</body>
+</html>
