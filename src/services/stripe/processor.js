@@ -13,6 +13,7 @@ const PipedriveClient = require('../pipedrive');
 const { getRate } = require('./exchangeRateService');
 const { getStripeClient } = require('./client');
 const SendPulseClient = require('../sendpulse');
+const { extractCashFields } = require('../cash/cashFieldParser');
 
 class StripeProcessorService {
   constructor(options = {}) {
@@ -2818,6 +2819,14 @@ class StripeProcessorService {
         metadata.vat_amount = vatAmount.toFixed(2);
         metadata.total_including_vat = productPrice.toFixed(2);
         metadata.vat_currency = currency;
+      }
+
+      const cashFields = extractCashFields(fullDeal);
+      if (cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
+        metadata.cash_amount_expected = roundBankers(cashFields.amount).toFixed(2);
+        if (cashFields.expectedDate) {
+          metadata.cash_expected_date = cashFields.expectedDate;
+        }
       }
       
       const sessionParams = {

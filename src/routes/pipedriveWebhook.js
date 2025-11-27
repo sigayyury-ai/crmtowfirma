@@ -5,9 +5,14 @@ const InvoiceProcessingService = require('../services/invoiceProcessing');
 const { STAGES } = require('../services/stripe/crmSync');
 const logger = require('../utils/logger');
 const { normaliseCurrency } = require('../utils/currency');
+const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
+const { extractCashFields, parseDateString } = require('../services/cash/cashFieldParser');
+const { ensureCashStatus } = require('../services/cash/cashStatusSync');
+const { createCashReminder } = require('../services/cash/cashReminderService');
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
+const cashPaymentsRepository = new CashPaymentsRepository();
 
 /**
  * Нормализует invoice_type к числовому ID
@@ -44,6 +49,133 @@ function normalizeInvoiceTypeToId(invoiceType) {
   
   // Если не найдено, возвращаем оригинальное значение (может быть кастомное)
   return String(invoiceType).trim();
+}
+
+function roundCurrency(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
+
+function hasAmountChanged(currentValue, previousValue) {
+  if (!Number.isFinite(currentValue)) {
+    return false;
+  }
+  if (!Number.isFinite(previousValue)) {
+    return true;
+  }
+  return Math.abs(currentValue - previousValue) >= 0.01;
+}
+
+function resolveDealCurrency(deal) {
+  if (!deal) return 'PLN';
+  const currency = deal.currency ||
+    deal['Deal currency'] ||
+    deal['deal_currency'] ||
+    deal['Currency'];
+  if (!currency || typeof currency !== 'string') {
+    return 'PLN';
+  }
+  return currency.toUpperCase();
+}
+
+function fallbackExpectedDate(deal) {
+  if (!deal) return null;
+  return parseDateString(
+    deal.expected_close_date ||
+    deal.close_date ||
+    deal['Expected close date'] ||
+    deal['expected_close_date'] ||
+    deal['close_date']
+  );
+}
+
+async function syncCashExpectationFromDeal({ dealId, currentDeal, previousDeal }) {
+  if (!cashPaymentsRepository.isEnabled() || !dealId || !currentDeal) {
+    return;
+  }
+
+  const currentFields = extractCashFields(currentDeal);
+  if (!currentFields || !Number.isFinite(currentFields.amount) || currentFields.amount <= 0) {
+    return;
+  }
+
+  const previousFields = previousDeal ? extractCashFields(previousDeal) : null;
+  const previousAmount = previousFields?.amount;
+
+  if (!hasAmountChanged(currentFields.amount, previousAmount)) {
+    return;
+  }
+
+  const normalizedDealId = typeof dealId === 'string' ? dealId : Number(dealId);
+  const currency = resolveDealCurrency(currentDeal);
+  const expectedDate = currentFields.expectedDate || fallbackExpectedDate(currentDeal);
+  const roundedAmount = roundCurrency(currentFields.amount);
+
+  const existing = await cashPaymentsRepository.findDealExpectation(normalizedDealId);
+  const isNewExpectation = !existing;
+  const payload = {
+    cash_expected_amount: roundedAmount,
+    expected_date: expectedDate,
+    currency,
+    amount_pln: currency === 'PLN' ? roundedAmount : existing?.amount_pln ?? null,
+    status: existing && existing.status !== 'cancelled' ? existing.status : 'pending',
+    note: 'Создано из Pipedrive (cash_amount)'
+  };
+
+  let record = null;
+
+  if (existing) {
+    record = await cashPaymentsRepository.updatePayment(existing.id, payload);
+  } else {
+    record = await cashPaymentsRepository.createPayment({
+      deal_id: normalizedDealId,
+      proforma_id: null,
+      product_id: null,
+      cash_expected_amount: payload.cash_expected_amount,
+      currency: payload.currency,
+      amount_pln: currency === 'PLN' ? payload.cash_expected_amount : null,
+      expected_date: payload.expected_date,
+      status: 'pending',
+      source: 'crm',
+      created_by: 'pipedrive_webhook',
+      note: payload.note,
+      metadata: {
+        source: 'pipedrive'
+      }
+    });
+  }
+
+  if (record && record.id) {
+    await cashPaymentsRepository.logEvent(record.id, existing ? 'crm:update' : 'crm:create', {
+      source: 'pipedrive_webhook',
+      payload: {
+        amount: payload.cash_expected_amount,
+        expected_date: payload.expected_date
+      },
+      createdBy: 'pipedrive_webhook'
+    });
+
+    await ensureCashStatus({
+      pipedriveClient: invoiceProcessing.pipedriveClient,
+      dealId: normalizedDealId,
+      currentStatus: currentFields.status,
+      targetStatus: 'PENDING'
+    });
+
+    if (isNewExpectation) {
+      await createCashReminder(invoiceProcessing.pipedriveClient, {
+        dealId: normalizedDealId,
+        amount: payload.cash_expected_amount,
+        currency: payload.currency,
+        expectedDate: payload.expected_date,
+        closeDate: currentDeal.expected_close_date || currentDeal.close_date,
+        source: 'CRM',
+        buyerName: currentDeal.person_id?.name || currentDeal.person_name || currentDeal.title,
+        personId: currentDeal.person_id?.value || currentDeal.person_id,
+        sendpulseClient: invoiceProcessing.sendpulseClient
+      });
+    }
+  }
 }
 
 // Хранилище последних webhook событий для отладки (в памяти, последние 50)
@@ -439,6 +571,19 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     
     // Get lost_reason
     const lostReason = currentDeal?.lost_reason || currentDeal?.lostReason || currentDeal?.['lost_reason'] || null;
+
+    try {
+      await syncCashExpectationFromDeal({
+        dealId,
+        currentDeal,
+        previousDeal
+      });
+    } catch (cashSyncError) {
+      logger.warn('Failed to sync cash expectation from deal', {
+        dealId,
+        error: cashSyncError.message
+      });
+    }
 
     // ========== Обработка 1: Статус "lost" (приоритет) ==========
     // Проверяем статус lost ПЕРЕД обработкой invoice_type, так как это более критично
@@ -1443,4 +1588,3 @@ router.delete('/webhooks/pipedrive/history', (req, res) => {
 });
 
 module.exports = router;
-

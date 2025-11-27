@@ -19,6 +19,8 @@ const { requireStripeAccess } = require('../middleware/auth');
 const stripeService = require('../services/stripe/service');
 const stripeAnalyticsService = require('../services/stripe/analyticsService');
 const logger = require('../utils/logger');
+const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
+const { ensureCashStatus } = require('../services/cash/cashStatusSync');
 
 // Создаем экземпляры сервисов
 const wfirmaClient = new WfirmaClient();
@@ -70,6 +72,13 @@ const ExpenseCategoryMappingService = require('../services/pnl/expenseCategoryMa
 const expenseCategoryMappingService = new ExpenseCategoryMappingService();
 const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
+const cashPnlSyncService = require('../services/cash/cashPnlSyncService');
+const cashPaymentsRepository = new CashPaymentsRepository();
+const { createCashReminder } = require('../services/cash/cashReminderService');
+
+const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
+const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
+const CASH_STAGE_CAMP_WAITER_ID = Number(process.env.CASH_STAGE_CAMP_WAITER_ID || 27);
 // Configure multer with memory storage and size limits
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -189,6 +198,393 @@ router.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+/**
+ * POST /api/cash-payments
+ * Создать запись о кэш-платеже (ручной ввод менеджером/кассиром)
+ */
+router.post('/cash-payments', async (req, res) => {
+  if (!cashPaymentsRepository.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'Supabase client is not configured'
+    });
+  }
+
+  try {
+    const {
+      dealId,
+      proformaId = null,
+      productId = null,
+      amount,
+      currency = 'PLN',
+      expectedDate = null,
+      note = null,
+      source = 'manual'
+    } = req.body || {};
+
+    const normalizedDealId = Number(dealId);
+    if (!Number.isFinite(normalizedDealId) || normalizedDealId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'dealId is required and must be a positive number'
+      });
+    }
+
+    const cashAmount = parseCashAmount(amount);
+    if (!Number.isFinite(cashAmount) || cashAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'amount must be a positive number'
+      });
+    }
+
+    const normalizedProductId = productId === null || productId === undefined || productId === ''
+      ? null
+      : Number(productId);
+
+    if (productId !== null && productId !== undefined && !Number.isFinite(normalizedProductId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'productId must be a number when provided'
+      });
+    }
+
+    const normalizedCurrency = normalizeCurrencyCode(currency);
+    const payload = {
+      deal_id: normalizedDealId,
+      proforma_id: proformaId || null,
+      product_id: normalizedProductId,
+      cash_expected_amount: roundCurrency(cashAmount),
+      currency: normalizedCurrency,
+      amount_pln: normalizedCurrency === 'PLN' ? roundCurrency(cashAmount) : null,
+      expected_date: normalizeDateInput(expectedDate),
+      status: 'pending_confirmation',
+      source: source || 'manual',
+      created_by: req.user?.email || 'api',
+      note: note || null
+    };
+
+    const cashPayment = await cashPaymentsRepository.createPayment(payload);
+
+    if (!cashPayment) {
+      throw new Error('Failed to create cash payment');
+    }
+
+    await cashPaymentsRepository.logEvent(cashPayment.id, 'api:create', {
+      source: 'api',
+      payload: {
+        endpoint: '/api/cash-payments'
+      },
+      createdBy: req.user?.email || 'api'
+    });
+
+    if (cashPayment.proforma_id) {
+      await cashPaymentsRepository.updateProformaCashTotals(cashPayment.proforma_id);
+    }
+
+    await ensureCashStatus({
+      pipedriveClient,
+      dealId: normalizedDealId,
+      currentStatus: null,
+      targetStatus: 'PENDING'
+    });
+
+    try {
+      const dealResult = await pipedriveClient.getDeal(normalizedDealId);
+      const deal = dealResult?.deal;
+      await createCashReminder(pipedriveClient, {
+        dealId: normalizedDealId,
+        amount: payload.cash_expected_amount,
+        currency: payload.currency,
+        expectedDate: payload.expected_date,
+        closeDate: deal?.expected_close_date || deal?.close_date,
+        source: 'Manual API',
+        buyerName: deal?.person_name || deal?.title,
+        personId: deal?.person_id?.value || deal?.person_id,
+        sendpulseClient: invoiceProcessing.sendpulseClient
+      });
+    } catch (reminderError) {
+      logger.warn('Failed to create cash reminder from API', {
+        dealId: normalizedDealId,
+        error: reminderError.message
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      cashPayment
+    });
+  } catch (error) {
+    logger.error('Failed to create cash payment via API', {
+      error: error.message,
+      bodyKeys: Object.keys(req.body || {})
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/cash-payments', async (req, res) => {
+  if (!cashPaymentsRepository.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'Supabase client is not configured'
+    });
+  }
+
+  try {
+    const {
+      status,
+      dealId,
+      proformaId,
+      productId,
+      source,
+      expectedFrom,
+      expectedTo,
+      createdFrom,
+      createdTo,
+      search,
+      limit = 100,
+      offset = 0
+    } = req.query || {};
+
+    const filters = {
+      limit: Math.min(Number(limit) || 100, 500),
+      offset: Number(offset) || 0
+    };
+
+    if (status) {
+      filters.status = String(status)
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (filters.status.length === 1) {
+        filters.status = filters.status[0];
+      }
+    }
+
+    if (dealId) {
+      filters.dealId = Number(dealId);
+    }
+    if (proformaId) {
+      filters.proformaId = proformaId;
+    }
+    if (productId) {
+      filters.productId = Number(productId);
+    }
+    if (source) {
+      filters.source = source;
+    }
+    if (expectedFrom) {
+      filters.expectedFrom = normalizeDateInput(expectedFrom);
+    }
+    if (expectedTo) {
+      filters.expectedTo = normalizeDateInput(expectedTo);
+    }
+    if (createdFrom) {
+      filters.createdFrom = normalizeDateTimeInput(createdFrom);
+    }
+    if (createdTo) {
+      filters.createdTo = normalizeDateTimeInput(createdTo);
+    }
+    if (search) {
+      filters.searchFullnumber = search;
+    }
+
+    const payments = await cashPaymentsRepository.listPayments(filters);
+
+    return res.json({
+      success: true,
+      items: payments || []
+    });
+  } catch (error) {
+    logger.error('Failed to fetch cash payments', {
+      error: error.message
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.patch('/cash-payments/:id/confirm', async (req, res) => {
+  if (!cashPaymentsRepository.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'Supabase client is not configured'
+    });
+  }
+
+  const paymentId = Number(req.params.id);
+  if (!Number.isFinite(paymentId) || paymentId <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'payment id must be a positive number'
+    });
+  }
+
+  try {
+    const { amount, currency, confirmedAt, note } = req.body || {};
+    const normalizedAmount = parseCashAmount(amount ?? req.body?.cash_received_amount);
+
+    const payment = await cashPaymentsRepository.confirmPayment(paymentId, {
+      amount: normalizedAmount,
+      currency,
+      confirmedAt: normalizeDateTimeInput(confirmedAt),
+      confirmedBy: req.user?.email || 'api',
+      note
+    });
+
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        error: 'Cash payment not found'
+      });
+    }
+
+    await ensureCashStatus({
+      pipedriveClient,
+      dealId: payment.deal_id,
+      currentStatus: null,
+      targetStatus: 'RECEIVED'
+    });
+    await cashPnlSyncService.upsertEntryFromPayment(payment);
+    await updateCashDealStage(payment.deal_id, CASH_STAGE_CAMP_WAITER_ID, 'cash-confirm');
+
+    return res.json({
+      success: true,
+      cashPayment: payment
+    });
+  } catch (error) {
+    logger.error('Failed to confirm cash payment', {
+      error: error.message,
+      paymentId
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.post('/cash-refunds', async (req, res) => {
+  if (!cashPaymentsRepository.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'Supabase client is not configured'
+    });
+  }
+
+  const { cashPaymentId, amount, currency, reason, note, processedAt } = req.body || {};
+  const paymentId = Number(cashPaymentId);
+
+  if (!Number.isFinite(paymentId) || paymentId <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'cashPaymentId must be a positive number'
+    });
+  }
+
+  try {
+    const normalizedAmount = parseCashAmount(amount);
+    const result = await cashPaymentsRepository.refundPayment(paymentId, {
+      amount: normalizedAmount,
+      currency,
+      reason,
+      processedBy: req.user?.email || 'api',
+      processedAt: normalizeDateTimeInput(processedAt),
+      note
+    });
+
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: 'Cash payment not found'
+      });
+    }
+
+    await ensureCashStatus({
+      pipedriveClient,
+      dealId: result.payment.deal_id,
+      currentStatus: null,
+      targetStatus: 'REFUNDED'
+    });
+    await cashPnlSyncService.markEntryRefunded(result.payment, reason);
+    await updateCashDealStage(result.payment.deal_id, CASH_STAGE_SECOND_PAYMENT_ID, 'cash-refund');
+
+    return res.status(201).json({
+      success: true,
+      cashPayment: result.payment,
+      refund: result.refund
+    });
+  } catch (error) {
+    logger.error('Failed to create cash refund', {
+      error: error.message,
+      cashPaymentId: paymentId
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/cash-summary', async (req, res) => {
+  if (!cashPaymentsRepository.isEnabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'Supabase client is not configured'
+    });
+  }
+
+  try {
+    const {
+      period,
+      from,
+      to,
+      productId,
+      currency,
+      limit = 100
+    } = req.query || {};
+
+    const filters = {};
+    if (period) {
+      filters.periodMonth = period;
+    }
+    if (from) {
+      filters.from = normalizeDateInput(from);
+    }
+    if (to) {
+      filters.to = normalizeDateInput(to);
+    }
+    if (productId) {
+      filters.productId = Number(productId);
+    }
+    if (currency) {
+      filters.currency = String(currency).toUpperCase();
+    }
+
+    const summary = await cashPaymentsRepository.getMonthlySummary(filters);
+    const limited = Array.isArray(summary) ? summary.slice(0, Number(limit) || 100) : [];
+
+    return res.json({
+      success: true,
+      summary: limited
+    });
+  } catch (error) {
+    logger.error('Failed to fetch cash summary', {
+      error: error.message
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 /**
@@ -3334,25 +3730,88 @@ router.get('/payments/:id/expense-category-suggestions', async (req, res) => {
       })
     );
 
-    res.json({
-      success: true,
-      data: enrichedSuggestions
-    });
-  } catch (error) {
-    logger.error('Error getting expense category suggestions:', {
-      error: error.message,
-      stack: error.stack,
-      paymentId: req.params.id
-    });
-    res.status(500).json({
-      success: false,
-      error: 'Failed to get suggestions',
-      message: error.message || 'Unknown error occurred'
-    });
-  }
+  res.json({
+    success: true,
+    data: enrichedSuggestions
+  });
+} catch (error) {
+  logger.error('Error getting expense category suggestions:', {
+    error: error.message,
+    stack: error.stack,
+    paymentId: req.params.id
+  });
+  res.status(500).json({
+    success: false,
+    error: 'Failed to get suggestions',
+    message: error.message || 'Unknown error occurred'
+  });
+}
 });
 
+function parseCashAmount(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const sanitized = value.replace(/,/g, '.').replace(/[^\d.-]/g, '');
+    const parsed = parseFloat(sanitized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function normalizeCurrencyCode(value) {
+  if (typeof value !== 'string') {
+    return 'PLN';
+  }
+  const trimmed = value.trim().toUpperCase();
+  return trimmed || 'PLN';
+}
+
+function normalizeDateInput(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function roundCurrency(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
+
+function normalizeDateTimeInput(value) {
+  if (!value) {
+    return new Date().toISOString();
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString();
+  }
+  return date.toISOString();
+}
+
+async function updateCashDealStage(dealId, stageId, reason) {
+  if (!ENABLE_CASH_STAGE_AUTOMATION || !dealId || !stageId) {
+    return;
+  }
+  try {
+    await pipedriveClient.updateDealStage(dealId, stageId);
+    logger.info('Cash automation: deal stage updated', {
+      dealId,
+      stageId,
+      reason
+    });
+  } catch (error) {
+    logger.warn('Cash automation: failed to update deal stage', {
+      dealId,
+      stageId,
+      reason,
+      error: error.message
+    });
+  }
+}
+
 module.exports = router;
-
-
-

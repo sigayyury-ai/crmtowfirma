@@ -76,6 +76,31 @@ This document describes the current structure of the Pipedrive → wFirma integr
 - **Invoices** – XML structure based on `<invoicecontents><invoicecontent>...</invoicecontent></invoicecontents>` to avoid empty item names in wFirma.
 - **Tags** – names trimmed to 16 characters, created with invoice/good flags = 1.
 
+## Payment Flow Map & `payments_total_bank`
+
+Гибридные платежи строятся на уже существующих банковских потоках. Сейчас все безналичные поступления агрегируются в `proformas.payments_total` и `payments_total_pln`; после внедрения кэша это поле станет `payments_total_bank`. Карта ниже фиксирует, в каких компонентах происходит расчёт, чтобы понимать точки изменений.
+
+### 1. Proforma → Bank Statement (wFirma CSV)
+
+1. `InvoiceProcessingService` создаёт проформу в wFirma и синхронизирует её в Supabase (`proformas`).
+2. Банковские выписки импортируются в таблицу `payments` (источник `bank_statement`) и матчинг выполняется `PaymentService`.
+3. После ручного аппрува (`manual_status = 'approved'`) метод `PaymentService.updateProformaPaymentAggregates` пересчитывает суммы по проформе и пишет их в `proformas.payments_total`/`payments_total_pln`.
+4. В этом месте появится колонка `payments_total_bank`: фактически это то же значение, но явно помеченное как «банк».
+
+### 2. Stripe Deposit Flow
+
+1. Stripe события агрегируются в `src/services/stripe/analyticsService` / `eventReportService` и содержат `grossRevenue`, `grossRevenuePln`.
+2. Эндпоинт VAT Margin `GET /api/vat-margin/monthly-proformas` объединяет Stripe суммы с проформами через `mergeStripeWithProformas` (см. `src/routes/api.js`).
+3. Эти Stripe суммы также являются безналом, поэтому при появлении `payments_total_bank` туда же будет добавляться `stripeTotal`/`stripeTotalPln`, чтобы банк отражал Stripe + CSV.
+
+### 3. VAT Margin / P&L потребление
+
+1. `paymentRevenueReportService`, `productReportService` и фронтовый `frontend/vat-margin-script.js` читают `proformas.payments_total` (будущее `payments_total_bank`) и `payments_total_pln`, чтобы отрисовать «Оплачено банком».
+2. P&L (`src/services/pnl/pnlReportService.js`) использует ту же колонку при расчёте управленческой выручки.
+3. Когда добавим `payments_total_cash`, бухгалтерские отчёты продолжат опираться только на `payments_total_bank`, а управленческие — суммировать `payments_total_bank + payments_total_cash`.
+
+Эта карта фиксирует все точки, где нужно будет переименовать поле или добавить расчёт `payments_total_bank` до того, как появится разделение на банк/наличные.
+
 ## Environment Variables
 
 - `PIPEDRIVE_API_TOKEN`, `PIPEDRIVE_BASE_URL`.
@@ -96,5 +121,4 @@ A template is provided in `env.example`.
 - Credentials must be provided via environment variables (avoid committing to source control).
 - Scheduler/cron must be configured if automatic processing is desired.
 - WordPress integration will likely run this service as an external Node app controlled via plugin settings (see business requirements document for details).
-
 

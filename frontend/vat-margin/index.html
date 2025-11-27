@@ -13,8 +13,41 @@
         <button data-tab="upload" class="active">Загрузка</button>
         <button data-tab="report">Отчёт</button>
         <button data-tab="manual">Ручная обработка</button>
+        <button data-tab="cash-summary">Cash Summary</button>
       </nav>
     </header>
+
+    <section class="controls-section">
+      <h2>Добавить наличный платёж</h2>
+      <div class="controls-grid">
+        <div class="control-group">
+          <label>Deal ID</label>
+          <input type="number" id="cashDealId" placeholder="Например, 99001001" />
+        </div>
+        <div class="control-group">
+          <label>Сумма</label>
+          <input type="number" id="cashAmount" step="0.01" placeholder="4000" />
+        </div>
+        <div class="control-group">
+          <label>Валюта</label>
+          <select id="cashCurrency">
+            <option value="PLN">PLN</option>
+            <option value="EUR">EUR</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label>Ожидаемая дата</label>
+          <input type="date" id="cashExpectedDate" />
+        </div>
+      </div>
+      <div class="button-group">
+        <button id="createCashPayment" class="btn btn-primary">➕ Добавить наличный платёж</button>
+        <span id="cashIndicator" class="tag">Проверяем ожидания...</span>
+      </div>
+      <p class="controls-hint">
+        Задача в Pipedrive создаётся автоматически: сумма и имя клиента попадут в заголовок «Забрать X у Y».
+      </p>
+    </section>
 
     <main>
       <section id="upload" class="tab active">
@@ -84,11 +117,39 @@
           <tbody></tbody>
         </table>
       </section>
+      <section id="cash-summary" class="tab">
+        <h2>Cash Summary</h2>
+        <p>Агрегированные ожидания наличных по месяцам (гибридные сделки).</p>
+        <div class="summary-cards" id="cashSummaryCards">
+          <div class="summary-card">
+            <h3>Expected PLN</h3>
+            <div class="summary-value" id="cashSummaryExpected">0</div>
+          </div>
+          <div class="summary-card">
+            <h3>Received PLN</h3>
+            <div class="summary-value" id="cashSummaryReceived">0</div>
+          </div>
+          <div class="summary-card">
+            <h3>Pending PLN</h3>
+            <div class="summary-value" id="cashSummaryPending">0</div>
+          </div>
+        </div>
+        <table id="cashSummaryTable">
+          <thead>
+            <tr>
+              <th>Месяц</th>
+              <th>Продукт</th>
+              <th>Expected (PLN)</th>
+              <th>Received (PLN)</th>
+              <th>Pending (PLN)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
     </main>
 
     <script src="sample-data.js"></script>
     <script src="script.js"></script>
   </body>
 </html>
-
-
