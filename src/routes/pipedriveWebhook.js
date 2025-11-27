@@ -90,6 +90,24 @@ async function updateInvoiceTypeField(dealId, value) {
   }
 }
 
+function hasProformaCandidates(deal) {
+  if (!deal || !INVOICE_NUMBER_FIELD_KEY) {
+    return false;
+  }
+  const rawValue = deal[INVOICE_NUMBER_FIELD_KEY];
+  if (rawValue === undefined || rawValue === null) {
+    return false;
+  }
+  const normalized = String(rawValue).trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (['delete', 'done', 'stripe', 'str', 'n/a', '-'].includes(normalized)) {
+    return false;
+  }
+  return true;
+}
+
 async function hasStripePaymentsForDeal(dealId) {
   if (!dealId || !stripeProcessor?.repository?.isEnabled()) {
     return false;
@@ -782,7 +800,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           }
         } else {
         const hasStripePayments = await hasStripePaymentsForDeal(dealId);
-        if (hasStripePayments) {
+        if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
           logger.info(`🗑️  Удаление Stripe платежей (без проформ) | Deal: ${dealId}`);
           await cleanupDealArtifacts(dealId);
           return res.status(200).json({
@@ -824,7 +842,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Используем только ID "74" для удаления
     if (currentInvoiceType === '74') {
       const hasStripePayments = await hasStripePaymentsForDeal(dealId);
-      if (hasStripePayments) {
+      if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
         logger.info(`🗑️  Удаление Stripe платежей (invoice_type=Delete) | Deal: ${dealId}`);
         await cleanupDealArtifacts(dealId);
         return res.status(200).json({
