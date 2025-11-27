@@ -1155,6 +1155,28 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             }
           }
 
+          // Получаем сумму сделки (используется как при создании платежей, так и при повторной отправке уведомлений)
+          const dealProductsResult = await stripeProcessor.pipedriveClient.getDealProducts(dealId);
+          let totalAmount = parseFloat(dealWithWebhookData.value) || 0;
+          
+          if (dealProductsResult.success && dealProductsResult.products && dealProductsResult.products.length > 0) {
+            const firstProduct = dealProductsResult.products[0];
+            const sumPrice = typeof firstProduct.sum === 'number' 
+              ? firstProduct.sum 
+              : parseFloat(firstProduct.sum) || 0;
+            if (sumPrice > 0) {
+              totalAmount = sumPrice;
+            }
+          }
+
+          // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
+          const rawCurrency = dealWithWebhookData.currency || 'PLN';
+          const currency = normaliseCurrency(rawCurrency);
+          
+          if (rawCurrency !== currency) {
+            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
+          }
+
           if (!needToCreate && existingPayments && existingPayments.length > 0) {
             logger.info(`✅ Все необходимые Stripe сессии уже существуют И оплачены | Deal: ${dealId} | График: ${paymentSchedule} | Количество: ${existingPayments.length}`, {
             dealId,
@@ -1210,28 +1232,6 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           } else {
             logger.info(`✅ Существующих сессий не найдено, создаем все | Deal: ${dealId} | График: ${paymentSchedule}`);
-          }
-
-          // Получаем сумму сделки
-          const dealProductsResult = await stripeProcessor.pipedriveClient.getDealProducts(dealId);
-          let totalAmount = parseFloat(dealWithWebhookData.value) || 0;
-          
-          if (dealProductsResult.success && dealProductsResult.products && dealProductsResult.products.length > 0) {
-            const firstProduct = dealProductsResult.products[0];
-            const sumPrice = typeof firstProduct.sum === 'number' 
-              ? firstProduct.sum 
-              : parseFloat(firstProduct.sum) || 0;
-            if (sumPrice > 0) {
-              totalAmount = sumPrice;
-            }
-          }
-
-          // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
-          const rawCurrency = dealWithWebhookData.currency || 'PLN';
-          const currency = normaliseCurrency(rawCurrency);
-          
-          if (rawCurrency !== currency) {
-            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
           }
 
           // Создаем только недостающие Stripe Checkout Sessions
