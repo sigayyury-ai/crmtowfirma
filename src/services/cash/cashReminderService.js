@@ -1,6 +1,8 @@
 const logger = require('../../utils/logger');
 
 const SENDPULSE_ID_FIELD_KEY = process.env.PIPEDRIVE_SENDPULSE_ID_FIELD_KEY || 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+const CASH_NOTE_MARKER = '💵 *Получить наличные*';
+const CASH_TASK_PREFIX = 'забрать';
 
 function formatAmount(amount, currency) {
   if (!Number.isFinite(amount)) {
@@ -64,7 +66,7 @@ async function sendNotification({ sendpulseClient, sendpulseId, dealId, buyerNam
   }
 
   const message = [
-    '💵 *Получить наличные*',
+    CASH_NOTE_MARKER,
     `Сумма: ${formattedAmount}`,
     `Клиент: ${buyerName || `Deal #${dealId}`}`,
     `Дедлайн: ${formattedDate}`
@@ -120,7 +122,7 @@ async function createCashReminder(pipedriveClient, {
     due_date: dueDate.toISOString().slice(0, 10),
     type: 'task',
     note: [
-    '💵 *Получить наличные*',
+      CASH_NOTE_MARKER,
       `Сумма: ${formattedAmount}`,
     `Ожидаемая дата: ${formattedDate}`,
     sourceLabel
@@ -150,6 +152,83 @@ async function createCashReminder(pipedriveClient, {
   }
 }
 
+function isCashTask(activity = {}) {
+  const subject = (activity.subject || '').toLowerCase();
+  const note = (activity.note || '').toLowerCase();
+  return subject.startsWith(CASH_TASK_PREFIX) ||
+    subject.includes(`${CASH_TASK_PREFIX} `) ||
+    note.includes('получить налич');
+}
+
+function isCashNote(note = {}) {
+  const content = (note.content || '').toLowerCase();
+  return content.includes('получить налич');
+}
+
+async function closeCashReminders(pipedriveClient, { dealId, removeNotes = true } = {}) {
+  const result = {
+    tasksClosed: 0,
+    notesRemoved: 0
+  };
+
+  if (!pipedriveClient || !dealId) {
+    return result;
+  }
+
+  try {
+    const activitiesRes = await pipedriveClient.getDealActivities(dealId, 'task');
+    const activities = activitiesRes?.activities || [];
+
+    for (const activity of activities) {
+      if (!isCashTask(activity) || activity.done === 1) {
+        continue;
+      }
+      await pipedriveClient.updateActivity(activity.id, { done: 1 });
+      result.tasksClosed += 1;
+    }
+
+    if (result.tasksClosed > 0) {
+      logger.info('Cash reminder tasks closed in Pipedrive', {
+        dealId,
+        tasksClosed: result.tasksClosed
+      });
+    }
+  } catch (error) {
+    logger.warn('Failed to close cash reminder tasks', { dealId, error: error.message });
+  }
+
+  if (!removeNotes) {
+    return result;
+  }
+
+  try {
+    const notesRes = await pipedriveClient.getDealNotes(dealId);
+    const notes = notesRes?.notes || [];
+
+    for (const note of notes) {
+      if (!isCashNote(note)) {
+        continue;
+      }
+      const deleteResult = await pipedriveClient.deleteNote(note.id);
+      if (deleteResult?.success !== false) {
+        result.notesRemoved += 1;
+      }
+    }
+
+    if (result.notesRemoved > 0) {
+      logger.info('Cash reminder notes removed in Pipedrive', {
+        dealId,
+        notesRemoved: result.notesRemoved
+      });
+    }
+  } catch (error) {
+    logger.warn('Failed to remove cash reminder notes', { dealId, error: error.message });
+  }
+
+  return result;
+}
+
 module.exports = {
-  createCashReminder
+  createCashReminder,
+  closeCashReminders
 };

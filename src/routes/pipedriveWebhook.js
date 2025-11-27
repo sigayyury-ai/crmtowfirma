@@ -14,6 +14,8 @@ const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 const cashPaymentsRepository = new CashPaymentsRepository();
 const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
+const STRIPE_DASHBOARD_ACCOUNT_PATH = process.env.STRIPE_DASHBOARD_ACCOUNT_PATH || '';
+const STRIPE_DASHBOARD_WORKSPACE_ID = process.env.STRIPE_DASHBOARD_WORKSPACE_ID || '';
 
 function resolvePipedriveClient() {
   if (invoiceProcessing?.pipedriveClient) {
@@ -31,6 +33,18 @@ function formatStripeInvoiceMarker(sessionId) {
   }
   const suffix = String(sessionId).slice(-6).toUpperCase();
   return `STR-${suffix}`;
+}
+
+function buildStripeSearchUrl(query) {
+  const stripeMode = (process.env.STRIPE_MODE || 'test').toLowerCase();
+  const baseUrl = stripeMode === 'live'
+    ? 'https://dashboard.stripe.com'
+    : 'https://dashboard.stripe.com/test';
+  const accountSegment = STRIPE_DASHBOARD_ACCOUNT_PATH ? `/${STRIPE_DASHBOARD_ACCOUNT_PATH}` : '';
+  const workspaceSegment = STRIPE_DASHBOARD_WORKSPACE_ID
+    ? `&search_context_id=${encodeURIComponent(STRIPE_DASHBOARD_WORKSPACE_ID)}`
+    : '';
+  return `${baseUrl}${accountSegment}/search?query=${encodeURIComponent(query)}${workspaceSegment}`;
 }
 
 async function updateInvoiceNumberField(dealId, value) {
@@ -1386,7 +1400,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               }
               
               noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;
-              noteContent += `📊 [Мониторинг всех платежей по сделке](${stripeBaseUrl}/payments?search=${dealId})\n`;
+              const searchLink = buildStripeSearchUrl(String(dealId));
+              noteContent += `📊 [Мониторинг всех платежей по сделке](${searchLink})\n`;
               
               await stripeProcessor.pipedriveClient.addNoteToDeal(dealId, noteContent);
               logger.info(`✅ Заметка с графиком платежей добавлена в сделку | Deal: ${dealId}`);

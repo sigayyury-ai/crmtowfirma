@@ -890,6 +890,40 @@ class PipedriveClient {
       };
     }
   }
+
+  async deleteNote(noteId) {
+    if (!noteId) {
+      throw new Error('noteId is required to delete note');
+    }
+
+    try {
+      const response = await this.client.delete(`/notes/${noteId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to delete note'
+      };
+    } catch (error) {
+      logger.error('Failed to delete note in Pipedrive', {
+        noteId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
 }
 
 module.exports = PipedriveClient;

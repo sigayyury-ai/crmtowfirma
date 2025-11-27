@@ -2535,6 +2535,22 @@ class StripeProcessorService {
         };
       }
       
+      const cashFields = extractCashFields(fullDeal);
+      let cashDeduction = 0;
+      if (!customAmount && cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
+        cashDeduction = roundBankers(cashFields.amount);
+        const netAmount = Math.max(basePrice - cashDeduction, 0);
+        if (netAmount !== basePrice) {
+          this.logger.info('Учитываем наличный платеж при расчете Stripe суммы', {
+            dealId,
+            basePrice,
+            cashDeduction,
+            netAmount
+          });
+        }
+        basePrice = netAmount;
+      }
+
       let productPrice = basePrice;
       
       // Override amount if customAmount is provided (for second payment)
@@ -2821,7 +2837,6 @@ class StripeProcessorService {
         metadata.vat_currency = currency;
       }
 
-      const cashFields = extractCashFields(fullDeal);
       if (cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
         metadata.cash_amount_expected = roundBankers(cashFields.amount).toFixed(2);
         if (cashFields.expectedDate) {
