@@ -128,6 +128,35 @@ async function hasStripePaymentsForDeal(dealId) {
   }
 }
 
+async function refundStripePayments(dealId) {
+  const summary = {
+    totalDeals: 1,
+    refundsCreated: 0,
+    errors: []
+  };
+
+  try {
+    await stripeProcessor.refundDealPayments(dealId, summary);
+    if (summary.refundsCreated > 0) {
+      logger.info('Stripe refunds processed for deal', {
+        dealId,
+        refundsCreated: summary.refundsCreated,
+        errors: summary.errors?.length || 0
+      });
+    } else {
+      logger.info('No Stripe refunds created for deal', {
+        dealId,
+        errors: summary.errors?.length || 0
+      });
+    }
+  } catch (error) {
+    logger.warn('Failed to refund Stripe payments for deal', {
+      dealId,
+      error: error.message
+    });
+  }
+}
+
 async function cleanupDealArtifacts(dealId) {
   const result = {
     cashDeleted: 0,
@@ -802,6 +831,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         const hasStripePayments = await hasStripePaymentsForDeal(dealId);
         if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
           logger.info(`🗑️  Удаление Stripe платежей (без проформ) | Deal: ${dealId}`);
+          await refundStripePayments(dealId);
           await cleanupDealArtifacts(dealId);
           return res.status(200).json({
             success: true,
@@ -844,6 +874,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       const hasStripePayments = await hasStripePaymentsForDeal(dealId);
       if (hasStripePayments || !hasProformaCandidates(currentDeal)) {
         logger.info(`🗑️  Удаление Stripe платежей (invoice_type=Delete) | Deal: ${dealId}`);
+        await refundStripePayments(dealId);
         await cleanupDealArtifacts(dealId);
         return res.status(200).json({
           success: true,
