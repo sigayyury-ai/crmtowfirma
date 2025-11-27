@@ -2,10 +2,17 @@ const tableBody = document.getElementById('cashTableBody');
 const summaryExpected = document.getElementById('summaryExpected');
 const summaryReceived = document.getElementById('summaryReceived');
 const summaryPending = document.getElementById('summaryPending');
-const filterFrom = document.getElementById('filterFrom');
-const filterTo = document.getElementById('filterTo');
 const filterStatus = document.getElementById('filterStatus');
+const filterProduct = document.getElementById('filterProduct');
 const applyFiltersBtn = document.getElementById('applyFilters');
+
+const STATUS_LABELS = {
+  pending: 'Ожидается',
+  pending_confirmation: 'На подтверждении',
+  received: 'Получено',
+  refunded: 'Возврат',
+  cancelled: 'Отменено'
+};
 
 const formatCurrency = (amount, currency = 'PLN') => {
   if (!Number.isFinite(amount)) return '—';
@@ -21,72 +28,8 @@ const formatDate = (value) => {
   return date.toLocaleDateString('ru-RU');
 };
 
-const getDefaultDateRange = () => {
-  const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0));
-  return {
-    from: start.toISOString().slice(0, 10),
-    to: end.toISOString().slice(0, 10)
-  };
-};
-
-const DEMO_CASH_PAYMENTS = [
-  {
-    id: 1,
-    deal_id: 99001001,
-    cash_expected_amount: 4000,
-    currency: 'PLN',
-    expected_date: '2025-11-12',
-    created_at: '2025-11-10T09:00:00Z',
-    status: 'pending_confirmation',
-    cash_received_amount: null,
-    source: 'manual',
-    proformas: {
-      buyer_name: 'Demo Client Surf',
-      expected_close_date: '2025-11-20'
-    }
-  },
-  {
-    id: 2,
-    deal_id: 99001002,
-    cash_expected_amount: 800,
-    currency: 'EUR',
-    expected_date: '2025-11-15',
-    created_at: '2025-11-05T10:00:00Z',
-    status: 'received',
-    cash_received_amount: 800,
-    source: 'manual',
-    proformas: {
-      buyer_name: 'Demo Client Sailing',
-      expected_close_date: '2025-12-01'
-    }
-  },
-  {
-    id: 3,
-    deal_id: 99001003,
-    cash_expected_amount: 1500,
-    currency: 'PLN',
-    expected_date: '2025-11-03',
-    created_at: '2025-11-01T08:00:00Z',
-    status: 'refunded',
-    cash_received_amount: 1500,
-    source: 'manual',
-    proformas: {
-      buyer_name: 'Demo Client Workshop',
-      expected_close_date: '2025-11-07'
-    }
-  }
-];
-
-const DEMO_CASH_SUMMARY = [
-  {
-    period_month: '2025-11-01',
-    expected_total_pln: 5500,
-    received_total_pln: 2300,
-    pending_total_pln: 1700
-  }
-];
+const DEMO_CASH_PAYMENTS = [];
+const DEMO_CASH_SUMMARY = [];
 
 async function fetchCashPayments(params = {}) {
   const url = new URL('/api/cash-payments', window.location.origin);
@@ -106,7 +49,7 @@ async function fetchCashPayments(params = {}) {
 async function fetchSummary(params = {}) {
   const url = new URL('/api/cash-summary', window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
-    if (value) {
+    if (value !== undefined && value !== null && value !== '') {
       url.searchParams.append(key, value);
     }
   });
@@ -118,36 +61,77 @@ async function fetchSummary(params = {}) {
   return data.summary || [];
 }
 
+async function loadProductOptions() {
+  if (!filterProduct) {
+    return;
+  }
+  try {
+    const response = await fetch('/api/vat-margin/products/summary');
+    if (!response.ok) {
+      throw new Error('Не удалось загрузить продукты');
+    }
+    const payload = await response.json();
+    const items = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : [];
+    const unique = new Map();
+    items.forEach((item) => {
+      const id = item.productId;
+      const name = item.productName || `Продукт #${item.productId}`;
+      const isActive = !item.calculationStatus || item.calculationStatus === 'in_progress';
+      if (!id || unique.has(id) || !isActive) {
+        return;
+      }
+      unique.set(id, name);
+    });
+
+    filterProduct.innerHTML = '<option value=\"\">Все продукты</option>';
+    Array.from(unique.entries())
+      .sort((a, b) => a[1].localeCompare(b[1], 'ru'))
+      .forEach(([id, name]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = name;
+        filterProduct.appendChild(option);
+      });
+  } catch (error) {
+    console.warn('Не удалось загрузить список продуктов', error);
+  }
+}
+
 function renderTable(items) {
   if (!items.length) {
-    tableBody.innerHTML = '<tr><td colspan="8" class="text-muted">Нет записей за выбранный период</td></tr>';
+    tableBody.innerHTML = '<tr><td colspan="7" class="text-muted">Нет записей за выбранный период</td></tr>';
     return;
   }
 
   tableBody.innerHTML = '';
   items.forEach((item) => {
     const tr = document.createElement('tr');
-    const dealLink = item.deal_id
-      ? `<a href="https://comoon.pipedrive.com/deal/${item.deal_id}" target="_blank" rel="noopener">Deal #${item.deal_id}</a>`
-      : '—';
+    const rawBuyerName =
+      item.metadata?.buyerName ||
+      item.metadata?.buyer_name ||
+      item.metadata?.personName ||
+      item.metadata?.person_name ||
+      item.proformas?.buyer_name ||
+      item.proformas?.buyer_alt_name ||
+      item.deal_person_name ||
+      null;
 
-    const buyerName = item.proformas?.buyer_name || item.proformas?.buyer_alt_name || '—';
-    const closeDate = item.proformas?.expected_close_date || null;
+    const buyerName = rawBuyerName || (item.deal_id ? `Сделка #${item.deal_id}` : '—');
+
+    const clientCell = item.deal_id
+      ? `<a href="https://comoon.pipedrive.com/deal/${item.deal_id}" target="_blank" rel="noopener">${buyerName}</a>`
+      : buyerName;
 
     const canConfirm = item.status === 'pending' || item.status === 'pending_confirmation';
+    const statusLabel = STATUS_LABELS[item.status] || item.status;
 
     tr.innerHTML = `
-      <td>${dealLink}</td>
-      <td>${buyerName}</td>
-      <td>${formatCurrency(item.cash_expected_amount)}</td>
-      <td>${item.currency || 'PLN'}</td>
-      <td>
-        <div>${formatDate(item.expected_date)}</div>
-        <small class="text-muted">Close: ${formatDate(closeDate)}</small>
-      </td>
-      <td><span class="tag ${item.status}">${item.status}</span></td>
-      <td>${item.cash_received_amount ? formatCurrency(item.cash_received_amount) : '—'}</td>
-      <td>
+      <td>${clientCell}</td>
+      <td>${formatCurrency(item.cash_expected_amount, item.currency || 'PLN')}</td>
+      <td>${formatDate(item.expected_date)}</td>
+      <td><span class="tag ${item.status}">${statusLabel}</span></td>
+      <td>${item.cash_received_amount ? formatCurrency(item.cash_received_amount, item.currency || 'PLN') : '—'}</td>
+      <td class="actions-cell">
         ${canConfirm ? `<button class="btn btn-primary btn-confirm" data-id="${item.id}">Подтвердить</button>` : ''}
         <button class="btn btn-secondary btn-refund" data-id="${item.id}">Возврат</button>
       </td>
@@ -156,19 +140,34 @@ function renderTable(items) {
   });
 }
 
-function renderSummary(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    summaryExpected.textContent = '0';
-    summaryReceived.textContent = '0';
-    summaryPending.textContent = '0';
+function renderSummary(entries, fallbackItems = []) {
+  if (Array.isArray(entries) && entries.length > 0) {
+    const totals = entries.reduce(
+      (acc, item) => {
+        acc.expected += item.expected_total_pln || 0;
+        acc.received += item.received_total_pln || 0;
+        acc.pending += item.pending_total_pln || 0;
+        return acc;
+      },
+      { expected: 0, received: 0, pending: 0 }
+    );
+
+    summaryExpected.textContent = `${totals.expected.toFixed(2)} PLN`;
+    summaryReceived.textContent = `${totals.received.toFixed(2)} PLN`;
+    summaryPending.textContent = `${totals.pending.toFixed(2)} PLN`;
     return;
   }
 
-  const totals = entries.reduce(
+  const totals = (Array.isArray(fallbackItems) ? fallbackItems : []).reduce(
     (acc, item) => {
-      acc.expected += item.expected_total_pln || 0;
-      acc.received += item.received_total_pln || 0;
-      acc.pending += item.pending_total_pln || 0;
+      const expected = Number(item.cash_expected_amount) || 0;
+      const received = Number(item.cash_received_amount) || 0;
+      if (item.status === 'received') {
+        acc.received += received || expected;
+      } else if (item.status === 'pending' || item.status === 'pending_confirmation') {
+        acc.pending += Math.max(expected - received, 0);
+      }
+      acc.expected += expected;
       return acc;
     },
     { expected: 0, received: 0, pending: 0 }
@@ -181,14 +180,13 @@ function renderSummary(entries) {
 
 async function loadJournal() {
   const filters = {
-    expectedFrom: filterFrom.value,
-    expectedTo: filterTo.value,
-    status: filterStatus.value,
+    status: filterStatus?.value || '',
+    productId: filterProduct && filterProduct.value ? filterProduct.value : undefined
   };
 
   const [payments, summary] = await Promise.allSettled([
     fetchCashPayments(filters),
-    fetchSummary({ from: filters.expectedFrom, to: filters.expectedTo })
+    fetchSummary(filters.productId ? { productId: filters.productId } : {})
   ]);
 
   const list = payments.status === 'fulfilled' ? payments.value : DEMO_CASH_PAYMENTS;
@@ -203,23 +201,36 @@ async function loadJournal() {
   }
 
   renderTable(list);
-  renderSummary(summaryData);
+  renderSummary(summaryData, list);
 }
 
 function initFilters() {
-  const { from, to } = getDefaultDateRange();
-  if (!filterFrom.value) {
-    filterFrom.value = from;
+  if (applyFiltersBtn) {
+    applyFiltersBtn.addEventListener('click', () => {
+      loadJournal().catch((error) => {
+        console.error(error);
+        alert('Не удалось загрузить данные журнала наличных.');
+      });
+    });
   }
-  if (!filterTo.value) {
-    filterTo.value = to;
+
+  if (filterStatus) {
+    filterStatus.addEventListener('change', () => {
+      loadJournal().catch((error) => {
+        console.error(error);
+        alert('Не удалось загрузить данные журнала наличных.');
+      });
+    });
   }
-applyFiltersBtn.addEventListener('click', () => {
-  loadJournal().catch((error) => {
-    console.error(error);
-    alert('Не удалось загрузить данные журнала наличных.');
-  });
-});
+
+  if (filterProduct) {
+    filterProduct.addEventListener('change', () => {
+      loadJournal().catch((error) => {
+        console.error(error);
+        alert('Не удалось загрузить данные журнала наличных.');
+      });
+    });
+  }
 }
 
 async function handleConfirm(paymentId) {
@@ -295,8 +306,10 @@ tableBody.addEventListener('click', (event) => {
 });
 
 initFilters();
-loadJournal().catch((error) => {
-  console.error(error);
-  renderTable(DEMO_CASH_PAYMENTS);
-  renderSummary(DEMO_CASH_SUMMARY);
+loadProductOptions().finally(() => {
+  loadJournal().catch((error) => {
+    console.error(error);
+    renderTable(DEMO_CASH_PAYMENTS);
+    renderSummary(DEMO_CASH_SUMMARY);
+  });
 });

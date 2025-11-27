@@ -642,6 +642,9 @@ class PaymentRevenueReportService {
       query.or('manual_status.eq.approved,match_status.eq.matched');
     }
 
+    // Always exclude manually rejected payments from reports
+    query.neq('manual_status', 'rejected');
+
     const { data, error } = await query.limit(5000);
 
     if (error) {

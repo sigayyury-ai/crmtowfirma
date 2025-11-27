@@ -1,0 +1,23 @@
+{
+  "demo-hybrid-1": {
+    "runId": "demo-hybrid-1",
+    "createdAt": "2025-11-27T10:42:29.007Z",
+    "personId": 863,
+    "campProductId": 3,
+    "campName": "Madeira",
+    "dealId": 1669,
+    "cashPaymentId": 7,
+    "cashAmount": 5,
+    "totalAmount": 10,
+    "cardAmount": 5,
+    "currency": "PLN",
+    "expectedDate": "2025-11-30",
+    "note": null,
+    "stripeSessionId": "cs_live_a1OdpfQXspNMwvKTe0ivLBYhUaXeW18XR0T0f3ldby7nxgV6OjbIiyWvHC",
+    "stripeSessionUrl": "https://checkout.stripe.com/c/pay/cs_live_a1OdpfQXspNMwvKTe0ivLBYhUaXeW18XR0T0f3ldby7nxgV6OjbIiyWvHC#fidnandhYHdWcXxpYCc%2FJ2FgY2RwaXEnKSdkdWxOYHwnPyd1blppbHNgWjA0SmpRY3dHXVUyX0M1TT1XSn9zYWNraFFwQDBCU2FnfzZqYXRCQTczf1NfUlFJRF1jM1diSjdoS3dOV0BpS0ZcRm0xY208QHMyPHN%2FSDREMzdnQE50VU9TNTUyZHM2djV3cycpJ2N3amhWYHdzYHcnP3F3cGApJ2dkZm5id2pwa2FGamlqdyc%2FJyZjY2NjY2MnKSdpZHxqcHFRfHVgJz8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl",
+    "paymentIntentId": null,
+    "stripePaymentStatus": null,
+    "cashPaymentStatus": "received",
+    "cashConfirmedAt": "2025-11-27T10:47:07.459+00:00"
+  }
+}

@@ -118,8 +118,10 @@ class ProductReportService {
     }
   }
 
-  async getProductSummary() {
-    const { products, totalGrossPln } = await this.loadAggregatedData();
+  async getProductSummary({ includeStripeData = true } = {}) {
+    const { products, totalGrossPln } = includeStripeData
+      ? await this.loadAggregatedData()
+      : await this.loadDatabaseOnlyData();
 
     const summary = Array.from(products.values())
       .map((entry) => {
@@ -370,6 +372,20 @@ class ProductReportService {
       });
       aggregation.stripeSummary = null;
     }
+
+    return aggregation;
+  }
+
+  async loadDatabaseOnlyData() {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured');
+    }
+
+    const rows = await this.fetchAllProductRows();
+    const aggregation = this.aggregateRows(rows);
+
+    // Не добавляем Stripe данные - только продукты из базы данных
+    aggregation.stripeSummary = null;
 
     return aggregation;
   }

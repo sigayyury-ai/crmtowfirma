@@ -396,10 +396,60 @@ router.get('/cash-payments', async (req, res) => {
     }
 
     const payments = await cashPaymentsRepository.listPayments(filters);
+    const items = Array.isArray(payments) ? payments : [];
+
+    let enrichedItems = items;
+    if (items.length && pipedriveClient) {
+      const dealNameMap = new Map();
+      const dealIdsToFetch = Array.from(
+        new Set(
+          items
+            .filter((item) => {
+              const hasBuyer =
+                item?.proformas?.buyer_name ||
+                item?.proformas?.buyer_alt_name ||
+                item?.metadata?.buyerName ||
+                item?.metadata?.buyer_name;
+              return !hasBuyer && Number.isFinite(item?.deal_id);
+            })
+            .map((item) => item.deal_id)
+            .filter((value) => Number.isFinite(value))
+        )
+      );
+
+      await Promise.all(
+        dealIdsToFetch.map(async (dealId) => {
+          try {
+            const dealResult = await pipedriveClient.getDealWithRelatedData(dealId);
+            if (dealResult?.success && dealResult.deal) {
+              const personName =
+                dealResult.person?.name ||
+                dealResult.deal?.person_name ||
+                dealResult.deal?.title ||
+                null;
+              dealNameMap.set(dealId, personName);
+            }
+          } catch (fetchError) {
+            logger.warn('Unable to resolve deal buyer name for cash payment', {
+              dealId,
+              error: fetchError.message
+            });
+          }
+        })
+      );
+
+      enrichedItems = items.map((item) => {
+        const fallbackName = dealNameMap.get(item.deal_id) || null;
+        return {
+          ...item,
+          deal_person_name: fallbackName
+        };
+      });
+    }
 
     return res.json({
       success: true,
-      items: payments || []
+      items: enrichedItems
     });
   } catch (error) {
     logger.error('Failed to fetch cash payments', {
@@ -1565,7 +1615,9 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
  */
 router.get('/vat-margin/products/summary', async (req, res) => {
   try {
-    const summary = await productReportService.getProductSummary();
+    // Для страницы продуктов показываем только реальные продукты из базы,
+    // без автоматически созданных из Stripe платежей
+    const summary = await productReportService.getProductSummary({ includeStripeData: false });
 
     res.json({
       success: true,

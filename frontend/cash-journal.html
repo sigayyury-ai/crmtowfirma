@@ -10,43 +10,14 @@
 <body>
   <div class="container">
     <nav class="main-nav">
-      <a href="/vat-margin.html" class="nav-link">VAT Margin</a>
-      <a href="/pnl-report.html" class="nav-link">PNL</a>
-      <a href="/cash-journal.html" class="nav-link active">Cash Journal</a>
-      <a href="/" class="nav-link">Automations</a>
+      <a href="/vat-margin.html" class="nav-link">Отчеты</a>
+      <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
+      <a href="/" class="nav-link">Настройки</a>
     </nav>
 
-    <header>
-      <h1>💵 Cash Journal</h1>
-      <p>Учет гибридных наличных оплат по сделкам Pipedrive</p>
-    </header>
-
-    <section class="controls-section">
-      <h2>Фильтры</h2>
-      <div class="controls-grid">
-        <div class="control-group">
-          <label>Период (expected date)</label>
-          <div class="button-group">
-            <input type="date" id="filterFrom">
-            <input type="date" id="filterTo">
-          </div>
-        </div>
-        <div class="control-group">
-          <label>Статус</label>
-          <select id="filterStatus">
-            <option value="">Все</option>
-            <option value="pending">Pending</option>
-            <option value="pending_confirmation">Pending confirmation</option>
-            <option value="received">Received</option>
-            <option value="refunded">Refunded</option>
-          </select>
-        </div>
-        <div class="control-group">
-          <label>&nbsp;</label>
-          <button id="applyFilters" class="btn btn-primary">🔄 Обновить</button>
-        </div>
-      </div>
-    </section>
+    <div class="sub-nav">
+      <a href="/cash-journal.html" class="nav-link active">Cash Journal</a>
+    </div>
 
     <section class="status-section">
       <h2>Сводка</h2>
@@ -66,24 +37,48 @@
       </div>
     </section>
 
+    <section class="controls-section filters-section">
+      <h2>Фильтры</h2>
+      <div class="filters-grid">
+        <div class="filter-field">
+          <label>Продукт</label>
+          <select id="filterProduct">
+            <option value="">Все продукты</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Статус</label>
+          <select id="filterStatus">
+            <option value="">Все</option>
+            <option value="pending">Ожидается</option>
+            <option value="pending_confirmation">На подтверждении</option>
+            <option value="received">Получено</option>
+            <option value="refunded">Возврат</option>
+          </select>
+        </div>
+        <div class="filter-field filter-actions">
+          <label>&nbsp;</label>
+          <button id="applyFilters" class="btn btn-primary">🔄 Обновить</button>
+        </div>
+      </div>
+    </section>
+
     <section class="results-section">
       <h2>Записи</h2>
       <div class="table-wrapper">
-        <table class="table">
+        <table class="data-table">
           <thead>
             <tr>
-      <th>Deal</th>
-      <th>Buyer</th>
-      <th>Amount</th>
-      <th>Currency</th>
-      <th>Expected / Close Date</th>
-      <th>Status</th>
-      <th>Confirmed</th>
-      <th>Действия</th>
+              <th>Клиент</th>
+              <th>Сумма</th>
+              <th>Дата ожидания</th>
+              <th>Статус</th>
+              <th>Подтверждено</th>
+              <th class="actions-header">Действия</th>
             </tr>
           </thead>
           <tbody id="cashTableBody">
-            <tr><td colspan="8" class="text-muted">Нет данных</td></tr>
+            <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
           </tbody>
         </table>
       </div>

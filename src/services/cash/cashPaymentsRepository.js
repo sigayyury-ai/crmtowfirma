@@ -89,10 +89,8 @@ class CashPaymentsRepository {
             total,
             payments_total_cash,
             payments_total_cash_pln,
-            expected_close_date,
-            issued_at,
             buyer_name,
-            pipedrive_deal_id
+            buyer_email
           ),
           products (
             id,
@@ -126,8 +124,6 @@ class CashPaymentsRepository {
           total,
           payments_total_cash,
           payments_total_cash_pln,
-          expected_close_date,
-          issued_at,
           buyer_name,
           buyer_email
         ),
