@@ -90,6 +90,26 @@ async function updateInvoiceTypeField(dealId, value) {
   }
 }
 
+async function hasStripePaymentsForDeal(dealId) {
+  if (!dealId || !stripeProcessor?.repository?.isEnabled()) {
+    return false;
+  }
+
+  try {
+    const payments = await stripeProcessor.repository.listPayments({
+      dealId: String(dealId),
+      limit: 1
+    });
+    return Array.isArray(payments) && payments.length > 0;
+  } catch (error) {
+    logger.warn('Failed to check Stripe payments for deal', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
+
 async function cleanupDealArtifacts(dealId) {
   const result = {
     cashDeleted: 0,
@@ -761,7 +781,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             });
           }
         } else {
-        // Если lost_reason не "Refund", удаляем проформы
+        const hasStripePayments = await hasStripePaymentsForDeal(dealId);
+        if (hasStripePayments) {
+          logger.info(`🗑️  Удаление Stripe платежей (без проформ) | Deal: ${dealId}`);
+          await cleanupDealArtifacts(dealId);
+          return res.status(200).json({
+            success: true,
+            message: 'Stripe payments deleted',
+            dealId
+          });
+        }
+
+        // Если lost_reason не "Refund" и Stripe-платежей нет, удаляем проформы
         logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
         try {
@@ -792,30 +823,41 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Проверяем удаление ПЕРЕД обработкой стадии, чтобы удаление имело приоритет
     // Используем только ID "74" для удаления
     if (currentInvoiceType === '74') {
+      const hasStripePayments = await hasStripePaymentsForDeal(dealId);
+      if (hasStripePayments) {
+        logger.info(`🗑️  Удаление Stripe платежей (invoice_type=Delete) | Deal: ${dealId}`);
+        await cleanupDealArtifacts(dealId);
+        return res.status(200).json({
+          success: true,
+          message: 'Stripe payments deleted',
+          dealId
+        });
+      }
+
       logger.info(`🗑️  Удаление проформ | Deal: ${dealId}`);
 
-        try {
-          const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
+      try {
+        const result = await invoiceProcessing.processDealDeletionByWebhook(dealId, currentDeal);
         if (result.success) {
           logger.info(`✅ Проформы удалены | Deal: ${dealId}`);
         } else {
           logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
         }
         await cleanupDealArtifacts(dealId);
-          return res.status(200).json({
-            success: result.success,
-            message: result.success ? 'Deletion processed' : result.error,
-            dealId
-          });
-        } catch (error) {
+        return res.status(200).json({
+          success: result.success,
+          message: result.success ? 'Deletion processed' : result.error,
+          dealId
+        });
+      } catch (error) {
         logger.error(`❌ Ошибка удаления проформ | Deal: ${dealId}`);
-          return res.status(200).json({
-            success: false,
-            error: error.message,
-            dealId
-          });
-        }
+        return res.status(200).json({
+          success: false,
+          error: error.message,
+          dealId
+        });
       }
+    }
 
     // ========== Обработка 3: Стадия "First payment" (ID: 18) (триггер для Stripe) ==========
     // ВРЕМЕННО ОТКЛЮЧЕНО: создание Stripe Checkout Sessions через стадию "First payment"
