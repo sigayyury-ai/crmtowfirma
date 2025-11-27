@@ -8,17 +8,59 @@ const { normaliseCurrency } = require('../utils/currency');
 const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
 const { extractCashFields, parseDateString } = require('../services/cash/cashFieldParser');
 const { ensureCashStatus } = require('../services/cash/cashStatusSync');
-const { createCashReminder } = require('../services/cash/cashReminderService');
+const { createCashReminder, closeCashReminders } = require('../services/cash/cashReminderService');
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 const cashPaymentsRepository = new CashPaymentsRepository();
+const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
+
+function resolvePipedriveClient() {
+  if (invoiceProcessing?.pipedriveClient) {
+    return invoiceProcessing.pipedriveClient;
+  }
+  if (stripeProcessor?.pipedriveClient) {
+    return stripeProcessor.pipedriveClient;
+  }
+  return null;
+}
+
+function formatStripeInvoiceMarker(sessionId) {
+  if (!sessionId) {
+    return null;
+  }
+  const suffix = String(sessionId).slice(-6).toUpperCase();
+  return `STR-${suffix}`;
+}
+
+async function updateInvoiceNumberField(dealId, value) {
+  const client = resolvePipedriveClient();
+  if (!client || !dealId || !INVOICE_NUMBER_FIELD_KEY) {
+    return false;
+  }
+
+  try {
+    await client.updateDeal(dealId, {
+      [INVOICE_NUMBER_FIELD_KEY]: value
+    });
+    logger.info('Invoice number field updated', { dealId, value });
+    return true;
+  } catch (error) {
+    logger.warn('Failed to update invoice number field', {
+      dealId,
+      error: error.message
+    });
+    return false;
+  }
+}
 
 async function cleanupDealArtifacts(dealId) {
   const result = {
     cashDeleted: 0,
     stripeCancelled: 0,
-    stripeRemoved: 0
+    stripeRemoved: 0,
+    reminderTasksClosed: 0,
+    reminderNotesRemoved: 0
   };
 
   if (!dealId) {
@@ -52,6 +94,24 @@ async function cleanupDealArtifacts(dealId) {
       dealId,
       error: error.message
     });
+  }
+
+  const pipedriveClient = resolvePipedriveClient();
+  if (pipedriveClient) {
+    try {
+      const reminderResult = await closeCashReminders(pipedriveClient, { dealId });
+      result.reminderTasksClosed = reminderResult.tasksClosed || 0;
+      result.reminderNotesRemoved = reminderResult.notesRemoved || 0;
+    } catch (error) {
+      logger.warn('Failed to cleanup cash reminders for deal', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  if (INVOICE_NUMBER_FIELD_KEY) {
+    await updateInvoiceNumberField(dealId, 'Done');
   }
 
   return result;
@@ -1270,6 +1330,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.info(`ℹ️  Новые сессии не созданы (все уже существуют) | Deal: ${dealId} | График: ${paymentSchedule}`);
           }
 
+          if (sessions.length > 0) {
+            const marker = formatStripeInvoiceMarker(sessions[0]?.id);
+            if (marker) {
+              await updateInvoiceNumberField(dealId, marker);
+            }
+          }
+
           // Отправляем уведомление в SendPulse с графиком платежей и ссылками на сессии
           logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
           const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
@@ -1464,6 +1531,12 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               });
               
               if (result.success) {
+                if (result.sessionId) {
+                  const marker = formatStripeInvoiceMarker(result.sessionId);
+                  if (marker) {
+                    await updateInvoiceNumberField(dealId, marker);
+                  }
+                }
                 return res.status(200).json({
                   success: true,
                   message: 'Checkout Sessions created via workflow automation',
