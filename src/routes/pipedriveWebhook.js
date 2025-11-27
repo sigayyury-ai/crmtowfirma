@@ -14,6 +14,49 @@ const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
 const cashPaymentsRepository = new CashPaymentsRepository();
 
+async function cleanupDealArtifacts(dealId) {
+  const result = {
+    cashDeleted: 0,
+    stripeCancelled: 0,
+    stripeRemoved: 0
+  };
+
+  if (!dealId) {
+    return result;
+  }
+
+  if (cashPaymentsRepository.isEnabled()) {
+    try {
+      const deletion = await cashPaymentsRepository.deleteByDealId(dealId);
+      result.cashDeleted = deletion.deleted || 0;
+      if (result.cashDeleted > 0) {
+        logger.info('Removed cash payments for deleted deal', {
+          dealId,
+          deleted: result.cashDeleted
+        });
+      }
+    } catch (error) {
+      logger.warn('Failed to delete cash payments for deal', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  try {
+    const stripeResult = await stripeProcessor.cancelDealCheckoutSessions(dealId);
+    result.stripeCancelled = stripeResult.cancelled || 0;
+    result.stripeRemoved = stripeResult.removed || 0;
+  } catch (error) {
+    logger.warn('Failed to cancel Stripe sessions for deleted deal', {
+      dealId,
+      error: error.message
+    });
+  }
+
+  return result;
+}
+
 /**
  * Нормализует invoice_type к числовому ID
  * Преобразует строковые значения в числовые ID для единообразной обработки
@@ -633,6 +676,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           } else {
             logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
           }
+          await cleanupDealArtifacts(dealId);
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Proformas deleted' : result.error,
@@ -662,6 +706,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         } else {
           logger.warn(`⚠️  Не удалось удалить проформы | Deal: ${dealId}`);
         }
+        await cleanupDealArtifacts(dealId);
           return res.status(200).json({
             success: result.success,
             message: result.success ? 'Deletion processed' : result.error,

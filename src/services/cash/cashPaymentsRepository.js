@@ -464,6 +464,56 @@ class CashPaymentsRepository {
     }
   }
 
+  async deleteByDealId(dealId) {
+    if (!this.isEnabled() || !dealId) return { deleted: 0 };
+
+    try {
+      const { data: payments, error } = await this.supabase
+        .from('cash_payments')
+        .select('id, proforma_id')
+        .eq('deal_id', dealId);
+
+      if (error) {
+        logger.error('Failed to fetch cash payments before deletion', { error, dealId });
+        return { deleted: 0 };
+      }
+
+      if (!payments || payments.length === 0) {
+        return { deleted: 0 };
+      }
+
+      const { error: deleteError } = await this.supabase
+        .from('cash_payments')
+        .delete()
+        .eq('deal_id', dealId);
+
+      if (deleteError) {
+        logger.error('Failed to delete cash payments by deal', { error: deleteError, dealId });
+        return { deleted: 0 };
+      }
+
+      const proformaIds = Array.from(
+        new Set(
+          payments
+            .map((payment) => payment.proforma_id)
+            .filter((id) => id !== null && id !== undefined)
+        )
+      );
+
+      await Promise.all(
+        proformaIds.map((id) => this.updateProformaCashTotals(id))
+      );
+
+      return { deleted: payments.length };
+    } catch (err) {
+      logger.error('Exception while deleting cash payments by deal', {
+        error: err.message,
+        dealId
+      });
+      return { deleted: 0 };
+    }
+  }
+
   async findByStripeSession(sessionId) {
     if (!this.isEnabled() || !sessionId) return null;
 

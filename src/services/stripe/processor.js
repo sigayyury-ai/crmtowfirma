@@ -3522,6 +3522,58 @@ class StripeProcessorService {
     }
   }
 
+  async cancelDealCheckoutSessions(dealId) {
+    if (!dealId) {
+      return { cancelled: 0, removed: 0 };
+    }
+
+    const payments = await this.repository.listPayments({ dealId: String(dealId) });
+    let cancelled = 0;
+
+    for (const payment of payments) {
+      if (!payment?.session_id) {
+        continue;
+      }
+      if (payment.payment_status && payment.payment_status === 'paid') {
+        continue;
+      }
+      try {
+        await this.stripe.checkout.sessions.expire(payment.session_id);
+        cancelled += 1;
+        this.logger.info('Expired Stripe Checkout Session for deleted deal', {
+          dealId,
+          sessionId: payment.session_id
+        });
+      } catch (error) {
+        if (error.code === 'resource_missing') {
+          this.logger.info('Stripe Checkout Session already missing', {
+            dealId,
+            sessionId: payment.session_id
+          });
+        } else {
+          this.logger.warn('Failed to expire Stripe Checkout Session', {
+            dealId,
+            sessionId: payment.session_id,
+            error: error.message
+          });
+        }
+      }
+    }
+
+    const deletionResult = await this.repository.deletePaymentsByDealId(dealId);
+    if (deletionResult.deleted > 0) {
+      this.logger.info('Removed stored Stripe payments for deleted deal', {
+        dealId,
+        deleted: deletionResult.deleted
+      });
+    }
+
+    return {
+      cancelled,
+      removed: deletionResult.deleted || 0
+    };
+  }
+
   /**
    * Log deletion for a lost deal payment
    * @param {Object} payment - Payment record from database
