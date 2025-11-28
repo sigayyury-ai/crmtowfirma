@@ -1,17 +1,17 @@
 const API_BASE = '/api';
 const TAB_PATH_MAP = {
-  report2: '/vat-margin.html',
-  products: '/vat-margin.html',
-  stripe: '/vat-margin.html',
-  deleted: '/vat-margin.html',
-  payments: '/payments',
-  'cash-journal': '/cash-journal'
+  report2: '/vat-margin',
+  products: '/vat-margin/products',
+  stripe: '/vat-margin/stripe',
+  deleted: '/vat-margin/deleted',
+  payments: '/vat-margin/payments',
+  'cash-journal': '/vat-margin/cash-journal'
 };
 
 const TAB_HASH_MAP = {
-  products: '#tab-products',
-  stripe: '#tab-stripe',
-  deleted: '#tab-deleted',
+  products: '',
+  stripe: '',
+  deleted: '',
   report2: '',
   payments: '',
   'cash-journal': ''
@@ -325,7 +325,8 @@ function togglePaymentsSubtab(subtab, options = {}) {
   }
 
   if (!suppressPathUpdate && activeTab === 'payments') {
-    const targetPath = activePaymentsSubtab === 'incoming' ? '/payments' : '/expenses';
+    const targetPath =
+      activePaymentsSubtab === 'incoming' ? '/vat-margin/payments' : '/vat-margin/expenses';
     if (window.location.pathname !== targetPath) {
       window.history.replaceState(null, '', targetPath);
     }
@@ -2639,12 +2640,27 @@ function getInitialTabFromPath(pathname) {
   switch (pathname) {
     case '/':
     case '/vat-margin.html':
+    case '/vat-margin':
+    case '/vat-margin/':
+    case '/reporting':
       return 'report2';
+    case '/products':
+    case '/vat-margin/products':
+      return 'products';
+    case '/stripe':
+    case '/vat-margin/stripe':
+      return 'stripe';
+    case '/deleted':
+    case '/vat-margin/deleted':
+      return 'deleted';
     case '/payments':
+    case '/vat-margin/payments':
       return 'payments';
     case '/expenses':
+    case '/vat-margin/expenses':
       return 'payments';
     case '/cash-journal':
+    case '/vat-margin/cash-journal':
       return 'cash-journal';
     default:
       return null;
@@ -2652,7 +2668,7 @@ function getInitialTabFromPath(pathname) {
 }
 
 function updateBrowserPathForTab(tabName) {
-  const basePath = TAB_PATH_MAP[tabName] || '/vat-margin.html';
+  const basePath = TAB_PATH_MAP[tabName] || '/vat-margin';
   const hash = TAB_HASH_MAP[tabName] || '';
   const target = `${basePath}${hash}`;
   const current = `${window.location.pathname}${window.location.hash}`;
@@ -2662,7 +2678,7 @@ function updateBrowserPathForTab(tabName) {
 }
 
 function getInitialPaymentsSubtabFromPath(pathname) {
-  if (pathname === '/expenses') {
+  if (pathname === '/expenses' || pathname === '/vat-margin/expenses') {
     return 'outgoing';
   }
   return 'incoming';

@@ -97,16 +97,21 @@ const sendPage = (filename) => (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend', filename));
 };
 
-app.get('/vat-margin.html', requireAuth, sendPage('vat-margin.html'));
-app.get('/vat-margin-product.html', requireAuth, sendPage('vat-margin-product.html'));
-app.get('/reporting', requireAuth, sendPage('vat-margin.html'));
-app.get('/products', requireAuth, sendPage('vat-margin.html'));
-app.get('/stripe', requireAuth, sendPage('vat-margin.html'));
-app.get('/deleted', requireAuth, sendPage('vat-margin.html'));
-app.get('/payments', requireAuth, sendPage('vat-margin.html'));
-app.get('/expenses', requireAuth, sendPage('expenses.html'));
-app.get('/cash-journal', requireAuth, sendPage('cash-journal.html'));
-app.get('/settings', requireAuth, sendPage('index.html'));
+app.get(['/vat-margin', '/vat-margin/', '/vat-margin.html'], requireAuth, sendPage('vat-margin.html'));
+app.get(
+  ['/vat-margin/product', '/vat-margin/product/', '/vat-margin-product.html'],
+  requireAuth,
+  sendPage('vat-margin-product.html')
+);
+
+app.get(['/reporting', '/vat-margin/reporting'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/products', '/vat-margin/products'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/stripe', '/vat-margin/stripe'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/deleted', '/vat-margin/deleted'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/payments', '/vat-margin/payments'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('expenses.html'));
+app.get(['/cash-journal', '/vat-margin/cash-journal'], requireAuth, sendPage('cash-journal.html'));
+app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html'));
 
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
@@ -176,4 +181,3 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
-
