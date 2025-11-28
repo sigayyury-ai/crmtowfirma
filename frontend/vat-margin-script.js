@@ -8,6 +8,15 @@ const TAB_PATH_MAP = {
   'cash-journal': '/cash-journal'
 };
 
+const TAB_HASH_MAP = {
+  products: '#tab-products',
+  stripe: '#tab-stripe',
+  deleted: '#tab-deleted',
+  report2: '',
+  payments: '',
+  'cash-journal': ''
+};
+
 let elements = {};
 let paymentsLoaded = false;
 let productsLoaded = false;
@@ -196,6 +205,14 @@ function bindEvents() {
 function initTabs() {
   const initialTab = getInitialTabFromPath(window.location.pathname) || 'report2';
   switchTab(initialTab, { suppressPathUpdate: true });
+
+  if (initialTab === 'payments') {
+    const initialPaymentsSubtab = getInitialPaymentsSubtabFromPath(window.location.pathname) || 'incoming';
+    togglePaymentsSubtab(initialPaymentsSubtab, {
+      suppressDataLoad: false,
+      suppressPathUpdate: true
+    });
+  }
 }
 
 function switchTab(tabName, options = {}) {
@@ -251,7 +268,10 @@ function switchTab(tabName, options = {}) {
   }
 
   if (tabName === 'payments') {
-    togglePaymentsSubtab('incoming', { suppressDataLoad: true });
+    togglePaymentsSubtab('incoming', {
+      suppressDataLoad: true,
+      suppressPathUpdate: true
+    });
     if (!paymentsLoaded) {
       loadPaymentsData();
       paymentsLoaded = true;
@@ -279,7 +299,7 @@ function initPaymentsSubtabs() {
 }
 
 function togglePaymentsSubtab(subtab, options = {}) {
-  const { suppressDataLoad = false } = options;
+  const { suppressDataLoad = false, suppressPathUpdate = false } = options;
   activePaymentsSubtab = subtab || 'incoming';
   const sections = {
     incoming: elements.paymentsIncomingSection,
@@ -302,6 +322,13 @@ function togglePaymentsSubtab(subtab, options = {}) {
   ) {
     loadPaymentsData();
     paymentsLoaded = true;
+  }
+
+  if (!suppressPathUpdate && activeTab === 'payments') {
+    const targetPath = activePaymentsSubtab === 'incoming' ? '/payments' : '/expenses';
+    if (window.location.pathname !== targetPath) {
+      window.history.replaceState(null, '', targetPath);
+    }
   }
 }
 
@@ -2615,6 +2642,8 @@ function getInitialTabFromPath(pathname) {
       return 'report2';
     case '/payments':
       return 'payments';
+    case '/expenses':
+      return 'payments';
     case '/cash-journal':
       return 'cash-journal';
     default:
@@ -2623,8 +2652,18 @@ function getInitialTabFromPath(pathname) {
 }
 
 function updateBrowserPathForTab(tabName) {
-  const targetPath = TAB_PATH_MAP[tabName] || '/vat-margin.html';
-  if (window.location.pathname !== targetPath) {
-    window.history.replaceState(null, '', targetPath);
+  const basePath = TAB_PATH_MAP[tabName] || '/vat-margin.html';
+  const hash = TAB_HASH_MAP[tabName] || '';
+  const target = `${basePath}${hash}`;
+  const current = `${window.location.pathname}${window.location.hash}`;
+  if (current !== target) {
+    window.history.replaceState(null, '', target);
   }
+}
+
+function getInitialPaymentsSubtabFromPath(pathname) {
+  if (pathname === '/expenses') {
+    return 'outgoing';
+  }
+  return 'incoming';
 }
