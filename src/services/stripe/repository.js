@@ -213,6 +213,29 @@ class StripeRepository {
     return data;
   }
 
+  async findPaymentByPaymentIntent(paymentIntentId) {
+    if (!this.isEnabled() || !paymentIntentId) return null;
+
+    const { data, error } = await this.supabase
+      .from('stripe_payments')
+      .select('*')
+      .eq('raw_payload->>payment_intent', paymentIntentId)
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissing(error)) {
+        logger.warn('Supabase table stripe_payments is missing; cannot fetch by payment intent', {
+          paymentIntentId
+        });
+        return null;
+      }
+      logger.error('Failed to load stripe payment by payment intent', { error, paymentIntentId });
+      throw error;
+    }
+
+    return data;
+  }
+
   /**
    * Update payment status for an existing payment
    * @param {string} sessionId - Stripe Checkout Session ID
@@ -349,6 +372,42 @@ class StripeRepository {
       ...entry,
       logged_at: entry.logged_at || new Date().toISOString()
     });
+
+    // Skip duplicates (Stripe often replays the same refund data)
+    if (payload.payment_id && payload.reason) {
+      try {
+        let duplicateQuery = this.supabase
+          .from('stripe_payment_deletions')
+          .select('id')
+          .eq('payment_id', payload.payment_id)
+          .eq('reason', payload.reason)
+          .limit(1);
+
+        if (payload.metadata?.refund_id) {
+          duplicateQuery = duplicateQuery.eq('metadata->>refund_id', String(payload.metadata.refund_id));
+        } else if (payload.reason === 'stripe_refund' && payload.raw_payload?.id) {
+          duplicateQuery = duplicateQuery.eq('raw_payload->>id', payload.raw_payload.id);
+        }
+
+        const { data: existing, error: duplicateError } = await duplicateQuery;
+        if (duplicateError) {
+          if (isTableMissing(duplicateError)) {
+            logger.warn('Supabase table stripe_payment_deletions missing during duplicate check');
+          } else {
+            logger.warn('Failed to check duplicate stripe deletion log', { error: duplicateError });
+          }
+        } else if (existing && existing.length > 0) {
+          logger.debug('Skipping duplicate stripe deletion log', {
+            paymentId: payload.payment_id,
+            reason: payload.reason,
+            refundId: payload.metadata?.refund_id || payload.raw_payload?.id || null
+          });
+          return existing[0];
+        }
+      } catch (duplicateCheckError) {
+        logger.warn('Duplicate stripe deletion check failed', { error: duplicateCheckError });
+      }
+    }
 
     const { error } = await this.supabase
       .from('stripe_payment_deletions')

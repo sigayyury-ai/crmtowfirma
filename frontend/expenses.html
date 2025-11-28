@@ -34,7 +34,7 @@
             padding: 0;
         }
         body.embedded-expenses .upload-section {
-            margin-top: 10px;
+            display: none;
         }
         body.embedded-expenses #uploadLog {
             display: none;
@@ -261,19 +261,10 @@
             <h3>Загрузка CSV файла с расходами</h3>
             <div style="display: flex; gap: 15px; align-items: center; margin-bottom: 10px;">
                 <input type="file" id="expensesCsvInput" accept=".csv" autocomplete="off" data-lpignore="true">
-                <label style="display: flex; align-items: center; gap: 5px;">
-                    Порог автокатегоризации:
-                    <input type="number" id="autoMatchThreshold" value="100" min="0" max="100" style="width: 60px; padding: 5px;" autocomplete="off" data-lpignore="true">
-                    <span style="color: #666;">%</span>
-                    <span style="color: #999; font-size: 0.9em;">(100% = отключено, все вручную)</span>
-                </label>
                 <button class="btn btn-primary" id="uploadCsvButton" onclick="handleExpensesCsvUpload()">
                     <span id="uploadButtonText">📤 Загрузить CSV</span>
                     <span id="uploadButtonSpinner" class="upload-spinner" style="display: none;">⏳</span>
                 </button>
-            </div>
-            <div style="font-size: 0.9em; color: #666; margin-bottom: 10px;">
-                Порог автокатегоризации: 100% = отключено (все расходы требуют ручного выбора). Установите значение < 100 для включения автокатегоризации.
             </div>
             <!-- Loading indicator -->
             <div id="uploadProgress" style="display: none; margin-top: 15px; padding: 15px; background: #f0f7ff; border-left: 4px solid #2196f3; border-radius: 4px;">
@@ -315,6 +306,7 @@
         <!-- Filters -->
         <div class="expenses-filters">
             <button class="btn btn-secondary" onclick="loadExpenses()">🔄 Обновить</button>
+            <button class="btn btn-primary" id="autoCategorizeBtn">🤖 Автокатегоризация</button>
             <label style="display: flex; align-items: center; gap: 10px;">
                 Фильтр по категории:
                 <select id="categoryFilter" class="form-control" style="min-width: 200px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">

@@ -3125,6 +3125,82 @@ class StripeProcessorService {
   async persistRefund(refund) {
     const currency = normaliseCurrency(refund.currency);
     const amounts = await this.convertRefundAmounts(refund);
+    const metadata = {
+      ...(refund.metadata || {}),
+      refund_id: refund.id
+    };
+
+    // Try to enrich metadata with customer/deal info from stored payment
+    let customerName = metadata.customer_name || null;
+    let customerEmail = metadata.customer_email || null;
+    let metadataDealId = metadata.deal_id || null;
+
+    if (refund.payment_intent) {
+      try {
+        const paymentRecord = await this.repository.findPaymentByPaymentIntent(refund.payment_intent);
+        if (paymentRecord) {
+          customerName =
+            customerName ||
+            paymentRecord.customer_name ||
+            paymentRecord.raw_payload?.customer_details?.name ||
+            null;
+          customerEmail =
+            customerEmail ||
+            paymentRecord.customer_email ||
+            paymentRecord.raw_payload?.customer_details?.email ||
+            null;
+          metadataDealId =
+            metadataDealId ||
+            paymentRecord.deal_id ||
+            paymentRecord.raw_payload?.metadata?.deal_id ||
+            null;
+        }
+      } catch (error) {
+        this.logger?.warn('Failed to enrich refund metadata with payment info', {
+          refundId: refund.id,
+          paymentIntent: refund.payment_intent,
+          error: error.message
+        });
+      }
+
+      if ((!customerName || !customerEmail || !metadataDealId) && this.stripe) {
+        try {
+          const paymentIntent = await this.stripe.paymentIntents.retrieve(refund.payment_intent, {
+            expand: ['charges.data.billing_details', 'customer']
+          });
+
+          const chargeDetails =
+            paymentIntent?.charges?.data?.find(
+              (charge) => charge?.billing_details?.name || charge?.billing_details?.email
+            ) || paymentIntent?.charges?.data?.[0];
+
+          customerName =
+            customerName ||
+            chargeDetails?.billing_details?.name ||
+            paymentIntent?.shipping?.name ||
+            (typeof paymentIntent?.customer === 'object' ? paymentIntent.customer?.name : null) ||
+            null;
+          customerEmail =
+            customerEmail ||
+            chargeDetails?.billing_details?.email ||
+            paymentIntent?.receipt_email ||
+            (typeof paymentIntent?.customer === 'object' ? paymentIntent.customer?.email : null) ||
+            null;
+          metadataDealId = metadataDealId || paymentIntent?.metadata?.deal_id || null;
+        } catch (intentError) {
+          this.logger?.warn('Failed to fetch payment intent while enriching refund metadata', {
+            refundId: refund.id,
+            paymentIntent: refund.payment_intent,
+            error: intentError.message
+          });
+        }
+      }
+    }
+
+    metadata.customer_name = customerName || metadata.customer_name || null;
+    metadata.customer_email = customerEmail || metadata.customer_email || null;
+    metadata.deal_id = metadataDealId || metadata.deal_id || null;
+
     const payload = {
       payment_id: refund.payment_intent || refund.charge || refund.id,
       reason: 'stripe_refund',
@@ -3132,7 +3208,7 @@ class StripeProcessorService {
       currency,
       amount_pln: amounts.amountPln,
       logged_at: new Date((refund.created || 0) * 1000).toISOString(),
-      metadata: refund.metadata || {},
+      metadata,
       raw_payload: refund
     };
     await this.repository.logDeletion(payload);

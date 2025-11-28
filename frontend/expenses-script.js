@@ -1,5 +1,4 @@
 const API_BASE = window.location.origin;
-
 let expenseCategoriesMap = {};
 let incomeCategoriesMap = {};
 
@@ -20,6 +19,8 @@ const expenseProductLinkState = {
   error: null,
   loadPromise: null
 };
+
+let autoCategorizeInProgress = false;
 
 // Initialize page
 document.addEventListener('DOMContentLoaded', () => {
@@ -46,6 +47,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   } else {
     console.warn('expensesCsvInput element not found');
+  }
+
+  const autoCategorizeBtn = document.getElementById('autoCategorizeBtn');
+  if (autoCategorizeBtn) {
+    autoCategorizeBtn.addEventListener('click', () => {
+      autoCategorizeExpenses().catch((error) => {
+        console.error('Auto-categorization failed:', error);
+        addLog('error', `Автокатегоризация завершилась с ошибкой: ${error.message}`);
+      });
+    });
   }
 });
 
@@ -582,6 +593,129 @@ function filterExpenses() {
   expensesState.filteredItems = filteredPayments;
   renderExpensesTable(filteredPayments);
   updateStatistics(filteredPayments);
+}
+
+function setAutoCategorizeButtonState(loading, label) {
+  const button = document.getElementById('autoCategorizeBtn');
+  if (!button) return;
+  if (loading) {
+    button.disabled = true;
+    button.textContent = label || '🤖 Автокатегоризация...';
+  } else {
+    button.disabled = false;
+    button.textContent = '🤖 Автокатегоризация';
+  }
+}
+
+async function autoCategorizeExpenses() {
+  if (autoCategorizeInProgress) {
+    addLog('warning', 'Автокатегоризация уже выполняется');
+    return;
+  }
+
+  const uncategorizedExpenses = expensesState.items.filter(
+    (payment) => payment.direction === 'out' && !payment.expense_category_id
+  );
+
+  if (uncategorizedExpenses.length === 0) {
+    addLog('info', 'Нет расходов без категории для автокатегоризации');
+    return;
+  }
+
+  autoCategorizeInProgress = true;
+  addLog('info', `Автокатегоризация запущена: ${uncategorizedExpenses.length} расходов без категории`);
+  setAutoCategorizeButtonState(true, `🤖 0/${uncategorizedExpenses.length}`);
+
+  let appliedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  for (let index = 0; index < uncategorizedExpenses.length; index += 1) {
+    const payment = uncategorizedExpenses[index];
+    setAutoCategorizeButtonState(true, `🤖 ${index + 1}/${uncategorizedExpenses.length}`);
+
+    try {
+      const detail = await loadExpenseDetails(String(payment.id), { forceReload: false });
+      const suggestions = detail?.suggestions || [];
+      const bestSuggestion = suggestions
+        .filter((suggestion) => suggestion && suggestion.categoryId)
+        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+
+      if (!bestSuggestion) {
+        skippedCount += 1;
+        addLog('info', `Расход ${payment.id}: нет предложений, пропускаем`);
+        continue;
+      }
+
+      await applyExpenseCategoryFromSuggestion(payment.id, bestSuggestion);
+
+      const categoryId = parseInt(bestSuggestion.categoryId, 10);
+      payment.expense_category_id = categoryId;
+
+      const cachedDetail = expensesState.details.get(String(payment.id));
+      if (cachedDetail?.expense) {
+        cachedDetail.expense.expense_category_id = categoryId;
+      }
+      if (cachedDetail?.payment) {
+        cachedDetail.payment.expense_category_id = categoryId;
+      }
+
+      appliedCount += 1;
+      const categoryName = expenseCategoriesMap[categoryId]?.name || `ID: ${categoryId}`;
+      addLog('success', `Расход ${payment.id}: установлена категория ${categoryName}`);
+    } catch (error) {
+      errorCount += 1;
+      console.error('Auto-categorization item failed', { paymentId: payment.id, error });
+      addLog('error', `Расход ${payment.id}: ${error.message}`);
+    }
+  }
+
+  try {
+    const currentFilter = document.getElementById('categoryFilter')?.value || 'null';
+    await loadExpenses();
+    const categoryFilter = document.getElementById('categoryFilter');
+    if (categoryFilter && categoryFilter.value !== currentFilter) {
+      categoryFilter.value = currentFilter;
+    }
+    filterExpenses();
+  } finally {
+    setAutoCategorizeButtonState(false);
+    autoCategorizeInProgress = false;
+    addLog('info', `Автокатегоризация завершена: применено ${appliedCount}, без предложений ${skippedCount}, ошибок ${errorCount}`);
+  }
+}
+
+async function applyExpenseCategoryFromSuggestion(paymentId, suggestion) {
+  const categoryId = parseInt(suggestion.categoryId, 10);
+  if (!categoryId) {
+    throw new Error('Некорректное предложение категории');
+  }
+
+  const body = {
+    expense_category_id: categoryId,
+    createMapping: suggestion.patternType !== null && suggestion.patternType !== undefined,
+    patternType: suggestion.patternType || null,
+    patternValue: suggestion.patternValue || '',
+    priority: suggestion.confidence >= 100
+      ? 10
+      : Math.max(1, Math.round((suggestion.confidence || 0) / 10))
+  };
+
+  const response = await fetch(
+    `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }
+  );
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.success) {
+    throw new Error(payload?.error || payload?.message || 'Не удалось присвоить категорию');
+  }
+
+  return categoryId;
 }
 
 // Handle expense row click
@@ -1537,7 +1671,6 @@ function selectUnmatchedExpense(expenseId) {
 // Handle CSV upload
 async function handleExpensesCsvUpload() {
   const fileInput = document.getElementById('expensesCsvInput');
-  const thresholdInput = document.getElementById('autoMatchThreshold');
   const uploadButton = document.getElementById('uploadCsvButton');
   const uploadButtonText = document.getElementById('uploadButtonText');
   const uploadButtonSpinner = document.getElementById('uploadButtonSpinner');
@@ -1556,12 +1689,8 @@ async function handleExpensesCsvUpload() {
     return;
   }
   
-  const threshold = parseInt(thresholdInput.value, 10) || 90;
-  const validThreshold = Math.max(0, Math.min(100, threshold));
-  
   // Show loading state
   fileInput.disabled = true;
-  thresholdInput.disabled = true;
   uploadButton.disabled = true;
   uploadButtonText.style.display = 'none';
   uploadButtonSpinner.style.display = 'inline-block';
@@ -1569,7 +1698,7 @@ async function handleExpensesCsvUpload() {
   uploadProgressText.textContent = 'Обработка файла...';
   uploadProgressDetails.textContent = `Файл: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
   
-  addLog('info', `Загрузка файла ${file.name} (${(file.size / 1024).toFixed(2)} KB)... (порог автокатегоризации: ${validThreshold}%)`);
+  addLog('info', `Загрузка файла ${file.name} (${(file.size / 1024).toFixed(2)} KB)...`);
   
   const formData = new FormData();
   formData.append('file', file);
@@ -1585,7 +1714,7 @@ async function handleExpensesCsvUpload() {
     
     let response;
     try {
-      response = await fetch(`${API_BASE}/api/payments/import-expenses?autoMatchThreshold=${validThreshold}`, {
+      response = await fetch(`${API_BASE}/api/payments/import-expenses`, {
         method: 'POST',
         body: formData,
         signal: controller.signal
@@ -1633,7 +1762,6 @@ async function handleExpensesCsvUpload() {
     const incomeProcessed = stats.income?.processed || 0;
     const autoMatched = stats.categorized || stats.expenses?.categorized || 0;
     const uncategorized = stats.uncategorized || stats.expenses?.uncategorized || 0;
-    const threshold = stats.autoMatchThreshold || 90;
     const uncategorizedExpenses = payload.data?.uncategorizedExpenses || [];
     
     // Hide progress indicator
@@ -1648,10 +1776,9 @@ async function handleExpensesCsvUpload() {
     
     if (expensesProcessed > 0) {
       if (autoMatched > 0) {
-        addLog('success', `Автоматически категоризировано: ${autoMatched} (>=${threshold}%), без категории: ${uncategorized}`);
-      } else {
-        addLog('info', `Без категории: ${uncategorized} (требуют ручного выбора)`);
+        addLog('success', `Автоматически категоризировано: ${autoMatched}`);
       }
+      addLog('info', `Без категории: ${uncategorized} (требуют ручного выбора или автокатегоризации)`);
     } else {
       addLog('warning', `⚠️ В CSV файле не найдено расходов (отрицательных сумм).`);
       addLog('info', `Проверьте формат CSV: расходы должны иметь знак минус перед суммой (например: "-100.00 PLN")`);
@@ -1684,7 +1811,6 @@ async function handleExpensesCsvUpload() {
   } finally {
     // Restore UI state
     fileInput.disabled = false;
-    thresholdInput.disabled = false;
     uploadButton.disabled = false;
     uploadButtonText.style.display = 'inline';
     uploadButtonSpinner.style.display = 'none';
