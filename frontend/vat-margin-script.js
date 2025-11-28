@@ -1,4 +1,12 @@
 const API_BASE = '/api';
+const TAB_PATH_MAP = {
+  report2: '/vat-margin.html',
+  products: '/vat-margin.html',
+  stripe: '/vat-margin.html',
+  deleted: '/vat-margin.html',
+  payments: '/payments',
+  'cash-journal': '/cash-journal'
+};
 
 let elements = {};
 let paymentsLoaded = false;
@@ -186,10 +194,12 @@ function bindEvents() {
 }
 
 function initTabs() {
-  switchTab('report2');
+  const initialTab = getInitialTabFromPath(window.location.pathname) || 'report2';
+  switchTab(initialTab, { suppressPathUpdate: true });
 }
 
-function switchTab(tabName) {
+function switchTab(tabName, options = {}) {
+  const { suppressPathUpdate = false } = options;
   activeTab = tabName;
   elements.tabButtons.forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
@@ -197,6 +207,10 @@ function switchTab(tabName) {
   elements.tabContents.forEach((content) => {
     content.classList.toggle('active', content.id === `tab-${tabName}`);
   });
+
+  if (!suppressPathUpdate) {
+    updateBrowserPathForTab(tabName);
+  }
 
   if (tabName === 'report2') {
     if (!paymentReportLoaded) {
@@ -2587,5 +2601,30 @@ function applyInitialHashSelection() {
   }
   if (hash === 'tab-payments') {
     switchTab('payments');
+    return;
+  }
+  if (hash === 'tab-cash-journal') {
+    switchTab('cash-journal');
+  }
+}
+
+function getInitialTabFromPath(pathname) {
+  switch (pathname) {
+    case '/':
+    case '/vat-margin.html':
+      return 'report2';
+    case '/payments':
+      return 'payments';
+    case '/cash-journal':
+      return 'cash-journal';
+    default:
+      return null;
+  }
+}
+
+function updateBrowserPathForTab(tabName) {
+  const targetPath = TAB_PATH_MAP[tabName] || '/vat-margin.html';
+  if (window.location.pathname !== targetPath) {
+    window.history.replaceState(null, '', targetPath);
   }
 }
