@@ -5,9 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Управление расходами - PNL</title>
     <link rel="stylesheet" href="style.css">
+    <script>
+        (function () {
+            try {
+                window.__EXPENSES_EMBEDDED__ = new URLSearchParams(window.location.search).get('embedded') === '1';
+            } catch (error) {
+                window.__EXPENSES_EMBEDDED__ = false;
+            }
+        })();
+    </script>
     <style>
         body {
             background: transparent !important;
+        }
+        body.embedded-expenses {
+            background: transparent;
+            margin: 0;
+            overflow: hidden;
+        }
+        body.embedded-expenses .container:first-of-type {
+            display: none;
+        }
+        body.embedded-expenses .expenses-header,
+        body.embedded-expenses .main-nav {
+            display: none;
+        }
+        body.embedded-expenses .expenses-container {
+            padding: 0;
+        }
+        body.embedded-expenses .upload-section {
+            margin-top: 10px;
+        }
+        body.embedded-expenses #uploadLog {
+            display: none;
         }
         .expenses-container {
             max-width: 100%;
@@ -203,6 +233,14 @@
     </style>
 </head>
 <body>
+    <script>
+        (function () {
+            if (window.__EXPENSES_EMBEDDED__) {
+                document.body.classList.add('embedded-expenses');
+                document.documentElement.classList.add('embedded-expenses-root');
+            }
+        })();
+    </script>
     <div class="container">
         <nav class="main-nav">
             <a href="/vat-margin.html" class="nav-link">Отчеты</a>
@@ -282,14 +320,6 @@
                 <select id="categoryFilter" class="form-control" style="min-width: 200px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
                     <option value="">Все категории</option>
                     <option value="null">Без категории</option>
-                </select>
-            </label>
-            <label style="display: flex; align-items: center; gap: 10px;">
-                Показать:
-                <select id="directionFilter" class="form-control" style="min-width: 150px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
-                    <option value="out">Только расходы (out)</option>
-                    <option value="all">Все платежи</option>
-                    <option value="in">Только доходы (in)</option>
                 </select>
             </label>
         </div>

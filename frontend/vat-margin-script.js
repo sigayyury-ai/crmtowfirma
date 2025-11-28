@@ -9,6 +9,7 @@ let activePaymentsSubtab = 'incoming';
 let deletedTabInitialized = false;
 let deletedTabAutoLoaded = false;
 let cashJournalInitialized = false;
+let outgoingIframeObserver = null;
 
 const paymentsState = {
   items: [],
@@ -74,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   initTabs();
   applyInitialHashSelection();
+  initOutgoingExpensesFrame();
 
   addLog('info', 'VAT Margin Tracker инициализирован');
 });
@@ -118,6 +120,7 @@ function cacheDom() {
     paymentsSubtabButtons: Array.from(document.querySelectorAll('[data-payments-tab]')),
     paymentsIncomingSection: document.getElementById('payments-incoming'),
     paymentsOutgoingSection: document.getElementById('payments-outgoing'),
+    outgoingExpensesIframe: document.getElementById('outgoing-expenses-iframe'),
     cashSummaryExpected: document.getElementById('cashSummaryExpected'),
     cashSummaryReceived: document.getElementById('cashSummaryReceived'),
     cashSummaryPending: document.getElementById('cashSummaryPending'),
@@ -231,9 +234,12 @@ function switchTab(tabName) {
     return;
   }
 
-  if (tabName === 'payments' && !paymentsLoaded) {
-    loadPaymentsData();
-    paymentsLoaded = true;
+  if (tabName === 'payments') {
+    togglePaymentsSubtab('incoming', { suppressDataLoad: true });
+    if (!paymentsLoaded) {
+      loadPaymentsData();
+      paymentsLoaded = true;
+    }
     return;
   }
 
@@ -256,7 +262,8 @@ function initPaymentsSubtabs() {
   });
 }
 
-function togglePaymentsSubtab(subtab) {
+function togglePaymentsSubtab(subtab, options = {}) {
+  const { suppressDataLoad = false } = options;
   activePaymentsSubtab = subtab || 'incoming';
   const sections = {
     incoming: elements.paymentsIncomingSection,
@@ -271,10 +278,50 @@ function togglePaymentsSubtab(subtab) {
     section?.classList.toggle('active', key === activePaymentsSubtab);
   });
 
-  if (activeTab === 'payments' && activePaymentsSubtab === 'incoming' && !paymentsLoaded) {
+  if (
+    !suppressDataLoad &&
+    activeTab === 'payments' &&
+    activePaymentsSubtab === 'incoming' &&
+    !paymentsLoaded
+  ) {
     loadPaymentsData();
     paymentsLoaded = true;
   }
+}
+
+function initOutgoingExpensesFrame() {
+  const iframe = elements.outgoingExpensesIframe;
+  if (!iframe) return;
+
+  const resize = () => {
+    if (!iframe || !iframe.contentWindow) return;
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const height = doc?.body?.scrollHeight || 0;
+      if (height > 0) {
+        iframe.style.height = `${height}px`;
+      }
+    } catch (error) {
+      console.warn('VAT Margin: unable to resize outgoing expenses iframe', error);
+    }
+  };
+
+  iframe.addEventListener('load', () => {
+    resize();
+    if (outgoingIframeObserver) {
+      outgoingIframeObserver.disconnect();
+    }
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow.document;
+      const target = doc?.body;
+      if (target && typeof ResizeObserver !== 'undefined') {
+        outgoingIframeObserver = new ResizeObserver(() => resize());
+        outgoingIframeObserver.observe(target);
+      }
+    } catch (error) {
+      console.warn('VAT Margin: unable to observe outgoing expenses iframe', error);
+    }
+  });
 }
 
 function initDeletedTab() {
@@ -2506,5 +2553,9 @@ function applyInitialHashSelection() {
   }
   if (hash === 'tab-deleted') {
     switchTab('deleted');
+    return;
+  }
+  if (hash === 'tab-payments') {
+    switchTab('payments');
   }
 }

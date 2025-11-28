@@ -167,31 +167,12 @@ async function loadExpenses() {
     `;
 
     // Get current direction filter
-    const directionFilter = document.getElementById('directionFilter');
-    const directionFilterValue = directionFilter?.value || 'out';
-    
     const cacheBuster = `&_t=${Date.now()}`;
-    let url;
-    let logMessage;
-    const currentDirection = directionFilterValue;
-    
-    // Load payments based on filter
-    if (currentDirection === 'in') {
-      // Load income payments
-      url = `${API_BASE}/api/vat-margin/payments?direction=in&limit=10000${cacheBuster}`;
-      logMessage = 'Загрузка доходов из:';
-    } else if (currentDirection === 'all') {
-      // Load all payments (no direction filter)
-      url = `${API_BASE}/api/vat-margin/payments?limit=10000${cacheBuster}`;
-      logMessage = 'Загрузка всех платежей из:';
-    } else {
-      // Load expenses (default)
-      url = `${API_BASE}/api/vat-margin/payments?direction=out&limit=10000${cacheBuster}`;
-      logMessage = 'Загрузка расходов из:';
-    }
+    const url = `${API_BASE}/api/vat-margin/payments?direction=out&limit=10000${cacheBuster}`;
+    const currentDirection = 'out';
     
     console.log('Loading payments from:', url);
-    addLog('info', `${logMessage} ${url}`);
+    addLog('info', `Загрузка расходов из: ${url}`);
     
     let response;
     try {
@@ -248,21 +229,10 @@ async function loadExpenses() {
     console.log('Raw payments count:', payments.length);
     console.log('Sample payments:', payments.slice(0, 3));
     
-    if (currentDirection === 'in') {
-      addLog('info', `Получено доходов: ${payments.length}`);
-    } else if (currentDirection === 'all') {
-      addLog('info', `Получено платежей: ${payments.length}`);
-    } else {
-      addLog('info', `Получено расходов: ${payments.length}`);
-    }
+    addLog('info', `Получено расходов: ${payments.length}`);
     
     if (payments.length === 0) {
-      const message = currentDirection === 'in' 
-        ? 'Нет доходов в базе данных' 
-        : currentDirection === 'all'
-        ? 'Нет платежей в базе данных'
-        : 'Нет расходов в базе данных';
-      
+      const message = 'Нет расходов в базе данных';
       tbody.innerHTML = `
         <tr>
           <td colspan="6" style="text-align: center; padding: 40px; color: #666;">
@@ -278,49 +248,24 @@ async function loadExpenses() {
     // Store all payments in state (for filtering)
     expensesState.items = payments;
     
-    // Update category filter dropdown based on direction
-    updateCategoryFilter(currentDirection);
+    // Update category filter dropdown
+    updateCategoryFilter('out');
     
-    // Apply current filters
+    // Apply category filter
     const categoryFilter = document.getElementById('categoryFilter');
-    const filterValue = categoryFilter?.value || '';
-    
+    const filterValue = categoryFilter?.value || 'null';
     let filteredPayments = payments;
     
-    // Filter by category based on direction
-    if (directionFilterValue === 'in') {
-      // For income: filter by income_category_id
-      if (filterValue === 'null') {
-        filteredPayments = payments.filter(p => !p.income_category_id);
-      } else if (filterValue) {
-        const categoryId = parseInt(filterValue, 10);
-        filteredPayments = payments.filter(p => p.income_category_id === categoryId);
-      }
-    } else if (directionFilterValue === 'out') {
-      // For expenses: filter by expense_category_id
-      if (filterValue === 'null') {
-        filteredPayments = payments.filter(p => !p.expense_category_id);
-      } else if (filterValue) {
-        const categoryId = parseInt(filterValue, 10);
-        filteredPayments = payments.filter(p => p.expense_category_id === categoryId);
-      }
-    } else {
-      // For 'all': filter by both categories (show uncategorized)
-      if (filterValue === 'null') {
-        filteredPayments = payments.filter(p => !p.expense_category_id && !p.income_category_id);
-      } else if (filterValue) {
-        const categoryId = parseInt(filterValue, 10);
-        filteredPayments = payments.filter(p => 
-          p.expense_category_id === categoryId || p.income_category_id === categoryId
-        );
-      }
+    if (filterValue === 'null') {
+      filteredPayments = payments.filter((payment) => !payment.expense_category_id);
+    } else if (filterValue) {
+      const categoryId = parseInt(filterValue, 10);
+      filteredPayments = payments.filter((payment) => payment.expense_category_id === categoryId);
     }
     
-    // Update statistics based on direction
-    updateStatistics(payments, currentDirection);
-    
-    // Render table with filtered payments
-    renderExpensesTable(filteredPayments, currentDirection);
+    // Update statistics and render table
+    updateStatistics(filteredPayments);
+    renderExpensesTable(filteredPayments);
     
   } catch (error) {
     console.error('Failed to load expenses:', error);
@@ -610,9 +555,7 @@ async function handleQuickCategoryChange(event, paymentId, categoryType = 'expen
     }
     
     // Update statistics
-    const directionFilter = document.getElementById('directionFilter');
-    const direction = directionFilter?.value || 'out';
-    updateStatistics(expensesState.items, direction);
+    updateStatistics(expensesState.items);
     
     // Show success message
     const paymentType = categoryType === 'income' ? 'дохода' : 'расхода';
@@ -627,10 +570,7 @@ async function handleQuickCategoryChange(event, paymentId, categoryType = 'expen
     }
     
     // Re-render table to update category display
-    const categoryFilter = document.getElementById('categoryFilter');
-    if (categoryFilter && directionFilter) {
-      filterExpenses();
-    }
+    filterExpenses();
     
   } catch (error) {
     console.error('Failed to update category:', error);
@@ -651,69 +591,24 @@ async function handleQuickCategoryChange(event, paymentId, categoryType = 'expen
   }
 }
 
-// Filter expenses/income by category and direction
+// Filter expenses by category (we always show outgoing payments)
 function filterExpenses() {
   const categoryFilter = document.getElementById('categoryFilter');
-  const directionFilter = document.getElementById('directionFilter');
-  if (!categoryFilter || !directionFilter) return;
+  if (!categoryFilter) return;
   
-  const categoryFilterValue = categoryFilter.value;
-  const directionFilterValue = directionFilter.value;
-  
-  // If direction changed, reload from server
-  // This ensures we have the correct data for the selected direction
-  const currentDirection = directionFilter.value;
-  if (currentDirection !== 'out' && expensesState.items.length > 0 && expensesState.items[0]?.direction === 'out') {
-    // Direction changed, reload
-    loadExpenses();
-    return;
+  const categoryFilterValue = categoryFilter.value || 'null';
+  let filteredPayments = expensesState.items.filter((payment) => payment.direction === 'out');
+
+  if (categoryFilterValue === 'null') {
+    filteredPayments = filteredPayments.filter((payment) => !payment.expense_category_id);
+  } else if (categoryFilterValue) {
+    const categoryId = parseInt(categoryFilterValue, 10);
+    filteredPayments = filteredPayments.filter((payment) => payment.expense_category_id === categoryId);
   }
-  
-  // Start with all payments
-  let filteredPayments = expensesState.items;
-  
-  // Filter by direction
-  if (directionFilterValue === 'out') {
-    filteredPayments = filteredPayments.filter(p => p.direction === 'out');
-  } else if (directionFilterValue === 'in') {
-    filteredPayments = filteredPayments.filter(p => p.direction === 'in');
-  }
-  // 'all' means show all directions
-  
-  // Filter by category based on direction
-  if (directionFilterValue === 'in') {
-    // For income: filter by income_category_id
-    if (categoryFilterValue === 'null') {
-      filteredPayments = filteredPayments.filter(p => !p.income_category_id);
-    } else if (categoryFilterValue) {
-      const categoryId = parseInt(categoryFilterValue, 10);
-      filteredPayments = filteredPayments.filter(p => p.income_category_id === categoryId);
-    }
-  } else if (directionFilterValue === 'out') {
-    // For expenses: filter by expense_category_id
-    if (categoryFilterValue === 'null') {
-      filteredPayments = filteredPayments.filter(p => !p.expense_category_id);
-    } else if (categoryFilterValue) {
-      const categoryId = parseInt(categoryFilterValue, 10);
-      filteredPayments = filteredPayments.filter(p => p.expense_category_id === categoryId);
-    }
-  } else {
-    // For 'all': filter by both categories
-    if (categoryFilterValue === 'null') {
-      filteredPayments = filteredPayments.filter(p => !p.expense_category_id && !p.income_category_id);
-    } else if (categoryFilterValue) {
-      const categoryId = parseInt(categoryFilterValue, 10);
-      filteredPayments = filteredPayments.filter(p => 
-        p.expense_category_id === categoryId || p.income_category_id === categoryId
-      );
-    }
-  }
-  
-  // Render filtered payments
-  renderExpensesTable(filteredPayments, directionFilterValue);
-  
-  // Update statistics based on direction
-  updateStatistics(expensesState.items, directionFilterValue);
+
+  expensesState.filteredItems = filteredPayments;
+  renderExpensesTable(filteredPayments);
+  updateStatistics(filteredPayments);
 }
 
 // Handle expense row click
@@ -1279,8 +1174,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
         throw new Error(errorMsg);
       }
 
-      // Сохраняем текущие фильтры перед перезагрузкой
-      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
+      // Сохраняем текущий фильтр по категории
       const currentCategory = document.getElementById('categoryFilter')?.value || '';
       
       // Reload expenses
@@ -1288,11 +1182,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       // Восстанавливаем фильтры после загрузки
       setTimeout(() => {
-        const directionFilter = document.getElementById('directionFilter');
         const categoryFilter = document.getElementById('categoryFilter');
-        if (directionFilter && directionFilter.value !== currentDirection) {
-          directionFilter.value = currentDirection;
-        }
         if (categoryFilter && categoryFilter.value !== currentCategory) {
           categoryFilter.value = currentCategory;
         }
@@ -1347,8 +1237,6 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
         throw new Error(payload.error || payload.message || 'Не удалось очистить категорию');
       }
 
-      // Сохраняем текущие фильтры перед перезагрузкой
-      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
       const currentCategory = document.getElementById('categoryFilter')?.value || '';
       
       // Reload payments
@@ -1356,11 +1244,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       // Восстанавливаем фильтры после загрузки
       setTimeout(() => {
-        const directionFilter = document.getElementById('directionFilter');
         const categoryFilter = document.getElementById('categoryFilter');
-        if (directionFilter && directionFilter.value !== currentDirection) {
-          directionFilter.value = currentDirection;
-        }
         if (categoryFilter && categoryFilter.value !== currentCategory) {
           categoryFilter.value = currentCategory;
         }
@@ -1446,16 +1330,8 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       addLog('success', `Платёж ${paymentId} перенесен в приходы (доходы)`);
       
-      // Сохраняем текущие фильтры
-      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
       const currentCategory = document.getElementById('categoryFilter')?.value || '';
-      
-      // Восстанавливаем фильтры ПЕРЕД загрузкой данных
-      const directionFilter = document.getElementById('directionFilter');
       const categoryFilter = document.getElementById('categoryFilter');
-      if (directionFilter && directionFilter.value !== currentDirection) {
-        directionFilter.value = currentDirection;
-      }
       if (categoryFilter && categoryFilter.value !== currentCategory) {
         categoryFilter.value = currentCategory;
       }
@@ -1494,16 +1370,8 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       addLog('success', `Платёж ${paymentId} перемещен в расходы`);
       
-      // Сохраняем текущие фильтры
-      const currentDirection = document.getElementById('directionFilter')?.value || 'out';
       const currentCategory = document.getElementById('categoryFilter')?.value || '';
-      
-      // Восстанавливаем фильтры ПЕРЕД загрузкой данных
-      const directionFilter = document.getElementById('directionFilter');
       const categoryFilter = document.getElementById('categoryFilter');
-      if (directionFilter && directionFilter.value !== currentDirection) {
-        directionFilter.value = currentDirection;
-      }
       if (categoryFilter && categoryFilter.value !== currentCategory) {
         categoryFilter.value = currentCategory;
       }

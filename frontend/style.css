@@ -67,14 +67,17 @@ body {
     border: 1px solid #e2e8f0;
     border-radius: 6px;
     background: #f7fafc;
+    color: #475569;
     cursor: pointer;
     transition: all 0.2s ease;
 }
 
 .subtab-button.active {
-    background: #667eea;
-    color: #fff;
-    border-color: #667eea;
+    background: linear-gradient(180deg, #fff 0%, #f8fbff 100%);
+    color: #1d4ed8;
+    border-color: #93c5fd;
+    box-shadow: inset 0 2px 0 rgba(37, 99, 235, 0.45), 0 6px 18px rgba(15, 23, 42, 0.12);
+    transform: translateY(-1px);
 }
 
 .tab-header {
@@ -110,15 +113,16 @@ body {
 
 .outgoing-iframe-wrapper {
     margin-top: 20px;
-    min-height: calc(100vh - 280px);
-    height: calc(100vh - 280px);
+    min-height: 320px;
+    height: auto;
 }
 
 .outgoing-iframe-wrapper iframe {
     width: 100%;
-    height: 100%;
+    min-height: 320px;
+    height: auto;
     border: 1px solid #e2e8f0;
-    border-radius: 8px;
+    border-radius: 12px;
     background: #fff;
 }
 

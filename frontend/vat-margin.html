@@ -195,9 +195,18 @@
                 <section class="payments-section payments-subtab-content" id="payments-outgoing">
                     <div class="section-header">
                         <h2>Исходящие платежи (расходы)</h2>
+                        <div class="controls">
+                            <button id="outgoing-upload-btn" class="btn btn-primary">
+                                📤 Загрузить CSV
+                            </button>
+                        </div>
                     </div>
                     <div class="outgoing-iframe-wrapper">
-                        <iframe src="expenses.html" title="Исходящие платежи" loading="lazy"></iframe>
+                        <iframe
+                            id="outgoing-expenses-iframe"
+                            src="expenses.html?embedded=1"
+                            title="Исходящие платежи"
+                            loading="lazy"></iframe>
                     </div>
                 </section>
             </div>
