@@ -99,9 +99,14 @@ const sendPage = (filename) => (req, res) => {
 
 app.get('/vat-margin.html', requireAuth, sendPage('vat-margin.html'));
 app.get('/vat-margin-product.html', requireAuth, sendPage('vat-margin-product.html'));
+app.get('/reporting', requireAuth, sendPage('vat-margin.html'));
+app.get('/products', requireAuth, sendPage('vat-margin.html'));
+app.get('/stripe', requireAuth, sendPage('vat-margin.html'));
+app.get('/deleted', requireAuth, sendPage('vat-margin.html'));
 app.get('/payments', requireAuth, sendPage('vat-margin.html'));
 app.get('/expenses', requireAuth, sendPage('expenses.html'));
 app.get('/cash-journal', requireAuth, sendPage('cash-journal.html'));
+app.get('/settings', requireAuth, sendPage('index.html'));
 
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
@@ -171,5 +176,4 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
-
 
