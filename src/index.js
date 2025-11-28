@@ -92,14 +92,16 @@ app.use(requireAuth);
 // Статические файлы (frontend) - защищены авторизацией
 app.use(express.static(path.join(__dirname, '../frontend')));
 
-// Маршрут для VAT Margin страницы
-app.get('/vat-margin.html', requireAuth, (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/vat-margin.html'));
-});
+// Маршруты для основных страниц (чтобы прямые ссылки и refresh работали)
+const sendPage = (filename) => (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend', filename));
+};
 
-app.get('/vat-margin-product.html', requireAuth, (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/vat-margin-product.html'));
-});
+app.get('/vat-margin.html', requireAuth, sendPage('vat-margin.html'));
+app.get('/vat-margin-product.html', requireAuth, sendPage('vat-margin-product.html'));
+app.get('/payments', requireAuth, sendPage('vat-margin.html'));
+app.get('/expenses', requireAuth, sendPage('expenses.html'));
+app.get('/cash-journal', requireAuth, sendPage('cash-journal.html'));
 
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);
@@ -169,6 +171,5 @@ process.on('SIGINT', () => {
 });
 
 module.exports = app;
-
 
 
