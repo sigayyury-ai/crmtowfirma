@@ -245,27 +245,17 @@ async function loadExpenses() {
       return;
     }
     
-    // Store all payments in state (for filtering)
+    // Store all payments in state (для фильтрации)
     expensesState.items = payments;
     
-    // Update category filter dropdown
+    // Обновляем фильтр по категориям и применяем текущий выбор
     updateCategoryFilter('out');
-    
-    // Apply category filter
     const categoryFilter = document.getElementById('categoryFilter');
-    const filterValue = categoryFilter?.value || 'null';
-    let filteredPayments = payments;
-    
-    if (filterValue === 'null') {
-      filteredPayments = payments.filter((payment) => !payment.expense_category_id);
-    } else if (filterValue) {
-      const categoryId = parseInt(filterValue, 10);
-      filteredPayments = payments.filter((payment) => payment.expense_category_id === categoryId);
+    if (categoryFilter && !categoryFilter.value) {
+      categoryFilter.value = 'null';
     }
     
-    // Update statistics and render table
-    updateStatistics(filteredPayments);
-    renderExpensesTable(filteredPayments);
+    filterExpenses();
     
   } catch (error) {
     console.error('Failed to load expenses:', error);
@@ -284,27 +274,10 @@ async function loadExpenses() {
 }
 
 // Update statistics
-function updateStatistics(payments, direction = 'out') {
-  let total, uncategorized, categorized;
-  
-  if (direction === 'in') {
-    // For income: count by income_category_id
-    total = payments.length;
-    uncategorized = payments.filter(p => !p.income_category_id).length;
-    categorized = total - uncategorized;
-  } else if (direction === 'out') {
-    // For expenses: count by expense_category_id
-    total = payments.length;
-    uncategorized = payments.filter(p => !p.expense_category_id).length;
-    categorized = total - uncategorized;
-  } else {
-    // For 'all': count expenses and income separately
-    const expenses = payments.filter(p => p.direction === 'out');
-    const income = payments.filter(p => p.direction === 'in');
-    total = payments.length;
-    uncategorized = expenses.filter(p => !p.expense_category_id).length + income.filter(p => !p.income_category_id).length;
-    categorized = total - uncategorized;
-  }
+function updateStatistics(payments) {
+  const total = payments.length;
+  const uncategorized = payments.filter((payment) => !payment.expense_category_id).length;
+  const categorized = total - uncategorized;
   
   document.getElementById('totalExpenses').textContent = total;
   document.getElementById('uncategorizedExpenses').textContent = uncategorized;
@@ -315,6 +288,8 @@ function updateStatistics(payments, direction = 'out') {
 function updateCategoryFilter(direction) {
   const categoryFilter = document.getElementById('categoryFilter');
   if (!categoryFilter) return;
+  
+  const previousValue = categoryFilter.value || '';
   
   // Keep "Все категории" and "Без категории" options
   categoryFilter.innerHTML = `
@@ -351,23 +326,21 @@ function updateCategoryFilter(direction) {
       categoryFilter.appendChild(option);
     });
   }
+
+  if (previousValue && Array.from(categoryFilter.options).some((opt) => opt.value === previousValue)) {
+    categoryFilter.value = previousValue;
+  }
 }
 
 // Render expenses/income table
-function renderExpensesTable(payments, direction = 'out') {
+function renderExpensesTable(payments) {
   const tbody = document.getElementById('expensesTableBody');
   
   if (payments.length === 0) {
-    const message = direction === 'in' 
-      ? 'Нет доходов для отображения'
-      : direction === 'all'
-      ? 'Нет платежей для отображения'
-      : 'Нет расходов для отображения';
-    
     tbody.innerHTML = `
       <tr>
         <td colspan="6" style="text-align: center; padding: 40px;">
-          ${message}
+          Нет расходов для отображения
         </td>
       </tr>
     `;
@@ -1137,7 +1110,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
 
         endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`;
         body = {
-          expenseCategoryId: parseInt(categoryId, 10),
+          expense_category_id: parseInt(categoryId, 10),
           createMapping: patternType !== null,
           patternType: patternType,
           patternValue: patternValue,
@@ -1175,7 +1148,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       }
 
       // Сохраняем текущий фильтр по категории
-      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      const currentCategory = document.getElementById('categoryFilter')?.value || 'null';
       
       // Reload expenses
       await loadExpenses();
@@ -1220,7 +1193,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
         body = { income_category_id: null };
       } else if (isExpense) {
         endpoint = `${API_BASE}/api/vat-margin/payments/${encodeURIComponent(paymentId)}/expense-category`;
-        body = { expenseCategoryId: null };
+        body = { expense_category_id: null };
       } else {
         throw new Error('Неизвестное направление платежа');
       }
@@ -1237,7 +1210,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
         throw new Error(payload.error || payload.message || 'Не удалось очистить категорию');
       }
 
-      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      const currentCategory = document.getElementById('categoryFilter')?.value || 'null';
       
       // Reload payments
       await loadExpenses();
@@ -1330,7 +1303,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       addLog('success', `Платёж ${paymentId} перенесен в приходы (доходы)`);
       
-      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      const currentCategory = document.getElementById('categoryFilter')?.value || 'null';
       const categoryFilter = document.getElementById('categoryFilter');
       if (categoryFilter && categoryFilter.value !== currentCategory) {
         categoryFilter.value = currentCategory;
@@ -1370,7 +1343,7 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
       
       addLog('success', `Платёж ${paymentId} перемещен в расходы`);
       
-      const currentCategory = document.getElementById('categoryFilter')?.value || '';
+      const currentCategory = document.getElementById('categoryFilter')?.value || 'null';
       const categoryFilter = document.getElementById('categoryFilter');
       if (categoryFilter && categoryFilter.value !== currentCategory) {
         categoryFilter.value = currentCategory;

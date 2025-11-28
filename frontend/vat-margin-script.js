@@ -121,6 +121,8 @@ function cacheDom() {
     paymentsIncomingSection: document.getElementById('payments-incoming'),
     paymentsOutgoingSection: document.getElementById('payments-outgoing'),
     outgoingExpensesIframe: document.getElementById('outgoing-expenses-iframe'),
+    outgoingUploadButton: document.getElementById('outgoing-upload-btn'),
+    outgoingRefreshButton: document.getElementById('outgoing-refresh-btn'),
     cashSummaryExpected: document.getElementById('cashSummaryExpected'),
     cashSummaryReceived: document.getElementById('cashSummaryReceived'),
     cashSummaryPending: document.getElementById('cashSummaryPending'),
@@ -293,6 +295,23 @@ function initOutgoingExpensesFrame() {
   const iframe = elements.outgoingExpensesIframe;
   if (!iframe) return;
 
+  const bindUploadProxy = () => {
+    const uploadButton = elements.outgoingUploadButton;
+    if (!uploadButton) return;
+    const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!iframeDoc) return;
+    uploadButton.onclick = () => {
+      try {
+        const input = iframeDoc.getElementById('expensesCsvInput');
+        if (input) {
+          input.click();
+        }
+      } catch (error) {
+        console.warn('VAT Margin: failed to trigger outgoing upload', error);
+      }
+    };
+  };
+
   const resize = () => {
     if (!iframe || !iframe.contentWindow) return;
     try {
@@ -308,6 +327,17 @@ function initOutgoingExpensesFrame() {
 
   iframe.addEventListener('load', () => {
     resize();
+    bindUploadProxy();
+    const refreshButton = elements.outgoingRefreshButton;
+    if (refreshButton) {
+      refreshButton.onclick = () => {
+        try {
+          iframe.contentWindow?.loadExpenses?.();
+        } catch (error) {
+          console.warn('VAT Margin: failed to refresh outgoing expenses', error);
+        }
+      };
+    }
     if (outgoingIframeObserver) {
       outgoingIframeObserver.disconnect();
     }

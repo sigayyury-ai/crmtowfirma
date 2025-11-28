@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const logger = require('../../utils/logger');
 const { normalizeWhitespace, normalizeName } = require('../../utils/normalize');
 
 const HEADER_MARKER = '#Data operacji;#Opis operacji;#Rachunek;#Kategoria;#Kwota;';
@@ -745,6 +746,20 @@ function parseBankStatement(content) {
       ? proformaMatch[1].replace(/\s+/g, ' ').replace('CO PROF', 'CO-PROF').toUpperCase()
       : null;
 
+    // Final guard: keep original sign unless we have a strong override (tax/refund)
+    const strongOutOverrides = new Set(['tax_payment_pattern', 'description_refund_to_client']);
+    if (amountDirection === 'in' && direction === 'out' && !strongOutOverrides.has(directionSource)) {
+      direction = 'in';
+      directionSource = 'amount_guard';
+      logger.debug('Direction guard applied (positive amount forced to income)', {
+        operationDate: operationDateRaw.trim(),
+        description: description.slice(0, 80),
+        amount_raw: amountRaw,
+        category,
+        directionSource
+      });
+    }
+
     const record = {
       operation_date: operationDateRaw.trim(),
       description,
@@ -771,4 +786,3 @@ module.exports = {
   parseBankStatement,
   extractPayerName: extractPayer
 };
-
