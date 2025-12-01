@@ -1916,10 +1916,18 @@ function renderPaymentDetail(data, target = paymentsState.detailCellEl) {
     : payment.matched_proforma || payment.auto_proforma_fullnumber || '';
   const commentValue = payment.manual_comment || '';
 
+  const headerAmount =
+    payment.amount_raw ||
+    formatCurrency(payment.amount || 0, payment.currency || 'PLN');
+
+  const rawAmountLabel = payment.amount_raw || '—';
+  const normalizedAmountLabel = formatCurrency(payment.amount || 0, payment.currency || 'PLN');
+
   const metaRows = [
     renderPaymentMeta('ID платежа', escapeHtml(String(payment.id))),
     renderPaymentMeta('Дата', escapeHtml(formatDate(payment.date))),
-    renderPaymentMeta('Сумма', escapeHtml(formatCurrency(payment.amount || 0, payment.currency || 'PLN'))),
+    renderPaymentMeta('Сумма (как в выписке)', escapeHtml(rawAmountLabel)),
+    renderPaymentMeta('Сумма (для расчёта)', escapeHtml(normalizedAmountLabel)),
     renderPaymentMeta('Плательщик', escapeHtml(payment.payer || '—')),
     renderPaymentMeta('Описание', escapeHtml(payment.description || '—')),
     renderPaymentMeta('Авто совпадение', escapeHtml(payment.auto_proforma_fullnumber || '—')),
@@ -1961,7 +1969,7 @@ function renderPaymentDetail(data, target = paymentsState.detailCellEl) {
   target.innerHTML = `
     <div class="payment-detail" data-payment-id="${escapeHtml(String(payment.id))}">
       <header>
-        <h3>Платёж ${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</h3>
+        <h3>Платёж ${escapeHtml(headerAmount)}</h3>
         ${manualBadge || ''}
       </header>
       <div class="payment-meta">

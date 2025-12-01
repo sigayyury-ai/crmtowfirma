@@ -475,6 +475,7 @@ class StripeProcessorService {
       deal_id: dealId,
       product_id: productLinkId,
       payment_type: session.metadata?.payment_type || null,
+      payment_schedule: session.metadata?.payment_schedule || null, // '50/50' or '100%'
       currency,
       // Store subtotal (price from CRM) as original_amount for display
       original_amount: roundBankers(amount),
@@ -4308,35 +4309,36 @@ class StripeProcessorService {
       if (sessions.length === 0) {
         if (paymentSchedule === '50/50') {
           const depositAmount = effectiveTotalAmount / 2;
-          message = `*Привет! Для тебя определен график платежей.*\n\n`;
-          message += `*График платежей:*\n\n`;
+          message = `Привет! Для тебя определён график платежей.\n\n`;
+          message += `Твой график платежей:\n\n`;
           
           let dateText = '';
           if (firstPaymentDate) {
             dateText = ` до *${formatDate(firstPaymentDate)}*`;
           }
-          message += `1️⃣ *Предоплата 50%:* ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
+          message += `• Предоплата 50%: ${formatAmount(depositAmount)} ${currency}${dateText}\n`;
           
           if (secondPaymentDate) {
             dateText = ` до *${formatDate(secondPaymentDate)}*`;
           }
-          message += `2️⃣ *Остаток 50%:* ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
+          message += `• Остаток 50%: ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
           
-          message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
+          message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
         } else {
           // Single payment
           let dateText = '';
           if (singlePaymentDate) {
             dateText = ` до *${formatDate(singlePaymentDate)}*`;
           }
-          message = `*Привет! Для тебя определен график платежей.*\n\n`;
-        message += `💳 *Полная оплата:* ${formatAmount(effectiveTotalAmount)} ${currency}${dateText}\n\n`;
-        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
+          message = `Привет! Для тебя определён график платежей.\n\n`;
+          message += `Твой график платежей:\n\n`;
+          message += `• Полная оплата: ${formatAmount(effectiveTotalAmount)} ${currency}${dateText}\n\n`;
+          message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
         }
       } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
         // Two payments: deposit and rest
-        message = `*Привет! Для тебя созданы ссылки на оплату через Stripe.*\n\n`;
-        message += `*График платежей:*\n\n`;
+        message = `Привет! Для тебя созданы ссылки на оплату через Stripe.\n\n`;
+        message += `Твой график платежей:\n\n`;
         
         const depositSession = sessions.find(s => s.type === 'deposit');
         const restSession = sessions.find(s => s.type === 'rest');
@@ -4346,7 +4348,7 @@ class StripeProcessorService {
           if (firstPaymentDate) {
             dateText = ` до *${formatDate(firstPaymentDate)}*`;
           }
-          message += `1️⃣ *Предоплата 50%:* ${formatAmount(depositSession.amount)} ${currency}${dateText}\n`;
+          message += `1️⃣ Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}${dateText}\n`;
           message += `   [Оплатить предоплату](${depositSession.url})\n\n`;
         }
 
@@ -4355,11 +4357,12 @@ class StripeProcessorService {
           if (secondPaymentDate) {
             dateText = ` до *${formatDate(secondPaymentDate)}*`;
           }
-          message += `2️⃣ *Остаток 50%:* ${formatAmount(restSession.amount)} ${currency}${dateText}\n`;
+          message += `2️⃣ Остаток 50%: ${formatAmount(restSession.amount)} ${currency}${dateText}\n`;
           message += `   [Оплатить остаток](${restSession.url})\n\n`;
         }
 
-        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
+        message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
+        message += `\nВажно: каждая ссылка действует 24 часа после создания.`;
       } else if (paymentSchedule === '100%' && sessions.length >= 1) {
         // Single payment - different text
         const singleSession = sessions[0];
@@ -4367,10 +4370,10 @@ class StripeProcessorService {
         if (singlePaymentDate) {
           dateText = ` до *${formatDate(singlePaymentDate)}*`;
         }
-        message = `*Привет! Для тебя создана ссылка на оплату через Stripe.*\n\n`;
-        message += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}${dateText}\n`;
+        message = `Привет! Для тебя создана ссылка на оплату через Stripe.\n\n`;
+        message += `💳 Сумма к оплате: ${formatAmount(singleSession.amount)} ${currency}${dateText}\n`;
         message += `   [Оплатить](${singleSession.url})\n\n`;
-        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
+        message += `Важно: ссылка действует 24 часа после создания.`;
       } else {
         // Fallback: list all sessions
         sessions.forEach((session, index) => {

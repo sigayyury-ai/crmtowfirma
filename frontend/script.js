@@ -93,6 +93,17 @@ function formatRelativeStart(iso) {
     return `${dateText} (${relative})`;
 }
 
+function formatDateOnly(iso) {
+    if (!iso) return '—';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleDateString(DATE_LOCALE, {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+    });
+}
+
 // DOM Elements
 const elements = {
     schedulerStatus: document.getElementById('scheduler-status'),
@@ -101,12 +112,14 @@ const elements = {
     wfirmaStatus: document.getElementById('wfirma-status'),
     resultsContainer: document.getElementById('results-container'),
     logsContainer: document.getElementById('logs-container'),
+    cronTasksContainer: document.getElementById('cron-tasks-container'),
     
     // Buttons
     refreshStatus: document.getElementById('refresh-status'),
     runPolling: document.getElementById('run-polling'),
     getPending: document.getElementById('get-pending'),
     testApis: document.getElementById('test-apis'),
+    refreshCronTasks: document.getElementById('refresh-cron-tasks'),
 };
 
 // State
@@ -116,6 +129,7 @@ let isPolling = false;
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
     refreshSystemStatus();
+    loadCronTasks();
     addLog('info', 'Система инициализирована');
 });
 
@@ -125,6 +139,7 @@ function initializeEventListeners() {
     elements.runPolling?.addEventListener('click', runManualPolling);
     elements.getPending?.addEventListener('click', getPendingDeals);
     elements.testApis?.addEventListener('click', testAllApis);
+    elements.refreshCronTasks?.addEventListener('click', loadCronTasks);
 }
 
 // API Functions
@@ -517,8 +532,144 @@ function setButtonLoading(button, loading) {
             'refresh-status': '🔄 Обновить статус',
             'run-polling': '🔍 Запустить Polling',
             'get-pending': '📋 Показать ожидающие',
-            'test-apis': '🧪 Тест API'
+            'test-apis': '🧪 Тест API',
+            'refresh-cron-tasks': '🔄 Обновить список'
         };
         button.innerHTML = originalTexts[button.id] || button.textContent;
+    }
+}
+
+// Cron Tasks Functions
+async function loadCronTasks() {
+    if (!elements.cronTasksContainer) return;
+    
+    try {
+        setButtonLoading(elements.refreshCronTasks, true);
+        elements.cronTasksContainer.innerHTML = '<div class="placeholder">Загрузка задач...</div>';
+        
+        const result = await apiCall('/second-payment-scheduler/upcoming-tasks', 'GET', null, { sanitize: false });
+        
+        if (result.success && result.tasks) {
+            displayCronTasks(result.tasks, result.nextRun);
+        } else {
+            elements.cronTasksContainer.innerHTML = '<div class="placeholder">Ошибка загрузки задач</div>';
+        }
+    } catch (error) {
+        elements.cronTasksContainer.innerHTML = `<div class="placeholder">Ошибка: ${error.message}</div>`;
+        addLog('error', `Ошибка загрузки задач cron: ${error.message}`);
+    } finally {
+        setButtonLoading(elements.refreshCronTasks, false);
+    }
+}
+
+function displayCronTasks(tasks, nextRun) {
+    if (!elements.cronTasksContainer) return;
+    
+    if (tasks.length === 0) {
+        elements.cronTasksContainer.innerHTML = `
+            <div class="placeholder">
+                <p>Нет задач для создания вторых платежей</p>
+                <p style="margin-top: 10px; font-size: 0.9rem; color: #718096;">
+                    Следующий запуск: ${nextRun || '09:00 ежедневно'}
+                </p>
+            </div>
+        `;
+        return;
+    }
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tasksHtml = tasks.map(task => {
+        const taskDate = new Date(task.secondPaymentDate);
+        taskDate.setHours(0, 0, 0, 0);
+        
+        let badgeClass = 'upcoming';
+        let badgeText = `через ${task.daysUntilSecondPayment} дн.`;
+        
+        if (task.daysUntilSecondPayment < 0) {
+            badgeClass = 'overdue';
+            badgeText = `просрочено ${Math.abs(task.daysUntilSecondPayment)} дн.`;
+        } else if (task.daysUntilSecondPayment === 0) {
+            badgeClass = 'today';
+            badgeText = 'сегодня';
+        }
+        
+        // Используем статус из API, если он есть
+        const itemClass = task.status || (task.daysUntilSecondPayment < 0 ? 'overdue' : 
+                          task.daysUntilSecondPayment <= 3 ? 'upcoming' : '');
+        
+        // Определяем тип задачи
+        const taskTypeLabel = task.type === 'manual_rest' ? 'Ручная задача (остаток)' : 
+                             task.type === 'stripe_second_payment' ? 'Автоматическая (Stripe, второй платеж)' :
+                             task.type === 'proforma_reminder' ? 'Напоминание (Проформа)' :
+                             task.type === 'second_payment' ? 'Автоматическая (второй платеж)' : 
+                             'Задача';
+        
+        return `
+            <div class="cron-task-item ${itemClass}" data-task-id="${task.dealId}-${task.type}-${task.secondPaymentDate}">
+                <div class="cron-task-header">
+                    <div>
+                        ${task.dealUrl ? `<a href="${task.dealUrl}" target="_blank" class="cron-task-title">Deal #${task.dealId}</a>` : `<span class="cron-task-title">Deal #${task.dealId}</span>`}
+                        <span class="cron-task-badge ${badgeClass}">${badgeText}</span>
+                        ${task.type === 'manual_rest' ? '<span class="cron-task-badge manual" style="background: #805ad5; margin-left: 8px;">Ручная</span>' : ''}
+                        ${task.paymentMethod === 'proforma' ? '<span class="cron-task-badge" style="background: #38a169; margin-left: 8px;">Проформа</span>' : ''}
+                        <button class="cron-task-delete-btn" onclick="hideCronTask(${task.dealId}, '${task.type}', '${task.secondPaymentDate}')" title="Удалить из очереди">×</button>
+                    </div>
+                    <div class="cron-task-date">${formatDateOnly(task.secondPaymentDate)}</div>
+                </div>
+                <div class="cron-task-details">
+                    <div class="cron-task-detail">
+                        <strong>Тип:</strong> ${taskTypeLabel}
+                    </div>
+                    <div class="cron-task-detail">
+                        <strong>Клиент:</strong> ${task.customerEmail}
+                    </div>
+                    <div class="cron-task-detail">
+                        <strong>Сумма:</strong> ${task.secondPaymentAmount.toFixed(2)} ${task.currency}
+                    </div>
+                    ${task.proformaNumber ? `<div class="cron-task-detail"><strong>Проформа:</strong> ${task.proformaNumber}</div>` : ''}
+                    ${task.bankAccountNumber ? `<div class="cron-task-detail"><strong>Банковский счет:</strong> ${task.bankAccountNumber}</div>` : ''}
+                    <div class="cron-task-detail">
+                        <strong>Начало лагеря:</strong> ${formatDateOnly(task.expectedCloseDate)}
+                    </div>
+                    ${task.note ? `<div class="cron-task-detail" style="color: #718096; font-style: italic;">${task.note}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+    
+    elements.cronTasksContainer.innerHTML = `
+        <div style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #e2e8f0;">
+            <strong>Найдено задач: ${tasks.length}</strong>
+            <span style="color: #718096; margin-left: 10px; font-size: 0.9rem;">
+                Следующий запуск: ${nextRun || '09:00 ежедневно'}
+            </span>
+        </div>
+        ${tasksHtml}
+    `;
+}
+
+async function hideCronTask(dealId, taskType, secondPaymentDate) {
+    if (!confirm(`Удалить задачу Deal #${dealId} из очереди?`)) {
+        return;
+    }
+    
+    try {
+        const result = await apiCall('/second-payment-scheduler/hide-task', 'POST', {
+            dealId,
+            taskType,
+            secondPaymentDate
+        });
+        
+        if (result.success) {
+            addLog('success', `Задача Deal #${dealId} удалена из очереди`);
+            // Перезагружаем список задач
+            await loadCronTasks();
+        } else {
+            addLog('error', `Ошибка удаления задачи: ${result.error || result.message}`);
+        }
+    } catch (error) {
+        addLog('error', `Ошибка удаления задачи: ${error.message}`);
     }
 }

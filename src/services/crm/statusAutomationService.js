@@ -2,6 +2,7 @@ const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
 const PipedriveClient = require('../pipedrive');
 const StripeRepository = require('../stripe/repository');
+const SendPulseClient = require('../sendpulse');
 const {
   evaluatePaymentStatus,
   normalizeSchedule,
@@ -139,6 +140,17 @@ class CrmStatusAutomationService {
     this.logger = options.logger || logger;
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.stripeRepository = options.stripeRepository || new StripeRepository();
+    
+    // Инициализируем SendPulse клиент (опционально)
+    try {
+      this.sendpulseClient = options.sendpulseClient || new SendPulseClient();
+    } catch (error) {
+      this.logger.warn('SendPulse not available for payment notifications', { error: error.message });
+      this.sendpulseClient = null;
+    }
+    
+    // Ключ поля SendPulse ID в Pipedrive
+    this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
   }
 
   isEnabled() {
@@ -407,6 +419,9 @@ class CrmStatusAutomationService {
         scheduleType: evaluation.scheduleType,
         paidPercent: Math.round(evaluation.paidRatio * 100)
       });
+      
+      // Отправляем уведомление о получении платежа через SendPulse
+      await this.sendPaymentReceivedNotification(normalizedDealId, snapshot, evaluation);
     } catch (error) {
       this.logger.error('Failed to update Pipedrive stage during CRM automation', {
         dealId: normalizedDealId,
@@ -424,6 +439,82 @@ class CrmStatusAutomationService {
       evaluation,
       snapshot
     };
+  }
+
+  /**
+   * Отправить уведомление о получении платежа через SendPulse
+   * @param {string} dealId - ID сделки
+   * @param {Object} snapshot - Снимок данных сделки
+   * @param {Object} evaluation - Результат оценки статуса платежа
+   * @returns {Promise<Object>} - Результат отправки
+   */
+  async sendPaymentReceivedNotification(dealId, snapshot, evaluation) {
+    if (!this.sendpulseClient) {
+      return { success: false, error: 'SendPulse not available' };
+    }
+
+    try {
+      // Получаем данные сделки и персоны
+      const dealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
+      if (!dealResult || !dealResult.person) {
+        this.logger.warn('Failed to get deal/person data for payment notification', { dealId });
+        return { success: false, error: 'Deal or person not found' };
+      }
+
+      const person = dealResult.person;
+      const deal = dealResult.deal || {};
+      const sendpulseId = person[this.SENDPULSE_ID_FIELD_KEY];
+
+      if (!sendpulseId) {
+        this.logger.debug('SendPulse ID not found for person, skipping payment notification', { dealId });
+        return { success: false, error: 'SendPulse ID not found' };
+      }
+
+      // Формируем информацию о платеже
+      const paidAmount = snapshot.totals.totalPaidPln || 0;
+      const expectedAmount = snapshot.totals.expectedAmountPln || 0;
+      const paidPercent = expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0;
+      
+      // Получаем номер проформы (к одной сделке может быть только одна проформа)
+      const proformas = snapshot.proformas || [];
+      const proforma = proformas.length > 0 ? proformas[0] : null;
+      const proformaNumber = proforma?.fullnumber || (proforma ? `CO-PROF ${proforma.id}/2025` : `Deal #${dealId}`);
+      
+      const message = `✅ Платеж получен
+
+Здравствуйте${person.name ? `, ${person.name}` : ''}!
+
+Мы получили ваш платеж по проформе ${proformaNumber}.`;
+
+      // Отправляем сообщение
+      const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
+
+      if (result.success) {
+        this.logger.info('Payment received notification sent via SendPulse', {
+          dealId,
+          sendpulseId,
+          paidAmount,
+          paidPercent
+        });
+      } else {
+        this.logger.warn('Failed to send payment received notification', {
+          dealId,
+          sendpulseId,
+          error: result.error
+        });
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error('Error sending payment received notification', {
+        dealId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
   }
 }
 

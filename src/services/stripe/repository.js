@@ -159,18 +159,23 @@ class StripeRepository {
         return null;
       }
       
-      // Handle missing columns (invoice_number, receipt_number) - retry without them
+      // Handle missing columns (invoice_number, receipt_number, payment_schedule) - retry without them
       const errorCode = error.code || '';
       const errorMessage = error.message || '';
-      if (errorCode === 'PGRST204' && (errorMessage.includes('invoice_number') || errorMessage.includes('receipt_number'))) {
-        logger.debug('Database columns invoice_number/receipt_number not found, retrying without them', {
-          sessionId: payment.session_id
+      const missingColumns = ['invoice_number', 'receipt_number', 'payment_schedule'];
+      const hasMissingColumn = missingColumns.some(col => errorMessage.includes(col));
+      
+      if (errorCode === 'PGRST204' && hasMissingColumn) {
+        logger.debug('Database columns not found, retrying without optional fields', {
+          sessionId: payment.session_id,
+          errorMessage
         });
         
         // Remove optional fields and retry
         const paymentWithoutOptionalFields = { ...payment };
-        delete paymentWithoutOptionalFields.invoice_number;
-        delete paymentWithoutOptionalFields.receipt_number;
+        missingColumns.forEach(col => {
+          delete paymentWithoutOptionalFields[col];
+        });
         
         const { error: retryError } = await this.supabase
           .from('stripe_payments')

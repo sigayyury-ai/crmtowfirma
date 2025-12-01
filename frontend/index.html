@@ -61,6 +61,17 @@
             <p class="controls-hint">Планировщик запускается автоматически каждый час. Используйте ручной polling только для оперативных расследований.</p>
         </div>
 
+        <div class="cron-tasks-section">
+            <h2>⏰ Будущие задачи Cron</h2>
+            <div class="cron-tasks-header">
+                <button id="refresh-cron-tasks" class="btn btn-info">🔄 Обновить список</button>
+                <span class="cron-tasks-hint">Задачи выполняются ежедневно в 9:00</span>
+            </div>
+            <div id="cron-tasks-container" class="cron-tasks-container">
+                <div class="placeholder">Загрузка задач...</div>
+            </div>
+        </div>
+
         <div class="results-section">
             <h2>📋 Результаты</h2>
             <div id="results-container" class="results-container">

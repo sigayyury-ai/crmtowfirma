@@ -621,7 +621,14 @@ class PaymentService {
     const existingHashes = await this.getExistingOperationHashes(operationHashes, 'out');
     if (existingHashes.size > 0) {
       logger.info('Skipping already imported expense payments', {
-        skipped: existingHashes.size
+        totalCsvExpenses: totalExpenses,
+        existingByHash: existingHashes.size,
+        willBeProcessed: totalExpenses - existingHashes.size,
+        sampleExistingHashes: Array.from(existingHashes).slice(0, 5).map((hash) => `${hash.substring(0, 8)}...`)
+      });
+    } else {
+      logger.info('No existing expense payments found by operation_hash', {
+        totalCsvExpenses: totalExpenses
       });
     }
     expenses = expenses.filter((expense) => {
@@ -739,7 +746,14 @@ class PaymentService {
     const existingHashes = await this.getExistingOperationHashes(operationHashes, 'in');
     if (existingHashes.size > 0) {
       logger.info('Skipping already imported income payments', {
-        skipped: existingHashes.size
+        totalCsvIncome: totalIncome,
+        existingByHash: existingHashes.size,
+        willBeProcessed: totalIncome - existingHashes.size,
+        sampleExistingHashes: Array.from(existingHashes).slice(0, 5).map((hash) => `${hash.substring(0, 8)}...`)
+      });
+    } else {
+      logger.info('No existing income payments found by operation_hash', {
+        totalCsvIncome: totalIncome
       });
     }
     income = income.filter((item) => {

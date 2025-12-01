@@ -2,6 +2,8 @@ const cron = require('node-cron');
 const { randomUUID } = require('crypto');
 const InvoiceProcessingService = require('./invoiceProcessing');
 const StripeProcessorService = require('./stripe/processor');
+const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
+const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentReminderService');
 const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
@@ -9,6 +11,7 @@ const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке
 // Stripe payments теперь обрабатываются через webhooks, polling оставлен только как fallback
 // Запускается раз в час вместе с основным циклом для проверки пропущенных событий
 const DELETION_CRON_EXPRESSION = '0 2 * * *'; // Раз в сутки в 2:00 ночи (редкий кейс)
+const SECOND_PAYMENT_CRON_EXPRESSION = '0 9 * * *'; // Ежедневно в 9:00 утра для создания вторых платежей
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -16,6 +19,8 @@ class SchedulerService {
   constructor(options = {}) {
     this.invoiceProcessing = options.invoiceProcessingService || new InvoiceProcessingService();
     this.stripeProcessor = options.stripeProcessorService || new StripeProcessorService();
+    this.secondPaymentScheduler = options.secondPaymentSchedulerService || new SecondPaymentSchedulerService();
+    this.proformaReminderService = options.proformaReminderService || new ProformaSecondPaymentReminderService();
     this.timezone = options.timezone || DEFAULT_TIMEZONE;
     this.cronExpression = options.cronExpression || CRON_EXPRESSION;
     this.retryDelayMinutes = options.retryDelayMinutes || RETRY_DELAY_MINUTES;
@@ -27,6 +32,7 @@ class SchedulerService {
     this.runHistory = [];
     this.cronJob = null;
     this.deletionCronJob = null;
+    this.secondPaymentCronJob = null;
     this.retryTimeout = null;
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -84,6 +90,28 @@ class SchedulerService {
       () => {
         this.runDeletionCycle({ trigger: 'cron_deletion', retryAttempt: 0 }).catch((error) => {
           logger.error('Unexpected error in deletion cron cycle:', error);
+        });
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
+
+    // Cron для автоматического создания вторых платежей (ежедневно в 9:00)
+    logger.info('Configuring daily cron job for second payment sessions', {
+      cronExpression: SECOND_PAYMENT_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+    this.secondPaymentCronJob = cron.schedule(
+      SECOND_PAYMENT_CRON_EXPRESSION,
+      () => {
+        this.runSecondPaymentCycle({ trigger: 'cron_second_payment', retryAttempt: 0 }).catch((error) => {
+          logger.error('Unexpected error in second payment cycle:', error);
+        });
+        // Также запускаем напоминания по проформам в то же время
+        this.runProformaReminderCycle({ trigger: 'cron_proforma_reminder' }).catch((error) => {
+          logger.error('Unexpected error in proforma reminder cycle:', error);
         });
       },
       {
@@ -486,12 +514,93 @@ class SchedulerService {
   }
 
   /**
+   * Запустить цикл обработки напоминаний по проформам
+   * @param {Object} options - Опции запуска
+   * @param {string} options.trigger - Триггер запуска
+   * @returns {Promise<Object>} - Результат обработки
+   */
+  async runProformaReminderCycle({ trigger = 'manual' }) {
+    const runId = randomUUID();
+    logger.info('Proforma reminder cycle started', { trigger, runId });
+
+    try {
+      const result = await this.proformaReminderService.processAllDeals();
+      if (result.errors.length > 0) {
+        logger.error('Proforma reminder processing finished with errors', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else {
+        logger.info('Proforma reminder processing finished successfully', {
+          trigger,
+          runId,
+          summary: result
+        });
+      }
+      return { success: result.errors.length === 0, summary: result };
+    } catch (error) {
+      logger.error('Proforma reminder processing crashed', {
+        trigger,
+        runId,
+        error: error.message
+      });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Отдельный цикл только для обработки удалений (запускается раз в сутки)
    * @param {Object} options - Опции запуска
    * @param {string} options.trigger - Триггер запуска
    * @param {number} options.retryAttempt - Номер попытки повтора
    * @returns {Promise<Object>} - Результат обработки удалений
    */
+  async runSecondPaymentCycle({ trigger = 'manual', retryAttempt = 0 }) {
+    const runId = randomUUID();
+    const startTime = Date.now();
+
+    logger.info('Starting second payment cycle', {
+      trigger,
+      runId,
+      retryAttempt
+    });
+
+    try {
+      const result = await this.secondPaymentScheduler.processAllDeals();
+
+      const duration = Date.now() - startTime;
+      logger.info('Second payment cycle completed', {
+        trigger,
+        runId,
+        duration: `${duration}ms`,
+        result
+      });
+
+      return {
+        success: true,
+        runId,
+        result,
+        duration
+      };
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      logger.error('Second payment cycle failed', {
+        trigger,
+        runId,
+        duration: `${duration}ms`,
+        error: error.message
+      });
+
+      return {
+        success: false,
+        runId,
+        error: error.message,
+        duration
+      };
+    }
+  }
+
   async runDeletionCycle({ trigger = 'manual', retryAttempt = 0 }) {
     const runId = randomUUID();
     logger.info('Deletion processing cycle started', { trigger, retryAttempt, runId });

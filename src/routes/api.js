@@ -21,6 +21,7 @@ const stripeAnalyticsService = require('../services/stripe/analyticsService');
 const logger = require('../utils/logger');
 const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
 const { ensureCashStatus } = require('../services/cash/cashStatusSync');
+const ProformaSecondPaymentReminderService = require('../services/proformaSecondPaymentReminderService');
 
 // Создаем экземпляры сервисов
 const wfirmaClient = new WfirmaClient();
@@ -79,6 +80,9 @@ const cashPaymentsRepository = new CashPaymentsRepository();
 const { createCashReminder } = require('../services/cash/cashReminderService');
 const CrmStatusAutomationService = require('../services/crm/statusAutomationService');
 const crmStatusAutomationService = new CrmStatusAutomationService();
+const SecondPaymentSchedulerService = require('../services/stripe/secondPaymentSchedulerService');
+const secondPaymentScheduler = new SecondPaymentSchedulerService();
+const proformaReminderService = new ProformaSecondPaymentReminderService();
 
 const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
 const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
@@ -951,6 +955,239 @@ router.get('/invoice-processing/scheduler-history', (req, res) => {
     });
   } catch (error) {
     logger.error('Error getting scheduler history:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/second-payment-scheduler/upcoming-tasks
+ * Получить список будущих задач cron по созданию вторых платежей (Stripe + Proforma)
+ */
+router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
+  try {
+    // Получаем задачи для Stripe платежей
+    const stripeDeals = await secondPaymentScheduler.findAllUpcomingTasks();
+    
+    // Форматируем данные для Stripe задач
+    const stripeTasks = await Promise.all(stripeDeals.map(async ({ deal, secondPaymentDate, isDateReached }) => {
+      const dealWithRelated = await pipedriveClient.getDealWithRelatedData(deal.id);
+      const person = dealWithRelated?.person;
+      const organization = dealWithRelated?.organization;
+      
+      const customerEmail = person?.email?.[0]?.value || 
+                           person?.email || 
+                           organization?.email?.[0]?.value || 
+                           organization?.email || 
+                           'N/A';
+      
+      const dealValue = parseFloat(deal.value) || 0;
+      const currency = deal.currency || 'PLN';
+      const secondPaymentAmount = dealValue / 2;
+      
+      const daysUntilSecondPayment = Math.ceil((secondPaymentDate - new Date()) / (1000 * 60 * 60 * 24));
+      
+      // Формируем ссылку на сделку в Pipedrive
+      const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+      const dealUrl = `${CRM_DEAL_BASE_URL}${deal.id}`;
+      
+      return {
+        dealId: deal.id,
+        dealTitle: deal.title,
+        dealUrl,
+        customerEmail,
+        expectedCloseDate: deal.expected_close_date || deal.close_date,
+        secondPaymentDate: secondPaymentDate.toISOString().split('T')[0],
+        secondPaymentAmount,
+        currency,
+        daysUntilSecondPayment,
+        isDateReached,
+        status: isDateReached ? 'overdue' : (daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
+        type: 'stripe_second_payment', // Тип задачи: второй платеж Stripe
+        paymentMethod: 'stripe'
+      };
+    }));
+
+    // Получаем задачи для Proforma платежей
+    // Показываем все задачи (включая просроченные), но не скрываем обработанные
+    const proformaTasks = await proformaReminderService.findAllUpcomingTasks({ hideProcessed: false });
+    
+    // Форматируем данные для Proforma задач
+    const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+    const formattedProformaTasks = proformaTasks.map(task => ({
+      dealId: task.dealId,
+      dealTitle: task.dealTitle,
+      dealUrl: `${CRM_DEAL_BASE_URL}${task.dealId}`,
+      customerEmail: task.customerEmail,
+      expectedCloseDate: task.expectedCloseDate,
+      secondPaymentDate: task.secondPaymentDate.toISOString().split('T')[0],
+      secondPaymentAmount: task.secondPaymentAmount,
+      currency: task.currency,
+      daysUntilSecondPayment: task.daysUntilSecondPayment,
+      isDateReached: task.isDateReached,
+      status: task.isDateReached ? 'overdue' : (task.daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
+      type: 'proforma_reminder', // Тип задачи: напоминание о втором платеже по проформе
+      paymentMethod: 'proforma',
+      proformaNumber: task.proformaNumber,
+      bankAccountNumber: task.bankAccountNumber
+    }));
+
+    // Добавляем ручные задачи из cron (например, Deal #1660 на 4 декабря)
+    const manualTaskDate = new Date('2025-12-04');
+    manualTaskDate.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const daysUntilManualTask = Math.ceil((manualTaskDate - today) / (1000 * 60 * 60 * 24));
+    
+    const manualTasks = [
+      {
+        dealId: 1660,
+        dealTitle: 'Заявка от Андрей',
+        dealUrl: `${CRM_DEAL_BASE_URL}1660`,
+        customerEmail: 'a.taliashvili@gmail.com',
+        expectedCloseDate: '2025-12-30',
+        secondPaymentDate: '2025-12-04',
+        secondPaymentAmount: 1275,
+        currency: 'PLN',
+        daysUntilSecondPayment: daysUntilManualTask,
+        isDateReached: manualTaskDate <= today,
+        status: manualTaskDate <= today ? 'overdue' : (daysUntilManualTask <= 3 ? 'soon' : 'upcoming'),
+        type: 'manual_rest',
+        paymentMethod: 'stripe',
+        note: 'Клиент попросил создать ссылку на оплату 4 декабря'
+      }
+    ];
+
+    // Объединяем все задачи
+    const allTasks = [...stripeTasks, ...formattedProformaTasks, ...manualTasks];
+    
+    // Сортируем по дате (ближайшие сначала)
+    allTasks.sort((a, b) => {
+      return new Date(a.secondPaymentDate) - new Date(b.secondPaymentDate);
+    });
+    
+    // Фильтруем скрытые задачи
+    const hiddenTasks = await getHiddenTasksFromSupabase();
+    const visibleTasks = allTasks.filter(task => {
+      return !hiddenTasks.some(hidden => 
+        hidden.deal_id === task.dealId && 
+        hidden.task_type === task.type &&
+        hidden.second_payment_date === task.secondPaymentDate
+      );
+    });
+    
+    res.json({
+      success: true,
+      tasks: visibleTasks,
+      count: visibleTasks.length,
+      nextRun: '09:00 ежедневно'
+    });
+  } catch (error) {
+    logger.error('Error getting upcoming second payment tasks:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * Получить список скрытых задач из Supabase
+ * @returns {Promise<Array>} - Массив скрытых задач
+ */
+async function getHiddenTasksFromSupabase() {
+  try {
+    if (!supabase) {
+      return [];
+    }
+    
+    const { data, error } = await supabase
+      .from('hidden_cron_tasks')
+      .select('*');
+    
+    if (error) {
+      logger.warn('Failed to fetch hidden tasks from Supabase', { error: error.message });
+      return [];
+    }
+    
+    return data || [];
+  } catch (error) {
+    logger.warn('Error fetching hidden tasks', { error: error.message });
+    return [];
+  }
+}
+
+/**
+ * POST /api/second-payment-scheduler/hide-task
+ * Скрыть задачу из очереди
+ */
+router.post('/second-payment-scheduler/hide-task', async (req, res) => {
+  try {
+    const { dealId, taskType, secondPaymentDate } = req.body;
+    
+    if (!dealId || !taskType || !secondPaymentDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: dealId, taskType, secondPaymentDate'
+      });
+    }
+    
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        error: 'Supabase not configured'
+      });
+    }
+    
+    // Проверяем, не скрыта ли уже задача
+    const { data: existing } = await supabase
+      .from('hidden_cron_tasks')
+      .select('*')
+      .eq('deal_id', dealId)
+      .eq('task_type', taskType)
+      .eq('second_payment_date', secondPaymentDate)
+      .maybeSingle();
+    
+    if (existing) {
+      return res.json({
+        success: true,
+        message: 'Task already hidden',
+        alreadyHidden: true
+      });
+    }
+    
+    // Добавляем задачу в скрытые
+    const { data, error } = await supabase
+      .from('hidden_cron_tasks')
+      .insert({
+        deal_id: dealId,
+        task_type: taskType,
+        second_payment_date: secondPaymentDate,
+        hidden_at: new Date().toISOString()
+      })
+      .select();
+    
+    if (error) {
+      logger.error('Failed to hide task', { error: error.message, dealId, taskType });
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to hide task',
+        message: error.message
+      });
+    }
+    
+    logger.info('Task hidden from cron queue', { dealId, taskType, secondPaymentDate });
+    
+    res.json({
+      success: true,
+      message: 'Task hidden successfully'
+    });
+  } catch (error) {
+    logger.error('Error hiding task:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',

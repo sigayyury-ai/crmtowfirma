@@ -148,6 +148,7 @@ header p {
 .status-section,
 .controls-section,
 .vat-margin-section,
+.cron-tasks-section,
 .results-section,
 .logs-section,
 .pnl-report-section {
@@ -416,6 +417,150 @@ h2 {
     opacity: 0.6;
     cursor: not-allowed;
     transform: none !important;
+}
+
+/* Cron Tasks */
+.cron-tasks-section {
+    margin-bottom: 30px;
+}
+
+.cron-tasks-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+}
+
+.cron-tasks-hint {
+    color: #718096;
+    font-size: 0.9rem;
+}
+
+.cron-tasks-container {
+    min-height: 150px;
+    background: #f7fafc;
+    border-radius: 8px;
+    padding: 20px;
+    border: 1px solid #e2e8f0;
+}
+
+.cron-task-item {
+    background: white;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 12px;
+    border-left: 4px solid #4299e1;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: all 0.2s ease;
+}
+
+.cron-task-item:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    transform: translateY(-1px);
+}
+
+.cron-task-item.overdue {
+    border-left-color: #f56565;
+}
+
+.cron-task-item.upcoming {
+    border-left-color: #ed8936;
+}
+
+.cron-task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 10px;
+}
+
+.cron-task-title {
+    font-weight: 600;
+    color: #2d3748;
+    font-size: 1rem;
+}
+
+.cron-task-title a {
+    color: #3182ce;
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+.cron-task-title a:hover {
+    color: #2c5282;
+    text-decoration: underline;
+}
+
+.cron-task-delete-btn {
+    background: #e53e3e;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    margin-left: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background-color 0.2s ease;
+    padding: 0;
+    font-weight: bold;
+}
+
+.cron-task-delete-btn:hover {
+    background: #c53030;
+}
+
+.cron-task-delete-btn:active {
+    background: #9b2c2c;
+}
+
+.cron-task-date {
+    color: #718096;
+    font-size: 0.875rem;
+}
+
+.cron-task-details {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+    font-size: 0.875rem;
+}
+
+.cron-task-detail {
+    color: #4a5568;
+}
+
+.cron-task-detail strong {
+    color: #2d3748;
+}
+
+.cron-task-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-left: 8px;
+}
+
+.cron-task-badge.overdue {
+    background: #fed7d7;
+    color: #c53030;
+}
+
+.cron-task-badge.upcoming {
+    background: #feebc8;
+    color: #c05621;
+}
+
+.cron-task-badge.today {
+    background: #c6f6d5;
+    color: #2f855a;
 }
 
 /* Results */

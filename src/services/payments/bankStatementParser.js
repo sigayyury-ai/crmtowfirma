@@ -701,37 +701,13 @@ function parseBankStatement(content) {
       }
     }
     
-    // EXCEPTION: Some banks show incoming payments with negative sign in CSV
-    // Only apply name pattern logic if:
-    // 1. Amount sign says "out" (negative)
-    // 2. Category doesn't specify direction
-    // 3. It's not a refund pattern (already handled above)
-    // 4. Description starts with person name pattern
-    // 5. Description doesn't contain expense keywords
-    if (directionSource === 'amount' && amountDirection === 'out' && description && !description.toUpperCase().includes('ZWROT')) {
-      const descUpper = description.toUpperCase().trim();
-      
-      // Check if description starts with what looks like a person name (2-3 words, all caps, no numbers)
-      const namePattern = /^[A-ZĄĆĘŁŃÓŚŹŻ]{2,}\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,}(\s+[A-ZĄĆĘŁŃÓŚŹŻ]{2,})?(\s|,|$)/;
-      
-      // Exclude common expense patterns
-      const isExpensePattern = descUpper.includes('PRZELEW WYCHODZĄCY') || 
-                                descUpper.includes('PRZELEW WYCHODZACY') ||
-                                descUpper.includes('ZAKUP') ||
-                                descUpper.includes('OPŁATA') ||
-                                descUpper.includes('PŁATNOŚĆ') ||
-                                descUpper.includes('KARTA') ||
-                                descUpper.includes('BLIK');
-      
-      // Only override if it looks like a person name AND no expense patterns AND not already handled as refund
-      if (namePattern.test(descUpper) && !isExpensePattern && directionSource === 'amount') {
-        // This might be an incoming payment shown with negative sign by the bank
-        // But ONLY if amount is negative - if amount is positive, it's definitely income
-        direction = 'in';
-        directionSource = 'description_name_exception';
-      }
-    }
-    
+    // EXCEPTION (DISABLED): раньше здесь была логика,
+    // которая могла менять направление с 'out' на 'in'
+    // для некоторых платежей по шаблону имени в описании.
+    // Она приводила к тому, что расходы с минусом попадали в доходы,
+    // поэтому сейчас мы всегда доверяем знаку суммы,
+    // кроме явно описанных правил выше (налоги, рефанды и т.п.).
+
     // Final safety check: if category explicitly says direction, trust it over amount sign
     // This handles cases where bank shows wrong sign in CSV
     if (category && directionSource === 'category') {
