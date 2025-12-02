@@ -1,50 +1,5 @@
-const { getStripeClient } = require('./client');
-const {
-  fromMinorUnit,
-  roundBankers,
-  normaliseCurrency,
-  convertCurrency
-} = require('../../utils/currency');
-const { logStripeError } = require('../../utils/logging/stripe');
-const StripeRepository = require('./repository');
+const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
-
-const MAX_ITERATIONS = 20;
-const DEFAULT_SUMMARY_LIMIT = 20;
-
-function parseDateToUnix(value) {
-  if (!value) return undefined;
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return undefined;
-  return Math.floor(timestamp / 1000);
-}
-
-function extractEventKey(lineItem) {
-  const description = lineItem?.description;
-  if (!description || typeof description !== 'string') return null;
-  const trimmed = description.trim();
-  return trimmed.length ? trimmed : null;
-}
-
-function identifyParticipant(session) {
-  const customer = session?.customer_details || {};
-  const email = customer.email ? customer.email.toLowerCase() : null;
-  const name = customer.name || (email ? email.split('@')[0] : 'Неизвестный участник');
-  const id = email || `${name}-${session.id}`;
-  return {
-    id,
-    displayName: name,
-    email
-  };
-}
-
-function sanitizeCurrency(currency) {
-  return normaliseCurrency(currency || 'PLN');
-}
-
-function toIsoTime(seconds) {
-  return seconds ? new Date(seconds * 1000).toISOString() : null;
-}
 
 function buildCsvValue(value) {
   if (value === null || value === undefined) return '';
@@ -56,327 +11,149 @@ function buildCsvValue(value) {
 }
 
 class StripeEventReportService {
-  constructor() {
-    // Use separate API key for events if provided, otherwise use default Stripe client
-    const eventsApiKey = process.env.STRIPE_EVENTS_API_KEY;
-    if (eventsApiKey && eventsApiKey.trim()) {
-      // Validate that it's a secret key (starts with sk_)
-      if (!eventsApiKey.startsWith('sk_')) {
-        logger.warn('STRIPE_EVENTS_API_KEY should be a secret key (sk_...), not a publishable key (pk_...)');
-      }
-      // Create separate Stripe client for events with different API key
-      const Stripe = require('stripe');
-      this.stripe = new Stripe(eventsApiKey.trim(), {
-        apiVersion: process.env.STRIPE_API_VERSION || '2024-04-10',
-        timeout: parseInt(process.env.STRIPE_TIMEOUT_MS || '12000', 10),
-        maxNetworkRetries: parseInt(process.env.STRIPE_MAX_NETWORK_RETRIES || '1', 10),
-        appInfo: {
-          name: 'pipedrive-wfirma-integration-events',
-          version: require('../../../package.json').version || '0.0.0'
-        }
-      });
-      logger.info('Stripe Events client initialized with separate API key', {
-        keyPrefix: eventsApiKey.substring(0, 7) + '...'
-      });
-    } else {
-      // Use default Stripe client
-      this.stripe = getStripeClient();
-      logger.info('Stripe Events client using default Stripe API key');
-    }
-    this.repository = new StripeRepository();
-    this.summaryCache = new Map();
-    this.summaryCacheTtlMs = parseInt(process.env.STRIPE_EVENTS_CACHE_TTL_MS || '600000', 10);
+  constructor(options = {}) {
+    this.supabase = options.supabase || supabase;
+    this.logger = options.logger || logger;
   }
 
-  async convertAmountToPln(amount, currency) {
-    if (!Number.isFinite(amount)) return 0;
-    const source = normaliseCurrency(currency);
-    if (source === 'PLN') return roundBankers(amount);
+  async getLastAggregationTimestamp() {
+    const { data, error } = await this.supabase
+      .from('stripe_event_aggregation_jobs')
+      .select('finished_at')
+      .eq('status', 'success')
+      .order('finished_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    const converted = await convertCurrency(amount, source, 'PLN');
-    return Number.isFinite(converted) ? converted : 0;
+    if (error) {
+      this.logger.warn('Failed to load aggregation jobs', { error: error.message });
+      return null;
+    }
+    return data?.finished_at || null;
   }
 
-  parseFilters({ from, to }) {
-    const created = {};
-    const fromUnix = parseDateToUnix(from);
-    const toUnix = parseDateToUnix(to);
-    if (fromUnix) created.gte = fromUnix;
-    if (toUnix) created.lte = toUnix;
-    return Object.keys(created).length ? created : undefined;
-  }
-
-  async listEvents({ limit, startingAfter, from, to } = {}) {
-    const summaryLimit = Math.min(Math.max(parseInt(limit, 10) || DEFAULT_SUMMARY_LIMIT, 1), 100);
-    const eventMap = new Map();
-    let cursor = startingAfter || undefined;
-    let hasMore = true;
-    let iterations = 0;
-    let lastSessionId = null;
-
-    const cacheKey = JSON.stringify({
-      limit: summaryLimit,
-      startingAfter: cursor || null,
-      from: from || null,
-      to: to || null
-    });
-
-    const cached = this.summaryCache.get(cacheKey);
-    if (cached && Date.now() < cached.expiresAt) {
-      return cached.payload;
+  async listEvents({ limit = 50, from = null, to = null } = {}) {
+    if (!this.supabase) {
+      throw new Error('StripeEventReportService: Supabase client is not configured');
     }
 
-    try {
-      // Load events directly from Stripe API
-      // Event report groups payments by line_item.description (eventKey), not by deal_id or CRM products
-      while (hasMore && iterations < MAX_ITERATIONS && eventMap.size < summaryLimit) {
-        const params = {
-          limit: 100,
-          expand: ['data.line_items']
-        };
-        const created = this.parseFilters({ from, to });
-        if (created) params.created = created;
-        if (cursor) params.starting_after = cursor;
+    const boundedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+    let query = this.supabase
+      .from('stripe_event_summary')
+      .select('*')
+      .order('last_payment_at', { ascending: false })
+      .limit(boundedLimit);
 
-        // eslint-disable-next-line no-await-in-loop
-        const response = await this.stripe.checkout.sessions.list(params);
-
-        // eslint-disable-next-line no-loop-func
-        for (const session of response.data) {
-          if (session.payment_status !== 'paid' || session.status !== 'complete') {
-            continue;
-          }
-          const lineItems = session?.line_items?.data || [];
-          for (const lineItem of lineItems) {
-            const eventKey = extractEventKey(lineItem);
-            if (!eventKey) continue;
-
-            const currency = sanitizeCurrency(lineItem.currency || session.currency);
-            const amount = fromMinorUnit(lineItem.amount_total ?? session.amount_total ?? 0, currency);
-            // eslint-disable-next-line no-await-in-loop
-            const amountPln = await this.convertAmountToPln(amount, currency);
-
-            let event = eventMap.get(eventKey);
-            if (!event) {
-              event = {
-                eventKey,
-                eventLabel: eventKey,
-                currency,
-                grossRevenue: 0,
-                grossRevenuePln: 0,
-                participants: new Set(),
-                paymentsCount: 0,
-                lastPaymentAt: 0,
-                currencies: new Set([currency]),
-                warnings: new Set()
-              };
-              eventMap.set(eventKey, event);
-            }
-
-            const participant = identifyParticipant(session);
-            event.participants.add(participant.id);
-            event.paymentsCount += 1;
-            event.currencies.add(currency);
-            event.grossRevenue += amount;
-            if (Number.isFinite(amountPln) && amountPln > 0) {
-              event.grossRevenuePln += amountPln;
-            }
-            event.lastPaymentAt = Math.max(event.lastPaymentAt, session.created || 0);
-            if (event.currencies.size > 1) {
-              event.warnings.add('Обнаружены платежи в нескольких валютах, проверьте отчёт вручную.');
-            }
-            if (!event.currency) {
-              [event.currency] = event.currencies;
-            }
-          }
-        }
-
-        hasMore = response.has_more;
-        if (response.data.length > 0) {
-          lastSessionId = response.data[response.data.length - 1].id;
-          cursor = lastSessionId;
-        } else {
-          hasMore = false;
-        }
-        iterations += 1;
-      }
-    } catch (error) {
-      logStripeError(error, { scope: 'listEvents' });
-      throw error;
+    if (from) {
+      query = query.gte('last_payment_at', from);
+    }
+    if (to) {
+      query = query.lte('last_payment_at', to);
     }
 
-    const items = Array.from(eventMap.values())
-      .sort((a, b) => (b.lastPaymentAt || 0) - (a.lastPaymentAt || 0))
-      .slice(0, summaryLimit)
-      .map((event) => ({
-        eventKey: event.eventKey,
-        eventLabel: event.eventLabel,
-        currency: event.currency,
-        grossRevenue: roundBankers(event.grossRevenue),
-        grossRevenuePln: event.currency === 'PLN'
-          ? roundBankers(event.grossRevenue)
-          : roundBankers(event.grossRevenuePln || 0),
-        participantsCount: event.participants.size,
-        paymentsCount: event.paymentsCount,
-        lastPaymentAt: event.lastPaymentAt ? toIsoTime(event.lastPaymentAt) : null,
-        warnings: Array.from(event.warnings)
-      }));
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`Failed to load event summary: ${error.message}`);
+    }
 
-    const result = {
-      items,
+    const lastUpdated = await this.getLastAggregationTimestamp();
+
+    return {
+      items: data || [],
       pageInfo: {
-        limit: summaryLimit,
-        hasMore: hasMore || eventMap.size > summaryLimit,
-        nextCursor: hasMore ? lastSessionId : null
-      }
+        limit: boundedLimit,
+        hasMore: false,
+        nextCursor: null
+      },
+      source: 'supabase',
+      lastUpdated
     };
-
-    this.summaryCache.set(cacheKey, {
-      payload: result,
-      expiresAt: Date.now() + this.summaryCacheTtlMs
-    });
-
-    return result;
   }
 
-  async getEventReport(eventKey, { from, to } = {}) {
-    const sessionsSet = new Set();
-    const participantsMap = new Map();
-    const warnings = new Set();
-    let totalsCurrency = null;
-    let totalGross = 0;
-    let totalGrossPln = 0;
-    let totalLineItems = 0;
-    let lastPaymentAt = 0;
+  async getEventReport(eventKey) {
+    if (!this.supabase) {
+      throw new Error('StripeEventReportService: Supabase client is not configured');
+    }
+    if (!eventKey) {
+      throw new Error('eventKey is required');
+    }
 
-    let cursor;
-    let hasMore = true;
-    let iterations = 0;
+    const { data: summary, error: summaryError } = await this.supabase
+      .from('stripe_event_summary')
+      .select('*')
+      .eq('event_key', eventKey)
+      .maybeSingle();
 
-    try {
-      while (hasMore && iterations < MAX_ITERATIONS) {
-        const params = {
-          limit: 100,
-          expand: ['data.line_items']
-        };
-        const created = this.parseFilters({ from, to });
-        if (created) params.created = created;
-        if (cursor) params.starting_after = cursor;
-
-        // eslint-disable-next-line no-await-in-loop
-        const response = await this.stripe.checkout.sessions.list(params);
-
-        for (const session of response.data) {
-          if (session.payment_status !== 'paid' || session.status !== 'complete') {
-            continue;
-          }
-          const lineItems = session?.line_items?.data || [];
-          const matchingItems = lineItems.filter((item) => extractEventKey(item) === eventKey);
-          if (!matchingItems.length) continue;
-
-          sessionsSet.add(session.id);
-          lastPaymentAt = Math.max(lastPaymentAt, session.created || 0);
-
-          for (const lineItem of matchingItems) {
-            totalLineItems += 1;
-            const currency = sanitizeCurrency(lineItem.currency || session.currency);
-            const amount = fromMinorUnit(lineItem.amount_total ?? session.amount_total ?? 0, currency);
-            // eslint-disable-next-line no-await-in-loop
-            const amountPln = await this.convertAmountToPln(amount, currency);
-
-            if (!totalsCurrency) totalsCurrency = currency;
-            if (totalsCurrency !== currency) {
-              warnings.add('Отчёт содержит платежи в разных валютах. Проверьте агрегированные значения вручную.');
-            }
-
-            totalGross += amount;
-            if (Number.isFinite(amountPln) && amountPln > 0) {
-              totalGrossPln += amountPln;
-            }
-
-            const participantInfo = identifyParticipant(session);
-            let participant = participantsMap.get(participantInfo.id);
-            if (!participant) {
-              participant = {
-                participantId: participantInfo.id,
-                displayName: participantInfo.displayName,
-                email: participantInfo.email,
-                currency,
-                totalAmount: 0,
-                totalAmountPln: 0,
-                paymentsCount: 0
-              };
-              participantsMap.set(participantInfo.id, participant);
-            }
-
-            participant.currency = currency;
-            participant.totalAmount += amount;
-            if (Number.isFinite(amountPln) && amountPln > 0) {
-              participant.totalAmountPln += amountPln;
-            }
-            participant.paymentsCount += 1;
-          }
-        }
-
-        hasMore = response.has_more;
-        if (response.data.length > 0) {
-          cursor = response.data[response.data.length - 1].id;
-        } else {
-          hasMore = false;
-        }
-        iterations += 1;
-      }
-    } catch (error) {
-      logStripeError(error, { scope: 'getEventReport', eventKey });
+    if (summaryError) {
+      throw new Error(`Failed to load event summary: ${summaryError.message}`);
+    }
+    if (!summary) {
+      const error = new Error('Event not found');
+      error.statusCode = 404;
       throw error;
     }
 
-    const participantsArray = Array.from(participantsMap.values()).map((participant) => ({
-      ...participant,
-      totalAmount: roundBankers(participant.totalAmount),
-      totalAmountPln: roundBankers(participant.totalAmountPln)
-    }));
+    const { data: participants, error: participantsError } = await this.supabase
+      .from('stripe_event_participants')
+      .select('*')
+      .eq('event_key', eventKey)
+      .order('total_amount_pln', { ascending: false });
 
-    const response = {
-      eventKey,
-      eventLabel: eventKey,
-      currency: totalsCurrency || 'PLN',
-      totalSessions: sessionsSet.size,
-      totalLineItems,
-      warnings: Array.from(warnings),
-      participants: participantsArray,
+    if (participantsError) {
+      throw new Error(`Failed to load event participants: ${participantsError.message}`);
+    }
+
+    return {
+      eventKey: summary.event_key,
+      eventLabel: summary.event_label,
+      currency: summary.currency || 'PLN',
+      totalSessions: summary.payments_count,
+      totalLineItems: summary.payments_count,
+      warnings: summary.warnings || [],
+      participants: participants || [],
       totals: {
-        grossRevenue: roundBankers(totalGross),
-        grossRevenuePln: roundBankers(totalGrossPln),
-        participantsCount: participantsArray.length,
-        sessionsCount: sessionsSet.size
+        grossRevenue: summary.gross_revenue,
+        grossRevenuePln: summary.gross_revenue_pln,
+        participantsCount: summary.participants_count,
+        sessionsCount: summary.payments_count
       },
-      generatedAt: new Date().toISOString()
+      generatedAt: new Date().toISOString(),
+      lastPaymentAt: summary.last_payment_at,
+      lastUpdated: summary.updated_at
     };
-
-    return response;
   }
 
-  async generateExportCsv(eventKey, options = {}) {
-    const report = await this.getEventReport(eventKey, options);
+  async generateExportCsv(eventKey) {
+    const report = await this.getEventReport(eventKey);
     const header = [
       'Name',
+      'Email',
       'Total Amount (PLN)',
       `Total Amount (${report.currency})`,
       'Payments Count'
     ];
 
-    const rows = report.participants.map((participant) => [
-      participant.displayName || '',
-      roundBankers(participant.totalAmountPln),
-      roundBankers(participant.totalAmount),
-      participant.paymentsCount || 0
+    const rows = (report.participants || []).map((participant) => [
+      participant.display_name || '',
+      participant.email || '',
+      participant.total_amount_pln?.toFixed
+        ? participant.total_amount_pln.toFixed(2)
+        : Number(participant.total_amount_pln || 0).toFixed(2),
+      participant.total_amount?.toFixed
+        ? participant.total_amount.toFixed(2)
+        : Number(participant.total_amount || 0).toFixed(2),
+      participant.payments_count || 0
     ]);
 
     const totalsRow = [
       'Итого',
-      roundBankers(report.totals.grossRevenuePln),
-      roundBankers(report.totals.grossRevenue),
+      '',
+      report.totals.grossRevenuePln?.toFixed
+        ? report.totals.grossRevenuePln.toFixed(2)
+        : Number(report.totals.grossRevenuePln || 0).toFixed(2),
+      report.totals.grossRevenue?.toFixed
+        ? report.totals.grossRevenue.toFixed(2)
+        : Number(report.totals.grossRevenue || 0).toFixed(2),
       report.totals.sessionsCount || 0
     ];
 

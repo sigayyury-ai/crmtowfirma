@@ -313,7 +313,8 @@ class StripeRepository {
     let query = this.supabase
       .from('stripe_payments')
       .select('*')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .neq('status', 'event_placeholder');
 
     // Filter by processed_at (payment date) if available, fallback to created_at
     if (filters.dateFrom) {

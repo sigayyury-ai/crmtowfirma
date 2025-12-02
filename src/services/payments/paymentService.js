@@ -570,8 +570,17 @@ class PaymentService {
         }
         return true;
       });
-      
-      if (paymentsToUpsert.length === 0) {
+
+      const { dedupedPayments, duplicateOperationHashes } = this._dedupePaymentsByOperationHash(paymentsToUpsert);
+
+      if (duplicateOperationHashes.length > 0) {
+        logger.warn('Detected duplicate payments within the same CSV upload, keeping the first occurrence only', {
+          duplicatesTotal: duplicateOperationHashes.length,
+          sampleDuplicates: duplicateOperationHashes.slice(0, 5).map((hash) => `${hash.substring(0, 8)}...`)
+        });
+      }
+
+      if (dedupedPayments.length === 0) {
         logger.info('All payments were deleted, skipping upsert');
         return {
           total: records.length,
@@ -582,7 +591,7 @@ class PaymentService {
       
       const { data: upserted, error } = await supabase
         .from('payments')
-        .upsert(paymentsToUpsert, { 
+        .upsert(dedupedPayments, { 
           onConflict: 'operation_hash',
           ignoreDuplicates: false
         })
@@ -819,6 +828,33 @@ class PaymentService {
         .map((row) => row.operation_hash)
         .filter(Boolean)
     );
+  }
+
+  _dedupePaymentsByOperationHash(payments = []) {
+    const seenOperationHashes = new Set();
+    const duplicates = new Set();
+    const deduped = [];
+
+    for (const payment of payments) {
+      const hash = payment?.operation_hash;
+      if (!hash) {
+        deduped.push(payment);
+        continue;
+      }
+
+      if (seenOperationHashes.has(hash)) {
+        duplicates.add(hash);
+        continue;
+      }
+
+      seenOperationHashes.add(hash);
+      deduped.push(payment);
+    }
+
+    return {
+      dedupedPayments: deduped,
+      duplicateOperationHashes: Array.from(duplicates)
+    };
   }
 
 

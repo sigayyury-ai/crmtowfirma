@@ -4,6 +4,7 @@ const InvoiceProcessingService = require('./invoiceProcessing');
 const StripeProcessorService = require('./stripe/processor');
 const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
 const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentReminderService');
+const StripeEventAggregationService = require('./stripe/eventAggregationService');
 const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
@@ -12,6 +13,7 @@ const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке
 // Запускается раз в час вместе с основным циклом для проверки пропущенных событий
 const DELETION_CRON_EXPRESSION = '0 2 * * *'; // Раз в сутки в 2:00 ночи (редкий кейс)
 const SECOND_PAYMENT_CRON_EXPRESSION = '0 9 * * *'; // Ежедневно в 9:00 утра для создания вторых платежей
+const STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION = '10 * * * *'; // каждый час в hh:10
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -21,6 +23,8 @@ class SchedulerService {
     this.stripeProcessor = options.stripeProcessorService || new StripeProcessorService();
     this.secondPaymentScheduler = options.secondPaymentSchedulerService || new SecondPaymentSchedulerService();
     this.proformaReminderService = options.proformaReminderService || new ProformaSecondPaymentReminderService();
+    this.stripeEventAggregationService =
+      options.stripeEventAggregationService || new StripeEventAggregationService();
     this.timezone = options.timezone || DEFAULT_TIMEZONE;
     this.cronExpression = options.cronExpression || CRON_EXPRESSION;
     this.retryDelayMinutes = options.retryDelayMinutes || RETRY_DELAY_MINUTES;
@@ -33,6 +37,7 @@ class SchedulerService {
     this.cronJob = null;
     this.deletionCronJob = null;
     this.secondPaymentCronJob = null;
+    this.stripeEventsCronJob = null;
     this.retryTimeout = null;
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -120,10 +125,31 @@ class SchedulerService {
       }
     );
 
+    // Cron для агрегации Stripe мероприятий (ежечасно)
+    logger.info('Configuring cron job for Stripe events aggregation', {
+      cronExpression: STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+    this.stripeEventsCronJob = cron.schedule(
+      STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION,
+      () => {
+        this.runStripeEventAggregation({ trigger: 'cron_stripe_events' }).catch((error) => {
+          logger.error('Unexpected error in Stripe events aggregation cron:', error);
+        });
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
         logger.error('Startup invoice processing failed:', error);
+      });
+      this.runStripeEventAggregation({ trigger: 'startup' }).catch((error) => {
+        logger.error('Startup Stripe events aggregation failed:', error);
       });
     });
   }
@@ -132,6 +158,10 @@ class SchedulerService {
     if (this.cronJob) {
       this.cronJob.stop();
       this.cronJob = null;
+    }
+    if (this.stripeEventsCronJob) {
+      this.stripeEventsCronJob.stop();
+      this.stripeEventsCronJob = null;
     }
 
     if (this.retryTimeout) {
@@ -195,6 +225,23 @@ class SchedulerService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  async runStripeEventAggregation({ trigger = 'manual' } = {}) {
+    if (!this.stripeEventAggregationService) {
+      logger.warn('Stripe event aggregation service not configured; skipping');
+      return;
+    }
+    try {
+      logger.info('Stripe events aggregation started', { trigger });
+      await this.stripeEventAggregationService.aggregateAll();
+      logger.info('Stripe events aggregation finished', { trigger });
+    } catch (error) {
+      logger.error('Stripe events aggregation failed', {
+        trigger,
+        error: error.message
+      });
     }
   }
 

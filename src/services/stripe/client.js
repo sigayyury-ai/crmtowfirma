@@ -3,8 +3,7 @@ const { logStripeError, logStripeResponse } = require('../../utils/logging/strip
 const logger = require('../../utils/logger');
 const { name: pkgName, version: pkgVersion } = require('../../../package.json');
 
-let stripeInstance = null;
-let currentMode = null;
+const stripeInstances = new Map();
 
 function getStripeMode() {
   return (process.env.STRIPE_MODE || 'live').toLowerCase();
@@ -16,7 +15,19 @@ function resolveNumber(value, fallback) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function resolveStripeApiKey() {
+function resolveStripeApiKey(options = {}) {
+  if (options.apiKey) {
+    return options.apiKey;
+  }
+
+  if (options.type === 'events') {
+    const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
+    if (!eventsKey) {
+      throw new Error('STRIPE_EVENTS_API_KEY is not set. Add it to .env');
+    }
+    return eventsKey;
+  }
+
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
@@ -70,8 +81,8 @@ function attachLoggingHooks(stripe) {
   sender._withLogging = true;
 }
 
-function createStripeClient() {
-  const apiKey = resolveStripeApiKey();
+function createStripeClient(options = {}) {
+  const apiKey = resolveStripeApiKey(options);
   const stripe = new Stripe(apiKey, {
     apiVersion: process.env.STRIPE_API_VERSION || '2024-04-10',
     timeout: resolveNumber(process.env.STRIPE_TIMEOUT_MS, 12000),
@@ -87,19 +98,20 @@ function createStripeClient() {
   const mode = getStripeMode();
   logger.info('Stripe client initialised', {
     mode,
-    apiVersion: stripe.getApiField('version')
+    apiVersion: stripe.getApiField('version'),
+    keyType: options.type || 'default'
   });
   return stripe;
 }
 
-function getStripeClient() {
-  const newMode = getStripeMode();
-  // Recreate client if mode changed
-  if (!stripeInstance || currentMode !== newMode) {
-    stripeInstance = createStripeClient();
-    currentMode = newMode;
+function getStripeClient(options = {}) {
+  const mode = getStripeMode();
+  const apiKey = resolveStripeApiKey(options);
+  const cacheKey = `${mode}:${options.type || 'default'}:${apiKey}`;
+  if (!stripeInstances.has(cacheKey)) {
+    stripeInstances.set(cacheKey, createStripeClient(options));
   }
-  return stripeInstance;
+  return stripeInstances.get(cacheKey);
 }
 
 module.exports = {

@@ -81,6 +81,11 @@ NODE_ENV=development
 # Stripe (test mode)
 STRIPE_API_KEY=sk_test_your_stripe_test_key
 STRIPE_MODE=test
+
+# Stripe Events (отдельный кабинет COMOON Events)
+# Обязательно укажите секретный ключ (sk_live_...); без него отчёты по мероприятиям
+# будут подключаться к основному продуктового аккаунту.
+STRIPE_EVENTS_API_KEY=sk_live_your_events_key
 STRIPE_EVENTS_CACHE_TTL_MS=600000
 ```
 

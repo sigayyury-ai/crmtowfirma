@@ -90,7 +90,13 @@ app.get('/robots.txt', (req, res) => {
 app.use(requireAuth);
 
 // Статические файлы (frontend) - защищены авторизацией
-app.use(express.static(path.join(__dirname, '../frontend')));
+// Запрещаем автоматическую отдачу index.html из подпапок, чтобы маршруты типа /vat-margin
+// корректно возвращали основной SPA, а не прототипы из подпапок.
+app.use(
+  express.static(path.join(__dirname, '../frontend'), {
+    index: false
+  })
+);
 
 // Маршруты для основных страниц (чтобы прямые ссылки и refresh работали)
 const sendPage = (filename) => (req, res) => {

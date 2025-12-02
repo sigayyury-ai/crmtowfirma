@@ -8,6 +8,7 @@ const {
 const { fromMinorUnit, normaliseCurrency, roundBankers, toMinorUnit } = require('../../utils/currency');
 const { logStripeError } = require('../../utils/logging/stripe');
 const ParticipantPaymentPlanService = require('./participantPaymentPlanService');
+const StripeEventStorageService = require('./eventStorageService');
 const { STAGE_IDS: STAGES } = require('../crm/statusCalculator');
 const StripeStatusAutomationService = require('../crm/stripeStatusAutomationService');
 const PipedriveClient = require('../pipedrive');
@@ -26,6 +27,7 @@ class StripeProcessorService {
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     // Force recreate Stripe client to pick up current STRIPE_MODE
     this.stripe = options.stripe || getStripeClient();
+    this.eventStorageService = new StripeEventStorageService({ stripe: this.stripe });
     this.mode = (process.env.STRIPE_MODE || 'live').toLowerCase();
     this.maxSessions = parseInt(process.env.STRIPE_PROCESSOR_MAX_SESSIONS || '500', 10);
     this.crmCache = new Map();
@@ -85,6 +87,23 @@ class StripeProcessorService {
       this.logger.warn('CRM status automation failed after Stripe processor event', {
         dealId,
         context,
+        error: error.message
+      });
+    }
+  }
+
+  async persistEventItems(session) {
+    if (!this.eventStorageService?.supabase) {
+      return;
+    }
+    if (!session?.id) {
+      return;
+    }
+    try {
+      await this.eventStorageService.syncSession(session);
+    } catch (error) {
+      this.logger.warn('Stripe processor: failed to persist event items', {
+        sessionId: session.id,
         error: error.message
       });
     }
@@ -603,6 +622,7 @@ class StripeProcessorService {
     
     // Save payment (repository handles missing invoice_number/receipt_number columns automatically)
     await this.repository.savePayment(paymentRecord);
+    await this.persistEventItems(session);
     await this.paymentPlanService.updatePlanFromSession(paymentRecord, session);
 
     // Send invoice to customer for BOTH B2B and B2C deals

@@ -1896,9 +1896,7 @@ router.get('/vat-margin/monthly-proformas', async (req, res) => {
  */
 router.get('/vat-margin/products/summary', async (req, res) => {
   try {
-    // Для страницы продуктов показываем только реальные продукты из базы,
-    // без автоматически созданных из Stripe платежей
-    const summary = await productReportService.getProductSummary({ includeStripeData: false });
+    const summary = await productReportService.getProductSummary({ includeStripeData: true });
 
     res.json({
       success: true,
@@ -1953,6 +1951,20 @@ router.post('/vat-margin/products/:productIdentifier/status', async (req, res) =
   try {
     const { productIdentifier } = req.params;
     const { status, dueMonth } = req.body || {};
+    const numericIdMatch = String(productIdentifier).match(/^id-(\d+)$/i);
+    if (!numericIdMatch) {
+      return res.status(400).json({
+        success: false,
+        error: 'Статус можно обновлять только для продуктов из базы'
+      });
+    }
+    const productId = parseInt(numericIdMatch[1], 10);
+    if (!Number.isFinite(productId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор продукта'
+      });
+    }
 
     const allowedStatuses = ['in_progress', 'calculated'];
     if (status && !allowedStatuses.includes(status)) {

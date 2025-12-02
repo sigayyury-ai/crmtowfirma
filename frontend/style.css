@@ -1,3 +1,8 @@
+.table-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
 /* Reset and base styles */
 * {
     margin: 0;
@@ -1060,6 +1065,12 @@ h2 {
     text-decoration: underline;
 }
 
+.product-link.disabled {
+    color: #94a3b8;
+    pointer-events: none;
+    cursor: default;
+}
+
 .status-select,
 .due-month-input {
     width: 100%;
@@ -1112,6 +1123,11 @@ h2 {
 .due-cell {
     font-weight: 600;
     color: #2563eb;
+}
+
+.status-readonly {
+    color: #94a3b8;
+    font-style: italic;
 }
 
 .status-badge {

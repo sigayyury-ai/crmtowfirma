@@ -253,7 +253,7 @@ function switchTab(tabName, options = {}) {
     if (!stripeEventsState.isLoaded) {
       loadStripeEvents();
     } else {
-      renderStripeTransactions(stripeEventsState.items);
+      renderStripeEvents(stripeEventsState.items);
     }
     return;
   }
@@ -614,15 +614,30 @@ async function loadStripeEvents({ force = false } = {}) {
       throw new Error(result?.message || 'Не удалось получить мероприятия Stripe');
     }
 
-    const items = Array.isArray(result?.data?.items) ? result.data.items : [];
-    stripeEventsState.items = items;
+    const rawItems = Array.isArray(result?.data?.items) ? result.data.items : [];
+    const normalizedItems = rawItems.map((item) => ({
+      eventKey: item?.event_key ?? item?.eventKey ?? '',
+      eventLabel: item?.event_label ?? item?.eventLabel ?? item?.event_key ?? 'Без названия',
+      currency: item?.currency || 'PLN',
+      grossRevenue: Number(
+        item?.gross_revenue_pln ??
+          item?.grossRevenuePln ??
+          item?.gross_revenue ??
+          item?.grossRevenue ??
+          0
+      ),
+      paymentsCount: Number(item?.payments_count ?? item?.paymentsCount ?? 0),
+      lastPaymentAt: item?.last_payment_at ?? item?.lastPaymentAt ?? null
+    }));
+
+    stripeEventsState.items = normalizedItems;
     stripeEventsState.isLoaded = true;
-    renderStripeEvents(items);
-    const countText = formatEventsCount(items.length);
+    renderStripeEvents(normalizedItems);
+    const countText = formatEventsCount(normalizedItems.length);
     if (elements.stripeEventsCount) {
       elements.stripeEventsCount.textContent = countText;
     }
-    updateStripeStatus('success', `Подключено • ${countText}`);
+    updateStripeStatus('success', '');
   } catch (error) {
     console.error('Failed to load Stripe events summary', error);
     stripeEventsState.error = error.message;
@@ -630,7 +645,7 @@ async function loadStripeEvents({ force = false } = {}) {
     if (elements.stripeEventsCount) {
       elements.stripeEventsCount.textContent = '0 мероприятий';
     }
-    updateStripeStatus('error', 'Ошибка загрузки Stripe');
+    updateStripeStatus('error', 'Ошибка загрузки мероприятий');
   } finally {
     stripeEventsState.isLoading = false;
     setButtonLoading(elements.stripeRefreshEvents, false);
@@ -1132,11 +1147,10 @@ function renderProductSummaryTable(products) {
 
       const slug = encodeURIComponent(product.productSlug || product.productKey || product.productId || 'unknown');
       const detailUrl = `/vat-margin-product.html?product=${slug}`;
-
       return `
         <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
           <td>
-            <a class="product-link" href="${detailUrl}" data-product-link-id="${escapeHtml(product.productSlug || '')}">${escapeHtml(product.productName || 'Без названия')}</a>
+            <a class="product-link" href="${detailUrl}" data-product-link="${escapeHtml(product.productSlug || '')}">${escapeHtml(product.productName || 'Без названия')}</a>
             ${combinedNotes}
           </td>
           <td class="numeric">${(product.proformaCount || 0).toLocaleString('ru-RU')}</td>
@@ -1177,16 +1191,30 @@ function renderProductSummaryTable(products) {
   elements.productSummaryTable
     .querySelectorAll('.status-select')
     .forEach((select) => {
+      const slug = select.dataset.productSlug || '';
+      select.dataset.originalValue = select.value;
       select.addEventListener('change', () => {
-        handleProductStatusChange(select.dataset.productSlug, select.value);
+        if (!slug.startsWith('id-')) {
+          addLog('warning', 'Статус можно менять только для продуктов из таблицы products');
+          select.value = select.dataset.originalValue || select.value;
+          return;
+        }
+        handleProductStatusChange(slug, select.value);
       });
     });
 
   elements.productSummaryTable
     .querySelectorAll('.due-month-input')
     .forEach((input) => {
+      const slug = input.dataset.productSlug || '';
+      input.dataset.originalValue = input.value || '';
       input.addEventListener('change', () => {
-        handleProductDueMonthChange(input.dataset.productSlug, input.value);
+        if (!slug.startsWith('id-')) {
+          addLog('warning', 'Месяц расчёта можно менять только для продуктов из таблицы products');
+          input.value = input.dataset.originalValue || '';
+          return;
+        }
+        handleProductDueMonthChange(slug, input.value);
       });
     });
 

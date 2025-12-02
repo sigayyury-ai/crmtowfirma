@@ -6,7 +6,7 @@
     <title>VAT Margin Tracker - Pipedrive ↔ wFirma</title>
     <meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
     <meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
     <div class="container">
@@ -132,22 +132,15 @@
                         </div>
                         <div class="controls">
                             <span id="stripe-status-indicator" class="status-pill status-idle">Проверка...</span>
-                            <button id="stripe-refresh-events" class="btn btn-secondary">🔄 Обновить</button>
                         </div>
                     </div>
 
-                    <section class="table-section">
-                        <div class="section-header">
-                            <h3>Список мероприятий</h3>
-                            <span id="stripe-events-count" class="section-subtitle">0 мероприятий</span>
-                        </div>
-                        <div id="stripe-summary-totals" class="stripe-summary-totals">
-                            <div class="placeholder">Здесь появится суммарная информация по Stripe после загрузки</div>
-                        </div>
-                        <div class="table-wrapper" id="stripe-summary-table">
-                            <div class="placeholder">Здесь появится агрегированный список мероприятий после загрузки</div>
-                        </div>
-                    </section>
+                    <div class="table-controls">
+                        <span id="stripe-events-count" class="section-subtitle">0 мероприятий</span>
+                    </div>
+
+                    <div id="stripe-summary-totals" class="stripe-summary-totals"></div>
+                    <div class="table-wrapper" id="stripe-summary-table"></div>
                 </section>
             </div>
 
@@ -288,6 +281,6 @@
         </div>
     </div>
 
-    <script src="vat-margin-script.js"></script>
+    <script src="/vat-margin-script.js"></script>
 </body>
 </html>

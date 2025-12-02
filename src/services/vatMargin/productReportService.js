@@ -76,7 +76,7 @@ function roundCurrencyMap(map) {
   return result;
 }
 
-function createEmptyEntry({ mapKey, productId, productName, productKey, slug }) {
+function createEmptyEntry({ mapKey, productId, productName, productKey, slug, source = 'product' }) {
   const resolvedProductName = productName || 'Без названия';
   const resolvedProductKey = productKey
     || normalizeProductName(resolvedProductName)
@@ -90,6 +90,7 @@ function createEmptyEntry({ mapKey, productId, productName, productKey, slug }) 
     productKey: resolvedProductKey,
     slug: resolvedSlug,
     productName: resolvedProductName,
+    source,
     calculationStatus: STATUS_DEFAULT,
     calculationDueMonth: null,
     proformaIds: new Set(),
@@ -142,6 +143,7 @@ class ProductReportService {
           productKey: entry.productKey,
           productSlug: entry.slug,
           productName: entry.productName,
+          source: entry.source || 'product',
           calculationStatus: entry.calculationStatus,
           calculationDueMonth: entry.calculationDueMonth,
           proformaCount,
@@ -386,7 +388,103 @@ class ProductReportService {
       aggregation.stripeSummary = null;
     }
 
+    try {
+      const eventsInfo = await this.addStripeEventEntries(aggregation.products);
+      aggregation.totalGrossPln += eventsInfo.totalEventsPln;
+      aggregation.stripeEventsSummary = eventsInfo;
+    } catch (error) {
+      logger.error('Failed to append Stripe events to product report', {
+        error: error.message
+      });
+    }
+
     return aggregation;
+  }
+
+  async addStripeEventEntries(productsMap) {
+    if (!supabase) {
+      return { totalEvents: 0, totalEventsPln: 0 };
+    }
+
+    const { data, error } = await supabase
+      .from('stripe_event_summary')
+      .select('*')
+      .order('last_payment_at', { ascending: false });
+
+    if (error) {
+      throw new Error(`Failed to load stripe_event_summary: ${error.message}`);
+    }
+
+    if (!data || !data.length) {
+      return { totalEvents: 0, totalEventsPln: 0 };
+    }
+
+    let totalEventsPln = 0;
+    const normalizedNames = data
+      .map((event) => normalizeProductName(event.event_label || event.event_key || ''))
+      .filter(Boolean);
+
+    let productLookup = new Map();
+    if (normalizedNames.length) {
+      const { data: productRows, error: productError } = await supabase
+        .from('products')
+        .select('id,name,normalized_name,calculation_status,calculation_due_month')
+        .in('normalized_name', normalizedNames);
+
+      if (!productError && Array.isArray(productRows)) {
+        productRows.forEach((row) => {
+          const key = row.normalized_name || normalizeProductName(row.name);
+          if (key) {
+            productLookup.set(key, row);
+          }
+        });
+      }
+    }
+
+    data.forEach((event) => {
+      const normalized = normalizeProductName(event.event_label || event.event_key || '');
+      const matchedProduct = normalized ? productLookup.get(normalized) : null;
+      const slug = matchedProduct ? `id-${matchedProduct.id}` : `stripe-event-${event.event_key}`;
+      const mapKey = matchedProduct ? `id:${matchedProduct.id}` : slug;
+
+      const entry = createEmptyEntry({
+        mapKey,
+        productId: matchedProduct ? matchedProduct.id : null,
+        productName: matchedProduct?.name || `Stripe Event: ${event.event_label}`,
+        productKey: matchedProduct?.normalized_name || slug,
+        slug,
+        source: 'stripe_event'
+      });
+
+      if (matchedProduct) {
+        entry.calculationStatus = matchedProduct.calculation_status || entry.calculationStatus;
+        entry.calculationDueMonth = matchedProduct.calculation_due_month || entry.calculationDueMonth;
+      }
+
+      entry.totals.grossPln = Number(event.gross_revenue_pln || 0);
+      entry.totals.paidPln = Number(event.gross_revenue_pln || 0);
+      entry.totals.originalTotals = {
+        [event.currency || 'PLN']: Number(event.gross_revenue || 0)
+      };
+      entry.lastSaleDate = event.last_payment_at;
+      entry.stripeTotals = {
+        paymentsCount: event.payments_count,
+        grossPln: Number(event.gross_revenue_pln || 0),
+        grossRevenuePln: Number(event.gross_revenue_pln || 0),
+        grossRevenue: Number(event.gross_revenue || 0),
+        lastPaymentAt: event.last_payment_at,
+        refundsCount: event.refunds_count || 0
+      };
+      entry.source = 'stripe_event';
+
+      productsMap.set(slug, entry);
+      totalEventsPln += entry.totals.grossPln;
+    });
+
+    return {
+      totalEvents: data.length,
+      totalEventsPln
+    };
   }
 
   async loadDatabaseOnlyData() {
@@ -547,6 +645,13 @@ class ProductReportService {
     });
 
     stripePayments.forEach((payment) => {
+      if (
+        !payment.campProductId
+        && !payment.productName
+        && !payment.crmProductId
+      ) {
+        return;
+      }
       // Try to find existing product by campProductId first
       let mapKey = null;
       let matchedEntry = null;

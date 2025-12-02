@@ -298,7 +298,11 @@ class PaymentRevenueReportService {
 
     // For Stripe payments, use pre-calculated PLN amount if available
     let amountPln = null;
-    if (payment.source === 'stripe' && payment.stripe_amount_pln !== null && payment.stripe_amount_pln !== undefined) {
+    if (
+      (payment.source === 'stripe' || payment.source === 'stripe_event')
+      && payment.stripe_amount_pln !== null
+      && payment.stripe_amount_pln !== undefined
+    ) {
       amountPln = toNumber(payment.stripe_amount_pln);
     }
 
@@ -327,7 +331,10 @@ class PaymentRevenueReportService {
       status = determinePaymentStatus(paymentSummary.total_pln, paymentSummary.paid_pln);
     } else if (payment.manual_status === 'rejected') {
       status = { code: 'rejected', label: 'Отклонено', className: 'unmatched manual' };
-    } else if (payment.source === 'stripe' && payment.stripe_payment_status === 'paid') {
+    } else if (
+      (payment.source === 'stripe' || payment.source === 'stripe_event')
+      && payment.stripe_payment_status === 'paid'
+    ) {
       // Stripe payments that are paid but not linked to proforma should show as "paid"
       status = { code: 'paid', label: 'Оплачено', className: 'matched' };
     }
@@ -367,7 +374,7 @@ class PaymentRevenueReportService {
     };
   }
 
-  aggregateProducts(payments, proformaMap, productLinksMap = new Map()) {
+  aggregateProducts(payments, proformaMap, productLinksMap = new Map(), productCatalog = null) {
     const productMap = new Map();
     const summary = {
       payments_count: 0,
@@ -375,6 +382,29 @@ class PaymentRevenueReportService {
       currency_totals: {},
       total_pln: 0,
       unmatched_count: 0
+    };
+
+    const catalogById = productCatalog?.byId instanceof Map ? productCatalog.byId : new Map();
+    const catalogByName = productCatalog?.byNormalizedName instanceof Map
+      ? productCatalog.byNormalizedName
+      : new Map();
+
+    const resolveCatalogEntryById = (rawId) => {
+      if (rawId === null || rawId === undefined || rawId === '') {
+        return null;
+      }
+      return catalogById.get(String(rawId)) || null;
+    };
+
+    const resolveCatalogEntryByName = (rawName) => {
+      if (!rawName || typeof rawName !== 'string') {
+        return null;
+      }
+      const normalized = normalizeProductKey(rawName);
+      if (!normalized || normalized === 'без названия') {
+        return null;
+      }
+      return catalogByName.get(normalized) || null;
     };
 
     payments.forEach((payment) => {
@@ -401,6 +431,17 @@ class PaymentRevenueReportService {
       let productKey = 'unmatched';
       let productName = 'Без привязки';
       let productId = null;
+
+      if (productKey === 'unmatched' && payment.product_id) {
+        const catalogEntry = resolveCatalogEntryById(payment.product_id);
+        if (catalogEntry) {
+          productId = catalogEntry.id;
+          productName = catalogEntry.name || productName;
+          if (productId !== null && productId !== undefined && productId !== '') {
+            productKey = `id:${productId}`;
+          }
+        }
+      }
 
       // For Stripe payments, use product_links to find product by ID (not by name!)
       // payment.stripe_product_id is actually product_link.id (UUID) from stripe_payments table
@@ -481,6 +522,39 @@ class PaymentRevenueReportService {
         }
       }
 
+      if (productKey === 'unmatched' && payment.source === 'stripe_event') {
+        let catalogEntry = resolveCatalogEntryById(payment.stripe_crm_product_id);
+        if (!catalogEntry) {
+          const candidates = [
+            payment.stripe_product_name,
+            payment.stripe_event_key
+          ];
+          for (const candidate of candidates) {
+            catalogEntry = resolveCatalogEntryByName(candidate);
+            if (catalogEntry) break;
+          }
+        }
+
+        if (catalogEntry) {
+          productId = catalogEntry.id ?? null;
+          productName = catalogEntry.name || payment.stripe_product_name || payment.stripe_event_key || 'Мероприятие';
+          if (productId !== null && productId !== undefined && productId !== '') {
+            productKey = `id:${productId}`;
+          } else if (catalogEntry.normalizedName) {
+            productKey = `key:${catalogEntry.normalizedName}`;
+          }
+        } else {
+          const fallbackName = payment.stripe_product_name || payment.stripe_event_key || 'Stripe Event';
+          const normalizedFallback = fallbackName ? normalizeProductKey(fallbackName) : null;
+          if (normalizedFallback && normalizedFallback !== 'без названия') {
+            productKey = `stripe-event:${normalizedFallback}`;
+          } else if (payment.stripe_event_key) {
+            productKey = `stripe-event:${payment.stripe_event_key}`;
+          }
+          productName = fallbackName;
+        }
+      }
+
       // Fallback to proforma product if no Stripe product found
       if (productKey === 'unmatched' && proformaInfo?.product) {
         productKey = proformaInfo.product.key;
@@ -492,11 +566,22 @@ class PaymentRevenueReportService {
         summary.unmatched_count += 1;
       }
 
+      const determineGroupSource = () => {
+        if (payment.source === 'stripe_event') {
+          return 'stripe_event';
+        }
+        if (payment.source === 'stripe') {
+          return 'stripe';
+        }
+        return 'product';
+      };
+
       if (!productMap.has(productKey)) {
         productMap.set(productKey, {
           key: productKey,
           name: productName,
           product_id: productId,
+          source: determineGroupSource(),
           totals: {
             payments_count: 0,
             currency_totals: {},
@@ -508,6 +593,9 @@ class PaymentRevenueReportService {
       }
 
       const group = productMap.get(productKey);
+      if (group && payment.source === 'stripe_event') {
+        group.source = 'stripe_event';
+      }
       group.totals.payments_count += 1;
       if (Number.isFinite(paymentEntry.amount_pln)) {
         group.totals.pln_total += paymentEntry.amount_pln;
@@ -591,6 +679,7 @@ class PaymentRevenueReportService {
         key: group.key,
         name: group.name,
         product_id: group.product_id,
+        source: group.source || 'product',
         totals: {
           payments_count: group.totals.payments_count,
           proforma_count: Array.from(group.totals.proforma_ids).length,
@@ -612,7 +701,7 @@ class PaymentRevenueReportService {
     return { products, summary };
   }
 
-  async loadPayments({ dateFrom, dateTo, statusScope }) {
+  async loadPayments({ dateFrom, dateTo, statusScope, productCatalog }) {
     if (!this.supabase) {
       throw new Error('Supabase client is not configured');
     }
@@ -679,6 +768,7 @@ class PaymentRevenueReportService {
 
     // Load Stripe payments
     let stripePayments = [];
+    let stripeEventPayments = [];
     try {
       if (this.stripeRepository.isEnabled()) {
         const stripeData = await this.stripeRepository.listPayments({
@@ -787,8 +877,164 @@ class PaymentRevenueReportService {
       });
     }
 
-    // Combine bank and Stripe payments
-    return [...bankPayments, ...stripePayments];
+    // Load Stripe event items as synthetic payments
+    try {
+      stripeEventPayments = await this.loadStripeEventItems({
+        dateFrom,
+        dateTo,
+        productCatalog
+      });
+    } catch (error) {
+      logger.warn('Failed to load Stripe event payments for payment report', {
+        error: error.message
+      });
+    }
+
+    // Combine bank, Stripe, and Stripe event payments
+    return [...bankPayments, ...stripePayments, ...stripeEventPayments];
+  }
+
+  async loadStripeEventItems({ dateFrom, dateTo, productCatalog }) {
+    if (!this.supabase) {
+      return [];
+    }
+
+    const fromIso = toIsoDate(dateFrom);
+    const toIso = toIsoDate(dateTo);
+
+    let query = this.supabase
+      .from('stripe_event_items')
+      .select(
+        `
+        line_item_id,
+        session_id,
+        event_key,
+        event_label,
+        currency,
+        amount,
+        amount_pln,
+        payment_status,
+        customer_name,
+        customer_email,
+        updated_at,
+        created_at
+      `
+      )
+      .order('created_at', { ascending: false })
+      .limit(5000);
+
+    if (fromIso) {
+      query = query.gte('created_at', fromIso);
+    }
+    if (toIso) {
+      query = query.lte('created_at', toIso);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`Failed to query stripe_event_items: ${error.message}`);
+    }
+
+    const sessionIds = Array.from(
+      new Set((data || []).map((item) => item.session_id).filter(Boolean))
+    );
+
+    let paymentDateMap = new Map();
+    if (sessionIds.length) {
+      const { data: payments, error: paymentsError } = await this.supabase
+        .from('stripe_payments')
+        .select('session_id, processed_at, created_at')
+        .in('session_id', sessionIds);
+
+      if (paymentsError) {
+        throw new Error(`Failed to load stripe payments for events: ${paymentsError.message}`);
+      }
+
+      paymentDateMap = new Map(
+        (payments || []).map((row) => [row.session_id, row])
+      );
+    }
+
+    const catalogByName = productCatalog?.byNormalizedName instanceof Map
+      ? productCatalog.byNormalizedName
+      : new Map();
+    const catalogById = productCatalog?.byId instanceof Map ? productCatalog.byId : new Map();
+
+    const toDateOnly = (value) => {
+      if (!value) return null;
+      const parsed = new Date(value);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    const originalFrom = toDateOnly(dateFrom);
+    const originalTo = toDateOnly(dateTo);
+
+    return (data || [])
+      .map((item) => {
+        const normalizedLabel = normalizeProductKey(item.event_label || item.event_key);
+        let catalogEntry = null;
+        if (normalizedLabel && catalogByName.has(normalizedLabel)) {
+          catalogEntry = catalogByName.get(normalizedLabel);
+        }
+        if (!catalogEntry && item.product_id && catalogById.has(String(item.product_id))) {
+          catalogEntry = catalogById.get(String(item.product_id));
+        }
+
+        const resolvedProductId = catalogEntry?.id ?? null;
+        const resolvedProductName = catalogEntry?.name
+          || item.event_label
+          || item.event_key
+          || 'Мероприятие';
+
+        const paymentRecord = paymentDateMap.get(item.session_id) || null;
+        const paidAt = paymentRecord?.processed_at
+          || paymentRecord?.created_at
+          || item.created_at
+          || item.updated_at
+          || null;
+
+        return {
+          id: `stripe_event_${item.line_item_id}`,
+          operation_date: paidAt,
+          description: resolvedProductName
+            ? `Stripe Event: ${resolvedProductName}`
+            : `Stripe Event: ${item.event_label || item.event_key || '—'}`,
+          amount: Number(item.amount) || 0,
+          currency: item.currency || 'PLN',
+          direction: 'in',
+          payer_name: item.customer_name || item.customer_email || null,
+          payer_normalized_name: normalizeWhitespace(item.customer_name || item.customer_email || ''),
+          manual_status: 'approved',
+          manual_proforma_id: null,
+          manual_proforma_fullnumber: null,
+          proforma_id: null,
+          proforma_fullnumber: null,
+          match_status: 'matched',
+          match_confidence: 1.0,
+          match_reason: 'stripe_event',
+          source: 'stripe_event',
+          stripe_event_key: item.event_key,
+          stripe_product_name: resolvedProductName,
+          stripe_payment_status: item.payment_status || 'paid',
+          stripe_amount_pln: Number(item.amount_pln) || 0,
+          stripe_product_id: null,
+          stripe_crm_product_id: resolvedProductId ? String(resolvedProductId) : null,
+          product_id: resolvedProductId || null,
+          paid_at: paidAt
+        };
+      })
+      .filter((item) => {
+        const paidDate = item.paid_at ? new Date(item.paid_at) : null;
+        if (paidDate) {
+          if (originalFrom && paidDate < originalFrom) {
+            return false;
+          }
+          if (originalTo && paidDate > originalTo) {
+            return false;
+          }
+        }
+        return true;
+      });
   }
 
   async loadProformas({ ids = [], fullnumbers = [] } = {}) {
@@ -851,10 +1097,78 @@ class PaymentRevenueReportService {
     return Array.isArray(data) ? data : [];
   }
 
+  async loadProductCatalog() {
+    const emptyCatalog = {
+      byId: new Map(),
+      byNormalizedName: new Map()
+    };
+
+    if (!this.supabase) {
+      return emptyCatalog;
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('products')
+        .select('id,name,normalized_name');
+
+      if (error) {
+        logger.warn('Supabase error while fetching product catalog for payment report', {
+          error: error.message
+        });
+        return emptyCatalog;
+      }
+
+      const catalog = {
+        byId: new Map(),
+        byNormalizedName: new Map()
+      };
+
+      (data || []).forEach((product) => {
+        if (!product) {
+          return;
+        }
+
+        const numericId = Number(product.id);
+        const productId = Number.isNaN(numericId) ? product.id : numericId;
+        const normalizedFromDb = typeof product.normalized_name === 'string'
+          ? normalizeProductKey(product.normalized_name)
+          : null;
+        const normalizedFromName = product.name ? normalizeProductKey(product.name) : null;
+
+        const normalizedName = normalizedFromDb && normalizedFromDb !== 'без названия'
+          ? normalizedFromDb
+          : (normalizedFromName && normalizedFromName !== 'без названия' ? normalizedFromName : null);
+
+        const entry = {
+          id: productId,
+          name: product.name || 'Без названия',
+          normalizedName
+        };
+
+        if (productId !== null && productId !== undefined && productId !== '') {
+          catalog.byId.set(String(productId), entry);
+        }
+        if (normalizedName) {
+          catalog.byNormalizedName.set(normalizedName, entry);
+        }
+      });
+
+      return catalog;
+    } catch (error) {
+      logger.warn('Failed to load product catalog for payment report', {
+        error: error.message
+      });
+      return emptyCatalog;
+    }
+  }
+
   async getReport(options = {}) {
     try {
       const dateRange = this.resolveDateRange(options);
       const statusScope = this.normalizeStatusScope(options.status);
+
+      const productCatalog = await this.loadProductCatalog();
 
       // Load payments - handle errors gracefully
       let payments = [];
@@ -862,7 +1176,8 @@ class PaymentRevenueReportService {
         payments = await this.loadPayments({
           dateFrom: dateRange.dateFrom,
           dateTo: dateRange.dateTo,
-          statusScope
+          statusScope,
+          productCatalog
         });
       } catch (error) {
         logger.error('Failed to load payments for report', {
@@ -949,7 +1264,7 @@ class PaymentRevenueReportService {
       // Aggregate products - ensure it always returns valid structure
       let aggregation;
       try {
-        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap);
+        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap, productCatalog);
       } catch (error) {
         logger.error('Failed to aggregate products for report', {
           error: error.message,
