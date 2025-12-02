@@ -9,7 +9,7 @@ const { fromMinorUnit, normaliseCurrency, roundBankers, toMinorUnit } = require(
 const { logStripeError } = require('../../utils/logging/stripe');
 const ParticipantPaymentPlanService = require('./participantPaymentPlanService');
 const { STAGE_IDS: STAGES } = require('../crm/statusCalculator');
-const CrmStatusAutomationService = require('../crm/statusAutomationService');
+const StripeStatusAutomationService = require('../crm/stripeStatusAutomationService');
 const PipedriveClient = require('../pipedrive');
 const { getRate } = require('./exchangeRateService');
 const { getStripeClient } = require('./client');
@@ -22,7 +22,7 @@ class StripeProcessorService {
     this.repository = options.repository || new StripeRepository();
     this.paymentPlanService = options.paymentPlanService || new ParticipantPaymentPlanService();
     this.crmStatusAutomationService =
-      options.crmStatusAutomationService || new CrmStatusAutomationService();
+      options.crmStatusAutomationService || new StripeStatusAutomationService();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     // Force recreate Stripe client to pick up current STRIPE_MODE
     this.stripe = options.stripe || getStripeClient();
