@@ -42,7 +42,11 @@ function cacheDom() {
     proformasContainer: document.getElementById('product-proformas'),
     linkedPaymentsContainer: document.getElementById('product-linked-payments'),
     stripePaymentsContainer: document.getElementById('product-stripe-payments'),
-    alertBox: document.getElementById('product-alert')
+    alertBox: document.getElementById('product-alert'),
+    payerModal: document.getElementById('product-payer-modal'),
+    payerModalTitle: document.getElementById('product-payer-title'),
+    payerModalBody: document.getElementById('product-payer-body'),
+    payerModalClose: document.getElementById('product-payer-close')
   };
 }
 
@@ -65,6 +69,45 @@ function bindEvents() {
       await saveProductStatus();
     });
   }
+
+  elements.proformasContainer?.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-payer-action="show-payments"]');
+    if (!trigger || !elements.proformasContainer.contains(trigger)) {
+      return;
+    }
+    const payerName = trigger.dataset.payerName || '';
+    const proforma = trigger.dataset.proformaFullnumber || '';
+    openProductPayerPaymentsModal({
+      payerName: payerName || null,
+      proformaFullnumber: proforma || null
+    });
+  });
+  elements.proformasContainer?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const trigger = event.target.closest('[data-payer-action="show-payments"]');
+    if (!trigger || !elements.proformasContainer.contains(trigger)) {
+      return;
+    }
+    event.preventDefault();
+    const payerName = trigger.dataset.payerName || '';
+    const proforma = trigger.dataset.proformaFullnumber || '';
+    openProductPayerPaymentsModal({
+      payerName: payerName || null,
+      proformaFullnumber: proforma || null
+    });
+  });
+
+  elements.payerModalClose?.addEventListener('click', closeProductPayerPaymentsModal);
+  elements.payerModal?.addEventListener('click', (event) => {
+    if (event.target === elements.payerModal) {
+      closeProductPayerPaymentsModal();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isProductPayerModalOpen()) {
+      closeProductPayerPaymentsModal();
+    }
+  });
 }
 
 function showAlert(type, message) {
@@ -142,6 +185,9 @@ async function loadProductDetail() {
 function renderProductDetail() {
   if (!productDetail) return;
 
+  const isStripeOnlyProduct = productDetail.source === 'stripe_event'
+    || (productDetail.proformaCount === 0 && productDetail.stripeTotals?.paymentsCount > 0);
+
   if (elements.title) {
     elements.title.textContent = productDetail.productName || 'Без названия';
   }
@@ -173,66 +219,47 @@ function renderProductDetail() {
   }
 
   renderSummaryCards(productDetail);
-  renderProformasTable(productDetail.proformas || []);
+
+  try {
+    renderProformasTable(productDetail.proformas || [], { isStripeOnly: isStripeOnlyProduct });
+  } catch (error) {
+    console.error('Failed to render proformas table', error);
+    if (elements.proformasContainer) {
+      elements.proformasContainer.innerHTML = '<div class="placeholder">Не удалось отобразить проформы</div>';
+    }
+  }
+
+  renderStripePaymentsTable(productDetail.stripePayments || [], {
+    stripeTotals: productDetail.stripeTotals,
+    isStripeOnly: isStripeOnlyProduct
+  });
   renderLinkedPaymentsTables(productDetail.linkedPayments || {});
-  renderStripePaymentsTable(productDetail.stripePayments || []);
 }
 
 function renderSummaryCards(detail) {
   if (!elements.summaryContainer) return;
 
-  const cards = [
+  const totals = detail.totals || {};
+  const summaryItems = [
     {
       label: 'Суммарная выручка (PLN)',
-      value: formatCurrency(detail.totals?.grossPln || 0, 'PLN')
+      value: formatCurrency(totals.grossPln || 0, 'PLN')
     },
     {
       label: 'Оплачено (PLN)',
-      value: formatCurrency(detail.totals?.paidPln || 0, 'PLN')
+      value: formatCurrency(totals.paidPln || 0, 'PLN')
     },
     {
-      label: 'Доля в общей выручке',
-      value: detail.revenueShare ? `${(detail.revenueShare * 100).toFixed(2)}%` : '—'
+      label: 'Проформ',
+      value: (detail.proformaCount || 0).toLocaleString('ru-RU')
+    },
+    {
+      label: 'Платежей Stripe',
+      value: (detail.stripeTotals?.paymentsCount || 0).toLocaleString('ru-RU')
     }
   ];
 
-  const originalTotals = detail.totals?.currencyTotals || {};
-  Object.entries(originalTotals).forEach(([currency, amount]) => {
-    cards.push({
-      label: `Выручка в ${currency}`,
-      value: formatCurrency(amount, currency)
-    });
-  });
-
-  if (detail.stripeTotals) {
-    const stripe = detail.stripeTotals;
-    cards.push({
-      label: 'Stripe выручка (PLN)',
-      value: formatCurrency(stripe.grossPln || 0, 'PLN')
-    });
-    cards.push({
-      label: 'Stripe VAT (PLN)',
-      value: formatCurrency(stripe.grossTaxPln || 0, 'PLN')
-    });
-    cards.push({
-      label: 'Stripe платежей',
-      value: formatPaymentCount(stripe.paymentsCount) || '0 платежей'
-    });
-    if (stripe.missingVatCount) {
-      cards.push({
-        label: 'Stripe без VAT',
-        value: stripe.missingVatCount.toLocaleString('ru-RU')
-      });
-    }
-    if (stripe.invalidAddressCount) {
-      cards.push({
-        label: 'Stripe без адреса',
-        value: stripe.invalidAddressCount.toLocaleString('ru-RU')
-      });
-    }
-  }
-
-  elements.summaryContainer.innerHTML = cards
+  elements.summaryContainer.innerHTML = summaryItems
     .map((card) => `
       <div class="summary-card">
         <span class="summary-label">${escapeHtml(card.label)}</span>
@@ -242,26 +269,64 @@ function renderSummaryCards(detail) {
     .join('');
 }
 
-function renderProformasTable(items) {
+function renderProformasTable(items, { isStripeOnly = false } = {}) {
   if (!elements.proformasContainer) return;
 
-  if (!Array.isArray(items) || items.length === 0) {
-    elements.proformasContainer.innerHTML = '<div class="placeholder">Данные отсутствуют</div>';
+  if (isStripeOnly) {
+    elements.proformasContainer.innerHTML = '<div class="placeholder">Это продукт из Stripe, проформы для него не создаются.</div>';
     return;
   }
 
-  const rows = items
+  const validItems = Array.isArray(items)
+    ? items.filter((item) => item && typeof item === 'object')
+    : [];
+
+  if (!validItems.length) {
+    elements.proformasContainer.innerHTML = '<div class="placeholder">Проформы не найдены</div>';
+    return;
+  }
+
+  const rows = validItems
     .map((item) => {
-      const buyerName = item.buyerName || item.buyerAltName || '—';
+      const buyerName = item.buyerName || item.buyerAltName || null;
       const proformaLabel = escapeHtml(item.fullnumber || '—');
       const proformaCell = item.dealUrl
         ? `<a class="deal-link" href="${item.dealUrl}" target="_blank" rel="noopener noreferrer">${proformaLabel}</a>`
         : proformaLabel;
 
+      const paymentCount = Number(item.paymentCount) || 0;
+      const paymentCountLabel = paymentCount > 0 ? formatPaymentCount(paymentCount) : '';
+      const paymentsBadge = paymentCountLabel
+        ? `<div class="payments-count-badge">${escapeHtml(paymentCountLabel)}</div>`
+        : '';
+
+      const buyerCell = buyerName && item.fullnumber
+        ? `
+            <div class="buyer-cell">
+              <span
+                class="payer-link"
+                data-payer-action="show-payments"
+                data-payer-name="${escapeHtml(buyerName)}"
+                data-proforma-fullnumber="${escapeHtml(item.fullnumber)}"
+                role="button"
+                tabindex="0"
+              >
+                ${escapeHtml(buyerName)}
+              </span>
+              ${paymentsBadge}
+            </div>
+          `
+        : `
+            <div class="buyer-cell">
+              ${escapeHtml(buyerName || '—')}
+              ${paymentsBadge}
+            </div>
+          `;
+
       return `
         <tr>
           <td>${proformaCell}</td>
-          <td>${escapeHtml(buyerName)}</td>
+          <td>${buyerCell}</td>
           <td>${escapeHtml(formatDate(item.date))}</td>
           <td>${formatCurrencyMap(item.currencyTotals || {})}</td>
           <td class="numeric">${formatCurrency(item.totalPln || 0, 'PLN')}</td>
@@ -363,10 +428,32 @@ function createLinkedPaymentsSection(title, items, options = {}) {
   `;
 }
 
-function renderStripePaymentsTable(items) {
+function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = false } = {}) {
   if (!elements.stripePaymentsContainer) return;
 
   if (!Array.isArray(items) || items.length === 0) {
+    if (stripeTotals?.paymentsCount) {
+      const summaryParts = [
+        `Всего платежей: ${stripeTotals.paymentsCount.toLocaleString('ru-RU')}`,
+        `Выручка: ${formatCurrency(stripeTotals.grossPln || 0, 'PLN')}`
+      ];
+      if (stripeTotals.grossTaxPln) {
+        summaryParts.push(`VAT: ${formatCurrency(stripeTotals.grossTaxPln, 'PLN')}`);
+      }
+      if (stripeTotals.lastPaymentAt) {
+        summaryParts.push(`последний платёж ${formatDateTime(stripeTotals.lastPaymentAt)}`);
+      }
+      const note = isStripeOnly
+        ? 'Это продукт создан из Stripe Events, подробные checkout-сессии доступны в отчётах Stripe.'
+        : 'Stripe платежи агрегированы, подробные сессии пока недоступны.';
+      elements.stripePaymentsContainer.innerHTML = `
+        <div class="placeholder">
+          <div>${note}</div>
+          <div>${summaryParts.join(' • ')}</div>
+        </div>
+      `;
+      return;
+    }
     elements.stripePaymentsContainer.innerHTML = '<div class="placeholder">Stripe платежей нет</div>';
     return;
   }
@@ -416,6 +503,164 @@ function renderStripePaymentsTable(items) {
       <tbody>${rows}</tbody>
     </table>
   `;
+}
+
+function showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber }) {
+  if (elements.payerModalTitle) {
+    elements.payerModalTitle.textContent = payerName
+      ? `Платежи: ${payerName}`
+      : 'Платежи контрагента';
+  }
+
+  const metaParts = [];
+  if (payerName) {
+    metaParts.push(`Контрагент: ${escapeHtml(payerName)}`);
+  }
+  if (proformaFullnumber) {
+    metaParts.push(`Проформа: ${escapeHtml(proformaFullnumber)}`);
+  }
+
+  if (elements.payerModalBody) {
+    elements.payerModalBody.innerHTML = `
+      ${metaParts.length ? `<div class="payer-payments-summary"><div class="summary-meta">${metaParts.join(' • ')}</div></div>` : ''}
+      <div class="loading-indicator">Загружаю платежи...</div>
+    `;
+  }
+
+  if (elements.payerModal) {
+    elements.payerModal.style.display = 'block';
+  }
+  document.body.classList.add('modal-open');
+}
+
+async function openProductPayerPaymentsModal({ payerName, proformaFullnumber }) {
+  if (!elements.payerModalBody) return;
+
+  showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber });
+
+  const params = new URLSearchParams();
+  if (payerName) {
+    params.set('payer', payerName.trim().toLowerCase());
+  }
+  if (proformaFullnumber) {
+    params.set('proforma', proformaFullnumber.trim());
+  }
+
+  let payments = [];
+  let totalCount = 0;
+  let filterApplied = Boolean(payerName);
+  let fallbackUsed = false;
+
+  if (params.toString()) {
+    try {
+      const result = await apiCall(`/vat-margin/payer-payments?${params.toString()}`);
+      if (result?.success && Array.isArray(result.payments)) {
+        payments = result.payments;
+        totalCount = Number(result.count) || payments.length;
+      } else if (result?.error) {
+        showProductPayerPaymentsError(result.error);
+        return;
+      }
+    } catch (error) {
+      showProductPayerPaymentsError(error.message);
+      return;
+    }
+  }
+
+  if (!payments.length && payerName && proformaFullnumber) {
+    try {
+      const fallbackParams = new URLSearchParams();
+      fallbackParams.set('proforma', proformaFullnumber.trim());
+      const result = await apiCall(`/vat-margin/payer-payments?${fallbackParams.toString()}`);
+      if (result?.success && Array.isArray(result.payments)) {
+        payments = result.payments;
+        totalCount = Number(result.count) || payments.length;
+        fallbackUsed = true;
+        filterApplied = false;
+      }
+    } catch (error) {
+      // swallow fallback error; will show message below if still empty
+    }
+  }
+
+  if (!payments.length) {
+    showProductPayerPaymentsError('Платежи не найдены');
+    return;
+  }
+
+  renderProductPayerPaymentsModal({
+    payerName,
+    proformaFullnumber,
+    payments,
+    totalCount,
+    filterNote: fallbackUsed
+  });
+}
+
+function showProductPayerPaymentsError(message) {
+  if (elements.payerModalBody) {
+    elements.payerModalBody.innerHTML = `<div class="placeholder">Не удалось загрузить платежи: ${escapeHtml(message)}</div>`;
+  }
+}
+
+function renderProductPayerPaymentsModal({
+  payerName,
+  proformaFullnumber,
+  payments = [],
+  totalCount = 0,
+  filterNote = false
+}) {
+  if (!elements.payerModalBody) return;
+
+  const rows = payments.length
+    ? payments.map((payment) => `
+        <tr>
+          <td>${escapeHtml(String(payment.id || '—'))}</td>
+          <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
+          <td class="numeric">${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
+          <td>${escapeHtml(payment.description || '—')}</td>
+          <td>${escapeHtml(payment.proforma_fullnumber || '—')}</td>
+          <td>${escapeHtml(payment.manual_status || payment.match_status || '—')}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="payer-payments-empty">Платежи не найдены</td></tr>';
+
+  elements.payerModalBody.innerHTML = `
+    <div class="payer-payments-summary">
+      <div class="summary-meta">
+        ${payerName ? `Контрагент: ${escapeHtml(payerName)}` : ''}
+        ${proformaFullnumber ? ` • Проформа: ${escapeHtml(proformaFullnumber)}` : ''}
+        ${filterNote ? ' • Показаны платежи по проформе' : ''}
+      </div>
+      <div class="summary-stats">
+        <span>Платежей: ${(totalCount || payments.length || 0).toLocaleString('ru-RU')}</span>
+      </div>
+    </div>
+    <table class="payer-payments-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Дата</th>
+          <th>Сумма</th>
+          <th>Описание</th>
+          <th>Проформа</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function closeProductPayerPaymentsModal() {
+  if (elements.payerModal) {
+    elements.payerModal.style.display = 'none';
+  }
+  document.body.classList.remove('modal-open');
+}
+
+function isProductPayerModalOpen() {
+  return Boolean(elements.payerModal && elements.payerModal.style.display === 'block');
 }
 
 function renderPaymentStatusBadge(status) {

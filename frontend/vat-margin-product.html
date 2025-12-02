@@ -11,9 +11,9 @@
 <body>
     <div class="container">
         <nav class="main-nav">
-            <a href="/vat-margin.html" class="nav-link">Отчеты</a>
-            <a href="/" class="nav-link">Автоматизация и интеграции</a>
-            <span class="nav-link active">Отчёт по продукту</span>
+            <a href="/vat-margin.html" class="nav-link active">Отчеты</a>
+            <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
+            <a href="/" class="nav-link">Настройки</a>
         </nav>
 
         <header>
@@ -52,22 +52,34 @@
             </div>
 
             <div class="detail-block">
+                <h2>Stripe платежи</h2>
+                <div id="product-stripe-payments" class="table-wrapper">
+                    <div class="placeholder">Данные отсутствуют</div>
+                </div>
+            </div>
+
+            <div class="detail-block">
                 <h2>Связанные платежи</h2>
                 <p class="section-subtitle">Вручную привязанные платежи и расходы по продукту</p>
                 <div id="product-linked-payments" class="table-wrapper">
                     <div class="placeholder">Данные отсутствуют</div>
                 </div>
             </div>
-
-            <div class="detail-block">
-                <h2>Stripe платежи</h2>
-                <div id="product-stripe-payments" class="table-wrapper">
-                    <div class="placeholder">Данные отсутствуют</div>
-                </div>
-            </div>
         </section>
     </div>
 
-    <script src="/vat-margin-product.js"></script>
+    <div id="product-payer-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="product-payer-title">Платежи контрагента</h3>
+                <button class="modal-close" id="product-payer-close" aria-label="Закрыть">&times;</button>
+            </div>
+            <div class="modal-body" id="product-payer-body">
+                <div class="loading-indicator">Загружаю платежи...</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/vat-margin-product.js?v=20251203"></script>
 </body>
 </html>

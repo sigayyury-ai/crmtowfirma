@@ -118,6 +118,11 @@ app.get(['/payments', '/vat-margin/payments'], requireAuth, sendPage('vat-margin
 app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('expenses.html'));
 app.get(['/cash-journal', '/vat-margin/cash-journal'], requireAuth, sendPage('cash-journal.html'));
 app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html'));
+app.get(
+  ['/stripe-event-report', '/stripe-event-report/'],
+  requireAuth,
+  sendPage('stripe-event-report/index.html')
+);
 
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);

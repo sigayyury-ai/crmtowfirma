@@ -76,7 +76,7 @@ function roundCurrencyMap(map) {
   return result;
 }
 
-function createEmptyEntry({ mapKey, productId, productName, productKey, slug, source = 'product' }) {
+function createEmptyEntry({ mapKey, productId, productName, productKey, slug, source = 'product', eventKey = null }) {
   const resolvedProductName = productName || 'Без названия';
   const resolvedProductKey = productKey
     || normalizeProductName(resolvedProductName)
@@ -102,7 +102,8 @@ function createEmptyEntry({ mapKey, productId, productName, productKey, slug, so
     },
     proformaDetails: new Map(),
     stripeTotals: null,
-    stripePayments: []
+    stripePayments: [],
+    eventKey: eventKey || null
   };
 }
 
@@ -214,7 +215,8 @@ class ProductReportService {
           buyerStreet: detail.buyerStreet || null,
           buyerZip: detail.buyerZip || null,
           buyerCity: detail.buyerCity || null,
-          buyerCountry: detail.buyerCountry || null
+          buyerCountry: detail.buyerCountry || null,
+          paymentCount: Number(detail.paymentCount) || 0
         };
       })
       .sort((a, b) => {
@@ -239,9 +241,48 @@ class ProductReportService {
           invalidAddressCount: entry.stripeTotals.invalidAddressCount,
           b2bCount: entry.stripeTotals.b2bCount,
           b2cCount: entry.stripeTotals.b2cCount,
-          lastPaymentAt: entry.stripeTotals.lastPaymentAt
+          lastPaymentAt: entry.stripeTotals.lastPaymentAt,
+          note: entry.source === 'stripe' ? 'Выручка полностью из Stripe' : null
         }
       : null;
+
+    if (
+      (!entry.stripePayments || entry.stripePayments.length === 0)
+      && entry.source === 'stripe_event'
+      && entry.eventKey
+    ) {
+      try {
+        const participants = await this.loadStripeEventParticipants(entry.eventKey);
+        if (Array.isArray(participants) && participants.length > 0) {
+          entry.stripePayments = participants.map((participant) => ({
+            sessionId: participant.participant_id || participant.email || null,
+            paymentType: 'stripe_event',
+            customerType: participant.company_name ? 'organization' : 'person',
+            customerName: participant.display_name || participant.company_name || participant.email || participant.participant_id || null,
+            customerEmail: participant.email || null,
+            companyName: participant.company_name || null,
+            companyTaxId: participant.company_tax_id || null,
+            companyCountry: participant.company_country || null,
+            currency: participant.currency || 'PLN',
+            amount: toNumber(participant.total_amount) || 0,
+            amountPln: toNumber(participant.total_amount_pln) || toNumber(participant.total_amount) || 0,
+            taxAmount: 0,
+            taxAmountPln: 0,
+            expectedVat: false,
+            addressValidated: true,
+            paymentMode: 'event',
+            createdAt: participant.updated_at || null,
+            processedAt: participant.updated_at || null,
+            paymentsCount: participant.payments_count || 0
+          }));
+        }
+      } catch (error) {
+        logger.warn('Failed to load Stripe event participants for product detail', {
+          eventKey: entry.eventKey,
+          error: error.message
+        });
+      }
+    }
 
     const stripePayments = Array.isArray(entry.stripePayments)
       ? entry.stripePayments.map((payment) => ({
@@ -453,12 +494,14 @@ class ProductReportService {
         productName: matchedProduct?.name || `Stripe Event: ${event.event_label}`,
         productKey: matchedProduct?.normalized_name || slug,
         slug,
-        source: 'stripe_event'
+        source: 'stripe_event',
+        eventKey: event.event_key || null
       });
 
       if (matchedProduct) {
         entry.calculationStatus = matchedProduct.calculation_status || entry.calculationStatus;
         entry.calculationDueMonth = matchedProduct.calculation_due_month || entry.calculationDueMonth;
+        entry.eventKey = entry.eventKey || event.event_key || null;
       }
 
       entry.totals.grossPln = Number(event.gross_revenue_pln || 0);
@@ -950,7 +993,8 @@ class ProductReportService {
             buyerStreet: proforma.buyer_street || null,
             buyerZip: proforma.buyer_zip || null,
             buyerCity: proforma.buyer_city || null,
-            buyerCountry: proforma.buyer_country || null
+            buyerCountry: proforma.buyer_country || null,
+            paymentCount: Number(proforma.payments_count) || 0
           });
         }
         const detail = entry.proformaDetails.get(proformaId);
@@ -1024,7 +1068,16 @@ class ProductReportService {
     if (normalized.startsWith('id-')) {
       const id = parseInt(normalized.slice(3), 10);
       if (Number.isFinite(id)) {
-        return products.get(`id:${id}`) || null;
+        const directEntry = products.get(`id:${id}`);
+        if (directEntry) {
+          return directEntry;
+        }
+        // Stripe-only entries that were injected via slug (id-<id>) should still be accessible
+        const fallbackEntry = Array.from(products.values()).find((entry) => entry.slug === normalized);
+        if (fallbackEntry) {
+          return fallbackEntry;
+        }
+        return null;
       }
     }
 
@@ -1111,6 +1164,28 @@ class ProductReportService {
       incoming: mapped.filter((item) => item.direction === 'in'),
       outgoing: mapped.filter((item) => item.direction === 'out')
     };
+  }
+
+  async loadStripeEventParticipants(eventKey) {
+    if (!supabase || !eventKey) {
+      return [];
+    }
+
+    const { data, error } = await supabase
+      .from('stripe_event_participants')
+      .select('*')
+      .eq('event_key', eventKey)
+      .order('total_amount_pln', { ascending: false });
+
+    if (error) {
+      logger.warn('Failed to load stripe event participants', {
+        eventKey,
+        error: error.message
+      });
+      return [];
+    }
+
+    return data || [];
   }
 }
 

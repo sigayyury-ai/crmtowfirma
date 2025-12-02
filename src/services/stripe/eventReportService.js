@@ -93,7 +93,7 @@ class StripeEventReportService {
       throw error;
     }
 
-    const { data: participants, error: participantsError } = await this.supabase
+    const { data: participantsData, error: participantsError } = await this.supabase
       .from('stripe_event_participants')
       .select('*')
       .eq('event_key', eventKey)
@@ -103,6 +103,20 @@ class StripeEventReportService {
       throw new Error(`Failed to load event participants: ${participantsError.message}`);
     }
 
+    const participants = (participantsData || []).map((participant) => ({
+      id: participant.id,
+      eventKey: participant.event_key,
+      participantId: participant.participant_id,
+      displayName: participant.display_name,
+      email: participant.email,
+      currency: participant.currency || summary.currency || 'PLN',
+      totalAmount: participant.total_amount,
+      totalAmountPln: participant.total_amount_pln,
+      paymentsCount: participant.payments_count,
+      refundAmountPln: participant.refund_amount_pln,
+      updatedAt: participant.updated_at
+    }));
+
     return {
       eventKey: summary.event_key,
       eventLabel: summary.event_label,
@@ -110,7 +124,7 @@ class StripeEventReportService {
       totalSessions: summary.payments_count,
       totalLineItems: summary.payments_count,
       warnings: summary.warnings || [],
-      participants: participants || [],
+      participants,
       totals: {
         grossRevenue: summary.gross_revenue,
         grossRevenuePln: summary.gross_revenue_pln,
