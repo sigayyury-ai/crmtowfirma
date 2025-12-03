@@ -267,6 +267,7 @@ class PaymentRevenueReportService {
         total_pln: totalPln,
         payments_total: paymentsTotal,
         payments_total_pln: paymentsTotalPln,
+        payments_count: Number.isFinite(record.payments_count) ? Number(record.payments_count) : null,
         buyer: {
           name: record.buyer_name || record.buyer_alt_name || null,
           alt_name: record.buyer_alt_name || null,
@@ -658,14 +659,25 @@ class PaymentRevenueReportService {
         );
         entry.totals.pln_total = Number(entry.totals.pln_total.toFixed(2));
         entry.payer_names = Array.from(entry.payer_names.values());
+        if ((!entry.payer_names || entry.payer_names.length === 0) && entry.proforma?.buyer?.name) {
+          entry.payer_names = [entry.proforma.buyer.name];
+        }
         entry.first_payment_date = entry.first_payment_date ? entry.first_payment_date.toISOString() : null;
         entry.last_payment_date = entry.last_payment_date ? entry.last_payment_date.toISOString() : null;
+
+        const lifetimePaymentCount = Number.isFinite(entry.proforma?.payments_count)
+          ? entry.proforma.payments_count
+          : entry.totals.payment_count;
+        entry.lifetime_payment_count = lifetimePaymentCount;
 
         if (entry.proforma) {
           const targetTotalPln = Number.isFinite(entry.proforma.total_pln)
             ? entry.proforma.total_pln
             : convertToPln(entry.proforma.total, entry.proforma.currency, entry.proforma.currency_exchange);
-          entry.status = determinePaymentStatus(targetTotalPln, entry.totals.pln_total);
+          const paidPln = Number.isFinite(entry.proforma.payments_total_pln)
+            ? entry.proforma.payments_total_pln
+            : entry.totals.pln_total;
+          entry.status = determinePaymentStatus(targetTotalPln, paidPln);
         } else {
           const firstStatus = entry.payments.find((item) => item.status)?.status
             || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
@@ -1054,6 +1066,7 @@ class PaymentRevenueReportService {
         payments_total,
         payments_total_pln,
         payments_currency_exchange,
+        payments_count,
         buyer_name,
         buyer_alt_name,
         buyer_email,

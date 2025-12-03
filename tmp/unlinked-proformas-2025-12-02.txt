@@ -1,0 +1,99 @@
+proforma_fullnumber,wfirma_id,buyer_name,product_names,pipedrive_deal_id,deal_title,deal_status
+CO-PROF 133/2025,396992694,Daria Hudz,NY2026,1593,Заявка от Дарья,open
+CO-PROF 129/2025,396417974,Aliaksandr Slaushchyk,Single lankowa,1546,Aliaksandr Slaushchyk,open
+CO-PROF 120/2025,394987858,Hennadii Mykhailiuta,Single lankowa,1574,Заявка от Гена,open
+CO-PROF 119/2025,394987849,Katsiaryna Kartashevich,Single lankowa,1539,Заявка от Katerina,open
+CO-PROF 117/2025,394700224,Marharyta Nikolenka  Николенко,NY2026,1243,Заявка от Марго,open
+CO-PROF 118/2025,394893310,Zakupy Sp. z o.o.,NY2026,1588,Заявка от Игорь,open
+CO-PROF 116/2025,394384087,Pavel Tumash,NY2026,1586,Заявка от Pavel Tumash и Аня,open
+CO-PROF 115/2025,394384084,Artsiom Lamanovich,Single lankowa,,,
+CO-PROF 109/2025,393879481,Andrey Pradun,Single lankowa,1584,Заявка от Андрей,open
+CO-PROF 114/2025,393906643,Yauhen Bandarenka,Single lankowa,1573,Заявка от Evgeny,open
+CO-PROF 112/2025,393906634,NATALLIA NEROVNYA,Madeira march 26,1564,Заявка от Наташа,open
+CO-PROF 111/2025,393906631,ANTON PITSUKOU,Single lankowa,1562,Заявка от Anton Pit,open
+CO-PROF 110/2025,393906625,Maksim Rudz,NY2026,1547,Максим+девушка,open
+CO-PROF 113/2025,393906637,Mikhail Chuprynski,Single lankowa,1569,Заявка от Mikhail,open
+CO-PROF 100/2025,392492506,Aliaksandr Krakhmalchyk,NY2026,1549,Заявка от Aliaksandr Krakhmalchyk,open
+CO-PROF 103/2025,392509183,Hanna Kachurouskaya,NY2026,1540,Заявка от Hanna,open
+CO-PROF 102/2025,392494999,Aliaksandr Slaushchyk,Single lankowa 14.12.2025,1546,Aliaksandr Slaushchyk,open
+CO-PROF 99/2025,392179285,Ivan Kalinaev,Single lankowa 14.12.2025,1534,Заявка от ivan kalinaev,open
+CO-PROF 96/2025,392028328,Hanna Chakhouskaya,Single lankowa 14.12.2025,,,
+CO-PROF 98/2025,392029729,Anna Yushina,NY2026,1541,Заявка от Anna Yushina,open
+CO-PROF 97/2025,392029084,Oleksii Krushnevych,NY2026,1550,Заявка от Леша ( Игров ),open
+CO-PROF 91/2025,391727494,Aliaksandra Rudziaha,Сoliving Portugal 01.11.2025,,,
+CO-PROF 94/2025,391734811,Elizaveta Petrova,SKI FRANCE 24.01.2026,1327,Заявка от Elizaveta  Petrova,open
+CO-PROF 95/2025,391735066,Bozhena Baranovskaya,Sporthause/ singl,,,
+CO-PROF 92/2025,391729330,Tatiana Miroshnichenko,Сoliving Portugal 01.11.2025,,,
+CO-PROF 93/2025,391730194,Marharyta Nikolenka,Sporthause/ singl,,,
+CO-PROF 89/2025,391723246,Olga Gaishyn,Сoliving Portugal 01.11.2025,,,
+CO-PROF 90/2025,391726492,Oleksandra Zlobina,Single lankowa 14.12.2025,1535,Заявка от Александра,open
+CO-PROF 85/2025,391025350,Anastasiia Chumak Kubelíkova,Sporthause/ singl,,,
+CO-PROF 84/2025,391021921,Ina Aliakseyenka,Single lankowa 14.12.2025,1439,Заявка от Инна,open
+CO-PROF 86/2025,391029319,MAKSIM LOIKO,SKI POLAND 03.01.2026,,,
+CO-PROF 83/2025,391017388,Orekhvo-Strekha Tatsiana,NY2026,1191,Заявка от Таня,open
+CO-PROF 81/2025,390034933,Oleksandra Myrovytska,Sporthause/ singl,,,
+CO-PROF 82/2025,390043609,Yauheni Sauko,SKI POLAND 03.01.2026,,,
+CO-PROF 78/2025,389300716,Maryia Kukharchuk,SKI POLAND 03.01.2026,,,
+CO-PROF 79/2025,389303470,,,1435,Заявка от Сюзан,lost
+CO-PROF 72/2025,388944028,Valeryia Paliashchuk,Сoliving Portugal 01.11.2025,,,
+CO-PROF 74/2025,388946518,Siarhei Laputs,Сoliving Portugal 01.11.2025,,,
+CO-PROF 73/2025,388944679,Adriana Feher Dubrovska,Сoliving Portugal 01.11.2025,,,
+CO-PROF 75/2025,388947367,Karina Stamburska,Сoliving Portugal 01.11.2025,,,
+CO-PROF 58/2025,388861120,Artsem Huletski,Sporthause/ singl,,,
+CO-PROF 61/2025,388863190,Sergei Lalov,Sporthause/ singl,,,
+CO-PROF 70/2025,388868281,Sviataslau Salamennik,NY2026,1269,Заявка от Sviataslau Salamennik,open
+CO-PROF 67/2025,388867417,Aliona Zaika,NY2026,,,
+CO-PROF 60/2025,388862089,Anatoli Lahuta,Single lankowa 14.12.2025,1412,Заявка от Анатолий,open
+CO-PROF 62/2025,388863475,Alena Pratasevich,NY2026,1278,Заявка от Елена,open
+CO-PROF 68/2025,388867696,ALEKSEI VERBITSKI,NY2026,1271,Заявка от Алексей,open
+CO-PROF 65/2025,388866295,Kseniia Zemlianaia,Sporthause/ singl,,,
+CO-PROF 69/2025,388867921,Uladzislau Burak,NY2026,,,
+CO-PROF 66/2025,388867072,GULALI MIRZAYEV,Single lankowa 14.12.2025,,,
+CO-PROF 53/2025,388562299,Dzianis Nevar,Сoliving Portugal 01.11.2025,,,
+CO-PROF 54/2025,388563919,Irina Lavrishcheva,Single lankowa 14.12.2025,1416,Заявка от Irina,open
+CO-PROF 50/2025,388554805,Halyna Stadnytska,Сoliving Portugal 01.11.2025,,,
+CO-PROF 52/2025,388559812,Iryna Veramyova,Single lankowa 14.12.2025,,,
+CO-PROF 51/2025,388555996,Darya Sliunkova,Single lankowa 14.12.2025,1444,Заявка от Darya,open
+CO-PROF 48/2025,387807748,PREMIERE DENT ANNA ZINCZENKO-LEBIEDŹ,Sporthause/ singl,,,
+CO-PROF 47/2025,387793399,Iryna Kozik,Single lankowa 14.12.2025,1413,Заявка от Ира,open
+CO-PROF 46/2025,387519298,Plavunova Galina,SKI FRANCE 24.01.2026,1299,Заявка от Галина,open
+CO-PROF 43/2025,387003703,Veranika Likhnis,NY2026,,,
+CO-PROF 44/2025,387086023,GULALI MIRZAYEV,Sporthause/ singl,,,
+CO-PROF 45/2025,387126121,Yuliia Korytko,Sporthause/ singl,,,
+CO-PROF 34/2025,386877010,Yauheni Sauko,Sporthause/ singl,,,
+CO-PROF 42/2025,386918866,Uladzimir Vysotski,Weekend stodola 09.10.25,,,
+CO-PROF 35/2025,386893468,Evelina Muntean,NY2026,1285,Заявка от Эва и Дэн,open
+CO-PROF 33/2025,386873263,Yan Pershai,NY2026,1242,Заявка от Yan,open
+CO-PROF 37/2025,386897170,Anton Iokov,Sporthause/ singl,,,
+CO-PROF 32/2025,386871289,Fedorenko Vladislav,NY2026,1399,Заявка от Влад,open
+CO-PROF 39/2025,386912155,Yuliya Kaborda,NY2026,1391,Заявка от Yuliya Kaborda,open
+CO-PROF 38/2025,386899663,Aliaksei Bely,Sporthause/ singl,,,
+CO-PROF 30/2025,385298851,Anna But,Coliving Portugal 01.12.2025,,,
+CO-PROF 27/2025,385294699,Alena Pratasevich,SKI FRANCE 24.01.2026,,,
+CO-PROF 29/2025,385297765,Andrei Abdulov,Weekend stodola 09.10.25,,,
+CO-PROF 28/2025,385296205,Alina Shypila,Сoliving Portugal 01.11.2025,,,
+CO-PROF 31/2025,385300978,Volha Vetrava,NY2026,,,
+CO-PROF 23/2025,384814462,Viktoriia Usova,NY2026,1239,Заявка от Виктория Усова,open
+CO-PROF 26/2025,384817450,Vladimir Petuhov,NY2026,1270,Заявка от Vladimir Petuhov,open
+CO-PROF 25/2025,384816844,DARYA SVECHKINA,NY2026,1248,Заявка от Дарья+парень,open
+CO-PROF 22/2025,384813454,Lizaveta Horynava,NY2026,1301,Заявка от Елизавета222,open
+CO-PROF 24/2025,384815350,Vladyslav Koshman,NY2026,1341,Заявка от Vladyslav+девушка,open
+CO-PROF 19/2025,384500089,Maksim Sheka,Weekend stodola 09.10.25,,,
+CO-PROF 17/2025,384492595,Olga Kuzina,NY2026,1241,Заявка от Ольга Кузина,open
+CO-PROF 16/2025,384491923,Kalesnikau Kiryl,NY2026,1244,Заявка от Маша и Кирилл,open
+CO-PROF 20/2025,384501634,Shapovalova Inna,NY2026,1279,Заявка от Inna Shapovalova+парень,open
+CO-PROF 15/2025,384488887,Yauheni Ramashou,SKI POLAND 03.01.2026,,,
+CO-PROF 13/2025,384331021,Alena Pratasevich,Сoliving Portugal 01.11.2025,,,
+CO-PROF 12/2025,384329992,Vladyslav Koshman,SKI POLAND 03.01.2026,,,
+CO-PROF 14/2025,384331708,ANTON PITSUKOU,Сoliving Portugal 01.11.2025,,,
+CO-PROF 11/2025,384111106,DARYA SVECHKINA,SKI POLAND 03.01.2026,,,
+CO-PROF 8/2025,383823595,Natalia Gschwander,SKI FRANCE 24.01.2026,1321,Заявка от Natalia Gschwander,open
+CO-PROF 10/2025,383855674,Uladzimir Stasevich,SKI FRANCE 24.01.2026,,,
+CO-PROF 9/2025,383824027,Kseniia Zemlianaia,Weekend stodola 09.10.25,,,
+CO-PROF 6/2025,383544949,Yan Pershai,Weekend stodola 09.10.25,,,
+CO-PROF 5/2025,383544568,Maksim Sheka,Weekend stodola 09.10.25,,,
+CO-PROF 7/2025,383545852,Karina Stamburska,Сoliving Portugal 01.11.2025,,,
+CO-PROF 4/2025,383540398,Irina Bondarenko,SKI FRANCE 24.01.2026,1291,Заявка от Ирина,open
+CO-PROF 1/2025,383526691,Valeryia Paliashchuk,Pakiet / Сoliving Portugal 01.11,,,
+CO-PROF 3/2025,383531248,Adriana Feher Dubrovska,Сoliving Portugal 01.11.2025,,,
+CO-PROF 2/2025,383528200,Viktorija Vita Gailuma,Pakiet / SKI FRANCE,,,

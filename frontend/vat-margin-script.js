@@ -146,7 +146,11 @@ function cacheDom() {
     cashFilterProduct: document.getElementById('cashFilterProduct'),
     cashFilterStatus: document.getElementById('cashFilterStatus'),
     cashFiltersApply: document.getElementById('cashFiltersApply'),
-    cashTableBody: document.getElementById('cashTableBody')
+    cashTableBody: document.getElementById('cashTableBody'),
+    payerPaymentsModal: document.getElementById('payer-payments-modal'),
+    payerPaymentsTitle: document.getElementById('payer-payments-title'),
+    payerPaymentsBody: document.getElementById('payer-payments-body'),
+    payerPaymentsClose: document.getElementById('payer-payments-close')
   };
 }
 
@@ -185,6 +189,19 @@ function bindEvents() {
       if (Number.isFinite(id)) {
         refundCashPayment(id);
       }
+    }
+  });
+  elements.paymentReportContainer?.addEventListener('click', handlePaymentReportAction);
+  elements.paymentReportContainer?.addEventListener('keydown', handlePaymentReportKeydown);
+  elements.payerPaymentsClose?.addEventListener('click', closePayerPaymentsModal);
+  elements.payerPaymentsModal?.addEventListener('click', (event) => {
+    if (event.target === elements.payerPaymentsModal) {
+      closePayerPaymentsModal();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isPayerPaymentsModalOpen()) {
+      closePayerPaymentsModal();
     }
   });
   initPaymentsSubtabs();
@@ -1218,19 +1235,6 @@ function renderProductSummaryTable(products) {
       });
     });
 
-  elements.productSummaryTable
-    .querySelectorAll('[data-product-link]')
-    .forEach((link) => {
-      link.addEventListener('click', (event) => {
-        event.preventDefault();
-        const targetSlug = link.dataset.productLink;
-        if (targetSlug) {
-          window.location.hash = 'tab-products';
-          handleProductLinkClick(targetSlug);
-          window.location.href = link.getAttribute('href');
-        }
-      });
-    });
 }
 
 async function handleProductStatusChange(productSlug, nextStatus) {
@@ -1442,7 +1446,7 @@ function renderPaymentReport(groups) {
     return;
   }
 
-  const html = groups.map((group) => {
+  const html = groups.map((group, groupIndex) => {
     const currencyTotals = Object.entries(group.totals?.currency_totals || {})
       .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
       .map(([cur, amount]) => formatCurrency(amount, cur))
@@ -1452,7 +1456,7 @@ function renderPaymentReport(groups) {
     const proformaCount = group.totals?.proforma_count || 0;
     const paymentsCount = group.totals?.payments_count || 0;
 
-    const rows = (group.entries || []).map((entry) => {
+    const rows = (group.entries || []).map((entry, entryIndex) => {
       const paymentCount = entry.totals?.payment_count || 0;
       const entryCurrencyTotals = Object.entries(entry.totals?.currency_totals || {})
         .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
@@ -1486,20 +1490,40 @@ function renderPaymentReport(groups) {
         dateLabel = `${firstDate} → ${lastDate}`;
       }
 
-      const payerLabel = entry.payer_names && entry.payer_names.length > 0
+      const paymentsList = Array.isArray(entry.payments) ? entry.payments : [];
+      const hasPayments = paymentsList.length > 0;
+      const hasPayerNames = Array.isArray(entry.payer_names) && entry.payer_names.length > 0;
+      const fallbackPayerName = entry.proforma?.buyer?.name || entry.proforma?.buyer?.alt_name || '—';
+      const payerLabel = hasPayerNames
         ? escapeHtml(entry.payer_names.join(', '))
-        : '—';
+        : escapeHtml(fallbackPayerName || '—');
 
-      const paymentCountLabel = formatPaymentCount(paymentCount);
-      const paymentsBadge = paymentCount > 1 ? `<div class="payments-count-badge">${paymentCountLabel}</div>` : '';
+      const payerNameFilter = hasPayerNames && entry.payer_names.length === 1
+        ? entry.payer_names[0]
+        : (fallbackPayerName || '');
+
+      const payerCellContent = hasPayments && payerLabel !== '—'
+        ? `
+            <span
+              class="payer-link"
+              data-payer-action="show-payments"
+              data-group-index="${groupIndex}"
+              data-entry-index="${entryIndex}"
+              data-payer-name="${escapeHtml(payerNameFilter || '')}"
+              role="button"
+              tabindex="0"
+            >
+              ${payerLabel}
+            </span>
+          `
+        : payerLabel;
 
       return `
         <tr>
           <td>
             <div>${dateLabel}</div>
-            ${paymentsBadge}
           </td>
-          <td>${payerLabel}</td>
+          <td>${payerCellContent}</td>
           <td class="amount">${entryCurrencyTotals}</td>
           <td class="amount">${entryPlnTotal}</td>
           <td>${proformaCell}</td>
@@ -1540,6 +1564,222 @@ function renderPaymentReport(groups) {
   }).join('');
 
   elements.paymentReportContainer.innerHTML = html;
+}
+
+function handlePaymentReportAction(event) {
+  const trigger = event.target.closest('[data-payer-action="show-payments"]');
+  if (!trigger || !elements.paymentReportContainer?.contains(trigger)) {
+    return;
+  }
+
+  const groupIndex = Number(trigger.dataset.groupIndex);
+  const entryIndex = Number(trigger.dataset.entryIndex);
+
+  if (!Number.isInteger(groupIndex) || !Number.isInteger(entryIndex)) {
+    addLog('warning', 'Не удалось определить позицию платежей для отображения');
+    return;
+  }
+
+  const payerName = (trigger.dataset.payerName || '').trim();
+  openPayerPaymentsModal({
+    groupIndex,
+    entryIndex,
+    payerName: payerName || null
+  });
+}
+
+function handlePaymentReportKeydown(event) {
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return;
+  }
+
+  const trigger = event.target.closest('[data-payer-action="show-payments"]');
+  if (!trigger || !elements.paymentReportContainer?.contains(trigger)) {
+    return;
+  }
+
+  event.preventDefault();
+  handlePaymentReportAction(event);
+}
+
+async function openPayerPaymentsModal({ groupIndex, entryIndex, payerName }) {
+  const groups = Array.isArray(paymentReportState.groups) ? paymentReportState.groups : [];
+  const group = groups[groupIndex];
+  if (!group) {
+    addLog('warning', 'Не удалось найти группу платежей для отображения деталей плательщика');
+    return;
+  }
+
+  const entries = Array.isArray(group.entries) ? group.entries : [];
+  const entry = entries[entryIndex];
+  if (!entry) {
+    addLog('warning', 'Не удалось найти запись с платежами для выбранного плательщика');
+    return;
+  }
+
+  const proforma = entry.proforma || null;
+  const groupName = group.name || 'Без названия';
+  showPayerPaymentsModalLoading({ groupName, proforma, payerName });
+
+  const paymentsSource = Array.isArray(entry.payments) ? entry.payments : [];
+  const params = new URLSearchParams();
+  if (payerName) {
+    params.set('payer', payerName.trim().toLowerCase());
+  }
+  if (proforma?.fullnumber) {
+    params.set('proforma', proforma.fullnumber.trim());
+  }
+
+  let fetchedPayments = [];
+  let fetchedCount = 0;
+
+  if (params.toString()) {
+    try {
+      const result = await apiCall(`/vat-margin/payer-payments?${params.toString()}`);
+      if (result?.success && Array.isArray(result.payments)) {
+        fetchedPayments = result.payments;
+        fetchedCount = Number(result.count) || fetchedPayments.length;
+      } else if (result?.error) {
+        addLog('warning', `Не удалось загрузить платежи плательщика: ${result.error}`);
+      }
+    } catch (error) {
+      addLog('error', `Не удалось загрузить платежи плательщика: ${error.message}`);
+    }
+  }
+
+  const payments = fetchedPayments.length ? fetchedPayments : paymentsSource;
+  const totalPayments = fetchedCount
+    || paymentsSource.length
+    || entry.totals?.payment_count
+    || payments.length;
+
+  renderPayerPaymentsModal({
+    groupName,
+    proforma,
+    payerName,
+    payments,
+    totalPayments
+  });
+}
+
+function renderPayerPaymentsModal({
+  groupName,
+  proforma,
+  payerName,
+  payments,
+  totalPayments
+}) {
+  if (!elements.payerPaymentsModal || !elements.payerPaymentsBody) {
+    addLog('warning', 'Модальное окно для платежей плательщика недоступно');
+    return;
+  }
+
+  const visiblePayments = Array.isArray(payments) ? payments : [];
+  const totalPln = visiblePayments.reduce(
+    (sum, payment) => sum + (Number(payment.amount_pln) || 0),
+    0
+  );
+
+  if (elements.payerPaymentsTitle) {
+    elements.payerPaymentsTitle.textContent = payerName
+      ? `Платежи: ${payerName}`
+      : 'Все платежи';
+  }
+
+  const metaParts = [];
+  if (groupName) {
+    metaParts.push(`Продукт: ${escapeHtml(groupName)}`);
+  }
+  if (proforma?.fullnumber) {
+    metaParts.push(`Проформа: ${escapeHtml(proforma.fullnumber)}`);
+  }
+  if (proforma?.pipedrive_deal_id && proforma?.pipedrive_deal_url) {
+    const dealUrl = escapeHtml(proforma.pipedrive_deal_url);
+    metaParts.push(
+      `<a href="${dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a>`
+    );
+  }
+
+  const paymentsCountLabel = totalPayments && payerName && visiblePayments.length !== totalPayments
+    ? `${visiblePayments.length} из ${totalPayments}`
+    : `${visiblePayments.length}`;
+
+  const rows = visiblePayments.length
+    ? visiblePayments
+      .map((payment) => `
+        <tr>
+          <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
+          <td>${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
+          <td>${Number.isFinite(Number(payment.amount_pln)) ? formatCurrency(Number(payment.amount_pln), 'PLN') : '—'}</td>
+          <td>${escapeHtml(payment.description || '—')}</td>
+          <td>${escapeHtml(payment.status?.label || '—')}</td>
+        </tr>
+      `)
+      .join('')
+    : '<tr><td colspan="5" class="payer-payments-empty">Нет платежей для выбранного плательщика</td></tr>';
+
+  elements.payerPaymentsBody.innerHTML = `
+    <div class="payer-payments-summary">
+      ${metaParts.length ? `<div class="summary-meta">${metaParts.join(' • ')}</div>` : ''}
+      <div class="summary-stats">
+        <span>Платежей: ${paymentsCountLabel}</span>
+        <span>Сумма (PLN): ${formatCurrency(totalPln, 'PLN')}</span>
+      </div>
+    </div>
+    <table class="payer-payments-table">
+      <thead>
+        <tr>
+          <th>Дата</th>
+          <th>Сумма</th>
+          <th>Сумма (PLN)</th>
+          <th>Описание</th>
+          <th>Статус</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+    </table>
+  `;
+
+  elements.payerPaymentsModal.style.display = 'block';
+  document.body.classList.add('modal-open');
+}
+
+function showPayerPaymentsModalLoading({ groupName, proforma, payerName }) {
+  if (elements.payerPaymentsTitle) {
+    elements.payerPaymentsTitle.textContent = payerName
+      ? `Платежи: ${payerName}`
+      : 'Платежи';
+  }
+  if (elements.payerPaymentsBody) {
+    const metaParts = [];
+    if (groupName) {
+      metaParts.push(`Продукт: ${escapeHtml(groupName)}`);
+    }
+    if (proforma?.fullnumber) {
+      metaParts.push(`Проформа: ${escapeHtml(proforma.fullnumber)}`);
+    }
+    const metaHtml = metaParts.length
+      ? `<div class="payer-payments-summary"><div class="summary-meta">${metaParts.join(' • ')}</div></div>`
+      : '';
+    elements.payerPaymentsBody.innerHTML = `
+      ${metaHtml}
+      <div class="loading-indicator">Загружаю платежи...</div>
+    `;
+  }
+  elements.payerPaymentsModal.style.display = 'block';
+  document.body.classList.add('modal-open');
+}
+
+function closePayerPaymentsModal() {
+  if (!elements.payerPaymentsModal) return;
+  elements.payerPaymentsModal.style.display = 'none';
+  document.body.classList.remove('modal-open');
+}
+
+function isPayerPaymentsModalOpen() {
+  return Boolean(elements.payerPaymentsModal && elements.payerPaymentsModal.style.display === 'block');
 }
 
 function exportPaymentReportCsv() {

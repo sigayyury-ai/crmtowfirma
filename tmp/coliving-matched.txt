@@ -1,0 +1,11 @@
+CO-PROF 91/2025 => Deal 1532 (Заявка от Александра) status=won
+CO-PROF 92/2025 => Deal 1531 (Заявка от Татьяна Мирошниченко) status=won
+CO-PROF 89/2025 => Deal 1529 (Заявка от Ольга+муж) status=won
+CO-PROF 74/2025 => Deal 1164 (Заявка от Serge) status=won
+CO-PROF 73/2025 => Deal 1230 (Заявка от Adriana Feher Dubrovska) status=lost
+CO-PROF 53/2025 => Deal 1434 (Заявка от Denn) status=won
+CO-PROF 50/2025 => Deal 1401 (Заявка от Галинка Стадницька) status=won
+CO-PROF 28/2025 => Deal 1332 (Заявка от Alina Shypila) status=won
+CO-PROF 13/2025 => Deal 1303 (Заявка от Елена) status=won
+CO-PROF 14/2025 => Deal 1382 (Заявка от Антон 733) status=won
+CO-PROF 3/2025 => Deal 1230 (Заявка от Adriana Feher Dubrovska) status=lost

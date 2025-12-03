@@ -164,6 +164,60 @@ class PipedriveClient {
   }
 
   /**
+   * Поиск персон по имени или email
+   * @param {string} term - Поисковый запрос
+   * @param {Object} options - Дополнительные параметры
+   * @param {number} [options.limit=10] - Ограничение по количеству результатов
+   * @param {boolean} [options.exactMatch=false] - Флаг точного совпадения
+   * @returns {Promise<Object>} - Результат с массивом найденных персон
+   */
+  async searchPersons(term, options = {}) {
+    if (!term || typeof term !== 'string' || term.trim().length === 0) {
+      return { success: false, persons: [], error: 'Search term is required' };
+    }
+
+    try {
+      const params = {
+        api_token: this.apiToken,
+        term: term.trim(),
+        limit: options.limit || 10,
+        exact_match: options.exactMatch ? 1 : 0,
+        fields: options.fields || 'name,email'
+      };
+
+      const response = await this.client.get('/persons/search', { params });
+      const items = response.data?.data?.items || [];
+      const persons = items
+        .map((entry) => entry?.item)
+        .filter(Boolean)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          emails: Array.isArray(item.emails) ? item.emails : [],
+          phones: Array.isArray(item.phones) ? item.phones : []
+        }));
+
+      return {
+        success: true,
+        persons
+      };
+    } catch (error) {
+      logger.error('Error searching persons in Pipedrive:', {
+        term,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null,
+        persons: [],
+        rateLimited: error.response?.status === 429
+      };
+    }
+  }
+
+  /**
    * Создать новую сделку
    * @param {Object} data - Поля сделки (title, value, currency, person_id, stage_id и т.д.)
    * @returns {Promise<Object>} - Результат создания сделки
@@ -190,6 +244,57 @@ class PipedriveClient {
       });
       return {
         success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Получить список сделок, связанных с персоной
+   * @param {number} personId - ID персоны
+   * @param {Object} options
+   * @param {string} [options.status] - Статус сделок (open, won, lost)
+   * @returns {Promise<Object>} - Результат с массивом сделок
+   */
+  async getPersonDeals(personId, options = {}) {
+    if (!personId) {
+      return { success: false, deals: [], error: 'personId is required' };
+    }
+
+    try {
+      const params = {
+        api_token: this.apiToken
+      };
+
+      if (options.status) {
+        params.status = options.status;
+      }
+
+      const response = await this.client.get(`/persons/${personId}/deals`, { params });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          deals: response.data?.data || [],
+          additionalData: response.data?.additional_data || null
+        };
+      }
+
+      return {
+        success: false,
+        deals: [],
+        error: response.data?.error || 'Failed to fetch person deals'
+      };
+    } catch (error) {
+      logger.error('Error fetching person deals from Pipedrive:', {
+        personId,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        deals: [],
         error: error.message,
         details: error.response?.data || null
       };

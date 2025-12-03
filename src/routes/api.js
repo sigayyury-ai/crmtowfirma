@@ -2149,6 +2149,98 @@ router.get('/vat-margin/payment-report/export', async (req, res) => {
   }
 });
 
+router.get('/vat-margin/payer-payments', async (req, res) => {
+  try {
+    const { payer, proforma } = req.query;
+
+    if ((!payer || !payer.trim()) && (!proforma || !proforma.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: 'payer or proforma query parameter is required'
+      });
+    }
+
+    let query = supabase
+      .from('payments')
+      .select(`
+        id,
+        amount,
+        amount_raw,
+        currency,
+        description,
+        payer_name,
+        payer_normalized_name,
+        manual_status,
+        match_status,
+        operation_date,
+        proforma_id,
+        proforma_fullnumber,
+        manual_proforma_id,
+        manual_proforma_fullnumber,
+        direction,
+        income_category_id,
+        expense_category_id
+      `)
+      .eq('direction', 'in')
+      .is('deleted_at', null)
+      .order('operation_date', { ascending: true });
+
+    if (payer && payer.trim()) {
+      const normalized = payer.trim().toLowerCase();
+      query = query.eq('payer_normalized_name', normalized);
+    }
+
+    if (proforma && proforma.trim()) {
+      const value = proforma.trim().replace(/"/g, '\\"');
+      query = query.or(
+        `proforma_fullnumber.eq."${value}",manual_proforma_fullnumber.eq."${value}"`
+      );
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw error;
+    }
+
+    const payments = (data || []).map((payment) => {
+      const baseAmount = typeof payment.amount === 'number' ? payment.amount : Number(payment.amount) || 0;
+      return {
+        id: payment.id,
+        amount: baseAmount,
+        amount_raw: payment.amount_raw || null,
+        currency: payment.currency || 'PLN',
+        date: payment.operation_date || null,
+        description: payment.description || '',
+        payer_name: payment.payer_name || null,
+        payer_normalized_name: payment.payer_normalized_name || null,
+        manual_status: payment.manual_status || null,
+        match_status: payment.match_status || null,
+        proforma_id: payment.manual_proforma_id || payment.proforma_id || null,
+        proforma_fullnumber: payment.manual_proforma_fullnumber || payment.proforma_fullnumber || null,
+        direction: payment.direction,
+        income_category_id: payment.income_category_id || null,
+        amount_pln: payment.currency === 'PLN' ? baseAmount : null
+      };
+    });
+
+    res.json({
+      success: true,
+      payments,
+      count: payments.length
+    });
+  } catch (error) {
+    logger.error('Error fetching payer payments', {
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Не удалось получить платежи плательщика',
+      message: error.message
+    });
+  }
+});
+
 router.get('/vat-margin/payments', async (req, res) => {
   let direction, limit, uncategorized;
   

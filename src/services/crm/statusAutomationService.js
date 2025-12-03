@@ -355,21 +355,12 @@ class CrmStatusAutomationService {
         return { success: false, error: 'SendPulse ID not found' };
       }
 
-      // Формируем информацию о платеже
-      const paidAmount = snapshot.totals.totalPaidPln || 0;
-      const expectedAmount = snapshot.totals.expectedAmountPln || 0;
-      const paidPercent = expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0;
-      
-      // Получаем номер проформы (к одной сделке может быть только одна проформа)
-      const proformas = snapshot.proformas || [];
-      const proforma = proformas.length > 0 ? proformas[0] : null;
-      const proformaNumber = proforma?.fullnumber || (proforma ? `CO-PROF ${proforma.id}/2025` : `Deal #${dealId}`);
-      
-      const message = `✅ Платеж получен
-
-Здравствуйте${person.name ? `, ${person.name}` : ''}!
-
-Мы получили ваш платеж по проформе ${proformaNumber}.`;
+    // Формируем информацию о платеже
+    const paidAmount = snapshot.totals.totalPaidPln || 0;
+    const expectedAmount = snapshot.totals.expectedAmountPln || 0;
+    const paidPercent = expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0;
+    
+    const message = '✅ Твой платеж получен, спасибо!';
 
       // Отправляем сообщение
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);

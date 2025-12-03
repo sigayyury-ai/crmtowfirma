@@ -45,7 +45,7 @@ class WfirmaLookup {
 
   extractTagValue(xml, tag) {
     if (!xml) return null;
-    const regex = new RegExp(`<${tag}>([\s\S]*?)<\/${tag}>`, 'i');
+    const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i');
     const match = xml.match(regex);
     if (!match) return null;
     return match[1].trim();
