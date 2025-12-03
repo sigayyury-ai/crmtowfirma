@@ -39,6 +39,7 @@ class MqlRepository {
       pipedrive_mql: data.pipedriveMql,
       combined_mql: data.combinedMql,
       won_deals: data.wonDeals,
+      repeat_deals: data.repeatDeals || 0,
       closed_deals: data.closedDeals,
       marketing_expense: data.marketingExpense,
       subscribers: data.subscribers,

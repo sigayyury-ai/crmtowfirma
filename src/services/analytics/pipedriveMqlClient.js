@@ -23,6 +23,14 @@ class PipedriveMqlClient {
       medium: options.utmMediumField || mqlConfig.pipedriveUtmMediumField,
       campaign: options.utmCampaignField || mqlConfig.pipedriveUtmCampaignField
     };
+    this.customerPersonLabel = (
+      options.customerPersonLabel ||
+      mqlConfig.pipedriveCustomerPersonLabel ||
+      ''
+    ).toLowerCase();
+    this.customerPersonLabelId = String(
+      options.customerPersonLabelId || mqlConfig.pipedriveCustomerPersonLabelId || ''
+    ).trim();
   }
 
   async fetchMqlDeals(options = {}) {
@@ -106,6 +114,9 @@ class PipedriveMqlClient {
     const username = person?.name || deal.person_name || null;
     const utmSource = this._pluckField(deal, this.utmFields.source);
     const firstSeenAt = deal.update_time || deal.add_time || new Date().toISOString();
+    const personLabel = this._extractPersonLabel(person);
+    const personLabelId = this._extractPersonLabelId(person);
+    const isRepeatCustomer = this._isCustomerPerson(personLabel, personLabelId);
 
     return {
       id: deal.id,
@@ -130,7 +141,10 @@ class PipedriveMqlClient {
       utmCampaign: this._pluckField(deal, this.utmFields.campaign),
       channelBucket: resolveChannelBucket(utmSource || ''),
       firstSeenAt,
-      firstSeenMonth: getMonthKey(firstSeenAt)
+      firstSeenMonth: getMonthKey(firstSeenAt),
+      personLabel,
+      personLabelId,
+      isRepeatCustomer
     };
   }
 
@@ -188,6 +202,34 @@ class PipedriveMqlClient {
   _pluckField(deal, fieldKey) {
     if (!fieldKey) return null;
     return deal[fieldKey] || null;
+  }
+
+  _extractPersonLabel(person = {}) {
+    if (!person) return null;
+    if (typeof person.label === 'string' && person.label.trim().length) {
+      return person.label.trim().toLowerCase();
+    }
+    if (typeof person.label_name === 'string' && person.label_name.trim().length) {
+      return person.label_name.trim().toLowerCase();
+    }
+    return null;
+  }
+
+  _extractPersonLabelId(person = {}) {
+    if (person?.label_id === null || person?.label_id === undefined) {
+      return null;
+    }
+    return String(person.label_id).trim();
+  }
+
+  _isCustomerPerson(label, labelId) {
+    if (this.customerPersonLabel && label && label === this.customerPersonLabel) {
+      return true;
+    }
+    if (this.customerPersonLabelId && labelId && labelId === this.customerPersonLabelId) {
+      return true;
+    }
+    return false;
   }
 
   _parseLabelList(value) {

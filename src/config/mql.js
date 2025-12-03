@@ -40,6 +40,8 @@ module.exports = {
   pipedriveUtmSourceField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_SOURCE_FIELD),
   pipedriveUtmMediumField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_MEDIUM_FIELD),
   pipedriveUtmCampaignField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_CAMPAIGN_FIELD),
+  pipedriveCustomerPersonLabel: stringOrNull(process.env.PIPEDRIVE_CUSTOMER_PERSON_LABEL)?.toLowerCase() || null,
+  pipedriveCustomerPersonLabelId: stringOrNull(process.env.PIPEDRIVE_CUSTOMER_PERSON_LABEL_ID),
   marketingExpenseCategoryIds: (() => {
     const ids = parseNumberList(process.env.MQL_MARKETING_EXPENSE_CATEGORY_IDS);
     return ids.length ? ids : [20];

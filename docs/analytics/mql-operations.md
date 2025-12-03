@@ -18,9 +18,10 @@ _Last updated: 2025-12-03_
    - Leads deduplicated by normalized email → username → external ID.
    - Months always cover the entire selected year; SendPulse CSV baseline is applied when API history is missing.
    - Derived metrics:
-     - `combined.mql = pipedrive + sendpulse (after dedupe)`
-     - `conversion = won / combined.mql`
-     - Costs computed from `marketing_expense`.
+  - `combined.mql = pipedrive + sendpulse (after dedupe)`
+  - `conversion = won / combined.mql`
+  - `repeat_deals` — количество выигранных сделок от клиентов с label `Customer`
+  - Costs computed from `marketing_expense`.
 4. **Persistence**
    - Raw leads → `mql_leads`.
    - Monthly aggregates → `mql_monthly_snapshots` (see `scripts/migrations/20251204_create_mql_tables.sql`).
@@ -38,6 +39,7 @@ _Last updated: 2025-12-03_
 | `MQL_SYNC_LOOKBACK_MONTHS` | How far back the cron refreshes (min 12). |
 | `PIPEDRIVE_MQL_LABEL_ID`, `PIPEDRIVE_SQL_LABEL_IDS` | Deal labels to include. |
 | `PIPEDRIVE_CONVERSATION_STAGE_IDS` | Stage IDs where MQL labels usually get applied. |
+| `PIPEDRIVE_CUSTOMER_PERSON_LABEL` / `_ID` | Лейбл у Person, по которому считаем повторные продажи. |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Snapshot persistence. |
 
 ## Manual Inputs & Utilities

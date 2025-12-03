@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS mql_monthly_snapshots (
     pipedrive_mql INTEGER DEFAULT 0,
     combined_mql INTEGER DEFAULT 0,
     won_deals INTEGER DEFAULT 0,
+    repeat_deals INTEGER DEFAULT 0,
     closed_deals INTEGER DEFAULT 0,
     marketing_expense NUMERIC(14, 2) DEFAULT 0,
     subscribers INTEGER DEFAULT 0,

@@ -79,6 +79,7 @@ function renderTable() {
   const dataset = currentSummary;
   if (!dataset) return;
   const months = dataset.months;
+  const totals = buildTotals(months, dataset);
   const template = document.getElementById('table-template');
   const tableClone = template.content.cloneNode(true);
   const head = tableClone.getElementById('table-head');
@@ -93,12 +94,16 @@ function renderTable() {
     th.textContent = formatMonth(month);
     headerRow.appendChild(th);
   });
+  const totalTh = document.createElement('th');
+  totalTh.textContent = 'Итого';
+  totalTh.classList.add('total-column');
+  headerRow.appendChild(totalTh);
   head.appendChild(headerRow);
 
   if (state.view === 'source') {
-    renderSourceRows(body, months, dataset);
+    renderSourceRows(body, months, dataset, totals);
   } else {
-    renderChannelRows(body, months, dataset);
+    renderChannelRows(body, months, dataset, totals);
   }
 
   tableWrapper.innerHTML = '';
@@ -106,13 +111,14 @@ function renderTable() {
   bindSubscriberEditors();
 }
 
-function renderSourceRows(body, months, dataset) {
-  const accordionRows = buildMqlAccordionRows(months, dataset);
+function renderSourceRows(body, months, dataset, totals) {
+  const accordionRows = buildMqlAccordionRows(months, dataset, totals);
   accordionRows.forEach((row) => body.appendChild(row));
 
   const rows = [
     { label: 'Выигранные сделки', metric: 'won', source: 'combined', formatter: formatNumber },
     { label: 'Закрытые сделки', metric: 'closed', source: 'combined', formatter: formatNumber },
+    { label: 'Повторные продажи', metric: 'repeat', source: 'combined', formatter: formatNumber },
     { label: 'Conversion %', metric: 'conversion', source: 'combined', formatter: formatPercent },
     { label: 'Маркетинговый бюджет', metric: 'budget', formatter: formatCurrency },
     { label: 'Подписчики (Instagram)', metric: 'subscribers', formatter: formatNumber },
@@ -130,12 +136,7 @@ function renderSourceRows(body, months, dataset) {
 
     months.forEach((month) => {
       const td = document.createElement('td');
-      let value;
-      if (row.source) {
-        value = dataset.sources[month][row.source][row.metric];
-      } else {
-        value = dataset.metrics[month][row.metric];
-      }
+      let value = getRowValue(row, dataset, month);
       if (row.label === 'Подписчики (Instagram)') {
         td.classList.add('subscriber-cell');
         td.dataset.monthKey = month;
@@ -147,11 +148,20 @@ function renderSourceRows(body, months, dataset) {
       td.textContent = row.formatter(value);
       tr.appendChild(td);
     });
+    const totalValue = getSummaryValue(row, totals);
+    const totalTd = document.createElement('td');
+    totalTd.classList.add('total-cell');
+    let resolvedTotal = totalValue;
+    if (!row.allowNull && (resolvedTotal === undefined || resolvedTotal === null)) {
+      resolvedTotal = 0;
+    }
+    totalTd.textContent = row.formatter(resolvedTotal);
+    tr.appendChild(totalTd);
     body.appendChild(tr);
   });
 }
 
-function buildMqlAccordionRows(months, dataset) {
+function buildMqlAccordionRows(months, dataset, totals) {
   const headerRow = document.createElement('tr');
   headerRow.classList.add('mql-accordion-header');
 
@@ -172,6 +182,10 @@ function buildMqlAccordionRows(months, dataset) {
     td.textContent = formatNumber(dataset.sources[month].combined.mql);
     headerRow.appendChild(td);
   });
+  const totalTd = document.createElement('td');
+  totalTd.classList.add('total-cell');
+  totalTd.textContent = formatNumber(totals.sources.combined.mql);
+  headerRow.appendChild(totalTd);
 
   const sources = [
     { key: 'pipedrive', label: 'MQL — Pipedrive' },
@@ -192,6 +206,11 @@ function buildMqlAccordionRows(months, dataset) {
       td.textContent = formatNumber(dataset.sources[month][source.key].mql ?? 0);
       tr.appendChild(td);
     });
+    const totalValue = totals.sources[source.key]?.mql ?? 0;
+    const totalCell = document.createElement('td');
+    totalCell.classList.add('total-cell');
+    totalCell.textContent = formatNumber(totalValue);
+    tr.appendChild(totalCell);
 
     return tr;
   });
@@ -220,7 +239,7 @@ function buildMqlAccordionRows(months, dataset) {
   return [headerRow, ...detailRows];
 }
 
-function renderChannelRows(body, months, dataset) {
+function renderChannelRows(body, months, dataset, totals) {
   const fallbackKeys = Object.keys(dataset.channels[months[0]] || {});
   let channelKeys = CHANNELS.filter((key) => dataset.channels[months[0]]?.[key] !== undefined);
   if (channelKeys.length === 0) {
@@ -237,6 +256,10 @@ function renderChannelRows(body, months, dataset) {
       td.textContent = formatNumber(dataset.channels[month][channel]);
       tr.appendChild(td);
     });
+    const totalTd = document.createElement('td');
+    totalTd.classList.add('total-cell');
+    totalTd.textContent = formatNumber(totals.channels[channel] || 0);
+    tr.appendChild(totalTd);
     body.appendChild(tr);
   });
 }
@@ -270,6 +293,77 @@ function init() {
 }
 
 init();
+
+function getRowValue(row, dataset, month) {
+  if (row.source) {
+    return dataset.sources[month][row.source][row.metric];
+  }
+  return dataset.metrics[month][row.metric];
+}
+
+function getSummaryValue(row, totals) {
+  if (row.source) {
+    return totals.sources[row.source]?.[row.metric] ?? null;
+  }
+  return totals.metrics[row.metric];
+}
+
+function buildTotals(months, dataset) {
+  const totals = {
+    sources: {
+      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: null },
+      pipedrive: { mql: 0 },
+      sendpulse: { mql: 0 }
+    },
+    metrics: {
+      budget: 0,
+      subscribers: null,
+      newSubscribers: 0,
+      costPerSubscriber: null,
+      costPerMql: null,
+      costPerDeal: null
+    },
+    channels: {}
+  };
+
+  months.forEach((month) => {
+    const sourceRow = dataset.sources[month] || {};
+    const metricRow = dataset.metrics[month] || {};
+
+    totals.sources.combined.mql += Number(sourceRow.combined?.mql) || 0;
+    totals.sources.combined.won += Number(sourceRow.combined?.won) || 0;
+    totals.sources.combined.closed += Number(sourceRow.combined?.closed) || 0;
+    totals.sources.combined.repeat += Number(sourceRow.combined?.repeat) || 0;
+    totals.sources.pipedrive.mql += Number(sourceRow.pipedrive?.mql) || 0;
+    totals.sources.sendpulse.mql += Number(sourceRow.sendpulse?.mql) || 0;
+
+    const subscribers = metricRow.subscribers;
+    if (isFiniteNumber(subscribers)) {
+      totals.metrics.subscribers = subscribers;
+    }
+
+    totals.metrics.budget += Number(metricRow.budget) || 0;
+    totals.metrics.newSubscribers += Number(metricRow.newSubscribers) || 0;
+
+    const channelRow = dataset.channels[month] || {};
+    Object.entries(channelRow).forEach(([channel, value]) => {
+      totals.channels[channel] = (totals.channels[channel] || 0) + (Number(value) || 0);
+    });
+  });
+
+  const totalBudget = totals.metrics.budget;
+  const totalNewSubscribers = totals.metrics.newSubscribers;
+  const totalMql = totals.sources.combined.mql;
+  const totalWon = totals.sources.combined.won;
+
+  totals.metrics.costPerSubscriber =
+    totalBudget > 0 && totalNewSubscribers > 0 ? totalBudget / totalNewSubscribers : null;
+  totals.metrics.costPerMql = totalBudget > 0 && totalMql > 0 ? totalBudget / totalMql : null;
+  totals.metrics.costPerDeal = totalBudget > 0 && totalWon > 0 ? totalBudget / totalWon : null;
+  totals.sources.combined.conversion = totalMql > 0 ? totalWon / totalMql : null;
+
+  return totals;
+}
 
 function bindSubscriberEditors() {
   const cells = tableWrapper.querySelectorAll('.subscriber-cell');

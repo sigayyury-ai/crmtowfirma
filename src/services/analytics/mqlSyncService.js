@@ -48,7 +48,7 @@ class MqlSyncService {
       sources[month] = {
         pipedrive: { mql: 0 },
         sendpulse: { mql: 0 },
-        combined: { mql: 0, won: 0, closed: 0, conversion: 0 }
+        combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: 0 }
       };
       channels[month] = {};
       metrics[month] = {
@@ -164,6 +164,7 @@ class MqlSyncService {
       }
 
       this.incrementWonAndClosed(dataset, deal);
+      this.incrementRepeatSales(dataset, deal);
 
       dataset.leads.push({
         source: 'pipedrive',
@@ -199,6 +200,26 @@ class MqlSyncService {
     const closedMonthKey = getMonthKey(closedTimestamp);
     if (closedMonthKey && dataset.sources[closedMonthKey]) {
       dataset.sources[closedMonthKey].combined.closed += 1;
+    }
+  }
+
+  incrementRepeatSales(dataset, deal) {
+    if (!deal.isRepeatCustomer) {
+      return;
+    }
+    const repeatMonth =
+      getMonthKey(deal.wonTime) ||
+      getMonthKey(deal.closeTime) ||
+      getMonthKey(deal.updateTime) ||
+      deal.firstSeenMonth;
+
+    if (!repeatMonth || !repeatMonth.startsWith(`${dataset.year}-`)) {
+      return;
+    }
+
+    const row = dataset.sources[repeatMonth];
+    if (row?.combined) {
+      row.combined.repeat += 1;
     }
   }
 
@@ -270,6 +291,7 @@ class MqlSyncService {
         pipedriveMql: row.pipedrive.mql,
         combinedMql: row.combined.mql,
         wonDeals: row.combined.won,
+        repeatDeals: row.combined.repeat,
         closedDeals: row.combined.closed,
         marketingExpense: dataset.metrics[monthKey].budget,
         subscribers: dataset.metrics[monthKey].subscribers,
@@ -302,6 +324,7 @@ class MqlSyncService {
       const budget = monthsBudget[monthKey] || 0;
       const combinedMql = snapshot.combined_mql || 0;
       const wonDeals = snapshot.won_deals || 0;
+      const repeatDeals = snapshot.repeat_deals || 0;
       const newSubscribers = snapshot.new_subscribers || 0;
 
       const costPerMql = budget > 0 && combinedMql > 0 ? budget / combinedMql : null;
@@ -314,6 +337,7 @@ class MqlSyncService {
         pipedriveMql: snapshot.pipedrive_mql || 0,
         combinedMql: snapshot.combined_mql || 0,
         wonDeals: snapshot.won_deals || 0,
+        repeatDeals,
         closedDeals: snapshot.closed_deals || 0,
         marketingExpense: budget,
         subscribers: snapshot.subscribers || 0,

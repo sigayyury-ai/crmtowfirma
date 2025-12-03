@@ -75,7 +75,7 @@ function buildBaseDataset(year) {
     sources[month] = {
       pipedrive: { mql: 0 },
       sendpulse: { mql: 0 },
-      combined: { mql: 0, won: 0, closed: 0, conversion: 0 }
+      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: 0 }
     };
     channels[month] = {};
     metrics[month] = {
@@ -140,6 +140,7 @@ function buildDatasetFromSnapshots(snapshots, year) {
     sourceRow.sendpulse.mql = snapshot.sendpulse_mql || 0;
     sourceRow.combined.mql = snapshot.combined_mql || 0;
     sourceRow.combined.won = snapshot.won_deals || 0;
+    sourceRow.combined.repeat = snapshot.repeat_deals || 0;
     sourceRow.combined.closed = snapshot.closed_deals || 0;
     sourceRow.combined.conversion =
       sourceRow.combined.mql > 0 && sourceRow.combined.won > 0
