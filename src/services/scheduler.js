@@ -571,7 +571,7 @@ class SchedulerService {
     logger.info('Proforma reminder cycle started', { trigger, runId });
 
     try {
-      const result = await this.proformaReminderService.processAllDeals();
+      const result = await this.proformaReminderService.processAllDeals({ trigger, runId });
       if (result.errors.length > 0) {
         logger.error('Proforma reminder processing finished with errors', {
           trigger,

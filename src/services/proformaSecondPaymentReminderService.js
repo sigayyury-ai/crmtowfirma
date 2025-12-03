@@ -13,6 +13,7 @@ class ProformaSecondPaymentReminderService {
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.invoiceService = options.invoiceService || new InvoiceProcessingService();
     this.logger = options.logger || logger;
+    this.sentCache = new Set(); // in-memory защита от повторной отправки внутри одного процесса
     
     // Инициализируем SendPulse только если доступен
     try {
@@ -47,24 +48,128 @@ class ProformaSecondPaymentReminderService {
     }
   }
 
+  normalizeDate(value) {
+    if (!value) {
+      return null;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    date.setHours(0, 0, 0, 0);
+    return date.toISOString().split('T')[0];
+  }
+
+  getReminderCacheKey(dealId, secondPaymentDate) {
+    const normalizedDate = this.normalizeDate(secondPaymentDate);
+    if (!normalizedDate) {
+      return null;
+    }
+    return `${dealId}:${normalizedDate}`;
+  }
+
   /**
-   * Проверить, было ли отправлено напоминание недавно (в последние 7 дней)
-   * @param {number} dealId - ID сделки
-   * @returns {Promise<boolean>} - true если напоминание было отправлено недавно
+   * Проверка на повторную отправку в текущий день.
+   * Сначала смотрим локальный кэш (для защиты внутри процесса), затем Supabase.
    */
-  async wasReminderSentRecently(dealId) {
+  async wasReminderSentRecently(dealId, secondPaymentDate) {
     try {
-      // Проверяем логи за последние 7 дней
-      // В реальной системе лучше хранить это в БД, но для простоты используем проверку по условиям
-      // Если задача просрочена более чем на 7 дней и второй платеж все еще не оплачен,
-      // значит напоминание уже отправлялось
-      return false; // Пока возвращаем false, чтобы не скрывать задачи
+      const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
+      if (cacheKey && this.sentCache.has(cacheKey)) {
+        return true;
+      }
+
+      if (!supabase || !cacheKey) {
+        return false;
+      }
+
+      const todayStr = this.normalizeDate(new Date());
+      const secondPaymentDateStr = this.normalizeDate(secondPaymentDate);
+      if (!todayStr || !secondPaymentDateStr) {
+        return false;
+      }
+
+      const { data, error } = await supabase
+        .from('proforma_reminder_logs')
+        .select('id')
+        .match({
+          deal_id: dealId,
+          second_payment_date: secondPaymentDateStr,
+          sent_date: todayStr
+        })
+        .limit(1);
+
+      if (error) {
+        this.logger.warn('Failed to check reminder log in Supabase', {
+          dealId,
+          error: error.message
+        });
+        return false;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        this.sentCache.add(cacheKey);
+        return true;
+      }
+
+      return false;
     } catch (error) {
       this.logger.warn('Failed to check if reminder was sent recently', {
         dealId,
         error: error.message
       });
       return false;
+    }
+  }
+
+  async recordReminderSent({ dealId, secondPaymentDate, sendpulseId, proformaNumber, trigger, runId }) {
+    const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
+    if (cacheKey) {
+      this.sentCache.add(cacheKey);
+    }
+
+    if (!supabase) {
+      return;
+    }
+
+    try {
+      const todayStr = this.normalizeDate(new Date());
+      const secondPaymentDateStr = this.normalizeDate(secondPaymentDate);
+      if (!todayStr || !secondPaymentDateStr) {
+        return;
+      }
+
+      const payload = {
+        deal_id: dealId,
+        second_payment_date: secondPaymentDateStr,
+        sent_date: todayStr,
+        run_id: runId || null,
+        trigger_source: trigger || null,
+        sendpulse_id: sendpulseId || null,
+        proforma_number: proformaNumber || null
+      };
+
+      const { error } = await supabase.from('proforma_reminder_logs').insert(payload);
+      if (error) {
+        if (error.code === '23505') {
+          this.logger.info('Proforma reminder already recorded for today', {
+            dealId,
+            secondPaymentDate: secondPaymentDateStr
+          });
+        } else {
+          this.logger.warn('Failed to store proforma reminder log', {
+            dealId,
+            error: error.message
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.warn('Failed to persist proforma reminder log', {
+        dealId,
+        error: error.message
+      });
     }
   }
 
@@ -220,7 +325,8 @@ class ProformaSecondPaymentReminderService {
    * @param {Object} task - Задача для напоминания
    * @returns {Promise<Object>} - Результат отправки
    */
-  async sendReminder(task) {
+  async sendReminder(task, options = {}) {
+    const { trigger = 'manual', runId = null } = options;
     if (!this.sendpulseClient) {
       return {
         success: false,
@@ -263,7 +369,18 @@ class ProformaSecondPaymentReminderService {
         this.logger.info('Proforma reminder sent successfully', {
           dealId: task.dealId,
           sendpulseId,
-          proformaNumber: task.proformaNumber
+          proformaNumber: task.proformaNumber,
+          trigger,
+          runId
+        });
+
+        await this.recordReminderSent({
+          dealId: task.dealId,
+          secondPaymentDate: task.secondPaymentDate,
+          sendpulseId,
+          proformaNumber: task.proformaNumber,
+          trigger,
+          runId
         });
       } else {
         this.logger.error('Failed to send proforma reminder', {
@@ -291,12 +408,13 @@ class ProformaSecondPaymentReminderService {
    * Отправляет напоминания для сделок, где дата второго платежа уже наступила
    * @returns {Promise<Object>} - Результат обработки
    */
-  async processAllDeals() {
+  async processAllDeals({ trigger = 'manual', runId = null } = {}) {
     const result = {
       processed: 0,
       sent: 0,
       errors: [],
-      skipped: 0
+      skipped: 0,
+      skippedDuplicates: 0
     };
 
     try {
@@ -339,7 +457,18 @@ class ProformaSecondPaymentReminderService {
       for (const task of tasksToProcessFiltered) {
         result.processed++;
         try {
-          const sendResult = await this.sendReminder(task);
+          const alreadySent = await this.wasReminderSentRecently(task.dealId, task.secondPaymentDate);
+          if (alreadySent) {
+            result.skipped++;
+            result.skippedDuplicates++;
+            this.logger.info('Skipping proforma reminder (already sent today)', {
+              dealId: task.dealId,
+              secondPaymentDate: this.normalizeDate(task.secondPaymentDate)
+            });
+            continue;
+          }
+
+          const sendResult = await this.sendReminder(task, { trigger, runId });
           if (sendResult.success) {
             result.sent++;
           } else {
