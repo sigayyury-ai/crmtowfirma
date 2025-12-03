@@ -1,9 +1,14 @@
 const supabase = require('../supabaseClient');
+const logger = require('../../utils/logger');
 
 const LEADS_TABLE = 'mql_leads';
 const SNAPSHOTS_TABLE = 'mql_monthly_snapshots';
 
 class MqlRepository {
+  constructor() {
+    this.repeatDealsSupported = process.env.MQL_ENABLE_REPEAT_DEALS !== '0';
+  }
+
   async bulkUpsertLeads(leads = []) {
     if (!leads.length) {
       return { inserted: 0 };
@@ -39,7 +44,6 @@ class MqlRepository {
       pipedrive_mql: data.pipedriveMql,
       combined_mql: data.combinedMql,
       won_deals: data.wonDeals,
-      repeat_deals: data.repeatDeals || 0,
       closed_deals: data.closedDeals,
       marketing_expense: data.marketingExpense,
       subscribers: data.subscribers,
@@ -54,9 +58,31 @@ class MqlRepository {
       updated_at: new Date().toISOString()
     };
 
+    if (!this.repeatDealsSupported) {
+      delete payload.repeat_deals;
+    } else {
+      payload.repeat_deals = data.repeatDeals || 0;
+    }
+
     const { error } = await supabase.from(SNAPSHOTS_TABLE).upsert(payload, {
       onConflict: 'year,month'
     });
+
+    if (error && this.repeatDealsSupported && this._isRepeatDealsMissingError(error)) {
+      this.repeatDealsSupported = false;
+      logger.warn(
+        "Supabase 'repeat_deals' column missing; disabling repeat deal persistence until migration runs",
+        { error: error.message }
+      );
+      delete payload.repeat_deals;
+      const retry = await supabase.from(SNAPSHOTS_TABLE).upsert(payload, {
+        onConflict: 'year,month'
+      });
+      if (retry.error) {
+        throw new Error(`Failed to upsert snapshot: ${retry.error.message}`);
+      }
+      return;
+    }
 
     if (error) {
       throw new Error(`Failed to upsert snapshot: ${error.message}`);
@@ -113,6 +139,11 @@ class MqlRepository {
     return data;
   }
 }
+
+MqlRepository.prototype._isRepeatDealsMissingError = function (error) {
+  if (!error?.message) return false;
+  return error.message.includes("repeat_deals");
+};
 
 module.exports = new MqlRepository();
 

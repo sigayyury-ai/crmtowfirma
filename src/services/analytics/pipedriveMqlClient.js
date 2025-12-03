@@ -31,6 +31,8 @@ class PipedriveMqlClient {
     this.customerPersonLabelId = String(
       options.customerPersonLabelId || mqlConfig.pipedriveCustomerPersonLabelId || ''
     ).trim();
+    this.sendpulseIdFieldKey =
+      options.sendpulseIdFieldKey || mqlConfig.pipedriveSendpulseIdField || null;
   }
 
   async fetchMqlDeals(options = {}) {
@@ -117,6 +119,7 @@ class PipedriveMqlClient {
     const personLabel = this._extractPersonLabel(person);
     const personLabelId = this._extractPersonLabelId(person);
     const isRepeatCustomer = this._isCustomerPerson(personLabel, personLabelId);
+    const sendpulseId = this._extractSendpulseId(person);
 
     return {
       id: deal.id,
@@ -144,7 +147,8 @@ class PipedriveMqlClient {
       firstSeenMonth: getMonthKey(firstSeenAt),
       personLabel,
       personLabelId,
-      isRepeatCustomer
+      isRepeatCustomer,
+      sendpulseId
     };
   }
 
@@ -230,6 +234,19 @@ class PipedriveMqlClient {
       return true;
     }
     return false;
+  }
+
+  _extractSendpulseId(person = {}) {
+    if (!this.sendpulseIdFieldKey) return null;
+    const raw = person?.[this.sendpulseIdFieldKey];
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === 'string') {
+      return raw.trim() || null;
+    }
+    if (typeof raw === 'number') {
+      return String(raw);
+    }
+    return null;
   }
 
   _parseLabelList(value) {

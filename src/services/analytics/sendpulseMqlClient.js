@@ -6,19 +6,16 @@ const logger = require('../../utils/logger');
 
 const DEFAULT_PAGE_SIZE = Number(process.env.MQL_SENDPULSE_PAGE_SIZE || 100);
 const DEFAULT_TAG = mqlConfig.sendpulseTag;
-const DEFAULT_BOT_ID = mqlConfig.sendpulseBotId;
-const API_URL = 'https://api.sendpulse.com/instagram/contacts/getByTag';
+const BOT_ENDPOINTS = {
+  instagram: 'https://api.sendpulse.com/instagram/contacts/getByTag',
+  telegram: 'https://api.sendpulse.com/telegram/contacts/getByTag'
+};
 
 class SendpulseMqlClient {
   constructor(options = {}) {
     this.tag = options.tag || DEFAULT_TAG;
-    this.botId = options.botId || DEFAULT_BOT_ID;
+    this.bots = this._resolveBots(options);
     this.pageSize = Number(options.pageSize || DEFAULT_PAGE_SIZE);
-
-    if (!this.botId) {
-      throw new Error('SENDPULSE_INSTAGRAM_BOT_ID must be configured to fetch Instagram contacts');
-    }
-
     this.sendpulseClient = new SendPulseClient();
   }
 
@@ -37,55 +34,19 @@ class SendpulseMqlClient {
     const headers = { Authorization: `Bearer ${token}` };
     const contacts = [];
 
-    let nextUrl = API_URL;
-    let params = {
-      tag: this.tag,
-      bot_id: this.botId,
-      limit: this.pageSize
-    };
-
-    while (nextUrl) {
-      const requestConfig = {
+    for (const bot of this.bots) {
+      const endpoint = BOT_ENDPOINTS[bot.type];
+      if (!endpoint) {
+        logger.warn('Unsupported SendPulse bot type, skipping', bot);
+        continue;
+      }
+      const botContacts = await this._fetchBotContacts({
+        endpoint,
+        bot,
         headers,
         signal
-      };
-
-      if (params) {
-        requestConfig.params = params;
-      }
-
-      logger.info('Fetching SendPulse contacts', { url: nextUrl, params });
-
-      let response;
-      try {
-        response = await axios.get(nextUrl, requestConfig);
-      } catch (error) {
-        if (error.response?.status === 404) {
-          logger.warn('SendPulse pagination link returned 404, stopping early', {
-            url: nextUrl
-          });
-          break;
-        }
-        throw error;
-      }
-
-      const payload = Array.isArray(response.data?.data)
-        ? response.data.data
-        : Array.isArray(response.data?.contacts)
-        ? response.data.contacts
-        : Array.isArray(response.data)
-        ? response.data
-        : [];
-
-      payload.forEach((entry) => contacts.push(this._normalize(entry)));
-
-      let nextLink = response.data?.links?.next;
-      if (nextLink) {
-        nextUrl = nextLink.replace('http://', 'https://');
-        params = null;
-      } else {
-        nextUrl = null;
-      }
+      });
+      contacts.push(...botContacts);
     }
 
     const result = {
@@ -104,12 +65,78 @@ class SendpulseMqlClient {
     return result;
   }
 
-  _normalize(contact = {}) {
+  async _fetchBotContacts({ endpoint, bot, headers, signal }) {
+    const contacts = [];
+    let nextUrl = endpoint;
+    let params = {
+      tag: this.tag,
+      bot_id: bot.botId,
+      limit: this.pageSize
+    };
+
+    while (nextUrl) {
+      const requestConfig = {
+        headers,
+        signal
+      };
+
+      if (params) {
+        requestConfig.params = params;
+      }
+
+      logger.info('Fetching SendPulse contacts', {
+        url: nextUrl,
+        params,
+        botType: bot.type
+      });
+
+      let response;
+      try {
+        response = await axios.get(nextUrl, requestConfig);
+      } catch (error) {
+        if (error.response?.status === 404) {
+          logger.warn('SendPulse pagination link returned 404, stopping early', {
+            url: nextUrl,
+            botType: bot.type
+          });
+          break;
+        }
+        throw error;
+      }
+
+      const payload = Array.isArray(response.data?.data)
+        ? response.data.data
+        : Array.isArray(response.data?.contacts)
+        ? response.data.contacts
+        : Array.isArray(response.data)
+        ? response.data
+        : [];
+
+      payload.forEach((entry) => contacts.push(this._normalize(entry, bot)));
+
+      let nextLink = response.data?.links?.next;
+      if (nextLink) {
+        nextUrl = nextLink.replace('http://', 'https://');
+        params = null;
+      } else {
+        nextUrl = null;
+      }
+    }
+
+    return contacts;
+  }
+
+  _normalize(contact = {}, bot) {
     const channel = contact.channel_data || {};
+    const rawId = contact.id || channel.id;
+    const scopedExternalId = rawId ? `${bot.type}:${rawId}` : null;
 
     return {
       source: 'sendpulse',
-      externalId: contact.id || channel.id,
+      botType: bot.type,
+      botId: bot.botId,
+      externalId: scopedExternalId || rawId,
+      sendpulseId: rawId ? String(rawId) : null,
       instagramId: channel.id,
       username: channel.user_name,
       firstName: channel.first_name || channel.name || null,
@@ -123,6 +150,23 @@ class SendpulseMqlClient {
       isVerified: channel.is_verified_user || false,
       raw: contact
     };
+  }
+  _resolveBots(options) {
+    if (Array.isArray(options.bots) && options.bots.length) {
+      return options.bots;
+    }
+
+    if (Array.isArray(mqlConfig.sendpulseBots) && mqlConfig.sendpulseBots.length) {
+      return mqlConfig.sendpulseBots;
+    }
+
+    if (mqlConfig.sendpulseBotId) {
+      return [{ type: 'instagram', botId: mqlConfig.sendpulseBotId }];
+    }
+
+    throw new Error(
+      'No SendPulse bots configured. Set SENDPULSE_INSTAGRAM_BOT_ID or SENDPULSE_TELEGRAM_BOT_ID.'
+    );
   }
 }
 

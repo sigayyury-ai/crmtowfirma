@@ -7,13 +7,16 @@ const tableWrapper = document.getElementById('table-wrapper');
 const sendpulseSyncEl = document.getElementById('sendpulse-sync');
 const pipedriveSyncEl = document.getElementById('pipedrive-sync');
 
+const initialState = deriveInitialState();
 const state = {
-  view: 'source',
-  year: Number(yearSelect?.value) || new Date().getFullYear()
+  view: initialState.view,
+  year: initialState.year
 };
 
 const summaryCache = new Map();
 let currentSummary = null;
+
+applyInitialFormState();
 
 async function loadSummary(year) {
   const cacheKey = String(year);
@@ -240,11 +243,20 @@ function buildMqlAccordionRows(months, dataset, totals) {
 }
 
 function renderChannelRows(body, months, dataset, totals) {
-  const fallbackKeys = Object.keys(dataset.channels[months[0]] || {});
-  let channelKeys = CHANNELS.filter((key) => dataset.channels[months[0]]?.[key] !== undefined);
-  if (channelKeys.length === 0) {
-    channelKeys = fallbackKeys;
+  const detectedKeys = new Set();
+  months.forEach((month) => {
+    Object.keys(dataset.channels[month] || {}).forEach((key) => detectedKeys.add(key));
+  });
+
+  let channelKeys;
+  if (detectedKeys.size > 0) {
+    const orderedDefaults = CHANNELS.filter((key) => detectedKeys.has(key));
+    const customKeys = Array.from(detectedKeys).filter((key) => !CHANNELS.includes(key));
+    channelKeys = [...orderedDefaults, ...customKeys];
+  } else {
+    channelKeys = [...CHANNELS];
   }
+
   channelKeys.forEach((channel) => {
     const tr = document.createElement('tr');
     const labelTd = document.createElement('td');
@@ -253,7 +265,8 @@ function renderChannelRows(body, months, dataset, totals) {
 
     months.forEach((month) => {
       const td = document.createElement('td');
-      td.textContent = formatNumber(dataset.channels[month][channel]);
+      const monthChannels = dataset.channels[month] || {};
+      td.textContent = formatNumber(monthChannels[channel] ?? 0);
       tr.appendChild(td);
     });
     const totalTd = document.createElement('td');
@@ -272,17 +285,28 @@ function updateSyncInfo() {
 function bindEvents() {
   viewButtons.forEach((button) => {
     button.addEventListener('click', () => {
-      viewButtons.forEach((btn) => btn.classList.remove('is-active'));
-      button.classList.add('is-active');
-      state.view = button.dataset.view;
+      const targetView = button.dataset.view;
+      if (!targetView || targetView === state.view) {
+        return;
+      }
+      state.view = targetView;
+      setActiveViewButton();
+      commitUrlState();
       renderTable();
     });
   });
 
-  yearSelect.addEventListener('change', (event) => {
-    state.year = Number(event.target.value);
-    loadSummary(state.year);
-  });
+  if (yearSelect) {
+    yearSelect.addEventListener('change', (event) => {
+      const nextYear = Number(event.target.value);
+      if (!Number.isFinite(nextYear) || nextYear === state.year) {
+        return;
+      }
+      state.year = nextYear;
+      commitUrlState();
+      loadSummary(state.year);
+    });
+  }
 
   // rerender automatically without manual refresh button
 }
@@ -293,6 +317,48 @@ function init() {
 }
 
 init();
+
+function deriveInitialState() {
+  const params = new URLSearchParams(window.location.search);
+  const allowedViews = ['source', 'channel'];
+  const defaultYear = Number(yearSelect?.value) || new Date().getFullYear();
+  const viewParam = params.get('view');
+  const view = allowedViews.includes(viewParam) ? viewParam : 'source';
+  const yearParam = Number(params.get('year'));
+  const year = Number.isFinite(yearParam) ? yearParam : defaultYear;
+  return { view, year };
+}
+
+function applyInitialFormState() {
+  if (yearSelect) {
+    const years = Array.from(yearSelect.options).map((option) => Number(option.value));
+    if (!years.includes(state.year)) {
+      const opt = document.createElement('option');
+      opt.value = String(state.year);
+      opt.textContent = state.year;
+      yearSelect.appendChild(opt);
+    }
+    yearSelect.value = String(state.year);
+  }
+  setActiveViewButton();
+}
+
+function setActiveViewButton() {
+  viewButtons.forEach((button) => {
+    if (button.dataset.view === state.view) {
+      button.classList.add('is-active');
+    } else {
+      button.classList.remove('is-active');
+    }
+  });
+}
+
+function commitUrlState() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('view', state.view);
+  url.searchParams.set('year', state.year);
+  window.history.replaceState({}, '', `${url.pathname}?${url.searchParams.toString()}`);
+}
 
 function getRowValue(row, dataset, month) {
   if (row.source) {

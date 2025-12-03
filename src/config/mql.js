@@ -20,9 +20,31 @@ function parseNumberList(value) {
     .filter((num) => Number.isFinite(num) && num > 0);
 }
 
+const sendpulseTag = process.env.MQL_SENDPULSE_TAG || 'Mql';
+const sendpulseInstagramBotId =
+  process.env.SENDPULSE_INSTAGRAM_BOT_ID || '65ec7b3f08090e12cd01a7ca';
+const sendpulseTelegramBotId = process.env.SENDPULSE_TELEGRAM_BOT_ID || null;
+
+const sendpulseBots = [];
+if (sendpulseInstagramBotId) {
+  sendpulseBots.push({
+    type: 'instagram',
+    botId: sendpulseInstagramBotId
+  });
+}
+if (sendpulseTelegramBotId) {
+  sendpulseBots.push({
+    type: 'telegram',
+    botId: sendpulseTelegramBotId
+  });
+}
+
 module.exports = {
-  sendpulseTag: process.env.MQL_SENDPULSE_TAG || 'Mql',
-  sendpulseBotId: process.env.SENDPULSE_INSTAGRAM_BOT_ID || '65ec7b3f08090e12cd01a7ca',
+  sendpulseTag,
+  sendpulseBotId: sendpulseInstagramBotId,
+  sendpulseInstagramBotId,
+  sendpulseTelegramBotId,
+  sendpulseBots,
   syncLookbackMonths: Number(process.env.MQL_SYNC_LOOKBACK_MONTHS || 24),
   pipedriveLabelId: (process.env.PIPEDRIVE_MQL_LABEL_ID || '25').trim(),
   pipedriveSqlLabelIds: (() => {
@@ -42,6 +64,7 @@ module.exports = {
   pipedriveUtmCampaignField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_CAMPAIGN_FIELD),
   pipedriveCustomerPersonLabel: stringOrNull(process.env.PIPEDRIVE_CUSTOMER_PERSON_LABEL)?.toLowerCase() || null,
   pipedriveCustomerPersonLabelId: stringOrNull(process.env.PIPEDRIVE_CUSTOMER_PERSON_LABEL_ID),
+  pipedriveSendpulseIdField: stringOrNull(process.env.PIPEDRIVE_SENDPULSE_ID_FIELD_KEY) || 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c',
   marketingExpenseCategoryIds: (() => {
     const ids = parseNumberList(process.env.MQL_MARKETING_EXPENSE_CATEGORY_IDS);
     return ids.length ? ids : [20];

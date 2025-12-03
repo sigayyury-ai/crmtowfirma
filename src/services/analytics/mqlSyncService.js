@@ -17,6 +17,9 @@ class MqlSyncService {
         resolveFirstSeenFromFlow: true
       });
     this.pnlExpenseClient = options.pnlExpenseClient || new PnlExpenseClient();
+    this.skipPipedrive = Boolean(
+      options.skipPipedrive ?? (process.env.MQL_SKIP_PIPEDRIVE === '1')
+    );
   }
 
   async run({ year } = {}) {
@@ -24,7 +27,11 @@ class MqlSyncService {
     const dataset = this.createDataset(targetYear);
 
     await this.collectSendpulse(dataset, targetYear);
-    await this.collectPipedrive(dataset, targetYear);
+    if (this.skipPipedrive) {
+      logger.warn('Skipping Pipedrive collection (MQL_SKIP_PIPEDRIVE enabled)');
+    } else {
+      await this.collectPipedrive(dataset, targetYear);
+    }
     await this.collectMarketingExpenses(dataset, targetYear);
     this.applySendpulseBaseline(dataset, targetYear);
     this.updateConversion(dataset);
@@ -69,6 +76,7 @@ class MqlSyncService {
       metrics,
       leads: [],
       dedupe: new Map(),
+      pipedriveSendpulse: new Map(),
       sync: {
         sendpulse: null,
         pipedrive: null,
@@ -112,6 +120,11 @@ class MqlSyncService {
       }
 
       const seenBefore = this.trackLead(dataset, dedupeKey);
+
+      if (this.shouldSkipTelegramContact(dataset, contact, monthKey)) {
+        return;
+      }
+
       monthRow.sendpulse.mql += 1;
       if (!seenBefore) {
         monthRow.combined.mql += 1;
@@ -165,6 +178,7 @@ class MqlSyncService {
 
       this.incrementWonAndClosed(dataset, deal);
       this.incrementRepeatSales(dataset, deal);
+      this.registerPipedriveSendpulse(dataset, deal, monthKey);
 
       dataset.leads.push({
         source: 'pipedrive',
@@ -221,6 +235,41 @@ class MqlSyncService {
     if (row?.combined) {
       row.combined.repeat += 1;
     }
+  }
+
+  registerPipedriveSendpulse(dataset, deal, monthKey) {
+    if (!deal?.sendpulseId || !monthKey) {
+      return;
+    }
+    const key = String(deal.sendpulseId).trim();
+    if (!key.length) {
+      return;
+    }
+    if (!dataset.pipedriveSendpulse.has(key)) {
+      dataset.pipedriveSendpulse.set(key, monthKey);
+    }
+  }
+
+  shouldSkipTelegramContact(dataset, contact, monthKey) {
+    if (contact?.botType !== 'telegram') {
+      return false;
+    }
+    const sendpulseId = contact?.sendpulseId;
+    if (!sendpulseId) {
+      return false;
+    }
+    const linkedMonth = dataset.pipedriveSendpulse.get(String(sendpulseId));
+    if (!linkedMonth) {
+      return false;
+    }
+    if (linkedMonth === monthKey) {
+      const metrics = dataset.metrics[monthKey];
+      if (metrics) {
+        metrics.telegramDedup = (metrics.telegramDedup || 0) + 1;
+      }
+      return true;
+    }
+    return false;
   }
 
   applySendpulseBaseline(dataset, year) {

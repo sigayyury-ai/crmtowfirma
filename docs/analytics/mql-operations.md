@@ -35,10 +35,12 @@ _Last updated: 2025-12-03_
 | `PIPEDRIVE_API_TOKEN` | CRM access for MQL/SQL deals + `getDealFlow`. |
 | `SENDPULSE_ID` / `SENDPULSE_SECRET` | OAuth client for Instagram bot API. |
 | `SENDPULSE_INSTAGRAM_BOT_ID` | Defaults to `65ec7b3f08090e12cd01a7ca`. |
+| `SENDPULSE_TELEGRAM_BOT_ID` | Optional second bot (`bots telegram ...`). |
 | `MQL_SENDPULSE_TAG` | Defaults to `Mql`. |
 | `MQL_SYNC_LOOKBACK_MONTHS` | How far back the cron refreshes (min 12). |
 | `PIPEDRIVE_MQL_LABEL_ID`, `PIPEDRIVE_SQL_LABEL_IDS` | Deal labels to include. |
 | `PIPEDRIVE_CONVERSATION_STAGE_IDS` | Stage IDs where MQL labels usually get applied. |
+| `PIPEDRIVE_SENDPULSE_ID_FIELD_KEY` | Custom field with SendPulse contact ID for Telegram dedupe (default `ff1aa263…`). |
 | `PIPEDRIVE_CUSTOMER_PERSON_LABEL` / `_ID` | Лейбл у Person, по которому считаем повторные продажи. |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Snapshot persistence. |
 
@@ -80,5 +82,6 @@ _Last updated: 2025-12-03_
 - **Pipedrive won/closed too low**: ensure we ran after daily API reset; check `tmp/pipedrive-mql-sample.json` for `firstSeenMonth`.
 - **August budget spike**: CSV keyword filter currently limited to `FACEBK`, `Google`, `LinkedIn`; update `PnlExpenseClient._appendCsvMarketing`.
 - **Subscribers not persisting**: API returns 200 but UI still shows old value → ensure Supabase row for that month exists (migration applied).
+- **Telegrams counted дважды**: если лид уже стал сделкой и в Pipedrive заполнен SendPulse ID, Telegram источник автоматически вычитается в том же месяце. Если счётчик не меняется — проверьте, что поле `PIPEDRIVE_SENDPULSE_ID_FIELD_KEY` содержит значение и выполнен свежий Pipedrive sync.
 
 
