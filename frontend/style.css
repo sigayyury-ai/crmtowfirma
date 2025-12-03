@@ -2063,6 +2063,36 @@ h2 {
     color: #2d3748;
 }
 
+.vat-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.vat-summary-card {
+    flex: 1 1 160px;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 10px;
+    padding: 12px 14px;
+    background: #f8fafc;
+}
+
+.vat-summary-card .label {
+    display: block;
+    font-size: 0.8rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+}
+
+.vat-summary-card .value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #0f172a;
+}
+
 .invoices-detail td {
     background: #f7fafc;
     padding: 20px;

@@ -346,7 +346,9 @@ class ProductReportService {
       proformas,
       stripeTotals,
       stripePayments,
-      linkedPayments
+      linkedPayments,
+      expenseTotals: this.calculateExpenseTotals(linkedPayments),
+      participantsCount: this.calculateParticipantsCount(proformas, stripePayments)
     };
   }
 
@@ -1124,7 +1126,11 @@ class ProductReportService {
           manual_proforma_fullnumber,
           income_category_id,
           expense_category_id,
-          source
+          source,
+          expense_category:expense_category_id (
+            id,
+            name
+          )
         )
       `)
       .eq('product_id', productId)
@@ -1155,7 +1161,9 @@ class ProductReportService {
           manualProforma: payment.manual_proforma_fullnumber || null,
           source: payment.source || null,
           linkedBy: row.linked_by || null,
-          linkedAt: row.linked_at || null
+          linkedAt: row.linked_at || null,
+          expenseCategoryId: payment.expense_category_id || null,
+          expenseCategoryName: payment.expense_category?.name || null
         };
       })
       .filter((item) => Number.isFinite(item.amount));
@@ -1186,6 +1194,39 @@ class ProductReportService {
     }
 
     return data || [];
+  }
+
+  calculateExpenseTotals(linkedPayments) {
+    const totals = {
+      currencyTotals: {},
+      totalPln: 0
+    };
+
+    if (!linkedPayments || !Array.isArray(linkedPayments.outgoing)) {
+      return totals;
+    }
+
+    linkedPayments.outgoing.forEach((item) => {
+      const amount = toNumber(item.amount);
+      if (!Number.isFinite(amount)) {
+        return;
+      }
+      const currency = (item.currency || 'PLN').toUpperCase();
+      totals.currencyTotals[currency] = (totals.currencyTotals[currency] || 0) + amount;
+      if (currency === 'PLN') {
+        totals.totalPln += amount;
+      }
+    });
+
+    totals.currencyTotals = roundCurrencyMap(totals.currencyTotals);
+    totals.totalPln = Number(totals.totalPln.toFixed(2));
+    return totals;
+  }
+
+  calculateParticipantsCount(proformas, stripePayments) {
+    const proformaCount = Array.isArray(proformas) ? proformas.length : 0;
+    const stripeCount = Array.isArray(stripePayments) ? stripePayments.length : 0;
+    return proformaCount + stripeCount;
   }
 }
 

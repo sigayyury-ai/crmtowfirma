@@ -43,6 +43,7 @@ function cacheDom() {
     proformasContainer: document.getElementById('product-proformas'),
     linkedPaymentsContainer: document.getElementById('product-linked-payments'),
     stripePaymentsContainer: document.getElementById('product-stripe-payments'),
+    vatMarginTable: document.getElementById('vat-margin-table'),
     alertBox: document.getElementById('product-alert'),
     payerModal: document.getElementById('product-payer-modal'),
     payerModalTitle: document.getElementById('product-payer-title'),
@@ -239,6 +240,8 @@ function renderProductDetail() {
     isStripeOnly: isStripeOnlyProduct
   });
   renderLinkedPaymentsTables(productDetail.linkedPayments || {});
+
+  renderVatMarginTable(productDetail);
 }
 
 function exportProductDetailCsv() {
@@ -247,39 +250,58 @@ function exportProductDetailCsv() {
     return;
   }
 
-  const rows = Array.isArray(productDetail.proformas) ? productDetail.proformas : [];
-  if (!rows.length) {
-    showAlert('info', 'Проформы отсутствуют, экспорт невозможен');
-    return;
-  }
-
   const headers = [
     'Продукт',
-    'Проформа',
+    'Источник',
     'Контрагент',
     'Дата',
-    'Сумма (оригинал)',
+    'Сумма (ориг.)',
     'Сумма (PLN)',
     'Оплачено (PLN)',
-    'Статус оплаты',
+    'Статус',
     'Deal ID'
   ];
 
-  const csvRows = rows.map((item) => {
-    return [
+  const rows = [];
+
+  (productDetail.proformas || []).forEach((item) => {
+    rows.push([
       productDetail.productName || '',
       item.fullnumber || '',
       item.buyerName || item.buyerAltName || '',
       formatDate(item.date),
-      item.total || 0,
-      item.totalPln || 0,
-      item.paidPln || 0,
+      Number(item.total || 0),
+      Number(item.totalPln || 0),
+      Number(item.paidPln || 0),
       paymentStatusLabels[item.paymentStatus] || item.paymentStatus || '',
       item.dealId || ''
-    ];
+    ]);
   });
 
-  const csvContent = [headers, ...csvRows]
+  (productDetail.stripePayments || []).forEach((payment) => {
+    const name = payment.customerName || payment.companyName || payment.customerEmail || 'Stripe клиент';
+    const identifier = payment.sessionId
+      ? `Stripe ${payment.sessionId}`
+      : `Stripe ${payment.paymentType || ''}`.trim();
+    rows.push([
+      productDetail.productName || '',
+      identifier,
+      name,
+      formatDate(payment.createdAt),
+      Number(payment.amount || 0),
+      Number(payment.amountPln || payment.amount || 0),
+      Number(payment.amountPln || payment.amount || 0),
+      payment.paymentType || 'Stripe',
+      payment.stripe_deal_id || ''
+    ]);
+  });
+
+  if (!rows.length) {
+    showAlert('info', 'Нет данных для экспорта');
+    return;
+  }
+
+  const csvContent = [headers, ...rows]
     .map((row) => row.map((cell) => {
       const value = cell === undefined || cell === null ? '' : String(cell);
       if (value.includes('"') || value.includes(',') || value.includes('\n')) {
@@ -307,6 +329,8 @@ function renderSummaryCards(detail) {
   if (!elements.summaryContainer) return;
 
   const totals = detail.totals || {};
+  const expenseTotals = detail.expenseTotals?.currencyTotals
+    || calculateExpenseTotals(detail.linkedPayments).currencyTotals;
   const summaryItems = [
     {
       label: 'Суммарная выручка (PLN)',
@@ -323,6 +347,10 @@ function renderSummaryCards(detail) {
     {
       label: 'Платежей Stripe',
       value: (detail.stripeTotals?.paymentsCount || 0).toLocaleString('ru-RU')
+    },
+    {
+      label: 'Расходы (привязанные)',
+      value: Object.keys(expenseTotals).length ? formatCurrencyMap(expenseTotals) : '0 PLN'
     }
   ];
 
@@ -444,6 +472,134 @@ function renderLinkedPaymentsTables(linkedPayments) {
   }
 
   elements.linkedPaymentsContainer.innerHTML = sections.join('');
+}
+
+function renderVatMarginTable(detail) {
+  if (!detail || !elements.vatMarginTable) {
+    return;
+  }
+
+  const participants = buildParticipantsList(detail);
+  if (!participants.length) {
+    elements.vatMarginTable.innerHTML = '<div class="placeholder">Недостаточно данных для расчёта VAT</div>';
+    return;
+  }
+
+  const totalExpensesPln = detail.expenseTotals?.totalPln
+    ?? calculateExpenseTotals(detail.linkedPayments).totalPln
+    ?? 0;
+  const expensesPerParticipant = participants.length > 0
+    ? Number((totalExpensesPln / participants.length).toFixed(2))
+    : 0;
+
+  const vatRate = 0.23;
+  let totalVat = 0;
+  let totalAmount = 0;
+
+  const rows = participants.map((participant) => {
+    const margin = Number((participant.amountPln - expensesPerParticipant).toFixed(2));
+    const vat = Number((margin * vatRate).toFixed(2));
+    totalVat += vat;
+    totalAmount += participant.amountPln;
+    return `
+      <tr>
+        <td>${escapeHtml(participant.name)}</td>
+        <td class="numeric">${formatCurrency(participant.amountPln, 'PLN')}</td>
+        <td class="numeric">${formatCurrency(expensesPerParticipant, 'PLN')}</td>
+        <td class="numeric">${formatCurrency(margin, 'PLN')}</td>
+        <td class="numeric">${(vatRate * 100).toFixed(0)}%</td>
+        <td class="numeric">${formatCurrency(vat, 'PLN')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const totalExpenses = Number((expensesPerParticipant * participants.length).toFixed(2));
+  const totalMargin = Number((totalAmount - totalExpenses).toFixed(2));
+
+  elements.vatMarginTable.innerHTML = `
+    <table class="detail-table vat-margin-table">
+      <thead>
+        <tr>
+          <th>Имя участника</th>
+          <th>Сумма</th>
+          <th>Расходы</th>
+          <th>Маржа</th>
+          <th>VAT</th>
+          <th>VAT к оплате</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td>Итого</td>
+          <td class="numeric">${formatCurrency(totalAmount, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(totalExpenses, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(totalMargin, 'PLN')}</td>
+          <td class="numeric">${(vatRate * 100).toFixed(0)}%</td>
+          <td class="numeric">${formatCurrency(totalVat, 'PLN')}</td>
+        </tr>
+      </tfoot>
+    </table>
+    <div class="vat-summary">
+      <div class="vat-summary-card">
+        <span class="label">Всего расходов</span>
+        <span class="value">${formatCurrency(totalExpenses, 'PLN')}</span>
+      </div>
+      <div class="vat-summary-card">
+        <span class="label">Расход на участника</span>
+        <span class="value">${formatCurrency(expensesPerParticipant, 'PLN')}</span>
+      </div>
+      <div class="vat-summary-card">
+        <span class="label">Количество участников</span>
+        <span class="value">${participants.length}</span>
+      </div>
+    </div>
+  `;
+}
+
+function buildParticipantsList(detail) {
+  const participants = [];
+
+  (detail.proformas || []).forEach((item) => {
+    const amountPln = Number(item.paidPln || item.totalPln || 0);
+    participants.push({
+      name: item.buyerName || item.buyerAltName || item.fullnumber || '—',
+      amountPln
+    });
+  });
+
+  (detail.stripePayments || []).forEach((payment) => {
+    const amountPln = Number(payment.amountPln || 0);
+    const name = payment.customerName || payment.companyName || payment.customerEmail || 'Stripe клиент';
+    participants.push({
+      name,
+      amountPln
+    });
+  });
+
+  return participants.filter((p) => Number.isFinite(p.amountPln) && p.amountPln > 0);
+}
+
+function calculateExpenseTotals(linkedPayments) {
+  const totals = {
+    currencyTotals: {},
+    totalPln: 0
+  };
+  const expenses = linkedPayments?.outgoing || [];
+
+  expenses.forEach((item) => {
+    const amount = Number(item.amount);
+    if (!Number.isFinite(amount)) return;
+    const currency = (item.currency || 'PLN').toUpperCase();
+    totals.currencyTotals[currency] = (totals.currencyTotals[currency] || 0) + amount;
+    if (currency === 'PLN') {
+      totals.totalPln += amount;
+    }
+  });
+
+  return totals;
 }
 
 function createLinkedPaymentsSection(title, items, options = {}) {
