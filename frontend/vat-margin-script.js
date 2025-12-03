@@ -1474,6 +1474,10 @@ function renderPaymentReport(groups) {
         ? `<div class="deal-link-wrapper"><a class="deal-link" href="${proforma.pipedrive_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a></div>`
         : '';
 
+      const stripeDealLink = !proforma && entry.stripe_deal_url && entry.stripe_deal_id
+        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${entry.stripe_deal_url}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(entry.stripe_deal_id))}</a></div>`
+        : '';
+
       const proformaCell = proforma
         ? `
           <div class="proforma-info">
@@ -1481,7 +1485,7 @@ function renderPaymentReport(groups) {
             ${dealLink}
           </div>
         `
-        : '—';
+        : (stripeDealLink || '—');
 
       const firstDate = entry.first_payment_date ? formatDate(entry.first_payment_date) : null;
       const lastDate = entry.last_payment_date ? formatDate(entry.last_payment_date) : null;

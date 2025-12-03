@@ -38,6 +38,7 @@ function cacheDom() {
     statusSelect: document.getElementById('detail-status'),
     dueMonthInput: document.getElementById('detail-due-month'),
     saveButton: document.getElementById('product-save-status'),
+    exportButton: document.getElementById('product-export-csv'),
     summaryContainer: document.getElementById('product-summary'),
     proformasContainer: document.getElementById('product-proformas'),
     linkedPaymentsContainer: document.getElementById('product-linked-payments'),
@@ -69,6 +70,10 @@ function bindEvents() {
       await saveProductStatus();
     });
   }
+
+  elements.exportButton?.addEventListener('click', () => {
+    exportProductDetailCsv();
+  });
 
   elements.proformasContainer?.addEventListener('click', (event) => {
     const trigger = event.target.closest('[data-payer-action="show-payments"]');
@@ -234,6 +239,68 @@ function renderProductDetail() {
     isStripeOnly: isStripeOnlyProduct
   });
   renderLinkedPaymentsTables(productDetail.linkedPayments || {});
+}
+
+function exportProductDetailCsv() {
+  if (!productDetail) {
+    showAlert('info', 'Нет данных для экспорта');
+    return;
+  }
+
+  const rows = Array.isArray(productDetail.proformas) ? productDetail.proformas : [];
+  if (!rows.length) {
+    showAlert('info', 'Проформы отсутствуют, экспорт невозможен');
+    return;
+  }
+
+  const headers = [
+    'Продукт',
+    'Проформа',
+    'Контрагент',
+    'Дата',
+    'Сумма (оригинал)',
+    'Сумма (PLN)',
+    'Оплачено (PLN)',
+    'Статус оплаты',
+    'Deal ID'
+  ];
+
+  const csvRows = rows.map((item) => {
+    return [
+      productDetail.productName || '',
+      item.fullnumber || '',
+      item.buyerName || item.buyerAltName || '',
+      formatDate(item.date),
+      item.total || 0,
+      item.totalPln || 0,
+      item.paidPln || 0,
+      paymentStatusLabels[item.paymentStatus] || item.paymentStatus || '',
+      item.dealId || ''
+    ];
+  });
+
+  const csvContent = [headers, ...csvRows]
+    .map((row) => row.map((cell) => {
+      const value = cell === undefined || cell === null ? '' : String(cell);
+      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    }).join(','))
+    .join('\n');
+
+  const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const safeName = (productDetail.productName || 'product')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  anchor.href = url;
+  anchor.download = `${safeName}_detail.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function renderSummaryCards(detail) {

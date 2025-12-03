@@ -12,6 +12,14 @@ function normalizeWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+function normalizeKeyValue(value, fallback = 'unknown') {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return fallback;
+  }
+  return normalized.toLowerCase();
+}
+
 function normalizeProductKey(name) {
   if (!name) return 'без названия';
   return normalizeWhitespace(String(name))
@@ -112,6 +120,14 @@ function buildDealUrl(dealId) {
   const trimmed = String(dealId).trim();
   if (!trimmed) return null;
   return `${CRM_DEAL_BASE_URL}${encodeURIComponent(trimmed)}`;
+}
+
+function buildStripeAggregateKey(payment, productKey) {
+  const payerKey = normalizeKeyValue(payment.payer_normalized_name || payment.payer_name);
+  const dealKey = payment.stripe_deal_id ? `deal:${payment.stripe_deal_id}` : 'deal:none';
+  const productPart = productKey || 'product:unknown';
+  const sourcePart = payment.source || 'stripe';
+  return `${sourcePart}:${payerKey}:${productPart}:${dealKey}`;
 }
 
 function escapeCsv(value) {
@@ -609,11 +625,23 @@ class PaymentRevenueReportService {
         group.totals.proforma_ids.add(proformaInfo.id);
       }
 
-      const aggregateKey = proformaInfo?.id ? `proforma:${proformaInfo.id}` : `payment:${payment.id}`;
+      let aggregateKey;
+      const isStripeLike = (payment.source === 'stripe' || payment.source === 'stripe_event');
+      const hasStripeGrouping = isStripeLike && (payment.payer_name || payment.payer_normalized_name);
+      if (hasStripeGrouping) {
+        aggregateKey = buildStripeAggregateKey(payment, productKey);
+      } else if (proformaInfo?.id) {
+        aggregateKey = `proforma:${proformaInfo.id}`;
+      } else {
+        aggregateKey = `payment:${payment.id}`;
+      }
       if (!group.aggregates.has(aggregateKey)) {
         group.aggregates.set(aggregateKey, {
           key: aggregateKey,
           proforma: proformaInfo,
+          source: payment.source || null,
+          stripe_deal_id: null,
+          stripe_deal_url: null,
           totals: {
             payment_count: 0,
             currency_totals: {},
@@ -627,6 +655,9 @@ class PaymentRevenueReportService {
       }
 
       const aggregate = group.aggregates.get(aggregateKey);
+      if (proformaInfo && !aggregate.proforma) {
+        aggregate.proforma = proformaInfo;
+      }
       aggregate.payments.push(paymentEntry);
       aggregate.totals.payment_count += 1;
       if (paymentEntry.currency) {
@@ -635,6 +666,13 @@ class PaymentRevenueReportService {
       }
       if (Number.isFinite(paymentEntry.amount_pln)) {
         aggregate.totals.pln_total += paymentEntry.amount_pln;
+      }
+
+      if (!aggregate.proforma && (payment.stripe_deal_id || payment.stripe_deal_url)) {
+        if (payment.stripe_deal_id && !aggregate.stripe_deal_id) {
+          aggregate.stripe_deal_id = payment.stripe_deal_id;
+          aggregate.stripe_deal_url = buildDealUrl(payment.stripe_deal_id);
+        }
       }
 
       if (paymentEntry.payer_name) {
