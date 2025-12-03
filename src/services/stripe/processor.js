@@ -4204,7 +4204,15 @@ class StripeProcessorService {
   async sendPaymentNotificationForDeal(dealId, options = {}) {
     const { paymentSchedule, sessions = [], currency, totalAmount } = options;
     const sessionsAmount = sessions.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
-    const effectiveTotalAmount = sessions.length > 0 ? sessionsAmount : totalAmount;
+    const normalizedTotalAmount =
+      typeof totalAmount === 'number' ? totalAmount : parseFloat(totalAmount) || 0;
+    const dealTotalAmount =
+      normalizedTotalAmount > 0 ? normalizedTotalAmount : (sessionsAmount || 0);
+    const effectiveTotalAmount = sessions.length > 0 ? sessionsAmount : dealTotalAmount;
+    const cashRemainder =
+      dealTotalAmount > 0 && sessionsAmount > 0
+        ? Math.max(dealTotalAmount - sessionsAmount, 0)
+        : 0;
 
     this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
       dealId,
@@ -4321,7 +4329,13 @@ class StripeProcessorService {
       };
 
       // Build message with payment schedule and links (using Markdown formatting)
-      const formatAmount = (amount) => parseFloat(amount).toFixed(2);
+      const formatAmount = (amount) => {
+        const num = Number(amount);
+        if (Number.isNaN(num)) {
+          return '0.00';
+        }
+        return num.toFixed(2);
+      };
 
       let message = '';
       
@@ -4406,6 +4420,20 @@ class StripeProcessorService {
 
       if (sessions.length > 0) {
         message += `\n💡 Нажми на ссылку выше, чтобы перейти к оплате.`;
+      }
+
+      const breakdownLines = [];
+      if (sessionsAmount > 0) {
+        breakdownLines.push(`💳 Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}`);
+      }
+      if (cashRemainder > 0) {
+        breakdownLines.push(`💵 Оплата наличными: ${formatAmount(cashRemainder)} ${currency}`);
+      }
+      if (dealTotalAmount > 0 && breakdownLines.length > 0) {
+        breakdownLines.push(`Σ Итого: ${formatAmount(dealTotalAmount)} ${currency}`);
+      }
+      if (breakdownLines.length > 0) {
+        message += `\n\nФактическая разбивка платежа:\n${breakdownLines.join('\n')}`;
       }
 
       // Send message via SendPulse

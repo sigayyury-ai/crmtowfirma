@@ -1312,11 +1312,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 });
 
               if (depositResult.success && depositResult.sessionId) {
+                const depositSessionAmount =
+                  typeof depositResult.amount === 'number'
+                    ? depositResult.amount
+                    : parseFloat(depositResult.amount) || depositAmount;
                 sessions.push({
                   id: depositResult.sessionId,
                   url: depositResult.sessionUrl,
                   type: 'deposit',
-                  amount: depositAmount
+                  amount: depositSessionAmount
                 });
                 logger.info(`✅ Первый платеж создан | Deal: ${dealId} | Session ID: ${depositResult.sessionId} | URL: ${depositResult.sessionUrl || 'нет'}`);
               } else {
@@ -1371,11 +1375,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 });
 
                 if (restResult.success && restResult.sessionId) {
+                  const restSessionAmount =
+                    typeof restResult.amount === 'number'
+                      ? restResult.amount
+                      : parseFloat(restResult.amount) || restAmount;
                   sessions.push({
                     id: restResult.sessionId,
                     url: restResult.sessionUrl,
                     type: 'rest',
-                    amount: restAmount
+                    amount: restSessionAmount
                   });
                   logger.info(`✅ Второй платеж создан | Deal: ${dealId} | Session ID: ${restResult.sessionId} | URL: ${restResult.sessionUrl || 'нет'}`);
                 } else {
@@ -1429,11 +1437,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 });
 
                 if (result.success && result.sessionId) {
+                  const singleSessionAmount =
+                    typeof result.amount === 'number'
+                      ? result.amount
+                      : parseFloat(result.amount) || totalAmount;
                   sessions.push({
                     id: result.sessionId,
                     url: result.sessionUrl,
                     type: 'single',
-                    amount: totalAmount
+                    amount: singleSessionAmount
                   });
                   logger.info(`✅ Платеж создан | Deal: ${dealId} | Session ID: ${result.sessionId} | URL: ${result.sessionUrl || 'нет'}`);
                 } else {
