@@ -123,6 +123,11 @@ app.get(
   requireAuth,
   sendPage('stripe-event-report/index.html')
 );
+app.get(
+  ['/analytics', '/analytics/', '/analytics/mql-report.html'],
+  requireAuth,
+  sendPage('analytics/mql-report.html')
+);
 
 // API роуты - защищены авторизацией
 app.use('/api', apiRoutes);

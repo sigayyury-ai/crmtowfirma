@@ -15,6 +15,7 @@ const ProductReportService = require('../services/vatMargin/productReportService
 const DeletedProformaReportService = require('../services/deletedProformaReportService');
 const stripeRouter = require('./stripe');
 const stripeEventReportRouter = require('./stripeEventReport');
+const analyticsRouter = require('./analytics');
 const { requireStripeAccess } = require('../middleware/auth');
 const stripeService = require('../services/stripe/service');
 const stripeAnalyticsService = require('../services/stripe/analyticsService');
@@ -670,6 +671,7 @@ router.get('/stripe-health', async (req, res) => {
 
 router.use('/stripe', requireStripeAccess, stripeRouter);
 router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
+router.use('/analytics', analyticsRouter);
 
 // ==================== PIPEDRIVE ENDPOINTS ====================
 

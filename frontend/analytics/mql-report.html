@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marketing Analytics · Monthly MQL Dashboard</title>
+    <link rel="stylesheet" href="../style.css" />
+    <style>
+      .view-toggle {
+        display: inline-flex;
+        border: 1px solid #d0d5dd;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+      .view-toggle button {
+        border: none;
+        background: transparent;
+        padding: 8px 20px;
+        font-weight: 600;
+        cursor: pointer;
+        color: #475467;
+      }
+      .view-toggle button.is-active {
+        background: #111827;
+        color: #ffffff;
+      }
+      .mql-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      .mql-table th,
+      .mql-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid #e5e7f1;
+        text-align: right;
+      }
+      .mql-table th:first-child,
+      .mql-table td:first-child {
+        text-align: left;
+        font-weight: 600;
+        min-width: 260px;
+      }
+      .mql-table .row-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .mql-table .collapse-toggle {
+        background: none;
+        border: none;
+        padding: 4px 8px;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+        font-size: 0.85em;
+        margin-left: -4px;
+        color: #475569;
+      }
+      .mql-table .collapse-toggle:hover {
+        background-color: rgba(0, 0, 0, 0.06);
+      }
+      .mql-table .collapse-icon {
+        display: inline-block;
+        transition: transform 0.2s;
+      }
+      .mql-table .mql-accordion-header {
+        background: #f8fafc;
+        cursor: pointer;
+      }
+      .mql-table .mql-accordion-header td {
+        background: #f8fafc;
+      }
+      .mql-table .mql-accordion-content {
+        display: none;
+        background: #fff;
+      }
+      .mql-table .mql-accordion-content .row-label {
+        padding-left: 32px;
+        color: #475569;
+      }
+      .mql-table .mql-accordion-header.is-open .collapse-icon {
+        transform: rotate(90deg);
+      }
+      .subscriber-cell {
+        cursor: pointer;
+        color: #0f172a;
+      }
+      .subscriber-cell.editing {
+        padding: 4px 6px;
+      }
+      .subscriber-cell input {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 4px;
+        padding: 4px 6px;
+        font-size: 13px;
+      }
+      .sync-grid {
+        display: flex;
+        gap: 32px;
+      }
+      .sync-grid strong {
+        display: block;
+        font-size: 18px;
+        margin-bottom: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container pnl-container-fullwidth">
+      <nav class="main-nav">
+        <a href="/pnl-report.html" class="nav-link">PNL</a>
+        <a href="/analytics/mql-report.html" class="nav-link active">Marketing</a>
+        <a href="/" class="nav-link">Настройки</a>
+      </nav>
+
+      <section class="pnl-report-section">
+        <div class="section-header">
+          <div>
+            <h2>Marketing</h2>
+          </div>
+          <div class="controls">
+            <div class="year-selector-group">
+              <label for="year-select" class="year-label">Год:</label>
+              <select id="year-select" class="year-select" aria-label="Выберите год отчёта">
+                <option value="2025" selected>2025</option>
+                <option value="2024">2024</option>
+                <option value="2026">2026</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-header" style="margin-top: 12px">
+          <div class="view-toggle" role="group" aria-label="Переключить представление">
+            <button class="is-active" data-view="source">Источники</button>
+            <button data-view="channel">Каналы (UTM)</button>
+          </div>
+        </div>
+
+        <div id="table-wrapper" class="pnl-report-table">
+          <div class="placeholder">Загрузка данных отчёта…</div>
+        </div>
+      </section>
+
+      <section class="pnl-settings-section" style="margin-top: 32px">
+        <div class="section-header">
+          <h2>Синхронизация</h2>
+        </div>
+        <div class="sync-grid">
+          <div>
+            <p class="muted">SendPulse</p>
+            <strong id="sendpulse-sync">—</strong>
+            <p class="muted">Последний импорт MQL по тегу</p>
+          </div>
+          <div>
+            <p class="muted">Pipedrive</p>
+            <strong id="pipedrive-sync">—</strong>
+            <p class="muted">Последний импорт сделок с меткой MQL</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <template id="table-template">
+      <table class="mql-table">
+        <thead id="table-head"></thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </template>
+
+    <script src="./mql-report.js" type="module"></script>
+  </body>
+</html>
+
+

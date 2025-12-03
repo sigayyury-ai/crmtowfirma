@@ -580,14 +580,16 @@ function filterExpenses() {
   const categoryFilter = document.getElementById('categoryFilter');
   if (!categoryFilter) return;
   
-  const categoryFilterValue = categoryFilter.value || 'null';
+  const categoryFilterValue = categoryFilter.value;
   let filteredPayments = expensesState.items.filter((payment) => payment.direction === 'out');
 
   if (categoryFilterValue === 'null') {
     filteredPayments = filteredPayments.filter((payment) => !payment.expense_category_id);
   } else if (categoryFilterValue) {
     const categoryId = parseInt(categoryFilterValue, 10);
-    filteredPayments = filteredPayments.filter((payment) => payment.expense_category_id === categoryId);
+    if (!Number.isNaN(categoryId)) {
+      filteredPayments = filteredPayments.filter((payment) => payment.expense_category_id === categoryId);
+    }
   }
 
   expensesState.filteredItems = filteredPayments;

@@ -113,6 +113,50 @@ class PipedriveClient {
   }
 
   /**
+   * Получить историю изменений сделки (flow)
+   * @param {number} dealId
+   * @param {Object} options
+   * @param {number} [options.start=0]
+   * @param {number} [options.limit=50]
+   * @returns {Promise<Object>}
+   */
+  async getDealFlow(dealId, options = {}) {
+    if (!dealId) {
+      return { success: false, error: 'dealId is required' };
+    }
+    try {
+      const params = {
+        api_token: this.apiToken,
+        start: options.start || 0,
+        limit: options.limit || 50
+      };
+      const response = await this.client.get(`/deals/${dealId}/flow`, { params });
+      if (response.data?.success) {
+        return {
+          success: true,
+          entries: response.data.data || [],
+          additionalData: response.data.additional_data || null
+        };
+      }
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to fetch deal flow'
+      };
+    } catch (error) {
+      logger.error('Error fetching deal flow from Pipedrive:', {
+        dealId,
+        error: error.message,
+        details: error.response?.data || null
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
    * Получить список сделок
    * @param {Object} options - Опции для фильтрации
    * @returns {Promise<Object>} - Список сделок
