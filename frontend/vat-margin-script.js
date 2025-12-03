@@ -68,6 +68,8 @@ const cashStatusLabels = {
   cancelled: 'Отменено'
 };
 
+const APPROX_MARGIN_RATE = 0.35;
+
 function saveSelectedPeriod() {
   if (!elements.monthSelect || !elements.yearSelect) return;
   const monthValue = elements.monthSelect.value;
@@ -1417,6 +1419,10 @@ function renderPaymentReportSummary(summary) {
     return;
   }
 
+  const totalPln = Number(summary.total_pln || 0);
+  const approxExpenses = totalPln * APPROX_MARGIN_RATE;
+  const approxMargin = totalPln - approxExpenses;
+
   const cardsHtml = `
     <div class="summary-card">
       <span class="summary-label">Платежей</span>
@@ -1429,6 +1435,14 @@ function renderPaymentReportSummary(summary) {
     <div class="summary-card">
       <span class="summary-label">Всего (PLN)</span>
       <span class="summary-value">${formatCurrency(summary.total_pln || 0, 'PLN')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Расходы</span>
+      <span class="summary-value">${formatCurrency(approxExpenses, 'PLN')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">Маржа</span>
+      <span class="summary-value">${formatCurrency(approxMargin, 'PLN')}</span>
     </div>
     <div class="summary-card">
       <span class="summary-label">Без привязки</span>
@@ -1452,7 +1466,10 @@ function renderPaymentReport(groups) {
       .map(([cur, amount]) => formatCurrency(amount, cur))
       .join(' + ') || '—';
 
-    const plnTotal = formatCurrency(group.totals?.pln_total || 0, 'PLN');
+    const totalPln = Number(group.totals?.pln_total || 0);
+    const plnTotal = formatCurrency(totalPln, 'PLN');
+    const approxExpenses = formatCurrency(totalPln * APPROX_MARGIN_RATE, 'PLN');
+    const approxMargin = formatCurrency(totalPln - (totalPln * APPROX_MARGIN_RATE), 'PLN');
     const proformaCount = group.totals?.proforma_count || 0;
     const paymentsCount = group.totals?.payments_count || 0;
 
@@ -1545,10 +1562,21 @@ function renderPaymentReport(groups) {
             <div class="product-name">${escapeHtml(group.name || 'Без названия')}</div>
             <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${paymentsCount.toLocaleString('ru-RU')} платеж(ей)</div>
           </div>
-          <div class="product-summary">
-            <span>${plnTotal}</span>
-            <span class="currency-breakdown">${currencyTotals}</span>
+        <div class="product-summary">
+          <div class="metric">
+            <span class="metric-label">Всего приходов</span>
+            <span class="metric-value">${plnTotal}</span>
           </div>
+          <div class="metric">
+            <span class="metric-label">Расходы</span>
+            <span class="metric-value">${approxExpenses}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Маржа</span>
+            <span class="metric-value">${approxMargin}</span>
+          </div>
+          <div class="currency-breakdown">${currencyTotals}</div>
+        </div>
         </div>
         <table class="payments-table group-table">
           <thead>

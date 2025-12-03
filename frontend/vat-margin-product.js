@@ -44,6 +44,7 @@ function cacheDom() {
     linkedPaymentsContainer: document.getElementById('product-linked-payments'),
     stripePaymentsContainer: document.getElementById('product-stripe-payments'),
     vatMarginTable: document.getElementById('vat-margin-table'),
+    vatMarginExportButton: document.getElementById('vat-margin-export'),
     alertBox: document.getElementById('product-alert'),
     payerModal: document.getElementById('product-payer-modal'),
     payerModalTitle: document.getElementById('product-payer-title'),
@@ -74,6 +75,10 @@ function bindEvents() {
 
   elements.exportButton?.addEventListener('click', () => {
     exportProductDetailCsv();
+  });
+
+  elements.vatMarginExportButton?.addEventListener('click', () => {
+    exportVatMarginCsv();
   });
 
   elements.proformasContainer?.addEventListener('click', (event) => {
@@ -325,6 +330,69 @@ function exportProductDetailCsv() {
   URL.revokeObjectURL(url);
 }
 
+function exportVatMarginCsv() {
+  if (!productDetail) {
+    showAlert('info', 'Нет данных для экспорта');
+    return;
+  }
+
+  const context = buildVatMarginContext(productDetail);
+  if (!context) {
+    showAlert('info', 'Недостаточно данных для экспорта VAT-маржи');
+    return;
+  }
+
+  const headers = [
+    'Имя участника',
+    'Сумма (PLN)',
+    'Расход (PLN)',
+    'Маржа (PLN)',
+    'VAT %',
+    'VAT к оплате (PLN)'
+  ];
+
+  const rows = context.rows.map((row) => [
+    row.name,
+    Number(row.amountPln.toFixed(2)),
+    Number(context.expensesPerParticipant.toFixed(2)),
+    Number(row.margin.toFixed(2)),
+    Number((context.vatRate * 100).toFixed(0)),
+    Number(row.vat.toFixed(2))
+  ]);
+
+  rows.push([
+    'Итого',
+    Number(context.totalAmount.toFixed(2)),
+    Number(context.totalExpenses.toFixed(2)),
+    Number(context.totalMargin.toFixed(2)),
+    Number((context.vatRate * 100).toFixed(0)),
+    Number(context.totalVat.toFixed(2))
+  ]);
+
+  const csvContent = [headers, ...rows]
+    .map((row) => row.map((cell) => {
+      const value = cell === undefined || cell === null ? '' : String(cell);
+      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    }).join(','))
+    .join('\n');
+
+  const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const safeName = (productDetail.productName || 'product')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  anchor.href = url;
+  anchor.download = `${safeName}_vat_margin.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
 function renderSummaryCards(detail) {
   if (!elements.summaryContainer) return;
 
@@ -479,44 +547,41 @@ function renderVatMarginTable(detail) {
     return;
   }
 
-  const participants = buildParticipantsList(detail);
-  if (!participants.length) {
+  const context = buildVatMarginContext(detail);
+  if (!context) {
     elements.vatMarginTable.innerHTML = '<div class="placeholder">Недостаточно данных для расчёта VAT</div>';
+    elements.vatMarginExportButton?.setAttribute('disabled', 'disabled');
     return;
   }
 
-  const totalExpensesPln = detail.expenseTotals?.totalPln
-    ?? calculateExpenseTotals(detail.linkedPayments).totalPln
-    ?? 0;
-  const expensesPerParticipant = participants.length > 0
-    ? Number((totalExpensesPln / participants.length).toFixed(2))
-    : 0;
+  elements.vatMarginExportButton?.removeAttribute('disabled');
 
-  const vatRate = 0.23;
-  let totalVat = 0;
-  let totalAmount = 0;
-
-  const rows = participants.map((participant) => {
-    const margin = Number((participant.amountPln - expensesPerParticipant).toFixed(2));
-    const vat = Number((margin * vatRate).toFixed(2));
-    totalVat += vat;
-    totalAmount += participant.amountPln;
-    return `
+  const rows = context.rows.map((row) => `
       <tr>
-        <td>${escapeHtml(participant.name)}</td>
-        <td class="numeric">${formatCurrency(participant.amountPln, 'PLN')}</td>
-        <td class="numeric">${formatCurrency(expensesPerParticipant, 'PLN')}</td>
-        <td class="numeric">${formatCurrency(margin, 'PLN')}</td>
-        <td class="numeric">${(vatRate * 100).toFixed(0)}%</td>
-        <td class="numeric">${formatCurrency(vat, 'PLN')}</td>
+        <td>${escapeHtml(row.name)}</td>
+        <td class="numeric">${formatCurrency(row.amountPln, 'PLN')}</td>
+        <td class="numeric">${formatCurrency(context.expensesPerParticipant, 'PLN')}</td>
+        <td class="numeric">${formatCurrency(row.margin, 'PLN')}</td>
+        <td class="numeric">${(context.vatRate * 100).toFixed(0)}%</td>
+        <td class="numeric">${formatCurrency(row.vat, 'PLN')}</td>
       </tr>
-    `;
-  }).join('');
-
-  const totalExpenses = Number((expensesPerParticipant * participants.length).toFixed(2));
-  const totalMargin = Number((totalAmount - totalExpenses).toFixed(2));
+    `).join('');
 
   elements.vatMarginTable.innerHTML = `
+    <div class="vat-summary">
+      <div class="vat-summary-card">
+        <span class="label">Всего расходов</span>
+        <span class="value">${formatCurrency(context.totalExpenses, 'PLN')}</span>
+      </div>
+      <div class="vat-summary-card">
+        <span class="label">Расход на участника</span>
+        <span class="value">${formatCurrency(context.expensesPerParticipant, 'PLN')}</span>
+      </div>
+      <div class="vat-summary-card">
+        <span class="label">Количество участников</span>
+        <span class="value">${context.participantsCount}</span>
+      </div>
+    </div>
     <table class="detail-table vat-margin-table">
       <thead>
         <tr>
@@ -534,29 +599,63 @@ function renderVatMarginTable(detail) {
       <tfoot>
         <tr>
           <td>Итого</td>
-          <td class="numeric">${formatCurrency(totalAmount, 'PLN')}</td>
-          <td class="numeric">${formatCurrency(totalExpenses, 'PLN')}</td>
-          <td class="numeric">${formatCurrency(totalMargin, 'PLN')}</td>
-          <td class="numeric">${(vatRate * 100).toFixed(0)}%</td>
-          <td class="numeric">${formatCurrency(totalVat, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(context.totalAmount, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(context.totalExpenses, 'PLN')}</td>
+          <td class="numeric">${formatCurrency(context.totalMargin, 'PLN')}</td>
+          <td class="numeric">${(context.vatRate * 100).toFixed(0)}%</td>
+          <td class="numeric">${formatCurrency(context.totalVat, 'PLN')}</td>
         </tr>
       </tfoot>
     </table>
-    <div class="vat-summary">
-      <div class="vat-summary-card">
-        <span class="label">Всего расходов</span>
-        <span class="value">${formatCurrency(totalExpenses, 'PLN')}</span>
-      </div>
-      <div class="vat-summary-card">
-        <span class="label">Расход на участника</span>
-        <span class="value">${formatCurrency(expensesPerParticipant, 'PLN')}</span>
-      </div>
-      <div class="vat-summary-card">
-        <span class="label">Количество участников</span>
-        <span class="value">${participants.length}</span>
-      </div>
-    </div>
   `;
+}
+
+function buildVatMarginContext(detail) {
+  if (!detail) return null;
+
+  const participants = buildParticipantsList(detail);
+  if (!participants.length) {
+    return null;
+  }
+
+  const expenseTotals = detail.expenseTotals?.totalPln;
+  const fallbackExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
+  const totalExpensesPln = Number.isFinite(expenseTotals) ? expenseTotals : fallbackExpenses || 0;
+  const expensesPerParticipant = participants.length
+    ? Number((totalExpensesPln / participants.length).toFixed(2))
+    : 0;
+
+  const vatRate = 0.23;
+  const rows = [];
+  let totalAmount = 0;
+  let totalVat = 0;
+
+  participants.forEach((participant) => {
+    const margin = Number((participant.amountPln - expensesPerParticipant).toFixed(2));
+    const vat = Number((margin * vatRate).toFixed(2));
+    totalAmount += participant.amountPln;
+    totalVat += vat;
+    rows.push({
+      name: participant.name,
+      amountPln: participant.amountPln,
+      margin,
+      vat
+    });
+  });
+
+  const totalExpenses = Number((expensesPerParticipant * participants.length).toFixed(2));
+  const totalMargin = Number((totalAmount - totalExpenses).toFixed(2));
+
+  return {
+    rows,
+    totalAmount: Number(totalAmount.toFixed(2)),
+    totalExpenses,
+    totalMargin,
+    totalVat: Number(totalVat.toFixed(2)),
+    expensesPerParticipant,
+    vatRate,
+    participantsCount: participants.length
+  };
 }
 
 function buildParticipantsList(detail) {
