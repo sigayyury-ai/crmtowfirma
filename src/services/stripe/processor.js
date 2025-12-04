@@ -69,6 +69,7 @@ class StripeProcessorService {
     
     // SendPulse ID field key in Pipedrive (same as invoiceProcessing)
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+    this.WEBHOOK_TASK_SUBJECT = '⚠️ Проверить обработку Stripe платежа';
   }
 
   async triggerCrmStatusAutomation(dealId, context = {}) {
@@ -1984,6 +1985,61 @@ class StripeProcessorService {
   }
 
   /**
+   * Check if CRM already contains an open webhook failure task for the same session
+   * @param {number|string} dealId
+   * @param {string} sessionId
+   * @returns {Promise<boolean>}
+   */
+  async hasExistingWebhookFailureTask(dealId, sessionId) {
+    if (!dealId || !sessionId) {
+      return false;
+    }
+
+    try {
+      const tasksResult = await this.pipedriveClient.getDealActivities(dealId, 'task');
+      if (!tasksResult?.success || !Array.isArray(tasksResult.activities)) {
+        return false;
+      }
+
+      const normalizedSessionId = String(sessionId).trim();
+      const subjectNeedle = 'Проверить обработку Stripe платежа';
+
+      return tasksResult.activities.some((task) => {
+        if (!task || task.done === 1) {
+          return false;
+        }
+
+        const subject = task.subject || '';
+        if (!subject.includes(subjectNeedle)) {
+          return false;
+        }
+
+        const noteCandidates = [
+          task.note,
+          task.long_note,
+          task.note_preview,
+          task.note_plain,
+          task.note_clean
+        ].filter(Boolean);
+
+        const noteText = noteCandidates.join(' ');
+        if (!normalizedSessionId) {
+          return true;
+        }
+
+        return subject.includes(normalizedSessionId) || noteText.includes(normalizedSessionId);
+      });
+    } catch (error) {
+      this.logger.warn('Failed to check existing webhook failure tasks', {
+        dealId,
+        sessionId,
+        error: error.message
+      });
+      return false;
+    }
+  }
+
+  /**
    * Close address tasks for a deal after payment is received
    * @param {number} dealId - Deal ID
    */
@@ -2046,13 +2102,24 @@ class StripeProcessorService {
    */
   async createWebhookFailureTask(dealId, sessionId) {
     if (!dealId || !sessionId) return;
-    
+    const cacheKey = `webhook-${dealId}-${sessionId}`;
+
     // Check if task already exists (avoid duplicates)
-    if (this.addressTaskCache.has(`webhook-${dealId}-${sessionId}`)) {
+    if (this.addressTaskCache.has(cacheKey)) {
       return;
     }
     
     try {
+      const alreadyExists = await this.hasExistingWebhookFailureTask(dealId, sessionId);
+      if (alreadyExists) {
+        this.logger.info('Webhook failure task already exists, skipping creation', {
+          dealId,
+          sessionId
+        });
+        this.addressTaskCache.add(cacheKey);
+        return;
+      }
+
       const stripeMode = this.mode || 'test';
       const dashboardBase = stripeMode === 'test' 
         ? 'https://dashboard.stripe.com/test'
@@ -2062,7 +2129,7 @@ class StripeProcessorService {
       const today = new Date().toISOString().slice(0, 10);
       await this.pipedriveClient.createTask({
         deal_id: dealId,
-        subject: '⚠️ Проверить обработку Stripe платежа',
+        subject: this.WEBHOOK_TASK_SUBJECT,
         due_date: today,
         type: 'task',
         note: `Платеж был успешно оплачен в Stripe, но не был обработан через webhook.\n\n` +
@@ -2076,7 +2143,7 @@ class StripeProcessorService {
               `Платеж будет обработан автоматически при следующей периодической проверке.`
       });
       
-      this.addressTaskCache.add(`webhook-${dealId}-${sessionId}`);
+      this.addressTaskCache.add(cacheKey);
       this.logger.info('Created CRM task for webhook failure', { dealId, sessionId });
     } catch (error) {
       this.logger.error('Failed to create CRM task for webhook failure', {
@@ -2387,7 +2454,16 @@ class StripeProcessorService {
    * Create Stripe Checkout Session for a single deal.
    */
   async createCheckoutSessionForDeal(deal, context = {}) {
-    let { trigger, runId, paymentType, customAmount, paymentSchedule, paymentIndex, skipNotification } = context;
+    let {
+      trigger,
+      runId,
+      paymentType,
+      customAmount,
+      paymentSchedule,
+      paymentIndex,
+      skipNotification,
+      setInvoiceTypeDone
+    } = context;
     const dealId = deal.id;
     const startTime = Date.now();
     let apiCallCount = 0;
@@ -3018,17 +3094,23 @@ class StripeProcessorService {
         }
       }
 
-      // 14. Update deal invoice_type to "Stripe" (75) in CRM after creating Checkout Session
-      // "Done" (73) will be set only after successful payment via webhook
+      // 14. Update deal invoice_type in CRM after creating Checkout Session
+      // Принудительно устанавливаем "Done" (73), если этого требует контекст
       try {
         apiCallCount++;
-        this.logger.debug(`📡 [Deal #${dealId}] API Call #${apiCallCount}: Updating deal invoice_type to Stripe in Pipedrive...`);
+        const nextInvoiceTypeValue = setInvoiceTypeDone ? this.invoiceDoneValue : this.stripeTriggerValue;
+        const nextInvoiceTypeLabel = setInvoiceTypeDone ? 'Done' : 'Stripe';
+        this.logger.debug(
+          `📡 [Deal #${dealId}] API Call #${apiCallCount}: Updating deal invoice_type to ${nextInvoiceTypeLabel} in Pipedrive...`
+        );
         await this.pipedriveClient.updateDeal(dealId, {
-          [this.invoiceTypeFieldKey]: this.stripeTriggerValue
+          [this.invoiceTypeFieldKey]: nextInvoiceTypeValue
         });
-        this.logger.info(`✅ [Deal #${dealId}] Updated deal invoice_type to Stripe`, { totalApiCalls: apiCallCount });
+        this.logger.info(`✅ [Deal #${dealId}] Updated deal invoice_type to ${nextInvoiceTypeLabel}`, {
+          totalApiCalls: apiCallCount
+        });
       } catch (updateError) {
-        this.logger.warn('Failed to update deal invoice_type to Stripe', {
+        this.logger.warn('Failed to update deal invoice_type after session creation', {
           dealId,
           error: updateError.message
         });
