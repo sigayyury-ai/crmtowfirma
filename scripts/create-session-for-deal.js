@@ -142,7 +142,8 @@ async function createSessionForDeal(dealId) {
       paymentType,
       paymentSchedule,
       paymentIndex,
-      skipNotification: false // Отправим уведомление
+      skipNotification: false, // Отправим уведомление
+      setInvoiceTypeDone: true // Ставим invoice_type в Done, чтобы не триггерить повторные уведомления
     };
 
     if (customAmount !== null) {
