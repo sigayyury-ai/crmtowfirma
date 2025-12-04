@@ -4,6 +4,7 @@ const SendpulseMqlClient = require('./sendpulseMqlClient');
 const PipedriveMqlClient = require('./pipedriveMqlClient');
 const PnlExpenseClient = require('./pnlExpenseClient');
 const mqlRepository = require('./mqlRepository');
+const mqlConfig = require('../../config/mql');
 const { getMonthKey, normalizeEmail } = require('./mqlNormalizer');
 const logger = require('../../utils/logger');
 const sendpulseBaseline = require(path.join(__dirname, '../../../data/analytics/sendpulse-baseline.json'));
@@ -145,7 +146,15 @@ class MqlSyncService {
   }
 
   async collectPipedrive(dataset, year) {
-    const result = await this.pipedriveClient.fetchMqlDeals({ resolveFirstSeenFromFlow: true });
+    const cutoffDate = await this.determinePipedriveCutoffDate();
+    if (cutoffDate) {
+      logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
+    }
+
+    const result = await this.pipedriveClient.fetchMqlDeals({
+      resolveFirstSeenFromFlow: true,
+      cutoffDate
+    });
     const deals = result.deals || [];
     dataset.sync.pipedrive = result.fetchedAt || new Date().toISOString();
 
@@ -293,7 +302,8 @@ class MqlSyncService {
     dataset.months.forEach((month) => {
       const combined = dataset.sources[month]?.combined;
       if (!combined) return;
-      combined.conversion = combined.mql > 0 ? combined.won / combined.mql : 0;
+      combined.conversion = combined.mql > 0 ? combined.won / combined.mql : null;
+      combined.retention = combined.won > 0 ? combined.repeat / combined.won : null;
     });
   }
 
@@ -348,6 +358,7 @@ class MqlSyncService {
         costPerSubscriber: dataset.metrics[monthKey].costPerSubscriber,
         costPerMql: dataset.metrics[monthKey].costPerMql,
         costPerDeal: dataset.metrics[monthKey].costPerDeal,
+        retentionRate: dataset.sources[monthKey].combined.retention ?? null,
         channelBreakdown: dataset.channels[monthKey],
         pipedriveSyncAt: dataset.sync.pipedrive,
         sendpulseSyncAt: dataset.sync.sendpulse,
@@ -434,6 +445,23 @@ class MqlSyncService {
       fs.unlinkSync(filePath);
     } catch (error) {
       // ignore
+    }
+  }
+
+  async determinePipedriveCutoffDate() {
+    try {
+      const lastSync = await mqlRepository.getMostRecentPipedriveSyncAt();
+      if (!lastSync) {
+        return null;
+      }
+      const bufferDays =
+        Number(process.env.MQL_PIPEDRIVE_SYNC_BUFFER_DAYS) || mqlConfig.pipedriveSyncBufferDays || 3;
+      const cutoff = new Date(lastSync);
+      cutoff.setUTCDate(cutoff.getUTCDate() - bufferDays);
+      return cutoff;
+    } catch (error) {
+      logger.warn('Failed to determine Pipedrive cutoff date', { error: error.message });
+      return null;
     }
   }
 }

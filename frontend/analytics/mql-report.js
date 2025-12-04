@@ -118,49 +118,75 @@ function renderSourceRows(body, months, dataset, totals) {
   const accordionRows = buildMqlAccordionRows(months, dataset, totals);
   accordionRows.forEach((row) => body.appendChild(row));
 
-  const rows = [
-    { label: 'Выигранные сделки', metric: 'won', source: 'combined', formatter: formatNumber },
-    { label: 'Закрытые сделки', metric: 'closed', source: 'combined', formatter: formatNumber },
-    { label: 'Повторные продажи', metric: 'repeat', source: 'combined', formatter: formatNumber },
-    { label: 'Conversion %', metric: 'conversion', source: 'combined', formatter: formatPercent },
-    { label: 'Маркетинговый бюджет', metric: 'budget', formatter: formatCurrency },
-    { label: 'Подписчики (Instagram)', metric: 'subscribers', formatter: formatNumber },
-    { label: 'Новые подписчики', metric: 'newSubscribers', formatter: formatNumber },
-    { label: 'Стоимость подписчика', metric: 'costPerSubscriber', formatter: formatCurrency, allowNull: true },
-    { label: 'Стоимость MQL', metric: 'costPerMql', formatter: formatCurrency, allowNull: true },
-    { label: 'Стоимость сделки', metric: 'costPerDeal', formatter: formatCurrency, allowNull: true }
+  const groupedRows = [
+    {
+      group: 'Сделки и воронка',
+      items: [
+        { label: 'Выигранные сделки', metric: 'won', source: 'combined', formatter: formatNumber },
+        { label: 'Закрытые сделки', metric: 'closed', source: 'combined', formatter: formatNumber },
+        { label: 'Повторные продажи', metric: 'repeat', source: 'combined', formatter: formatNumber },
+        { label: 'Retention %', metric: 'retention', source: 'combined', formatter: formatPercent, allowNull: true },
+        { label: 'Conversion %', metric: 'conversion', source: 'combined', formatter: formatPercent }
+      ]
+    },
+    {
+      group: 'Маркетинг и стоимость',
+      items: [
+        { label: 'Маркетинговый бюджет', metric: 'budget', formatter: formatCurrency },
+        { label: 'Стоимость MQL', metric: 'costPerMql', formatter: formatCurrency, allowNull: true },
+        { label: 'Стоимость сделки', metric: 'costPerDeal', formatter: formatCurrency, allowNull: true }
+      ]
+    },
+    {
+      group: 'Аудитория',
+      items: [
+        { label: 'Подписчики (Instagram)', metric: 'subscribers', formatter: formatNumber },
+        { label: 'Новые подписчики', metric: 'newSubscribers', formatter: formatNumber },
+        { label: 'Стоимость подписчика', metric: 'costPerSubscriber', formatter: formatCurrency, allowNull: true }
+      ]
+    }
   ];
 
-  rows.forEach((row) => {
-    const tr = document.createElement('tr');
-    const labelTd = document.createElement('td');
-    labelTd.textContent = row.label;
-    tr.appendChild(labelTd);
+  groupedRows.forEach((group) => {
+    const groupRow = document.createElement('tr');
+    groupRow.classList.add('group-row');
+    const groupTd = document.createElement('td');
+    groupTd.colSpan = months.length + 2;
+    groupTd.textContent = group.group;
+    groupRow.appendChild(groupTd);
+    body.appendChild(groupRow);
 
-    months.forEach((month) => {
-      const td = document.createElement('td');
-      let value = getRowValue(row, dataset, month);
-      if (row.label === 'Подписчики (Instagram)') {
-        td.classList.add('subscriber-cell');
-        td.dataset.monthKey = month;
-        td.dataset.rawValue = Number.isFinite(value) ? value : '';
+    group.items.forEach((row) => {
+      const tr = document.createElement('tr');
+      const labelTd = document.createElement('td');
+      labelTd.textContent = row.label;
+      tr.appendChild(labelTd);
+
+      months.forEach((month) => {
+        const td = document.createElement('td');
+        let value = getRowValue(row, dataset, month);
+        if (row.label === 'Подписчики (Instagram)') {
+          td.classList.add('subscriber-cell');
+          td.dataset.monthKey = month;
+          td.dataset.rawValue = Number.isFinite(value) ? value : '';
+        }
+        if (!row.allowNull && (value === undefined || value === null)) {
+          value = 0;
+        }
+        td.textContent = row.formatter(value);
+        tr.appendChild(td);
+      });
+      const totalValue = getSummaryValue(row, totals);
+      const totalTd = document.createElement('td');
+      totalTd.classList.add('total-cell');
+      let resolvedTotal = totalValue;
+      if (!row.allowNull && (resolvedTotal === undefined || resolvedTotal === null)) {
+        resolvedTotal = 0;
       }
-      if (!row.allowNull && (value === undefined || value === null)) {
-        value = 0;
-      }
-      td.textContent = row.formatter(value);
-      tr.appendChild(td);
+      totalTd.textContent = row.formatter(resolvedTotal);
+      tr.appendChild(totalTd);
+      body.appendChild(tr);
     });
-    const totalValue = getSummaryValue(row, totals);
-    const totalTd = document.createElement('td');
-    totalTd.classList.add('total-cell');
-    let resolvedTotal = totalValue;
-    if (!row.allowNull && (resolvedTotal === undefined || resolvedTotal === null)) {
-      resolvedTotal = 0;
-    }
-    totalTd.textContent = row.formatter(resolvedTotal);
-    tr.appendChild(totalTd);
-    body.appendChild(tr);
   });
 }
 
@@ -377,7 +403,7 @@ function getSummaryValue(row, totals) {
 function buildTotals(months, dataset) {
   const totals = {
     sources: {
-      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: null },
+      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: null, retention: null },
       pipedrive: { mql: 0 },
       sendpulse: { mql: 0 }
     },
@@ -427,6 +453,7 @@ function buildTotals(months, dataset) {
   totals.metrics.costPerMql = totalBudget > 0 && totalMql > 0 ? totalBudget / totalMql : null;
   totals.metrics.costPerDeal = totalBudget > 0 && totalWon > 0 ? totalBudget / totalWon : null;
   totals.sources.combined.conversion = totalMql > 0 ? totalWon / totalMql : null;
+  totals.sources.combined.retention = totalWon > 0 ? totals.sources.combined.repeat / totalWon : null;
 
   return totals;
 }

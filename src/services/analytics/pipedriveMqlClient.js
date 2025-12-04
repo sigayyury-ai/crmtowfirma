@@ -36,14 +36,24 @@ class PipedriveMqlClient {
   }
 
   async fetchMqlDeals(options = {}) {
+    let cutoffDate = options.cutoffDate ? new Date(options.cutoffDate) : null;
+    if (cutoffDate && Number.isNaN(cutoffDate.getTime())) {
+      cutoffDate = null;
+    }
     const deals = [];
     const stats = {
       scanned: 0,
       matched: 0,
-      pages: 0
+      pages: 0,
+      cutoffHit: false
     };
 
     let start = 0;
+    let reachedCutoff = false;
+
+    if (cutoffDate) {
+      logger.info('Pipedrive deal fetch cutoff active', { cutoffDate: cutoffDate.toISOString() });
+    }
     while (true) {
       if (stats.pages >= this.maxPages) {
         logger.warn('Reached max Pipedrive pagination limit, stopping early', {
@@ -65,15 +75,31 @@ class PipedriveMqlClient {
       }
 
       const batch = Array.isArray(response.deals) ? response.deals : [];
-      stats.scanned += batch.length;
       stats.pages += 1;
 
-      batch
-        .filter((deal) => this._isMqlDeal(deal))
-        .forEach((deal) => {
+      for (const deal of batch) {
+        stats.scanned += 1;
+
+        if (cutoffDate && this._isOlderThanCutoff(deal, cutoffDate)) {
+          reachedCutoff = true;
+          stats.cutoffHit = true;
+          logger.info('Stopping Pipedrive pagination at cutoff', {
+            dealId: deal.id,
+            updateTime: deal.update_time,
+            cutoffDate: cutoffDate.toISOString()
+          });
+          break;
+        }
+
+        if (this._isMqlDeal(deal)) {
           deals.push(this._normalizeDeal(deal));
           stats.matched += 1;
-        });
+        }
+      }
+
+      if (reachedCutoff) {
+        break;
+      }
 
       const pagination = response.pagination;
       if (!pagination || !pagination.more_items_in_collection) {
@@ -247,6 +273,18 @@ class PipedriveMqlClient {
       return String(raw);
     }
     return null;
+  }
+
+  _isOlderThanCutoff(deal = {}, cutoffDate) {
+    if (!cutoffDate) return false;
+    if (!deal?.update_time) {
+      return true;
+    }
+    const updatedAt = new Date(deal.update_time);
+    if (Number.isNaN(updatedAt.getTime())) {
+      return true;
+    }
+    return updatedAt < cutoffDate;
   }
 
   _parseLabelList(value) {

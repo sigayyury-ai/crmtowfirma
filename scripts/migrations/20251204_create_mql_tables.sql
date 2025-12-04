@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS mql_monthly_snapshots (
     won_deals INTEGER DEFAULT 0,
     repeat_deals INTEGER DEFAULT 0,
     closed_deals INTEGER DEFAULT 0,
+    retention_rate NUMERIC(6,4) DEFAULT 0,
     marketing_expense NUMERIC(14, 2) DEFAULT 0,
     subscribers INTEGER DEFAULT 0,
     new_subscribers INTEGER DEFAULT 0,

@@ -51,6 +51,7 @@ class MqlRepository {
       cost_per_subscriber: data.costPerSubscriber ?? null,
       cost_per_mql: data.costPerMql ?? null,
       cost_per_deal: data.costPerDeal ?? null,
+      retention_rate: data.retentionRate ?? null,
       channel_breakdown: data.channelBreakdown || {},
       pipedrive_sync_at: data.pipedriveSyncAt || null,
       sendpulse_sync_at: data.sendpulseSyncAt || null,
@@ -137,6 +138,23 @@ class MqlRepository {
     }
 
     return data;
+  }
+
+  async getMostRecentPipedriveSyncAt() {
+    const { data, error } = await supabase
+      .from(SNAPSHOTS_TABLE)
+      .select('pipedrive_sync_at')
+      .not('pipedrive_sync_at', 'is', null)
+      .order('pipedrive_sync_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      logger.warn('Failed to read latest Pipedrive sync timestamp', { error: error.message });
+      return null;
+    }
+
+    return data?.pipedrive_sync_at || null;
   }
 }
 

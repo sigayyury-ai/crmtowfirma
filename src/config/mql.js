@@ -59,6 +59,7 @@ module.exports = {
   pipedriveConversationStageIds: parseStageIds(process.env.PIPEDRIVE_CONVERSATION_STAGE_IDS || '3,35'),
   pipedriveMaxPages: Number(process.env.MQL_PIPEDRIVE_MAX_PAGES || 25),
   pipedrivePageSize: Number(process.env.MQL_PIPEDRIVE_PAGE_SIZE || 100),
+  pipedriveSyncBufferDays: Number(process.env.MQL_PIPEDRIVE_SYNC_BUFFER_DAYS || 3),
   pipedriveUtmSourceField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_SOURCE_FIELD),
   pipedriveUtmMediumField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_MEDIUM_FIELD),
   pipedriveUtmCampaignField: stringOrNull(process.env.MQL_PIPEDRIVE_UTM_CAMPAIGN_FIELD),

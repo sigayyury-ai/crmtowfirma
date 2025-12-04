@@ -75,7 +75,7 @@ function buildBaseDataset(year) {
     sources[month] = {
       pipedrive: { mql: 0 },
       sendpulse: { mql: 0 },
-      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: 0 }
+      combined: { mql: 0, won: 0, closed: 0, repeat: 0, conversion: 0, retention: 0 }
     };
     channels[month] = {};
     metrics[month] = {
@@ -146,6 +146,7 @@ function buildDatasetFromSnapshots(snapshots, year) {
       sourceRow.combined.mql > 0 && sourceRow.combined.won > 0
         ? sourceRow.combined.won / sourceRow.combined.mql
         : 0;
+    sourceRow.combined.retention = snapshot.retention_rate ?? null;
 
     metricsRow.budget = Number(snapshot.marketing_expense) || 0;
     metricsRow.subscribers = snapshot.subscribers || 0;
