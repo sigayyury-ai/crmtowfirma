@@ -75,6 +75,7 @@ const expenseCategoryMappingService = new ExpenseCategoryMappingService();
 const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
 const PaymentProductLinkService = require('../services/payments/paymentProductLinkService');
+const proformaAdjustmentRoutes = require('./internal/proformaAdjustmentRoutes');
 const paymentProductLinkService = new PaymentProductLinkService();
 const cashPnlSyncService = require('../services/cash/cashPnlSyncService');
 const cashPaymentsRepository = new CashPaymentsRepository();
@@ -672,6 +673,7 @@ router.get('/stripe-health', async (req, res) => {
 router.use('/stripe', requireStripeAccess, stripeRouter);
 router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
 router.use('/analytics', analyticsRouter);
+router.use('/', proformaAdjustmentRoutes);
 
 // ==================== PIPEDRIVE ENDPOINTS ====================
 
@@ -2508,10 +2510,13 @@ router.post('/vat-margin/payments/apply', async (req, res) => {
       message: 'Автоматические совпадения подтверждены'
     });
   } catch (error) {
+    const status = error.statusCode || 500;
     logger.error('Error applying automatic payment matches:', error);
-    res.status(500).json({
+    res.status(status).json({
       success: false,
-      error: 'Не удалось подтвердить автоматические совпадения',
+      error: status === 400
+        ? 'Массовое подтверждение отключено'
+        : 'Не удалось подтвердить автоматические совпадения',
       message: error.message
     });
   }

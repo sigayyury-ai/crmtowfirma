@@ -48,6 +48,12 @@ const paymentReportState = {
   filters: null
 };
 
+const payerPaymentsModalState = {
+  context: null,
+  payments: [],
+  totalPayments: 0
+};
+
 const deletedProformasState = {
   isLoading: false,
   lastResult: null
@@ -196,6 +202,7 @@ function bindEvents() {
   elements.paymentReportContainer?.addEventListener('click', handlePaymentReportAction);
   elements.paymentReportContainer?.addEventListener('keydown', handlePaymentReportKeydown);
   elements.payerPaymentsClose?.addEventListener('click', closePayerPaymentsModal);
+  elements.payerPaymentsBody?.addEventListener('click', handlePayerPaymentsBodyClick);
   elements.payerPaymentsModal?.addEventListener('click', (event) => {
     if (event.target === elements.payerPaymentsModal) {
       closePayerPaymentsModal();
@@ -1694,6 +1701,91 @@ async function openPayerPaymentsModal({ groupIndex, entryIndex, payerName }) {
   });
 }
 
+function handlePayerPaymentsBodyClick(event) {
+  const actionButton = event.target.closest('[data-payer-payment-action]');
+  if (!actionButton || !elements.payerPaymentsBody?.contains(actionButton)) {
+    return;
+  }
+
+  event.preventDefault();
+
+  const { payerPaymentAction: action, paymentId } = actionButton.dataset;
+  if (!action || !paymentId) {
+    return;
+  }
+
+  if (action === 'delete') {
+    deletePayerPaymentFromModal(paymentId, actionButton);
+  }
+}
+
+async function deletePayerPaymentFromModal(paymentId, triggerButton) {
+  const idLabel = String(paymentId);
+  if (!idLabel) return;
+
+  const { payerName, proforma } = payerPaymentsModalState.context || {};
+  const confirmationMessage = [
+    `Удалить платёж ${idLabel}?`,
+    payerName ? `Плательщик: ${payerName}` : null,
+    proforma?.fullnumber ? `Проформа: ${proforma.fullnumber}` : null,
+    '',
+    'Привязка к проформе будет удалена.'
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (!window.confirm(confirmationMessage)) {
+    return;
+  }
+
+  if (triggerButton) {
+    triggerButton.disabled = true;
+  }
+
+  try {
+    addLog('info', `Удаляю платёж ${idLabel} через модальное окно`);
+    const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(idLabel)}`, 'DELETE');
+    if (!result?.success) {
+      throw new Error(result?.error || 'Не удалось удалить платёж');
+    }
+    applyPayerPaymentRemoval(idLabel);
+    addLog('success', `Платёж ${idLabel} удалён`);
+  } catch (error) {
+    console.error('Failed to delete payment from modal', error);
+    addLog('error', `Не удалось удалить платёж ${idLabel}: ${error.message}`);
+    alert(`Не удалось удалить платёж: ${error.message}`);
+  } finally {
+    if (triggerButton) {
+      triggerButton.disabled = false;
+    }
+  }
+}
+
+function applyPayerPaymentRemoval(paymentId) {
+  const idKey = String(paymentId);
+  if (!payerPaymentsModalState.context) {
+    return;
+  }
+
+  payerPaymentsModalState.payments = payerPaymentsModalState.payments
+    .filter((payment) => String(payment.id) !== idKey);
+
+  payerPaymentsModalState.totalPayments = Math.max(
+    payerPaymentsModalState.totalPayments - 1,
+    payerPaymentsModalState.payments.length
+  );
+
+  const { context } = payerPaymentsModalState;
+  renderPayerPaymentsModal({
+    ...context,
+    payments: payerPaymentsModalState.payments,
+    totalPayments: payerPaymentsModalState.totalPayments
+  });
+
+  removePaymentFromState(idKey);
+  loadPaymentReportData({ silent: true }).catch(() => {});
+}
+
 function renderPayerPaymentsModal({
   groupName,
   proforma,
@@ -1711,6 +1803,10 @@ function renderPayerPaymentsModal({
     (sum, payment) => sum + (Number(payment.amount_pln) || 0),
     0
   );
+
+  payerPaymentsModalState.context = { groupName, proforma, payerName };
+  payerPaymentsModalState.payments = visiblePayments.slice();
+  payerPaymentsModalState.totalPayments = totalPayments;
 
   if (elements.payerPaymentsTitle) {
     elements.payerPaymentsTitle.textContent = payerName
@@ -1740,15 +1836,27 @@ function renderPayerPaymentsModal({
     ? visiblePayments
       .map((payment) => `
         <tr>
+          <td>${payment?.id != null ? escapeHtml(String(payment.id)) : '—'}</td>
           <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
           <td>${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
           <td>${Number.isFinite(Number(payment.amount_pln)) ? formatCurrency(Number(payment.amount_pln), 'PLN') : '—'}</td>
           <td>${escapeHtml(payment.description || '—')}</td>
           <td>${escapeHtml(payment.status?.label || '—')}</td>
+          <td class="actions-col">
+            <button
+              type="button"
+              class="payer-payment-action"
+              data-payer-payment-action="delete"
+              data-payment-id="${escapeHtml(String(payment.id || ''))}"
+              title="Удалить платёж и отвязать от проформы"
+            >
+              🗑
+            </button>
+          </td>
         </tr>
       `)
       .join('')
-    : '<tr><td colspan="5" class="payer-payments-empty">Нет платежей для выбранного плательщика</td></tr>';
+    : '<tr><td colspan="7" class="payer-payments-empty">Нет платежей для выбранного плательщика</td></tr>';
 
   elements.payerPaymentsBody.innerHTML = `
     <div class="payer-payments-summary">
@@ -1761,11 +1869,13 @@ function renderPayerPaymentsModal({
     <table class="payer-payments-table">
       <thead>
         <tr>
+          <th>ID</th>
           <th>Дата</th>
           <th>Сумма</th>
           <th>Сумма (PLN)</th>
           <th>Описание</th>
           <th>Статус</th>
+          <th class="actions-col">Действия</th>
         </tr>
       </thead>
       <tbody>
@@ -2642,16 +2752,30 @@ async function deletePaymentQuick(paymentId) {
       throw new Error(result.error || 'Не удалось удалить платеж');
     }
 
-    paymentsState.details.delete(String(paymentId));
-    paymentsState.items.splice(paymentIndex, 1);
-    if (paymentsState.selectedId === String(paymentId)) {
-      paymentsState.selectedId = null;
-    }
-    renderPaymentsTable(paymentsState.items);
+    removePaymentFromState(paymentId);
     addLog('success', `Платёж ${paymentId} удалён`);
   } catch (error) {
     addLog('error', `Ошибка удаления платежа: ${error.message}`);
   }
+}
+
+function removePaymentFromState(paymentId) {
+  const idKey = String(paymentId);
+  const paymentIndex = paymentsState.items.findIndex((item) => String(item.id) === idKey);
+
+  if (paymentIndex !== -1) {
+    paymentsState.items.splice(paymentIndex, 1);
+    if (paymentsState.selectedId === idKey) {
+      paymentsState.selectedId = null;
+      clearPaymentDetailRow();
+    }
+    renderPaymentsTable(paymentsState.items);
+  } else if (paymentsState.selectedId === idKey) {
+    paymentsState.selectedId = null;
+    clearPaymentDetailRow();
+  }
+
+  paymentsState.details.delete(idKey);
 }
 
 function exportPaymentsCsv() {

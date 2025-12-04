@@ -124,6 +124,8 @@ class PaymentService {
       let matchedProformaId = record.proforma_id || null;
       let matchedProformaFullnumber = record.proforma_fullnumber || null;
       let origin = 'auto';
+      const suggestedProformaId = record.auto_proforma_id || null;
+      const suggestedProformaFullnumber = record.auto_proforma_fullnumber || null;
 
       if (manualStatus === MANUAL_STATUS_APPROVED) {
         status = 'matched';
@@ -161,8 +163,8 @@ class PaymentService {
         manual_updated_at: record.manual_updated_at || null,
         match_metadata: record.match_metadata || null,
         source: record.source || null,
-        auto_proforma_id: record.proforma_id || null,
-        auto_proforma_fullnumber: record.proforma_fullnumber || null,
+        auto_proforma_id: suggestedProformaId,
+        auto_proforma_fullnumber: suggestedProformaFullnumber,
         expense_category_id: record.expense_category_id || null, // Include expense category ID
         income_category_id: record.income_category_id || null // Include income category ID (for refunds)
       };
@@ -213,6 +215,8 @@ class PaymentService {
         payer_normalized_name,
         proforma_id,
         proforma_fullnumber,
+        auto_proforma_id,
+        auto_proforma_fullnumber,
         match_status,
         match_confidence,
         match_reason,
@@ -1372,57 +1376,40 @@ class PaymentService {
   }
 
   applyMatching(payments, context) {
-    // ID категории "На счет" для автоматического присвоения при метчинге проформ
-    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
-    
     return payments.map((payment) => {
       const enriched = { ...payment };
       const candidates = this.createMatchingCandidates(enriched, context);
+      const best = candidates.length > 0 ? candidates[0] : null;
 
-      if (!candidates.length) {
-        return {
-          ...enriched,
-          payment_date: enriched.operation_date || null,
-          match_status: 'unmatched',
-          match_confidence: 0,
-          match_reason: 'Совпадения не найдены',
-          match_metadata: null,
-          proforma_id: null,
-          proforma_fullnumber: null
-        };
-      }
+      const matchMetadata = candidates.length
+        ? {
+            amount_diff: best.amountDiff,
+            remaining: best.remaining,
+            candidate_count: candidates.length,
+            candidates: candidates.slice(0, 5).map((candidate) => ({
+              proforma_id: candidate.proformaId,
+              proforma_fullnumber: candidate.proformaFullnumber,
+              score: candidate.score,
+              reason: candidate.reason,
+              amount_diff: candidate.amountDiff,
+              remaining: candidate.remaining
+            }))
+          }
+        : null;
 
-      const best = candidates[0];
-      const diffAcceptable = best.amountDiff <= AMOUNT_TOLERANCE;
-      const matchStatus = diffAcceptable ? 'matched' : 'needs_review';
-
-      // Автоматически присваиваем категорию "На счет" при успешном метчинге проформы
-      // Только для доходов (direction='in') и только если метчинг успешен (matchStatus='matched')
-      const shouldAssignCategory = enriched.direction === 'in' && matchStatus === 'matched' && best.proformaId;
-      
       return {
         ...enriched,
         payment_date: enriched.operation_date || null,
-        match_status: matchStatus,
-        match_confidence: best.score,
-        match_reason: best.reason,
-        match_metadata: {
-          amount_diff: best.amountDiff,
-          remaining: best.remaining,
-          candidate_count: candidates.length,
-          candidates: candidates.slice(0, 5).map((candidate) => ({
-            proforma_id: candidate.proformaId,
-            proforma_fullnumber: candidate.proformaFullnumber,
-            score: candidate.score,
-            reason: candidate.reason,
-            amount_diff: candidate.amountDiff,
-            remaining: candidate.remaining
-          }))
-        },
-        proforma_id: best.proformaId,
-        proforma_fullnumber: best.proformaFullnumber,
-        // Автоматически присваиваем категорию "На счет" при успешном метчинге
-        income_category_id: shouldAssignCategory ? INCOME_CATEGORY_ON_ACCOUNT_ID : (enriched.income_category_id || null)
+        match_status: candidates.length ? 'needs_review' : 'unmatched',
+        match_confidence: best ? best.score : 0,
+        match_reason: best ? best.reason : 'Совпадения не найдены',
+        match_metadata: matchMetadata,
+        auto_proforma_id: best?.proformaId || null,
+        auto_proforma_fullnumber: best?.proformaFullnumber || null,
+        // Не назначаем proforma_id автоматически — пользователь решает вручную
+        proforma_id: enriched.proforma_id || null,
+        proforma_fullnumber: enriched.proforma_fullnumber || null,
+        income_category_id: enriched.income_category_id || null
       };
     });
   }
@@ -1801,90 +1788,10 @@ class PaymentService {
     return this.getPaymentDetails(paymentId);
   }
 
-  async bulkApproveAutoMatches({ user = null, minConfidence = 80 } = {}) {
-    if (!supabase) {
-      throw new Error('Supabase client is not configured');
-    }
-
-    // ID категории "На счет" для автоматического присвоения при одобрении метчинга
-    const INCOME_CATEGORY_ON_ACCOUNT_ID = 2;
-
-    const { data, error } = await supabase
-      .from('payments')
-      .select('id, proforma_id, proforma_fullnumber, match_confidence, match_status, match_reason, direction, income_category_id')
-      .is('manual_status', null)
-      .in('match_status', ['matched', 'needs_review'])
-      .gte('match_confidence', minConfidence)
-      .order('match_confidence', { ascending: false })
-      .limit(1000);
-
-    if (error) {
-      logger.error('Supabase error while loading auto-matched payments:', error);
-      throw error;
-    }
-
-    const candidates = data || [];
-    if (!candidates.length) {
-      return { total: 0, processed: 0, skipped: 0 };
-    }
-
-    const now = new Date().toISOString();
-    const updates = [];
-
-    for (const payment of candidates) {
-      if (!payment.proforma_id || !payment.proforma_fullnumber) {
-        continue;
-      }
-
-      // Автоматически присваиваем категорию "На счет" при одобрении метчинга проформы
-      // Только для доходов (direction='in') и только если категория еще не присвоена
-      const shouldAssignCategory = payment.direction === 'in' && !payment.income_category_id;
-
-      updates.push({
-        id: payment.id,
-        manual_status: MANUAL_STATUS_APPROVED,
-        manual_proforma_id: payment.proforma_id,
-        manual_proforma_fullnumber: payment.proforma_fullnumber,
-        manual_user: user || 'bulk-auto',
-        manual_comment: payment.match_reason || null,
-        manual_updated_at: now,
-        // Автоматически присваиваем категорию "На счет" при одобрении метчинга
-        income_category_id: shouldAssignCategory ? INCOME_CATEGORY_ON_ACCOUNT_ID : (payment.income_category_id || null)
-      });
-    }
-
-    if (!updates.length) {
-      return { total: candidates.length, processed: 0, skipped: candidates.length };
-    }
-
-    let processed = 0;
-    const failedUpdates = [];
-
-    for (const update of updates) {
-      const { id, manual_proforma_id: linkedProformaId, ...changes } = update;
-      const { error: updateError } = await supabase
-        .from('payments')
-        .update(changes)
-        .eq('id', id);
-
-      if (updateError) {
-        logger.error('Supabase error while approving payment match:', updateError);
-        failedUpdates.push({ id, error: updateError });
-      } else {
-        processed += 1;
-        // eslint-disable-next-line no-await-in-loop
-        await this.updateProformaPaymentAggregates(linkedProformaId);
-      }
-    }
-
-    const skipped = candidates.length - processed;
-
-    return {
-      total: candidates.length,
-      processed,
-      skipped,
-      failed: failedUpdates
-    };
+  async bulkApproveAutoMatches() {
+    const error = new Error('Массовое подтверждение отключено. Подтверждайте платежи вручную.');
+    error.statusCode = 400;
+    throw error;
   }
 
   async approveAutoMatch(paymentId, { user = null } = {}) {
@@ -1894,7 +1801,10 @@ class PaymentService {
 
     const raw = await this.fetchPaymentRaw(paymentId);
 
-    if (!raw.proforma_id || !raw.proforma_fullnumber) {
+    const suggestedProformaId = raw.auto_proforma_id || raw.proforma_id || null;
+    const suggestedProformaFullnumber = raw.auto_proforma_fullnumber || raw.proforma_fullnumber || null;
+
+    if (!suggestedProformaId || !suggestedProformaFullnumber) {
       const validationError = new Error('Для этого платежа нет автоматического совпадения');
       validationError.statusCode = 400;
       throw validationError;
@@ -1913,11 +1823,16 @@ class PaymentService {
       .from('payments')
       .update({
         manual_status: MANUAL_STATUS_APPROVED,
-        manual_proforma_id: raw.proforma_id,
-        manual_proforma_fullnumber: raw.proforma_fullnumber,
+        manual_proforma_id: suggestedProformaId,
+        manual_proforma_fullnumber: suggestedProformaFullnumber,
         manual_comment: raw.match_reason || null,
         manual_user: user || 'quick-auto',
         manual_updated_at: now,
+        match_status: 'matched',
+        proforma_id: suggestedProformaId,
+        proforma_fullnumber: suggestedProformaFullnumber,
+        auto_proforma_id: null,
+        auto_proforma_fullnumber: null,
         // Автоматически присваиваем категорию "На счет" при одобрении метчинга
         income_category_id: shouldAssignCategory && !raw.income_category_id 
           ? INCOME_CATEGORY_ON_ACCOUNT_ID 
@@ -1932,12 +1847,12 @@ class PaymentService {
 
     logger.info('Payment manually linked to proforma', {
       paymentId,
-      proformaId: raw.proforma_id,
-      proformaFullnumber: raw.proforma_fullnumber,
+      proformaId: suggestedProformaId,
+      proformaFullnumber: suggestedProformaFullnumber,
       user: user || 'quick-auto'
     });
 
-    await this.updateProformaPaymentAggregates(raw.proforma_id);
+    await this.updateProformaPaymentAggregates(suggestedProformaId);
 
     return this.getPaymentDetails(paymentId);
   }
