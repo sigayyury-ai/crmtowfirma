@@ -195,6 +195,71 @@ class SendPulseClient {
   }
 
   /**
+   * Отправить SMS сообщение через SendPulse
+   * @param {string} phoneNumber - Номер телефона получателя (в формате +1234567890)
+   * @param {string} message - Текст сообщения
+   * @returns {Promise<Object>} - Результат отправки
+   */
+  async sendSMS(phoneNumber, message) {
+    try {
+      logger.info('Preparing to send SMS message:', {
+        phoneNumber: phoneNumber ? `${phoneNumber.substring(0, 3)}***${phoneNumber.substring(phoneNumber.length - 2)}` : 'N/A',
+        messageLength: message?.length || 0
+      });
+      
+      const accessToken = await this.getAccessToken();
+      
+      // SendPulse API для отправки SMS: POST /sms/send
+      const url = `${this.baseURL}/sms/send`;
+      
+      const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      };
+      
+      // Формат payload согласно документации SendPulse SMS API
+      const payload = {
+        phones: [phoneNumber], // Массив номеров телефонов
+        message: message,
+        // Опционально: sender - имя отправителя (если настроено в SendPulse)
+        // Опционально: transliterate - транслитерация (0 или 1)
+      };
+      
+      const response = await axios.post(url, payload, { headers });
+      
+      if (response.status === 200 || response.status === 201) {
+        const messageId = response.data?.id || response.data?.message_id || response.data?.result?.id;
+        logger.info('SendPulse SMS message sent successfully', {
+          phoneNumber: phoneNumber ? `${phoneNumber.substring(0, 3)}***${phoneNumber.substring(phoneNumber.length - 2)}` : 'N/A',
+          messageId: messageId || 'N/A',
+          status: response.status
+        });
+        return {
+          success: true,
+          messageId: messageId || null
+        };
+      } else {
+        throw new Error(`Failed to send SMS: unexpected status ${response.status}`);
+      }
+    } catch (error) {
+      logger.error('Error sending SendPulse SMS message:', error);
+      const errorDetails = {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        url: error.config?.url,
+        message: error.message
+      };
+      logger.error('SendPulse SMS API error details:', JSON.stringify(errorDetails, null, 2));
+      return {
+        success: false,
+        error: error.response?.data?.message || error.message,
+        details: errorDetails
+      };
+    }
+  }
+
+  /**
    * Тест подключения к SendPulse API
    * @returns {Promise<Object>} - Результат теста
    */
