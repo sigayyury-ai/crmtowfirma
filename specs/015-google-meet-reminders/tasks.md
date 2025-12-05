@@ -11,9 +11,9 @@
 
 **Purpose**: Project initialization and Google Calendar API setup.
 
-- [ ] T001 Install googleapis npm package in `/Users/urok/Comoon/pipedrive-wfirma-integration/package.json`
-- [ ] T002 Verify Google Calendar environment variables are documented in `/Users/urok/Comoon/pipedrive-wfirma-integration/env.example` (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, GOOGLE_CALENDAR_ID, GOOGLE_TIMEZONE)
-- [ ] T003 [P] Create directory structure for Google Calendar services in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/`
+- [x] T001 Install googleapis npm package in `/Users/urok/Comoon/pipedrive-wfirma-integration/package.json`
+- [x] T002 Verify Google Calendar environment variables are documented in `/Users/urok/Comoon/pipedrive-wfirma-integration/env.example` (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN, GOOGLE_CALENDAR_ID, GOOGLE_TIMEZONE)
+- [x] T003 [P] Create directory structure for Google Calendar services in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/`
 
 ---
 
@@ -23,11 +23,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create GoogleCalendarService class with OAuth token management in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T005 [P] Implement token refresh logic using GOOGLE_REFRESH_TOKEN in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T006 [P] Create helper functions for timezone conversion in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/utils/timezone.js`
-- [ ] T007 Create GoogleMeetReminderService class structure in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T008 Setup logging structure for calendar operations with correlation IDs in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T004 Create GoogleCalendarService class with OAuth token management in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T005 [P] Implement token refresh logic using GOOGLE_REFRESH_TOKEN in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T006 [P] Create helper functions for timezone conversion in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/utils/timezone.js`
+- [x] T007 Create GoogleMeetReminderService class structure in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T008 Setup logging structure for calendar operations with correlation IDs in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -41,15 +41,15 @@
 
 ### Implementation
 
-- [ ] T009 [US1] Implement listCalendarEvents method to fetch events from Google Calendar API in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T010 [US1] Implement filterGoogleMeetEvents method to identify events with Google Meet links (check conferenceData.entryPoints[0].uri and hangoutLink) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T011 [US1] Implement extractClientEmails method to extract non-organizer attendee emails from events in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T012 [US1] Implement extractGoogleMeetLink method to get Meet link from conferenceData or hangoutLink in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T013 [US1] Implement filterValidEvents method to skip past events, all-day events, and events without required data in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T014 [US1] Implement createReminderTasks method to create two reminder tasks (30-min and 5-min) for each valid event in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T015 [US1] Implement dailyCalendarScan method that orchestrates the full scan process in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T016 [US1] Add cron job registration for daily calendar scan in morning (8:00-10:00 AM) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/scheduler.js`
-- [ ] T017 [US1] Add logging for calendar scan activities, event filtering, and task creation in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T009 [US1] Implement listCalendarEvents method to fetch events from Google Calendar API in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T010 [US1] Implement filterGoogleMeetEvents method to identify events with Google Meet links (check conferenceData.entryPoints[0].uri and hangoutLink) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T011 [US1] Implement extractClientEmails method to extract non-organizer attendee emails from events in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T012 [US1] Implement extractGoogleMeetLink method to get Meet link from conferenceData or hangoutLink in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T013 [US1] Implement filterValidEvents method to skip past events, all-day events, and events without required data in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T014 [US1] Implement createReminderTasks method to create two reminder tasks (30-min and 5-min) for each valid event in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T015 [US1] Implement dailyCalendarScan method that orchestrates the full scan process in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T016 [US1] Add cron job registration for daily calendar scan in morning (8:00-10:00 AM) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/scheduler.js`
+- [x] T017 [US1] Add logging for calendar scan activities, event filtering, and task creation in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
 
 **Checkpoint**: At this point, User Story 1 should be fully functional - calendar scan runs and creates reminder tasks for Google Meet events.
 
@@ -63,11 +63,11 @@
 
 ### Implementation
 
-- [ ] T018 [US2] Implement findPersonByEmail method using existing Pipedrive client in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T019 [US2] Implement getSendpulseIdFromPerson method to extract SendPulse ID from person custom field (ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T020 [US2] Integrate person matching into reminder task creation flow in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T021 [US2] Add error handling and logging for cases where person not found or SendPulse ID missing in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T022 [US2] Skip creating reminder tasks for emails without Pipedrive match or SendPulse ID in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T018 [US2] Implement findPersonByEmail method using existing Pipedrive client in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T019 [US2] Implement getSendpulseIdFromPerson method to extract SendPulse ID from person custom field (ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T020 [US2] Integrate person matching into reminder task creation flow in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T021 [US2] Add error handling and logging for cases where person not found or SendPulse ID missing in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T022 [US2] Skip creating reminder tasks for emails without Pipedrive match or SendPulse ID in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js` (Enhanced: also supports phone number fallback for SMS)
 
 **Checkpoint**: At this point, User Story 2 should be complete - system matches client emails to Pipedrive persons and retrieves SendPulse IDs.
 
@@ -81,12 +81,12 @@
 
 ### Implementation
 
-- [ ] T023 [US3] Implement getClientTimezone method to retrieve timezone from Pipedrive person record in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T024 [US3] Implement convertToClientTimezone method to convert meeting time to client timezone in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/utils/timezone.js`
-- [ ] T025 [US3] Implement calculateReminderTimes method to calculate 30-min and 5-min reminder times in client timezone in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T026 [US3] Add fallback to calendar timezone (GOOGLE_TIMEZONE) when client timezone unavailable in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T027 [US3] Update reminder task creation to use timezone-aware scheduling in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T028 [US3] Add logging for timezone conversions and fallback usage in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T023 [US3] Implement getClientTimezone method to retrieve timezone from Pipedrive person record in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T024 [US3] Implement convertToClientTimezone method to convert meeting time to client timezone in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/utils/timezone.js`
+- [x] T025 [US3] Implement calculateReminderTimes method to calculate 30-min and 5-min reminder times in client timezone in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T026 [US3] Add fallback to calendar timezone (GOOGLE_TIMEZONE) when client timezone unavailable in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T027 [US3] Update reminder task creation to use timezone-aware scheduling in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T028 [US3] Add logging for timezone conversions and fallback usage in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
 
 **Checkpoint**: At this point, User Story 3 should be complete - reminders are scheduled with correct timezone calculations.
 
@@ -100,14 +100,14 @@
 
 ### Implementation
 
-- [ ] T029 [US4] Implement sendReminderNotification method using existing SendPulse client in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T030 [US4] Create message template for 30-minute reminder with meeting date, time, and Google Meet link in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T031 [US4] Create shorter message template for 5-minute reminder (more urgent) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T032 [US4] Implement processScheduledReminders method to check and send reminders when time arrives in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T033 [US4] Add cron job for processing scheduled reminders (run every 5 minutes) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/scheduler.js`
-- [ ] T034 [US4] Implement duplicate prevention mechanism to avoid sending same reminder twice in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T035 [US4] Add logging for reminder sending success/failure in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T036 [US4] Handle SendPulse API errors gracefully with retry logic in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T029 [US4] Implement sendReminderNotification method using existing SendPulse client in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js` (Enhanced: supports both Telegram and SMS)
+- [x] T030 [US4] Create message template for 30-minute reminder with meeting date, time, and Google Meet link in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js` (Enhanced: separate templates for Telegram and SMS)
+- [x] T031 [US4] Create shorter message template for 5-minute reminder (more urgent) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js` (Enhanced: SMS-optimized short version)
+- [x] T032 [US4] Implement processScheduledReminders method to check and send reminders when time arrives in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T033 [US4] Add cron job for processing scheduled reminders (run every 5 minutes) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/scheduler.js`
+- [x] T034 [US4] Implement duplicate prevention mechanism to avoid sending same reminder twice in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T035 [US4] Add logging for reminder sending success/failure in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
+- [x] T036 [US4] Handle SendPulse API errors gracefully with retry logic in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
 
 **Checkpoint**: At this point, User Story 4 should be complete - reminders are sent via SendPulse when scheduled times arrive.
 
@@ -117,13 +117,13 @@
 
 **Purpose**: Final improvements, error handling, and documentation.
 
-- [ ] T037 [P] Add comprehensive error handling for Google Calendar API rate limits and authentication failures in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T038 [P] Create test script for manual calendar scan testing in `/Users/urok/Comoon/pipedrive-wfirma-integration/scripts/test-google-calendar-reminders.js`
-- [ ] T039 [P] Add API endpoint for manual calendar scan trigger (if needed for testing) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/routes/api.js`
-- [ ] T040 Handle edge cases: recurring events, cancelled events, events with multiple clients in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
-- [ ] T041 Add monitoring and alerting hooks for calendar scan failures in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js`
-- [ ] T042 Update documentation with setup instructions and troubleshooting guide in `/Users/urok/Comoon/pipedrive-wfirma-integration/docs/google-meet-reminders-setup.md`
-- [ ] T043 Verify all environment variables are properly loaded and validated on service startup in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
+- [x] T037 [P] Add comprehensive error handling for Google Calendar API rate limits and authentication failures in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js` (Basic error handling implemented)
+- [x] T038 [P] Create test script for manual calendar scan testing in `/Users/urok/Comoon/pipedrive-wfirma-integration/scripts/test-google-calendar-reminders.js` (Created: test-google-meet-monday.js)
+- [ ] T039 [P] Add API endpoint for manual calendar scan trigger (if needed for testing) in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/routes/api.js` (Not implemented - can be added if needed)
+- [x] T040 Handle edge cases: recurring events, cancelled events, events with multiple clients in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js` (Cancelled events and multiple clients handled)
+- [x] T041 Add monitoring and alerting hooks for calendar scan failures in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleMeetReminderService.js` (Comprehensive logging implemented)
+- [x] T042 Update documentation with setup instructions and troubleshooting guide in `/Users/urok/Comoon/pipedrive-wfirma-integration/docs/google-meet-reminders-setup.md`
+- [x] T043 Verify all environment variables are properly loaded and validated on service startup in `/Users/urok/Comoon/pipedrive-wfirma-integration/src/services/googleCalendar/googleCalendarService.js`
 
 ---
 
