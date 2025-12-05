@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const StripeProcessorService = require('../services/stripe/processor');
 const InvoiceProcessingService = require('../services/invoiceProcessing');
+const ProformaRepository = require('../services/proformaRepository');
+const supabase = require('../services/supabaseClient');
 const { STAGE_IDS: STAGES } = require('../services/crm/statusCalculator');
 const logger = require('../utils/logger');
 const { normaliseCurrency } = require('../utils/currency');
@@ -12,6 +14,7 @@ const { createCashReminder, closeCashReminders } = require('../services/cash/cas
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
+const proformaRepository = new ProformaRepository();
 const cashPaymentsRepository = new CashPaymentsRepository();
 const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
 const INVOICE_NUMBER_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_NUMBER_FIELD_KEY || '0598d1168fe79005061aa3710ec45c3e03dbe8a3';
@@ -1726,8 +1729,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         
         // Получаем текущие продукты сделки
         const currentProductsResult = await pipedriveClient.getDealProducts(dealId);
+        logger.info(`📦 Результат получения продуктов | Deal: ${dealId} | Success: ${currentProductsResult.success} | Products count: ${currentProductsResult.products?.length || 0}`);
+        
         if (currentProductsResult.success && currentProductsResult.products) {
           const currentProducts = currentProductsResult.products;
+          logger.debug(`📦 Обработка продуктов | Deal: ${dealId} | Count: ${currentProducts.length}`);
           const currentProductId = currentProducts.length > 0 
             ? (currentProducts[0].product?.id || currentProducts[0].product_id || currentProducts[0].id)
             : null;
@@ -1735,24 +1741,67 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             ? (currentProducts[0].name || currentProducts[0].product?.name)
             : null;
           
-          // Получаем сохраненный продукт из кэша (если есть)
-          const cachedProduct = productChangeCache.get(dealId);
+          logger.debug(`📦 Текущий продукт | Deal: ${dealId} | ID: ${currentProductId} | Name: ${currentProductName}`);
           
-          // Проверяем, изменился ли продукт
-          const productChanged = cachedProduct && (
-            cachedProduct.productId !== currentProductId ||
-            cachedProduct.productName !== currentProductName
-          );
+          // Нормализуем название текущего продукта
+          const currentProductNormalized = currentProductName 
+            ? proformaRepository.normalizeProductName(currentProductName)
+            : null;
+          logger.debug(`📦 Нормализованное название текущего продукта | Deal: ${dealId} | "${currentProductNormalized}"`);
+          
+          // Получаем сохраненный продукт из базы данных (из проформы)
+          let previousProductNormalized = null;
+          try {
+            // Сначала находим проформу для сделки
+            const dealResult = await pipedriveClient.getDealWithRelatedData(dealId);
+            if (dealResult.success) {
+              const existingProforma = await invoiceProcessing.findExistingProformaForDeal(dealResult.deal);
+              
+              if (existingProforma?.found && existingProforma.invoiceId && supabase) {
+                // Получаем продукт из proforma_products для этой проформы
+                const { data: proformaProductData, error: proformaProductError } = await supabase
+                  .from('proforma_products')
+                  .select(`
+                    name,
+                    products (
+                      id,
+                      name,
+                      normalized_name
+                    )
+                  `)
+                  .eq('proforma_id', existingProforma.invoiceId)
+                  .limit(1)
+                  .single();
+                
+                if (!proformaProductError && proformaProductData) {
+                  // Берем normalized_name из связанной таблицы products
+                  if (proformaProductData.products?.normalized_name) {
+                    previousProductNormalized = proformaProductData.products.normalized_name;
+                    logger.info(`💾 Найден продукт из базы данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Normalized: "${previousProductNormalized}"`);
+                  } else if (proformaProductData.name) {
+                    // Если нет связанного продукта, нормализуем название из proforma_products
+                    previousProductNormalized = proformaRepository.normalizeProductName(proformaProductData.name);
+                    logger.info(`💾 Нормализован продукт из proforma_products | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Normalized: "${previousProductNormalized}"`);
+                  }
+                } else {
+                  logger.debug(`💾 Проформа найдена, но продукт не найден в proforma_products | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                }
+              } else {
+                logger.debug(`💾 Проформа не найдена для сделки | Deal: ${dealId}`);
+              }
+            }
+          } catch (error) {
+            logger.warn(`⚠️  Ошибка получения продукта из базы данных | Deal: ${dealId} | Ошибка: ${error.message}`);
+          }
+          
+          // Проверяем, изменился ли продукт (сравниваем нормализованные версии)
+          const productChanged = previousProductNormalized && currentProductNormalized && 
+            previousProductNormalized !== currentProductNormalized;
+          
+          logger.info(`🔍 Сравнение продуктов | Deal: ${dealId} | Было: "${previousProductNormalized}" | Стало: "${currentProductNormalized}" | Изменился: ${productChanged}`);
           
           if (productChanged) {
-            logger.info(`🔄 Обнаружено изменение продукта | Deal: ${dealId} | Было: ${cachedProduct.productName || cachedProduct.productId} | Стало: ${currentProductName || currentProductId}`);
-            
-            // Обновляем кэш
-            productChangeCache.set(dealId, {
-              productId: currentProductId,
-              productName: currentProductName,
-              timestamp: Date.now()
-            });
+            logger.info(`🔄 Обнаружено изменение продукта | Deal: ${dealId} | Было (normalized): "${previousProductNormalized}" | Стало (normalized): "${currentProductNormalized}" | Было (original): "${currentProductName}"`);
             
             // Обрабатываем изменение продукта независимо от invoice_type
             logger.info(`📄 Обработка изменения продукта | Deal: ${dealId}`);
@@ -1924,8 +1973,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                       invoiceId: existingProforma.invoiceId,
                       invoiceNumber: existingProforma.invoiceNumber,
                       productChange: {
-                        from: cachedProduct.productName || cachedProduct.productId,
-                        to: currentProductName || currentProductId
+                        from: previousProductNormalized,
+                        to: currentProductNormalized,
+                        toOriginal: currentProductName
                       }
                     });
                   } else {
@@ -1942,8 +1992,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                       dealId,
                       invoiceType: result.invoiceType,
                       productChange: {
-                        from: cachedProduct.productName || cachedProduct.productId,
-                        to: currentProductName || currentProductId
+                        from: previousProductNormalized,
+                        to: currentProductNormalized,
+                        toOriginal: currentProductName
                       }
                     });
                   } else {
@@ -1954,21 +2005,30 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             } catch (error) {
               logger.error(`❌ Ошибка обработки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`);
             }
-          } else if (!cachedProduct) {
-            // Первое получение продуктов - сохраняем в кэш
+          } else if (!previousProductNormalized && currentProductNormalized) {
+            // Проформы еще нет, но продукт есть - сохраняем в кэш для следующего раза
             productChangeCache.set(dealId, {
               productId: currentProductId,
               productName: currentProductName,
+              normalizedName: currentProductNormalized,
               timestamp: Date.now()
             });
-            logger.debug(`💾 Продукт сохранен в кэш | Deal: ${dealId} | Product: ${currentProductName || currentProductId}`);
+            logger.debug(`💾 Продукт сохранен в кэш (проформы еще нет) | Deal: ${dealId} | Product: ${currentProductName || currentProductId} | Normalized: "${currentProductNormalized}"`);
+          } else if (!productChanged && previousProductNormalized && currentProductNormalized) {
+            // Продукт не изменился - логируем для отладки
+            logger.debug(`✅ Продукт не изменился | Deal: ${dealId} | Normalized: "${currentProductNormalized}"`);
           }
+        } else {
+          logger.warn(`⚠️  Не удалось получить продукты | Deal: ${dealId} | Success: ${currentProductsResult.success} | Has products: ${!!currentProductsResult.products}`);
         }
+      } else {
+        logger.warn(`⚠️  PipedriveClient недоступен для проверки изменения продукта | Deal: ${dealId}`);
       }
     } catch (error) {
       logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
         dealId,
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
       // Не прерываем обработку webhook из-за ошибки проверки продукта
     }
