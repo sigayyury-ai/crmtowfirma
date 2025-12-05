@@ -1734,23 +1734,26 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         if (currentProductsResult.success && currentProductsResult.products) {
           const currentProducts = currentProductsResult.products;
           logger.debug(`📦 Обработка продуктов | Deal: ${dealId} | Count: ${currentProducts.length}`);
-          const currentProductId = currentProducts.length > 0 
-            ? (currentProducts[0].product?.id || currentProducts[0].product_id || currentProducts[0].id)
-            : null;
           const currentProductName = currentProducts.length > 0 
             ? (currentProducts[0].name || currentProducts[0].product?.name)
             : null;
           
-          logger.debug(`📦 Текущий продукт | Deal: ${dealId} | ID: ${currentProductId} | Name: ${currentProductName}`);
+          logger.debug(`📦 Текущий продукт из Pipedrive | Deal: ${dealId} | Name: ${currentProductName}`);
           
-          // Нормализуем название текущего продукта
-          const currentProductNormalized = currentProductName 
-            ? proformaRepository.normalizeProductName(currentProductName)
-            : null;
-          logger.debug(`📦 Нормализованное название текущего продукта | Deal: ${dealId} | "${currentProductNormalized}"`);
+          // Получаем или создаем продукт в нашей базе по названию из Pipedrive
+          let currentProductIdInDb = null;
+          if (currentProductName) {
+            try {
+              currentProductIdInDb = await invoiceProcessing.proformaRepository.ensureProductId(currentProductName);
+              logger.debug(`📦 Продукт найден/создан в базе | Deal: ${dealId} | Name: "${currentProductName}" | Product ID в базе: ${currentProductIdInDb}`);
+            } catch (error) {
+              logger.warn(`⚠️  Ошибка получения/создания продукта в базе | Deal: ${dealId} | Name: "${currentProductName}" | Ошибка: ${error.message}`);
+            }
+          }
           
-          // Получаем сохраненный продукт из базы данных (из проформы)
-          let previousProductNormalized = null;
+          // Получаем сохраненный продукт из базы данных (из проформы) - сравниваем по product_id из нашей базы
+          let previousProductId = null;
+          let previousProductName = null;
           try {
             // Сначала находим проформу для сделки
             const dealResult = await pipedriveClient.getDealWithRelatedData(dealId);
@@ -1763,6 +1766,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                   .from('proforma_products')
                   .select(`
                     name,
+                    product_id,
                     products (
                       id,
                       name,
@@ -1774,15 +1778,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                   .single();
                 
                 if (!proformaProductError && proformaProductData) {
-                  // Берем normalized_name из связанной таблицы products
-                  if (proformaProductData.products?.normalized_name) {
-                    previousProductNormalized = proformaProductData.products.normalized_name;
-                    logger.info(`💾 Найден продукт из базы данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Normalized: "${previousProductNormalized}"`);
-                  } else if (proformaProductData.name) {
-                    // Если нет связанного продукта, нормализуем название из proforma_products
-                    previousProductNormalized = proformaRepository.normalizeProductName(proformaProductData.name);
-                    logger.info(`💾 Нормализован продукт из proforma_products | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Normalized: "${previousProductNormalized}"`);
-                  }
+                  // Берем product_id из proforma_products (это ID из нашей таблицы products)
+                  previousProductId = proformaProductData.product_id;
+                  previousProductName = proformaProductData.products?.name || proformaProductData.name;
+                  logger.info(`💾 Найден продукт из базы данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Product ID: ${previousProductId} | Name: "${previousProductName}"`);
                 } else {
                   logger.debug(`💾 Проформа найдена, но продукт не найден в proforma_products | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
                 }
@@ -1794,14 +1793,21 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.warn(`⚠️  Ошибка получения продукта из базы данных | Deal: ${dealId} | Ошибка: ${error.message}`);
           }
           
-          // Проверяем, изменился ли продукт (сравниваем нормализованные версии)
-          const productChanged = previousProductNormalized && currentProductNormalized && 
-            previousProductNormalized !== currentProductNormalized;
+          // Проверяем, изменился ли продукт (сравниваем по product_id из нашей базы)
+          // ВАЖНО: Сравниваем ID продуктов из нашей базы данных
+          // Если проформы нет (previousProductId === null) - это не изменение продукта, а создание новой проформы
+          // Если проформы есть и product_id не совпадает - продукт изменился
+          const productChanged = previousProductId !== null && currentProductIdInDb !== null && 
+            String(previousProductId) !== String(currentProductIdInDb);
           
-          logger.info(`🔍 Сравнение продуктов | Deal: ${dealId} | Было: "${previousProductNormalized}" | Стало: "${currentProductNormalized}" | Изменился: ${productChanged}`);
+          if (previousProductId === null && currentProductIdInDb !== null) {
+            logger.info(`ℹ️  Проформа не найдена, это будет создание новой проформы | Deal: ${dealId} | Product ID в базе: ${currentProductIdInDb} | Name: "${currentProductName}"`);
+          } else {
+            logger.info(`🔍 Сравнение продуктов по ID из базы | Deal: ${dealId} | Было (Product ID в базе): ${previousProductId} | Стало (Product ID в базе): ${currentProductIdInDb} | Изменился: ${productChanged}`);
+          }
           
           if (productChanged) {
-            logger.info(`🔄 Обнаружено изменение продукта | Deal: ${dealId} | Было (normalized): "${previousProductNormalized}" | Стало (normalized): "${currentProductNormalized}" | Было (original): "${currentProductName}"`);
+            logger.info(`🔄 Обнаружено изменение продукта | Deal: ${dealId} | Было (Product ID в базе): ${previousProductId} | Стало (Product ID в базе): ${currentProductIdInDb} | Было (Name): "${previousProductName}" | Стало (Name): "${currentProductName}"`);
             
             // Обрабатываем изменение продукта независимо от invoice_type
             logger.info(`📄 Обработка изменения продукта | Deal: ${dealId}`);
@@ -1861,7 +1867,77 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                     };
                   }
                   
-                  // Рассчитываем график платежей (используем ту же логику, что и в createProformaInWfirma)
+                  // Получаем старую сумму проформы и уже оплаченные платежи для пересчета
+                  let oldProformaTotal = 0;
+                  let paidAmount = 0;
+                  let paidAmountPln = 0;
+                  
+                  if (supabase) {
+                    try {
+                      // Получаем старую сумму проформы из базы данных
+                      const { data: proformaData, error: proformaError } = await supabase
+                        .from('proformas')
+                        .select('total, currency, currency_exchange, payments_total, payments_total_pln')
+                        .eq('id', existingProforma.invoiceId)
+                        .single();
+                      
+                      if (!proformaError && proformaData) {
+                        oldProformaTotal = parseFloat(proformaData.total) || 0;
+                        logger.info(`💰 Старая сумма проформы | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Старая сумма: ${oldProformaTotal} ${proformaData.currency || fullDeal.currency}`);
+                        
+                        // Получаем уже оплаченные платежи для этой проформы
+                        // Используем ту же логику, что и в PaymentService.updateProformaPaymentAggregates
+                        const { data: paymentRows, error: paymentsError } = await supabase
+                          .from('payments')
+                          .select('amount, currency')
+                          .eq('manual_status', 'approved')
+                          .eq('manual_proforma_id', existingProforma.invoiceId);
+                        
+                        if (!paymentsError && paymentRows && paymentRows.length > 0) {
+                          const proformaCurrency = proformaData.currency || fullDeal.currency;
+                          const exchangeRate = parseFloat(proformaData.currency_exchange) || 1;
+                          
+                          // Собираем суммы по валютам (как в PaymentService)
+                          const totalsByCurrency = {};
+                          paymentRows.forEach((row) => {
+                            const amount = parseFloat(row.amount) || 0;
+                            if (!Number.isFinite(amount) || amount <= 0) {
+                              return;
+                            }
+                            const currency = row.currency || proformaCurrency;
+                            totalsByCurrency[currency] = (totalsByCurrency[currency] || 0) + amount;
+                          });
+                          
+                          // Конвертируем в валюту проформы (логика из PaymentService)
+                          paidAmount = totalsByCurrency[proformaCurrency] || 0;
+                          
+                          // Если платежей в валюте проформы нет, но есть в PLN, конвертируем
+                          if (paidAmount === 0 && Number.isFinite(exchangeRate) && exchangeRate > 0 && totalsByCurrency.PLN) {
+                            paidAmount = totalsByCurrency.PLN / exchangeRate;
+                          }
+                          
+                          // Рассчитываем PLN эквивалент
+                          if (proformaCurrency === 'PLN') {
+                            paidAmountPln = paidAmount;
+                          } else if (Number.isFinite(exchangeRate) && exchangeRate > 0) {
+                            paidAmountPln = paidAmount * exchangeRate;
+                          } else if (totalsByCurrency.PLN) {
+                            paidAmountPln = totalsByCurrency.PLN;
+                          }
+                          
+                          logger.info(`💰 Уже оплаченные платежи | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Платежей: ${paymentRows.length} | Оплачено: ${paidAmount} ${proformaCurrency} (${paidAmountPln} PLN) | По валютам: ${JSON.stringify(totalsByCurrency)}`);
+                        } else if (paymentsError) {
+                          logger.warn(`⚠️  Ошибка получения платежей | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${paymentsError.message}`);
+                        } else {
+                          logger.info(`💰 Платежи не найдены | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                        }
+                      }
+                    } catch (error) {
+                      logger.warn(`⚠️  Ошибка получения данных проформы для пересчета | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${error.message}`);
+                    }
+                  }
+                  
+                  // Рассчитываем график платежей с учетом пересчета суммы
                   const issueDate = new Date();
                   const issueDateStr = issueDate.toISOString().split('T')[0];
                   const paymentDate = new Date(issueDate);
@@ -1869,36 +1945,92 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                   const paymentDateStr = paymentDate.toISOString().split('T')[0];
                   
                   const totalAmountValue = parseFloat(fullDeal.value) || 0;
-                  const depositAmount = Math.round((totalAmountValue * invoiceProcessing.ADVANCE_PERCENT / 100) * 100) / 100;
-                  const balanceAmount = Math.round((totalAmountValue - depositAmount) * 100) / 100;
+                  
+                  // Пересчет: новая сумма - уже оплаченные платежи = остаток к оплате
+                  // НЕ учитываем старую сумму проформы, сравниваем новую сумму напрямую с оплаченными платежами
+                  const remainingAmount = Math.max(0, totalAmountValue - paidAmount);
+                  logger.info(`💰 Расчет остатка к оплате | Deal: ${dealId} | Новая сумма: ${totalAmountValue} | Оплачено: ${paidAmount} | Остаток: ${remainingAmount} ${fullDeal.currency}`);
+                  logger.info(`💰 Дополнительная информация | Deal: ${dealId} | Старая сумма проформы: ${oldProformaTotal} | Разница между новой и старой: ${totalAmountValue - oldProformaTotal} ${fullDeal.currency}`);
+                  
                   const formatAmount = (value) => value.toFixed(2);
                   
-                  // Определяем график платежей на основе разницы между сегодняшней датой и expected_close_date
+                  // Определяем график платежей на основе остатка к оплате
+                  // ВАЖНО: Если уже есть платежи, привязанные к проформе - НЕ дробим, весь остаток записываем как второй платеж
+                  // Если платежей нет - можно дробить, но в этом кейсе (изменение продукта) это не применимо
                   let secondPaymentDateStr = paymentDateStr;
                   let use50_50Schedule = false;
+                  const hasPayments = paymentRows && paymentRows.length > 0;
                   
-                  if (fullDeal.expected_close_date) {
-                    try {
-                      const expectedCloseDate = new Date(fullDeal.expected_close_date);
-                      const today = new Date(issueDateStr);
-                      const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+                  // Если остаток к оплате > 0, рассчитываем график платежей
+                  if (remainingAmount > 0) {
+                    if (hasPayments) {
+                      // Если уже есть платежи - НЕ дробим, весь остаток записываем как второй платеж
+                      logger.info(`💰 График платежей | Deal: ${dealId} | Уже есть платежи (${paymentRows.length}), не дробим. Весь остаток: ${remainingAmount} ${fullDeal.currency} - второй платеж`);
+                      use50_50Schedule = false;
                       
-                      // Если разница >= 30 дней (месяц), используем график 50/50
-                      if (daysDiff >= 30) {
-                        use50_50Schedule = true;
-                        // Вторая дата платежа - за 1 месяц до expected_close_date
-                        const balanceDueDate = new Date(expectedCloseDate);
-                        balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
-                        secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+                      // Определяем дату второго платежа на основе expected_close_date
+                      if (fullDeal.expected_close_date) {
+                        try {
+                          const expectedCloseDate = new Date(fullDeal.expected_close_date);
+                          const balanceDueDate = new Date(expectedCloseDate);
+                          balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
+                          secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+                        } catch (error) {
+                          logger.warn('Failed to calculate second payment date from expected close date', {
+                            dealId: fullDeal.id,
+                            expectedCloseDate: fullDeal.expected_close_date,
+                            error: error.message
+                          });
+                        }
                       }
-                    } catch (error) {
-                      logger.warn('Failed to calculate payment schedule from expected close date', {
-                        dealId: fullDeal.id,
-                        expectedCloseDate: fullDeal.expected_close_date,
-                        error: error.message
-                      });
+                    } else {
+                      // Если платежей нет - можно дробить (но в этом кейсе не применимо)
+                      if (fullDeal.expected_close_date) {
+                        try {
+                          const expectedCloseDate = new Date(fullDeal.expected_close_date);
+                          const today = new Date(issueDateStr);
+                          const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+                          
+                          // Если разница >= 30 дней (месяц), используем график 50/50 для остатка
+                          if (daysDiff >= 30) {
+                            use50_50Schedule = true;
+                            // Вторая дата платежа - за 1 месяц до expected_close_date
+                            const balanceDueDate = new Date(expectedCloseDate);
+                            balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
+                            secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+                          }
+                        } catch (error) {
+                          logger.warn('Failed to calculate payment schedule from expected close date', {
+                            dealId: fullDeal.id,
+                            expectedCloseDate: fullDeal.expected_close_date,
+                            error: error.message
+                          });
+                        }
+                      }
                     }
                   }
+                  
+                  // Рассчитываем суммы для графика платежей на основе остатка
+                  let depositAmount = 0;
+                  let balanceAmount = 0;
+                  
+                  if (remainingAmount > 0) {
+                    if (hasPayments) {
+                      // Если уже есть платежи - весь остаток записываем как второй платеж (не дробим)
+                      depositAmount = 0;
+                      balanceAmount = Math.round(remainingAmount * 100) / 100;
+                    } else if (use50_50Schedule) {
+                      // 50/50 от остатка (только если платежей нет)
+                      depositAmount = Math.round((remainingAmount * invoiceProcessing.ADVANCE_PERCENT / 100) * 100) / 100;
+                      balanceAmount = Math.round((remainingAmount - depositAmount) * 100) / 100;
+                    } else {
+                      // 100% остаток
+                      depositAmount = 0;
+                      balanceAmount = Math.round(remainingAmount * 100) / 100;
+                    }
+                  }
+                  
+                  logger.info(`💰 График платежей | Deal: ${dealId} | Есть платежи: ${hasPayments} | Остаток: ${remainingAmount} | Предоплата: ${depositAmount} | Остаток к оплате: ${balanceAmount} ${fullDeal.currency}`);
                   
                   // Получаем информацию о скидке из deal (та же логика, что и в createProformaInWfirma)
                   const getDiscount = (deal) => {
@@ -1935,10 +2067,22 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                   }
                   
                   let scheduleDescription;
-                  if (use50_50Schedule && secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
-                    scheduleDescription = `График платежей: 50% предоплата (${formatAmount(depositAmount)} ${fullDeal.currency}) оплачивается сейчас; 50% остаток (${formatAmount(balanceAmount)} ${fullDeal.currency}) до ${secondPaymentDateStr}.`;
+                  
+                  // Формируем описание графика платежей с учетом пересчета
+                  // ВАЖНО: Сравниваем новую сумму напрямую с оплаченными платежами, не учитываем старую сумму проформы
+                  // Если уже есть платежи - не дробим, весь остаток записываем как второй платеж
+                  if (remainingAmount <= 0) {
+                    // Если остаток <= 0, значит уже все оплачено или переплата
+                    scheduleDescription = `График платежей: Изменение продукта. Новая сумма: ${formatAmount(totalAmountValue)} ${fullDeal.currency}. Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}. Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency}.`;
+                  } else if (hasPayments) {
+                    // Если уже есть платежи - весь остаток записываем как второй платеж (не дробим)
+                    scheduleDescription = `График платежей: Изменение продукта. Новая сумма: ${formatAmount(totalAmountValue)} ${fullDeal.currency}. Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}. Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency} до ${secondPaymentDateStr}.`;
+                  } else if (use50_50Schedule && secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
+                    // 50/50 от остатка (только если платежей нет)
+                    scheduleDescription = `График платежей: Изменение продукта. Новая сумма: ${formatAmount(totalAmountValue)} ${fullDeal.currency}. Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}. Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency} (50% предоплата ${formatAmount(depositAmount)} ${fullDeal.currency} оплачивается сейчас; 50% остаток ${formatAmount(balanceAmount)} ${fullDeal.currency} до ${secondPaymentDateStr}).`;
                   } else {
-                    scheduleDescription = `График платежей: 100% оплата (${formatAmount(totalAmountValue)} ${fullDeal.currency}) до ${paymentDateStr}.`;
+                    // 100% остаток
+                    scheduleDescription = `График платежей: Изменение продукта. Новая сумма: ${formatAmount(totalAmountValue)} ${fullDeal.currency}. Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}. Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency} до ${paymentDateStr}.`;
                   }
                   
                   // Добавляем информацию о скидке, если она есть
@@ -1955,17 +2099,197 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                     : scheduleDescription;
                   
                   // Обновляем проформу
+                  // Если есть платежи, используем secondPaymentDateStr (дата второго платежа), иначе paymentDateStr
+                  const finalDueDate = hasPayments && secondPaymentDateStr ? secondPaymentDateStr : paymentDateStr;
                   const updateResult = await invoiceProcessing.updateProformaLines(existingProforma.invoiceId, {
                     product,
                     totalAmount: totalAmountValue,
                     schedule: {
-                      dueDate: paymentDateStr,
+                      dueDate: finalDueDate,
                       scheduleText: invoiceDescription
                     }
                   });
                   
                   if (updateResult.success) {
                     logger.info(`✅ Проформа обновлена после изменения продукта | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                    
+                    // Обновляем данные в базе данных (proforma_products)
+                    try {
+                      logger.info(`💾 Обновление proforma_products в базе данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                      await invoiceProcessing.persistProformaToDatabase(existingProforma.invoiceId, {
+                        invoiceNumber: existingProforma.invoiceNumber,
+                        issueDate: new Date(),
+                        currency: fullDeal.currency,
+                        totalAmount: totalAmountValue,
+                        fallbackProduct: product,
+                        dealId: dealId
+                      });
+                      logger.info(`✅ proforma_products обновлены в базе данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                    } catch (persistError) {
+                      logger.warn(`⚠️  Не удалось обновить proforma_products в базе данных | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${persistError.message}`);
+                      // Не прерываем процесс, так как проформа уже обновлена в wFirma
+                    }
+                    
+                    // Добавляем задачу на проверку последнего платежа
+                    try {
+                      const formatAmount = (value) => value.toFixed(2);
+                      const taskDueDate = new Date();
+                      taskDueDate.setDate(taskDueDate.getDate() + 1); // Задача на завтра
+                      
+                      const taskResult = await pipedriveClient.createTask({
+                        deal_id: dealId,
+                        subject: `Проверить последний платеж по проформе ${existingProforma.invoiceNumber || existingProforma.invoiceId}`,
+                        type: 'task',
+                        due_date: taskDueDate.toISOString().split('T')[0],
+                        note: `Проформа обновлена после изменения продукта. Проверить корректность последнего платежа.`
+                      });
+                      
+                      if (taskResult.success) {
+                        logger.info(`✅ Задача на проверку платежа создана | Deal: ${dealId} | Task ID: ${taskResult.task.id}`);
+                      } else {
+                        logger.warn(`⚠️  Не удалось создать задачу на проверку платежа | Deal: ${dealId} | Ошибка: ${taskResult.error}`);
+                      }
+                    } catch (taskError) {
+                      logger.warn(`⚠️  Ошибка создания задачи на проверку платежа | Deal: ${dealId} | Ошибка: ${taskError.message}`);
+                    }
+                    
+                    // Добавляем ноут в сделку со сводкой изменений
+                    try {
+                      const formatAmount = (value) => value.toFixed(2);
+                      const oldTotal = oldProformaTotal || 0;
+                      const noteContent = `🔄 Обновление проформы после изменения продукта
+
+📋 Проформа: ${existingProforma.invoiceNumber || existingProforma.invoiceId}
+
+📦 Изменение продукта:
+   Было: "${previousProductName || 'N/A'}"
+   Стало: "${currentProductName || 'N/A'}"
+
+💰 Изменение суммы:
+   Было: ${formatAmount(oldTotal)} ${fullDeal.currency}
+   Стало: ${formatAmount(totalAmountValue)} ${fullDeal.currency}
+   Разница: ${formatAmount(totalAmountValue - oldTotal)} ${fullDeal.currency}
+
+💳 Платежи:
+   Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}
+   Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency}
+   ${remainingAmount > 0 ? `Дата платежа: ${finalDueDate}` : 'Все оплачено'}
+
+✅ Проформа успешно обновлена в wFirma.`;
+                      
+                      const noteResult = await pipedriveClient.addNoteToDeal(dealId, noteContent);
+                      
+                      if (noteResult.success) {
+                        logger.info(`✅ Ноут добавлен в сделку | Deal: ${dealId} | Note ID: ${noteResult.note.id}`);
+                      } else {
+                        logger.warn(`⚠️  Не удалось добавить ноут в сделку | Deal: ${dealId} | Ошибка: ${noteResult.error}`);
+                      }
+                    } catch (noteError) {
+                      logger.warn(`⚠️  Ошибка добавления ноута в сделку | Deal: ${dealId} | Ошибка: ${noteError.message}`);
+                    }
+                    
+                    // Если есть остаток к оплате и дата второго платежа - отправляем сообщение клиенту и создаем напоминание
+                    if (remainingAmount > 0 && secondPaymentDateStr && hasPayments) {
+                      try {
+                        logger.info(`📧 Отправка сообщения клиенту о втором платеже | Deal: ${dealId} | Остаток: ${remainingAmount} ${fullDeal.currency}`);
+                        
+                        // Получаем данные персоны для SendPulse
+                        const dealWithRelated = await pipedriveClient.getDealWithRelatedData(dealId);
+                        const person = dealWithRelated?.person;
+                        const SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+                        const sendpulseId = person?.[SENDPULSE_ID_FIELD_KEY];
+                        
+                        if (sendpulseId) {
+                          // Получаем банковский счет
+                          const bankAccountResult = await invoiceProcessing.getBankAccountByCurrency(fullDeal.currency || 'PLN');
+                          const bankAccount = bankAccountResult.success ? bankAccountResult.bankAccount : null;
+                          
+                          // Формируем сообщение о втором платеже с новым остатком
+                          const customerFullName = person?.name || 'Клиент';
+                          // Берем только имя (первое слово)
+                          const customerName = customerFullName.split(' ')[0];
+                          const formatAmount = (value) => value.toFixed(2);
+                          
+                          // Получаем название нового продукта
+                          const newProductName = currentProductName || fullDeal.title;
+                          
+                          const message = `Привет, ${customerName}!
+
+Обновили кемп на "${newProductName}".
+
+Проформа пересчитана: ${existingProforma.invoiceNumber || existingProforma.invoiceId}
+
+Расчет:
+- Новая сумма: ${formatAmount(totalAmountValue)} ${fullDeal.currency}
+- Уже оплачено: ${formatAmount(paidAmount)} ${fullDeal.currency}
+- Остаток к оплате: ${formatAmount(remainingAmount)} ${fullDeal.currency}
+
+Дата платежа: ${secondPaymentDateStr}
+${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
+
+В назначении платежа укажите: "${existingProforma.invoiceNumber || existingProforma.invoiceId}"`;
+                          
+                          // Отправляем сообщение через SendPulse
+                          const SendPulseClient = require('../services/sendpulse');
+                          const sendpulseClient = new SendPulseClient();
+                          const sendResult = await sendpulseClient.sendTelegramMessage(sendpulseId, message);
+                          
+                          if (sendResult.success) {
+                            logger.info(`✅ Сообщение о втором платеже отправлено клиенту | Deal: ${dealId} | SendPulse ID: ${sendpulseId}`);
+                            
+                            // Записываем информацию для крон-задачи о напоминании
+                            // Крон-задача сама найдет эту сделку через findAllUpcomingTasks
+                            // если есть проформа, платежи и expected_close_date
+                            try {
+                              const ProformaSecondPaymentReminderService = require('../services/proformaSecondPaymentReminderService');
+                              const reminderService = new ProformaSecondPaymentReminderService();
+                              
+                              // Проверяем, что все данные на месте для крон-задачи
+                              const hasExpectedCloseDate = fullDeal.expected_close_date ? true : false;
+                              const hasProformaInDb = existingProforma ? true : false;
+                              const hasPaymentsInDb = hasPayments;
+                              
+                              logger.info(`📅 Напоминание для крон-задачи подготовлено | Deal: ${dealId}`, {
+                                secondPaymentDate: secondPaymentDateStr,
+                                hasExpectedCloseDate,
+                                hasProformaInDb,
+                                hasPaymentsInDb,
+                                remainingAmount,
+                                currency: fullDeal.currency,
+                                proformaNumber: existingProforma.invoiceNumber || existingProforma.invoiceId
+                              });
+                              
+                              logger.info(`ℹ️  Крон-задача автоматически отправит напоминание в дату платежа (${secondPaymentDateStr}) через ProformaSecondPaymentReminderService`);
+                            } catch (reminderError) {
+                              logger.warn(`⚠️  Ошибка подготовки напоминания для крон-задачи | Deal: ${dealId} | Ошибка: ${reminderError.message}`);
+                            }
+                          } else {
+                            logger.warn(`⚠️  Не удалось отправить сообщение клиенту | Deal: ${dealId} | Ошибка: ${sendResult.error}`);
+                          }
+                        } else {
+                          logger.warn(`⚠️  SendPulse ID не найден для персоны | Deal: ${dealId}`);
+                        }
+                      } catch (messageError) {
+                        logger.warn(`⚠️  Ошибка отправки сообщения клиенту | Deal: ${dealId} | Ошибка: ${messageError.message}`);
+                      }
+                    } else if (remainingAmount > 0) {
+                      logger.info(`ℹ️  Остаток к оплате есть, но нет даты второго платежа или платежей | Deal: ${dealId} | Остаток: ${remainingAmount} ${fullDeal.currency}`);
+                    }
+                    
+                    // Логируем информацию для крон-задачи даже если нет немедленного сообщения
+                    if (remainingAmount > 0 && secondPaymentDateStr) {
+                      logger.info(`📅 Напоминание для крон-задачи подготовлено | Deal: ${dealId}`, {
+                        secondPaymentDate: secondPaymentDateStr,
+                        hasExpectedCloseDate: fullDeal.expected_close_date ? true : false,
+                        hasProformaInDb: existingProforma ? true : false,
+                        hasPaymentsInDb: hasPayments,
+                        remainingAmount,
+                        currency: fullDeal.currency,
+                        proformaNumber: existingProforma.invoiceNumber || existingProforma.invoiceId
+                      });
+                      logger.info(`ℹ️  Крон-задача автоматически отправит напоминание в дату платежа (${secondPaymentDateStr}) через ProformaSecondPaymentReminderService`);
+                    }
+                    
                     return res.status(200).json({
                       success: true,
                       message: 'Proforma updated due to product change',
@@ -1973,13 +2297,68 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                       invoiceId: existingProforma.invoiceId,
                       invoiceNumber: existingProforma.invoiceNumber,
                       productChange: {
-                        from: previousProductNormalized,
-                        to: currentProductNormalized,
-                        toOriginal: currentProductName
+                        fromProductId: previousProductId,
+                        toProductId: currentProductIdInDb,
+                        fromProductName: previousProductName,
+                        toProductName: currentProductName
                       }
                     });
                   } else {
-                    logger.warn(`⚠️  Не удалось обновить проформу | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${updateResult.error}`);
+                    logger.error(`❌ Не удалось обновить проформу | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${updateResult.error}`);
+                    
+                    // Добавляем задачу на проверку ошибки обновления продукта
+                    try {
+                      const taskDueDate = new Date();
+                      taskDueDate.setDate(taskDueDate.getDate() + 1); // Задача на завтра
+                      
+                      const taskResult = await pipedriveClient.createTask({
+                        deal_id: dealId,
+                        subject: `Проверить - произошла ошибка обновления продукта`,
+                        type: 'task',
+                        due_date: taskDueDate.toISOString().split('T')[0],
+                        note: `Ошибка при обновлении проформы после изменения продукта.
+
+Проформа: ${existingProforma.invoiceNumber || existingProforma.invoiceId}
+Ошибка: ${updateResult.error}
+
+Требуется ручная проверка и исправление.`
+                      });
+                      
+                      if (taskResult.success) {
+                        logger.info(`✅ Задача на проверку ошибки создана | Deal: ${dealId} | Task ID: ${taskResult.task.id}`);
+                      } else {
+                        logger.warn(`⚠️  Не удалось создать задачу на проверку ошибки | Deal: ${dealId} | Ошибка: ${taskResult.error}`);
+                      }
+                    } catch (taskError) {
+                      logger.warn(`⚠️  Ошибка создания задачи на проверку ошибки | Deal: ${dealId} | Ошибка: ${taskError.message}`);
+                    }
+                    
+                    // Добавляем ноут об ошибке
+                    try {
+                      const noteContent = `❌ Ошибка обновления проформы после изменения продукта
+
+📋 Проформа: ${existingProforma.invoiceNumber || existingProforma.invoiceId}
+
+📦 Изменение продукта:
+   Было: "${previousProductName || 'N/A'}"
+   Стало: "${currentProductName || 'N/A'}"
+
+💰 Новая сумма: ${totalAmountValue} ${fullDeal.currency}
+
+❌ Ошибка: ${updateResult.error}
+
+Требуется ручная проверка и исправление проформы.`;
+                      
+                      const noteResult = await pipedriveClient.addNoteToDeal(dealId, noteContent);
+                      
+                      if (noteResult.success) {
+                        logger.info(`✅ Ноут об ошибке добавлен в сделку | Deal: ${dealId} | Note ID: ${noteResult.note.id}`);
+                      } else {
+                        logger.warn(`⚠️  Не удалось добавить ноут об ошибке | Deal: ${dealId} | Ошибка: ${noteResult.error}`);
+                      }
+                    } catch (noteError) {
+                      logger.warn(`⚠️  Ошибка добавления ноута об ошибке | Deal: ${dealId} | Ошибка: ${noteError.message}`);
+                    }
                   }
                 } else {
                   logger.info(`ℹ️  Проформа не найдена для сделки | Deal: ${dealId} | Создаем новую`);
@@ -1992,9 +2371,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                       dealId,
                       invoiceType: result.invoiceType,
                       productChange: {
-                        from: previousProductNormalized,
-                        to: currentProductNormalized,
-                        toOriginal: currentProductName
+                        fromProductId: previousProductId,
+                        toProductId: currentProductIdInDb,
+                        fromProductName: previousProductName,
+                        toProductName: currentProductName
                       }
                     });
                   } else {

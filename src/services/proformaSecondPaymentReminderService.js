@@ -350,17 +350,21 @@ class ProformaSecondPaymentReminderService {
       }
 
       // Формируем сообщение
-      const message = `🔔 Напоминание о втором платеже
+      // Берем только имя (первое слово) из customerName
+      const customerFullName = task.customerName || 'Клиент';
+      const customerName = customerFullName.split(' ')[0];
+      
+      const message = `Напоминание о втором платеже
 
-Здравствуйте, ${task.customerName}!
+Здравствуйте, ${customerName}!
 
 Напоминаем об оплате второго платежа по сделке "${task.dealTitle}".
 
-💰 Сумма: ${task.secondPaymentAmount.toFixed(2)} ${task.currency}
-📋 Проформа: ${task.proformaNumber}
-🏦 Счет: ${task.bankAccountNumber}
+Сумма: ${task.secondPaymentAmount.toFixed(2)} ${task.currency}
+Проформа: ${task.proformaNumber}
+Счет: ${task.bankAccountNumber}
 
-💡 Укажите "${task.proformaNumber}" в назначении платежа.`;
+Укажите "${task.proformaNumber}" в назначении платежа.`;
 
       // Отправляем сообщение
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
