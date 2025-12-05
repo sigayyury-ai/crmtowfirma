@@ -186,6 +186,14 @@ class StripeProcessorService {
                 reason: 'stripe:both-payments-complete-status-fix'
               });
 
+              // Добавляем заметку о том, что все платежи оплачены
+              await this.addAllPaymentsCompleteNote(dealId, {
+                depositPayment,
+                restPayment,
+                depositSessionId: depositPayment.session_id,
+                restSessionId: restPayment.session_id
+              });
+
               summary.fixed++;
               this.logger.info('Deal status fixed', {
                 dealId,
@@ -1181,13 +1189,21 @@ class StripeProcessorService {
           
           await this.closeAddressTasks(dealId);
           
-          // Add note and return early (skip individual payment logic below)
+          // Add note for current payment
           await this.addPaymentNoteToDeal(dealId, {
             paymentType: isRest ? 'rest' : 'deposit',
             amount: paymentRecord.original_amount,
             currency: paymentRecord.currency,
             amountPln: paymentRecord.amount_pln,
             sessionId: session.id
+          });
+          
+          // Add special note that all payments are complete
+          await this.addAllPaymentsCompleteNote(dealId, {
+            depositPayment,
+            restPayment,
+            depositSessionId: depositSessionId,
+            restSessionId: restSessionId
           });
           
           // Exit early - stage already updated to Camp Waiter
@@ -1320,6 +1336,23 @@ class StripeProcessorService {
           
           // Close address tasks if payment received
           await this.closeAddressTasks(dealId);
+          
+          // Add note for current payment
+          await this.addPaymentNoteToDeal(dealId, {
+            paymentType: isRest ? 'rest' : 'deposit',
+            amount: paymentRecord.original_amount,
+            currency: paymentRecord.currency,
+            amountPln: paymentRecord.amount_pln,
+            sessionId: session.id
+          });
+          
+          // Add special note that all payments are complete
+          await this.addAllPaymentsCompleteNote(dealId, {
+            depositPayment,
+            restPayment,
+            depositSessionId: depositPayment.session_id,
+            restSessionId: restPayment?.session_id || session.id
+          });
         } else {
           this.logger.warn(`⚠️  [Deal #${dealId}] Cannot move to Camp Waiter - missing payments`, {
             hasDeposit,
@@ -4032,11 +4065,123 @@ class StripeProcessorService {
   }
 
   /**
-   * Add refund note to deal
-   * @param {number} dealId - Deal ID
-   * @param {Array} refundedPayments - Array of refunded payments with refund info
-   * @returns {Promise<Object>} - Result of adding note
+   * Добавить заметку о том, что все платежи оплачены
+   * @param {number} dealId - ID сделки
+   * @param {Object} paymentInfo - Информация о платежах
+   * @returns {Promise<Object>} - Результат добавления заметки
    */
+  async addAllPaymentsCompleteNote(dealId, paymentInfo) {
+    const { depositPayment, restPayment, depositSessionId, restSessionId } = paymentInfo;
+
+    try {
+      // Проверяем, не существует ли уже такая заметка
+      try {
+        const dealNotes = await this.pipedriveClient.getDealNotes(dealId);
+        if (dealNotes && dealNotes.success && dealNotes.notes) {
+          const existingNote = dealNotes.notes.find(note => {
+            const noteContent = note.content || '';
+            return noteContent.includes('✅ Все платежи оплачены') || 
+                   noteContent.includes('Все платежи получены');
+          });
+          
+          if (existingNote) {
+            this.logger.info('All payments complete note already exists, skipping creation', {
+              dealId,
+              existingNoteId: existingNote.id
+            });
+            return {
+              success: true,
+              skipped: true,
+              reason: 'note_already_exists',
+              note: existingNote
+            };
+          }
+        }
+      } catch (notesCheckError) {
+        this.logger.warn('Failed to check existing notes before creating all payments complete note', {
+          dealId,
+          error: notesCheckError.message
+        });
+      }
+
+      const formatAmount = (amt) => parseFloat(amt).toFixed(2);
+      
+      // Собираем информацию о платежах
+      const depositAmount = depositPayment?.original_amount || depositPayment?.amount || 0;
+      const depositCurrency = depositPayment?.currency || 'PLN';
+      const depositAmountPln = depositPayment?.amount_pln || 0;
+      
+      const restAmount = restPayment?.original_amount || restPayment?.amount || 0;
+      const restCurrency = restPayment?.currency || 'PLN';
+      const restAmountPln = restPayment?.amount_pln || 0;
+      
+      const totalAmount = depositAmount + restAmount;
+      const totalAmountPln = depositAmountPln + restAmountPln;
+      const currency = depositCurrency; // Используем валюту первого платежа
+      
+      // Строим ссылки на Stripe Dashboard
+      const stripeMode = this.mode || 'test';
+      const dashboardBaseUrl = stripeMode === 'test' 
+        ? 'https://dashboard.stripe.com/test/checkout_sessions'
+        : 'https://dashboard.stripe.com/checkout_sessions';
+      
+      let noteContent = `✅ Все платежи оплачены!\n\n`;
+      noteContent += `💰 Общая сумма: ${formatAmount(totalAmount)} ${currency}`;
+      if (totalAmountPln && currency !== 'PLN') {
+        noteContent += ` (${formatAmount(totalAmountPln)} PLN)`;
+      }
+      noteContent += `\n\n`;
+      
+      // Детали по платежам
+      noteContent += `📋 Детали платежей:\n`;
+      noteContent += `1. Предоплата: ${formatAmount(depositAmount)} ${depositCurrency}`;
+      if (depositAmountPln && depositCurrency !== 'PLN') {
+        noteContent += ` (${formatAmount(depositAmountPln)} PLN)`;
+      }
+      if (depositSessionId) {
+        noteContent += `\n   Ссылка: ${dashboardBaseUrl}/${depositSessionId}`;
+      }
+      
+      noteContent += `\n\n`;
+      noteContent += `2. Остаток: ${formatAmount(restAmount)} ${restCurrency}`;
+      if (restAmountPln && restCurrency !== 'PLN') {
+        noteContent += ` (${formatAmount(restAmountPln)} PLN)`;
+      }
+      if (restSessionId) {
+        noteContent += `\n   Ссылка: ${dashboardBaseUrl}/${restSessionId}`;
+      }
+      
+      noteContent += `\n\nДата: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Warsaw' })}`;
+
+      const result = await this.pipedriveClient.addNoteToDeal(dealId, noteContent);
+
+      if (result.success) {
+        this.logger.info('All payments complete note added to deal', {
+          dealId,
+          totalAmount,
+          currency,
+          noteId: result.note?.id
+        });
+      } else {
+        this.logger.warn('Failed to add all payments complete note to deal', {
+          dealId,
+          error: result.error
+        });
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error('Error adding all payments complete note to deal', {
+        dealId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   async addRefundNoteToDeal(dealId, refundedPayments) {
     try {
       const formatAmount = (amt) => parseFloat(amt).toFixed(2);
