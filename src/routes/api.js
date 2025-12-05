@@ -973,11 +973,17 @@ router.get('/invoice-processing/scheduler-history', (req, res) => {
  */
 router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
   try {
+    // Константа для URL сделок
+    const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+    
     // Получаем задачи для Stripe платежей (создание сессии)
     const stripeDeals = await secondPaymentScheduler.findAllUpcomingTasks();
     
     // Получаем задачи-напоминания для Stripe платежей (сессия создана, но не оплачена)
     const stripeReminderTasks = await secondPaymentScheduler.findReminderTasks();
+    
+    // Получаем задачи для просроченных сессий (нужно пересоздать)
+    const expiredSessionTasks = await secondPaymentScheduler.findExpiredSessionTasks();
     
     // Форматируем данные для Stripe задач (создание сессии)
     const stripeTasks = await Promise.all(stripeDeals.map(async ({ deal, secondPaymentDate, isDateReached }) => {
@@ -998,7 +1004,6 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       const daysUntilSecondPayment = Math.ceil((secondPaymentDate - new Date()) / (1000 * 60 * 60 * 24));
       
       // Формируем ссылку на сделку в Pipedrive
-      const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
       const dealUrl = `${CRM_DEAL_BASE_URL}${deal.id}`;
       
       return {
@@ -1008,18 +1013,22 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
         customerEmail,
         expectedCloseDate: deal.expected_close_date || deal.close_date,
         secondPaymentDate: secondPaymentDate.toISOString().split('T')[0],
-        secondPaymentAmount,
-        currency,
-        daysUntilSecondPayment,
-        isDateReached,
-        status: isDateReached ? 'overdue' : (daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
+      secondPaymentAmount: (() => {
+        const amount = Number(secondPaymentAmount);
+        return isNaN(amount) ? 0 : amount;
+      })(),
+      currency: currency || 'PLN',
+        daysUntilSecondPayment: daysUntilSecondPayment ?? null,
+        isDateReached: isDateReached ?? false,
+        status: isDateReached ? 'overdue' : ((daysUntilSecondPayment ?? 0) <= 3 ? 'soon' : 'upcoming'),
         type: 'stripe_second_payment', // Тип задачи: второй платеж Stripe
-        paymentMethod: 'stripe'
+        paymentMethod: 'stripe',
+        label: 'Stripe', // Лейбл для отображения
+        taskDescription: 'Второй платеж' // Описание типа задачи
       };
     }));
 
     // Форматируем данные для Stripe задач-напоминаний
-    const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
     const formattedStripeReminderTasks = stripeReminderTasks.map(task => ({
       dealId: task.dealId,
       dealTitle: task.dealTitle,
@@ -1027,23 +1036,99 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       customerEmail: task.customerEmail,
       expectedCloseDate: task.deal.expected_close_date || task.deal.close_date,
       secondPaymentDate: task.secondPaymentDate.toISOString().split('T')[0],
-      secondPaymentAmount: task.secondPaymentAmount,
-      currency: task.currency,
-      daysUntilSecondPayment: task.daysUntilSecondPayment,
-      isDateReached: task.isDateReached,
-      status: task.isDateReached ? 'overdue' : (task.daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
+      secondPaymentAmount: (() => {
+        const amount = Number(task.secondPaymentAmount);
+        return isNaN(amount) ? 0 : amount;
+      })(),
+      currency: task.currency || 'PLN',
+      daysUntilSecondPayment: task.daysUntilSecondPayment ?? null,
+      isDateReached: task.isDateReached ?? false,
+      status: (task.isDateReached ?? false) ? 'overdue' : ((task.daysUntilSecondPayment ?? 0) <= 3 ? 'soon' : 'upcoming'),
       type: 'stripe_reminder', // Тип задачи: напоминание о втором платеже Stripe
       paymentMethod: 'stripe',
+      label: 'Stripe', // Лейбл для отображения
+      taskDescription: 'Второй платеж (напоминание)', // Описание типа задачи
       sessionId: task.sessionId,
       sessionUrl: task.sessionUrl
     }));
+
+    // Форматируем данные для просроченных сессий
+    const formattedExpiredSessionTasks = expiredSessionTasks.map(task => {
+      try {
+        const baseTask = {
+          dealId: task.dealId,
+          dealTitle: task.dealTitle,
+          dealUrl: `${CRM_DEAL_BASE_URL}${task.dealId}`,
+          customerEmail: task.customerEmail,
+          expectedCloseDate: task.deal?.expected_close_date || task.deal?.close_date || null,
+          currency: task.currency,
+          status: 'expired', // Просроченная сессия
+          type: 'stripe_expired_session', // Тип задачи: просроченная сессия, нужно пересоздать
+          paymentMethod: 'stripe',
+          sessionId: task.sessionId,
+          sessionUrl: null, // Просроченная сессия не имеет активного URL
+          isExpired: true,
+          daysExpired: task.daysExpired || 0,
+          paymentType: task.paymentType // Тип платежа: deposit, rest, second, final
+        };
+        
+        // Для deposit используем paymentAmount, для rest - secondPaymentAmount
+        // Устанавливаем оба поля, чтобы фронтенд не падал на null
+        if (task.paymentType === 'deposit') {
+          const amount = Number(task.paymentAmount);
+          baseTask.paymentAmount = isNaN(amount) ? 0 : amount;
+          // Для deposit также устанавливаем secondPaymentAmount = paymentAmount для единообразия с фронтендом
+          baseTask.secondPaymentAmount = isNaN(amount) ? 0 : amount;
+          // Для deposit используем expectedCloseDate как дату платежа
+          if (baseTask.expectedCloseDate) {
+            baseTask.secondPaymentDate = baseTask.expectedCloseDate; // Для отображения на фронтенде
+            // Рассчитываем дни до платежа от expectedCloseDate
+            const paymentDate = new Date(baseTask.expectedCloseDate);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            paymentDate.setHours(0, 0, 0, 0);
+            baseTask.daysUntilSecondPayment = Math.ceil((paymentDate - today) / (1000 * 60 * 60 * 24));
+            baseTask.isDateReached = paymentDate < today;
+          } else {
+            baseTask.daysUntilSecondPayment = null;
+            baseTask.isDateReached = false;
+          }
+          baseTask.taskDescription = 'Первый платеж (депозит)';
+        } else {
+          // Для rest/second/final используем secondPaymentAmount, если есть, иначе paymentAmount
+          const amount = Number(task.secondPaymentAmount || task.paymentAmount);
+          baseTask.secondPaymentAmount = isNaN(amount) ? 0 : amount;
+          baseTask.paymentAmount = 0; // Для rest paymentAmount = 0
+          if (task.secondPaymentDate) {
+            baseTask.secondPaymentDate = task.secondPaymentDate.toISOString().split('T')[0];
+            baseTask.daysUntilSecondPayment = task.daysUntilSecondPayment ?? null;
+            baseTask.isDateReached = task.isDateReached ?? false;
+          } else {
+            baseTask.daysUntilSecondPayment = null;
+            baseTask.isDateReached = false;
+          }
+          baseTask.taskDescription = 'Второй платеж';
+        }
+        
+        // Добавляем лейбл "Stripe" как у проформ
+        baseTask.label = 'Stripe';
+        
+        return baseTask;
+      } catch (error) {
+        logger.error('Error formatting expired session task', {
+          dealId: task.dealId,
+          error: error.message,
+          stack: error.stack
+        });
+        return null;
+      }
+    }).filter(task => task !== null); // Убираем задачи с ошибками форматирования
 
     // Получаем задачи для Proforma платежей
     // Показываем все задачи (включая просроченные), но не скрываем обработанные
     const proformaTasks = await proformaReminderService.findAllUpcomingTasks({ hideProcessed: false });
     
     // Форматируем данные для Proforma задач
-    const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
     const formattedProformaTasks = proformaTasks.map(task => ({
       dealId: task.dealId,
       dealTitle: task.dealTitle,
@@ -1051,15 +1136,20 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       customerEmail: task.customerEmail,
       expectedCloseDate: task.expectedCloseDate,
       secondPaymentDate: task.secondPaymentDate.toISOString().split('T')[0],
-      secondPaymentAmount: task.secondPaymentAmount,
-      currency: task.currency,
+      secondPaymentAmount: (() => {
+        const amount = Number(task.secondPaymentAmount);
+        return isNaN(amount) ? 0 : amount;
+      })(),
+      currency: task.currency || 'PLN',
       daysUntilSecondPayment: task.daysUntilSecondPayment,
       isDateReached: task.isDateReached,
       status: task.isDateReached ? 'overdue' : (task.daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
       type: 'proforma_reminder', // Тип задачи: напоминание о втором платеже по проформе
       paymentMethod: 'proforma',
-      proformaNumber: task.proformaNumber,
-      bankAccountNumber: task.bankAccountNumber
+      label: 'Proforma', // Лейбл для отображения
+      taskDescription: 'Второй платеж (проформа)', // Описание типа задачи
+      proformaNumber: task.proformaNumber
+      // bankAccountNumber удален из ответа API, так как не должен отображаться в описании задачи
     }));
 
     // Добавляем ручные задачи из cron (например, Deal #1660 на 4 декабря)
@@ -1088,22 +1178,35 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       }
     ];
 
-    // Объединяем все задачи
-    const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedProformaTasks, ...manualTasks];
+    // Объединяем все задачи (только разовые задачи по сделкам, без системных cron задач)
+    const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedExpiredSessionTasks, ...formattedProformaTasks, ...manualTasks];
     
     // Сортируем по дате (ближайшие сначала)
     allTasks.sort((a, b) => {
-      return new Date(a.secondPaymentDate) - new Date(b.secondPaymentDate);
+      // Для задач без даты ставим в конец
+      const dateA = a.secondPaymentDate ? new Date(a.secondPaymentDate) : 
+                     (a.expectedCloseDate ? new Date(a.expectedCloseDate) : new Date('9999-12-31'));
+      const dateB = b.secondPaymentDate ? new Date(b.secondPaymentDate) : 
+                     (b.expectedCloseDate ? new Date(b.expectedCloseDate) : new Date('9999-12-31'));
+      return dateA - dateB;
     });
     
     // Фильтруем скрытые задачи
     const hiddenTasks = await getHiddenTasksFromSupabase();
     const visibleTasks = allTasks.filter(task => {
-      return !hiddenTasks.some(hidden => 
-        hidden.deal_id === task.dealId && 
-        hidden.task_type === task.type &&
-        hidden.second_payment_date === task.secondPaymentDate
-      );
+      const isHidden = hiddenTasks.some(hidden => {
+        // Для deposit задач не проверяем second_payment_date
+        if (task.paymentType === 'deposit') {
+          return hidden.deal_id === task.dealId && 
+                 hidden.task_type === task.type;
+        }
+        // Для остальных задач проверяем и deal_id, и task_type, и second_payment_date
+        return hidden.deal_id === task.dealId && 
+               hidden.task_type === task.type &&
+               hidden.second_payment_date === task.secondPaymentDate;
+      });
+      
+      return !isHidden;
     });
     
     res.json({

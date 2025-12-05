@@ -122,6 +122,10 @@ class SchedulerService {
         this.runStripeReminderCycle({ trigger: 'cron_stripe_reminder' }).catch((error) => {
           logger.error('Unexpected error in Stripe reminder cycle:', error);
         });
+        // Также обрабатываем просроченные сессии (пересоздание и уведомления)
+        this.runExpiredSessionsCycle({ trigger: 'cron_expired_sessions' }).catch((error) => {
+          logger.error('Unexpected error in expired sessions cycle:', error);
+        });
       },
       {
         scheduled: true,
@@ -570,6 +574,42 @@ class SchedulerService {
   async runManualProcessing(label = 'manual') {
     logger.info('Manual invoice processing requested', { label });
     return this.runCycle({ trigger: label, retryAttempt: 0 });
+  }
+
+  /**
+   * Запустить цикл обработки просроченных сессий
+   * @param {Object} options - Опции запуска
+   * @param {string} options.trigger - Триггер запуска
+   * @returns {Promise<Object>} - Результат обработки
+   */
+  async runExpiredSessionsCycle({ trigger = 'manual' }) {
+    const runId = randomUUID();
+    logger.info('Expired sessions cycle started', { trigger, runId });
+
+    try {
+      const result = await this.secondPaymentScheduler.processExpiredSessions({ trigger, runId });
+      if (result.errors.length > 0) {
+        logger.error('Expired sessions processing finished with errors', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else {
+        logger.info('Expired sessions processing finished successfully', {
+          trigger,
+          runId,
+          summary: result
+        });
+      }
+      return { success: result.errors.length === 0, summary: result };
+    } catch (error) {
+      logger.error('Expired sessions processing crashed', {
+        trigger,
+        runId,
+        error: error.message
+      });
+      return { success: false, error: error.message };
+    }
   }
 
   /**

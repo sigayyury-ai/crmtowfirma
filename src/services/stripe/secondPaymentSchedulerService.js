@@ -303,6 +303,13 @@ class SecondPaymentSchedulerService {
           sessionId: result.sessionId,
           sessionUrl: result.sessionUrl
         });
+        // Логируем, что задача-напоминание будет доступна в cron
+        this.logger.info('✅ Reminder task will be available in cron queue', {
+          dealId: deal.id,
+          sessionId: result.sessionId,
+          secondPaymentDate: secondPaymentDate.toISOString().split('T')[0],
+          note: 'Task will appear in /api/second-payment-scheduler/upcoming-tasks via findReminderTasks() after date is reached'
+        });
       } else {
         this.logger.error('Failed to create second payment session', {
           dealId: deal.id,
@@ -325,22 +332,30 @@ class SecondPaymentSchedulerService {
 
   /**
    * Найти все задачи-напоминания о втором платеже (сессия создана, но не оплачена)
+   * Ищем по платежам в базе данных И в Stripe напрямую (для просроченных сессий)
    * @returns {Promise<Array>} - Массив задач для напоминаний
    */
   async findReminderTasks() {
     try {
-      // Получаем все сделки со статусом "Stripe" (invoice_type = 75)
-      const invoiceTypeFieldKey = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
-      const stripeTriggerValue = '75';
+      // Получаем все неоплаченные вторые платежи из базы данных
+      const allPayments = await this.repository.listPayments({});
+      
+      // Фильтруем только вторые платежи (rest/second/final), которые не оплачены
+      const unpaidSecondPayments = allPayments.filter(p => 
+        (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+        p.payment_status !== 'paid' &&
+        p.deal_id // Должен быть deal_id
+      );
 
-      const dealsResult = await this.pipedriveClient.getDeals({
-        filter_id: null,
-        status: 'all_not_deleted',
-        limit: 500,
-        start: 0
-      });
+      // Также ищем просроченные сессии в Stripe напрямую (которые могут не быть в базе)
+      const expiredSessionsFromStripe = await this.findExpiredUnpaidSessionsFromStripe();
 
-      if (!dealsResult.success || !dealsResult.deals) {
+      // Объединяем deal_id из базы и из Stripe
+      const dealIdsFromDb = [...new Set(unpaidSecondPayments.map(p => p.deal_id))];
+      const dealIdsFromStripe = [...new Set(expiredSessionsFromStripe.map(s => s.dealId))];
+      const allDealIds = [...new Set([...dealIdsFromDb, ...dealIdsFromStripe])];
+
+      if (allDealIds.length === 0) {
         return [];
       }
 
@@ -348,97 +363,141 @@ class SecondPaymentSchedulerService {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
 
-      for (const deal of dealsResult.deals) {
-        // Проверяем, что invoice_type = "Stripe" (75)
-        const invoiceType = deal[invoiceTypeFieldKey];
-        if (String(invoiceType) !== stripeTriggerValue) {
-          continue;
-        }
+      // Для каждой сделки проверяем условия
+      for (const dealId of allDealIds) {
+        try {
+          // Получаем данные сделки из Pipedrive
+          const dealResult = await this.pipedriveClient.getDeal(dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            continue;
+          }
 
-        // Определяем график платежей
-        const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
-        if (schedule !== '50/50' || !secondPaymentDate) {
-          continue;
-        }
+          const deal = dealResult.deal;
 
-        // Проверяем, что дата второго платежа наступила
-        if (!this.isDateReached(secondPaymentDate)) {
-          continue;
-        }
+          // Определяем график платежей
+          const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+          if (schedule !== '50/50' || !secondPaymentDate) {
+            continue;
+          }
 
-        // Проверяем, что первый платеж оплачен
-        const firstPaid = await this.isFirstPaymentPaid(deal.id);
-        if (!firstPaid) {
-          continue;
-        }
+          // Проверяем, что дата второго платежа наступила
+          if (!this.isDateReached(secondPaymentDate)) {
+            continue;
+          }
 
-        // Проверяем, что вторая сессия создана
-        const payments = await this.repository.listPayments({ dealId: String(deal.id) });
-        const restPayment = payments.find(p => 
-          (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final')
-        );
+          // Проверяем, что первый платеж оплачен
+          const firstPaid = await this.isFirstPaymentPaid(dealId);
+          if (!firstPaid) {
+            continue;
+          }
 
-        if (!restPayment) {
-          continue; // Сессия еще не создана
-        }
+          // Получаем вторую сессию для этой сделки
+          // Сначала ищем в базе данных
+          const payments = await this.repository.listPayments({ dealId: String(dealId) });
+          let restPayment = payments.find(p => 
+            (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+            p.payment_status !== 'paid'
+          );
 
-        // Проверяем, что второй платеж не оплачен
-        if (restPayment.payment_status === 'paid') {
-          continue; // Уже оплачен
-        }
+          // Если не нашли в базе, ищем в просроченных сессиях из Stripe
+          let expiredSession = null;
+          if (!restPayment) {
+            const expiredSessions = await this.findExpiredUnpaidSessionsFromStripe();
+            expiredSession = expiredSessions.find(s => String(s.dealId) === String(dealId));
+            
+            if (expiredSession) {
+              // Создаем объект, похожий на restPayment для единообразия
+              restPayment = {
+                session_id: expiredSession.sessionId,
+                payment_type: expiredSession.paymentType,
+                payment_status: 'unpaid',
+                payment_schedule: expiredSession.paymentSchedule,
+                original_amount: expiredSession.amount,
+                currency: expiredSession.currency,
+                raw_payload: {
+                  url: expiredSession.url
+                }
+              };
+              this.logger.info('Found expired session from Stripe for reminder task', {
+                dealId,
+                sessionId: expiredSession.sessionId
+              });
+            }
+          }
 
-        // Получаем URL сессии из Stripe API или из raw_payload
-        let sessionUrl = null;
-        // Сначала пытаемся получить из raw_payload (быстрее)
-        if (restPayment.raw_payload && restPayment.raw_payload.url) {
-          sessionUrl = restPayment.raw_payload.url;
-        } else {
-          // Если нет в raw_payload, получаем из Stripe API
-          try {
-            const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
-            sessionUrl = stripeSession.url || null;
-          } catch (error) {
-            this.logger.warn('Failed to retrieve session URL from Stripe', {
-              dealId: deal.id,
-              sessionId: restPayment.session_id,
-              error: error.message
+          if (!restPayment) {
+            continue; // Сессия оплачена или не найдена
+          }
+
+          // Получаем URL сессии
+          let sessionUrl = null;
+          // Сначала пытаемся получить из raw_payload (быстрее)
+          if (restPayment.raw_payload && restPayment.raw_payload.url) {
+            sessionUrl = restPayment.raw_payload.url;
+          } else if (expiredSession && expiredSession.url) {
+            sessionUrl = expiredSession.url;
+          } else {
+            // Если нет в raw_payload, получаем из Stripe API
+            try {
+              const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
+              sessionUrl = stripeSession.url || null;
+            } catch (error) {
+              this.logger.warn('Failed to retrieve session URL from Stripe', {
+                dealId: deal.id,
+                sessionId: restPayment.session_id,
+                error: error.message
+              });
+            }
+          }
+          
+          // Если сессия просрочена, URL будет null - это нормально
+          if (!sessionUrl && expiredSession) {
+            this.logger.info('Expired session has no active URL, will need to recreate', {
+              dealId,
+              sessionId: restPayment.session_id
             });
           }
+
+          // Получаем данные персоны
+          const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(deal.id);
+          const person = dealWithRelated?.person;
+          const organization = dealWithRelated?.organization;
+          
+          const customerEmail = person?.email?.[0]?.value || 
+                               person?.email || 
+                               organization?.email?.[0]?.value || 
+                               organization?.email || 
+                               'N/A';
+          
+          const customerName = person?.name || organization?.name || 'Клиент';
+
+          const dealValue = parseFloat(deal.value) || 0;
+          const currency = deal.currency || 'PLN';
+          const secondPaymentAmount = dealValue / 2;
+          
+          const daysUntil = Math.ceil((secondPaymentDate - today) / (1000 * 60 * 60 * 24));
+
+          reminderTasks.push({
+            deal,
+            dealId: deal.id,
+            dealTitle: deal.title,
+            customerEmail,
+            customerName,
+            secondPaymentDate,
+            secondPaymentAmount,
+            currency,
+            daysUntilSecondPayment: daysUntil,
+            isDateReached: this.isDateReached(secondPaymentDate),
+            sessionId: restPayment.session_id,
+            sessionUrl: sessionUrl
+          });
+        } catch (error) {
+          this.logger.warn('Error processing deal for reminder task', {
+            dealId,
+            error: error.message
+          });
+          continue;
         }
-
-        // Получаем данные персоны
-        const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(deal.id);
-        const person = dealWithRelated?.person;
-        const organization = dealWithRelated?.organization;
-        
-        const customerEmail = person?.email?.[0]?.value || 
-                             person?.email || 
-                             organization?.email?.[0]?.value || 
-                             organization?.email || 
-                             'N/A';
-        
-        const customerName = person?.name || organization?.name || 'Клиент';
-
-        const dealValue = parseFloat(deal.value) || 0;
-        const currency = deal.currency || 'PLN';
-        const secondPaymentAmount = dealValue / 2;
-        
-        const daysUntil = Math.ceil((secondPaymentDate - today) / (1000 * 60 * 60 * 24));
-
-        reminderTasks.push({
-          deal,
-          dealId: deal.id,
-          dealTitle: deal.title,
-          customerEmail,
-          customerName,
-          secondPaymentDate,
-          secondPaymentAmount,
-          currency,
-          daysUntilSecondPayment: daysUntil,
-          isDateReached: this.isDateReached(secondPaymentDate),
-          sessionId: restPayment.session_id,
-          sessionUrl: sessionUrl
-        });
       }
 
       // Сортируем по дате (ближайшие сначала)
@@ -462,7 +521,7 @@ class SecondPaymentSchedulerService {
    * @returns {Promise<Object>} - Результат отправки
    */
   async sendReminder(task, options = {}) {
-    const { trigger = 'manual', runId = null } = options;
+    const { trigger = 'manual', runId = null, isRecreated = false } = options;
     
     if (!this.stripeProcessor.sendpulseClient) {
       return {
@@ -505,16 +564,38 @@ class SecondPaymentSchedulerService {
         return num.toFixed(2);
       };
 
+      // Определяем тип платежа
+      const isDeposit = task.paymentType === 'deposit';
+      const isRest = task.paymentType === 'rest' || task.paymentType === 'second' || task.paymentType === 'final';
+      
       // Формируем сообщение
-      let message = `Привет! Напоминаю о втором платеже.\n\n`;
+      let message = '';
+      
+      if (isRecreated) {
+        message = `Привет! Предыдущая ссылка на оплату истекла, создал новую.\n\n`;
+      } else {
+        if (isDeposit) {
+          message = `Привет! Напоминаю о первом платеже.\n\n`;
+        } else {
+          message = `Привет! Напоминаю о втором платеже.\n\n`;
+        }
+      }
       
       if (task.sessionUrl) {
         message += `[Ссылка на оплату](${task.sessionUrl})\n`;
         message += `Ссылка действует 24 часа\n\n`;
+      } else if (isRecreated) {
+        message += `⚠️ Новая ссылка создана, но не получена. Пожалуйста, свяжитесь с нами.\n\n`;
       }
       
-      message += `Сумма: ${formatAmount(task.secondPaymentAmount)} ${task.currency}\n`;
-      message += `Дата платежа: ${formatDate(task.secondPaymentDate)}\n`;
+      // Используем paymentAmount для обоих типов платежей
+      const amount = task.paymentAmount || task.secondPaymentAmount || 0;
+      message += `Сумма: ${formatAmount(amount)} ${task.currency}\n`;
+      
+      // Для второго платежа добавляем дату
+      if (isRest && task.secondPaymentDate) {
+        message += `Дата платежа: ${formatDate(task.secondPaymentDate)}\n`;
+      }
 
       // Отправляем через SendPulse
       const result = await this.stripeProcessor.sendpulseClient.sendTelegramMessage(sendpulseId, message);
@@ -544,6 +625,326 @@ class SecondPaymentSchedulerService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  /**
+   * Найти все просроченные неоплаченные сессии для задач cron
+   * @returns {Promise<Array>} - Массив задач для пересоздания сессий
+   */
+  async findExpiredSessionTasks() {
+    try {
+      const expiredSessions = await this.findExpiredUnpaidSessionsFromStripe();
+      if (expiredSessions.length === 0) {
+        return [];
+      }
+
+      const tasks = [];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Группируем по deal_id
+      const dealIds = [...new Set(expiredSessions.map(s => s.dealId))];
+
+      for (const dealId of dealIds) {
+        try {
+          // Получаем данные сделки
+          const dealResult = await this.pipedriveClient.getDeal(dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            continue;
+          }
+
+          const deal = dealResult.deal;
+
+          // Находим все просроченные сессии для этой сделки
+          const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
+          if (dealExpiredSessions.length === 0) {
+            continue;
+          }
+
+          // Определяем график платежей
+          const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+          
+          // Обрабатываем каждую просроченную сессию отдельно
+          for (const expiredSession of dealExpiredSessions) {
+            const isDeposit = expiredSession.paymentType === 'deposit';
+            const isRest = expiredSession.paymentType === 'rest' || 
+                          expiredSession.paymentType === 'second' || 
+                          expiredSession.paymentType === 'final';
+
+            // Для первого платежа (deposit) - пересоздаем всегда, если просрочена
+            if (isDeposit) {
+              // Можно пересоздавать сразу
+            } 
+            // Для второго платежа (rest/second/final) - только если график 50/50, дата наступила и первый оплачен
+            else if (isRest) {
+              if (schedule !== '50/50' || !secondPaymentDate) {
+                continue; // Пропускаем эту сессию
+              }
+
+              // Проверяем, что первый платеж оплачен
+              const firstPaid = await this.isFirstPaymentPaid(dealId);
+              if (!firstPaid) {
+                continue; // Пропускаем эту сессию
+              }
+
+              // Проверяем, что дата второго платежа наступила
+              // Вторую сессию нужно выставлять только в день согласно графику платежей
+              if (!this.isDateReached(secondPaymentDate)) {
+                continue; // Пропускаем эту сессию
+              }
+            } else {
+              continue; // Неизвестный тип платежа
+            }
+
+            // Получаем данные персоны (один раз для всех сессий сделки)
+            const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(dealId);
+            const person = dealWithRelated?.person;
+            const organization = dealWithRelated?.organization;
+            
+            const customerEmail = person?.email?.[0]?.value || 
+                                 person?.email || 
+                                 organization?.email?.[0]?.value || 
+                                 organization?.email || 
+                                 'N/A';
+            
+            const customerName = person?.name || organization?.name || 'Клиент';
+
+            const dealValue = parseFloat(deal.value) || 0;
+            const currency = deal.currency || 'PLN';
+            
+            const daysExpired = expiredSession.expiresAt 
+              ? Math.floor((today - new Date(expiredSession.expiresAt * 1000)) / (1000 * 60 * 60 * 24))
+              : 0;
+
+            // Для deposit используем сумму из сессии или половину от deal value
+            // Для rest используем половину от deal value
+            const paymentAmount = expiredSession.amount || (isDeposit ? dealValue / 2 : dealValue / 2);
+            
+            const task = {
+              deal,
+              dealId: deal.id,
+              dealTitle: deal.title,
+              customerEmail,
+              customerName,
+              paymentType: expiredSession.paymentType,
+              paymentAmount,
+              currency,
+              sessionId: expiredSession.sessionId,
+              sessionUrl: null, // Просроченная сессия не имеет активного URL
+              isExpired: true,
+              daysExpired: daysExpired
+            };
+
+            // Для второго платежа добавляем информацию о дате и сумму
+            if (isRest && secondPaymentDate) {
+              const daysUntil = Math.ceil((secondPaymentDate - today) / (1000 * 60 * 60 * 24));
+              task.secondPaymentDate = secondPaymentDate;
+              task.secondPaymentAmount = paymentAmount; // Для rest используем paymentAmount как secondPaymentAmount
+              task.daysUntilSecondPayment = daysUntil;
+              task.isDateReached = this.isDateReached(secondPaymentDate);
+            }
+
+            tasks.push(task);
+          }
+        } catch (error) {
+          this.logger.warn('Error processing deal for expired session task', {
+            dealId,
+            error: error.message
+          });
+          continue;
+        }
+      }
+
+      return tasks;
+    } catch (error) {
+      this.logger.error('Failed to find expired session tasks', {
+        error: error.message
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Найти просроченные неоплаченные сессии в Stripe напрямую
+   * Это нужно для случаев, когда сессии просрочены, но не были сохранены в базу
+   * @returns {Promise<Array>} - Массив просроченных сессий с информацией о сделках
+   */
+  async findExpiredUnpaidSessionsFromStripe() {
+    try {
+      const expiredSessions = [];
+      const now = Math.floor(Date.now() / 1000);
+      const sevenDaysAgo = now - (7 * 24 * 60 * 60); // Последние 7 дней
+
+      // Получаем просроченные сессии из Stripe
+      let hasMore = true;
+      let startingAfter = null;
+      const limit = 100;
+
+      while (hasMore && expiredSessions.length < 500) {
+        const params = {
+          limit,
+          status: 'expired',
+          created: { gte: sevenDaysAgo }
+        };
+
+        if (startingAfter) {
+          params.starting_after = startingAfter;
+        }
+
+        const sessions = await this.stripeProcessor.stripe.checkout.sessions.list(params);
+
+        for (const session of sessions.data) {
+          // Фильтруем только неоплаченные сессии с deal_id
+          if (session.payment_status !== 'paid' && session.metadata?.deal_id) {
+            const paymentType = session.metadata?.payment_type || '';
+            // Нас интересуют все типы платежей (deposit, rest, second, final)
+            if (paymentType === 'deposit' || paymentType === 'rest' || paymentType === 'second' || paymentType === 'final') {
+              expiredSessions.push({
+                sessionId: session.id,
+                dealId: session.metadata.deal_id,
+                paymentType: paymentType,
+                paymentSchedule: session.metadata?.payment_schedule || null,
+                amount: session.amount_total ? session.amount_total / 100 : null,
+                currency: session.currency?.toUpperCase() || 'PLN',
+                expiresAt: session.expires_at,
+                url: session.url
+              });
+            }
+          }
+        }
+
+        hasMore = sessions.has_more;
+        if (sessions.data.length > 0) {
+          startingAfter = sessions.data[sessions.data.length - 1].id;
+        } else {
+          hasMore = false;
+        }
+      }
+
+      this.logger.info('Found expired unpaid sessions from Stripe', {
+        count: expiredSessions.length
+      });
+
+      return expiredSessions;
+    } catch (error) {
+      this.logger.error('Failed to find expired sessions from Stripe', {
+        error: error.message
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Обработать просроченные сессии: пересоздать и отправить уведомление
+   * @param {Object} options - Опции обработки
+   * @param {string} options.trigger - Триггер запуска
+   * @param {string} options.runId - ID запуска
+   * @returns {Promise<Object>} - Статистика обработки
+   */
+  async processExpiredSessions(options = {}) {
+    const { trigger = 'manual', runId = null } = options;
+    const summary = {
+      totalFound: 0,
+      recreated: 0,
+      errors: [],
+      skipped: []
+    };
+
+    try {
+      this.logger.info('Starting expired sessions processing cycle', { trigger, runId });
+
+      const expiredTasks = await this.findExpiredSessionTasks();
+      summary.totalFound = expiredTasks.length;
+
+      this.logger.info('Found expired session tasks', {
+        count: expiredTasks.length,
+        trigger,
+        runId
+      });
+
+      for (const task of expiredTasks) {
+        try {
+          let result;
+          
+          // Определяем тип платежа и пересоздаем соответствующую сессию
+          if (task.paymentType === 'deposit') {
+            // Пересоздаем сессию для первого платежа
+            result = await this.stripeProcessor.createCheckoutSessionForDeal(task.deal, {
+              trigger: 'cron_expired_session',
+              runId: runId || `expired_deposit_${Date.now()}`,
+              paymentType: 'deposit',
+              paymentSchedule: task.deal.expected_close_date ? '50/50' : '100%',
+              paymentIndex: 1
+            });
+          } else if (task.paymentType === 'rest' || task.paymentType === 'second' || task.paymentType === 'final') {
+            // Пересоздаем сессию для второго платежа
+            result = await this.createSecondPaymentSession(task.deal, task.secondPaymentDate);
+          } else {
+            summary.errors.push({
+              dealId: task.dealId,
+              error: `Unknown payment type: ${task.paymentType}`
+            });
+            continue;
+          }
+          
+          if (result.success) {
+            // Отправляем уведомление с новой ссылкой
+            const notificationResult = await this.sendReminder({
+              ...task,
+              sessionId: result.sessionId,
+              sessionUrl: result.sessionUrl
+            }, { 
+              trigger, 
+              runId,
+              isRecreated: true 
+            });
+            
+            if (notificationResult.success) {
+              summary.recreated++;
+              this.logger.info('Expired session recreated and notification sent', {
+                dealId: task.dealId,
+                paymentType: task.paymentType,
+                oldSessionId: task.sessionId,
+                newSessionId: result.sessionId
+              });
+            } else {
+              summary.errors.push({
+                dealId: task.dealId,
+                error: `Failed to send notification: ${notificationResult.error}`
+              });
+            }
+          } else {
+            summary.errors.push({
+              dealId: task.dealId,
+              error: result.error || 'Failed to recreate session'
+            });
+          }
+        } catch (error) {
+          summary.errors.push({
+            dealId: task.dealId,
+            error: error.message
+          });
+        }
+      }
+
+      this.logger.info('Expired sessions processing cycle completed', {
+        trigger,
+        runId,
+        summary
+      });
+
+      return summary;
+    } catch (error) {
+      this.logger.error('Error in expired sessions processing cycle', {
+        trigger,
+        runId,
+        error: error.message
+      });
+      summary.errors.push({
+        error: error.message
+      });
+      return summary;
     }
   }
 
