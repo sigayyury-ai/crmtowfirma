@@ -41,3 +41,6 @@ link-*.js
 restore-*.js
 quick-test.js
 0
+
+# Local deployment scripts (not tracked)
+scripts/deploy.js
