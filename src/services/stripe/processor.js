@@ -4323,6 +4323,48 @@ class StripeProcessorService {
       const deal = fullDealResult.deal;
       const person = fullDealResult.person;
       
+      // Get discount from deal (check various possible field names)
+      const getDiscount = (deal) => {
+        // Try different possible field names for discount
+        const discountFields = [
+          'discount',
+          'discount_amount',
+          'discount_percent',
+          'discount_value',
+          'rabat',
+          'rabat_amount',
+          'rabat_percent'
+        ];
+        
+        for (const field of discountFields) {
+          if (deal[field] !== null && deal[field] !== undefined && deal[field] !== '') {
+            const value = typeof deal[field] === 'number' ? deal[field] : parseFloat(deal[field]);
+            if (!isNaN(value) && value > 0) {
+              return { value, type: field.includes('percent') ? 'percent' : 'amount' };
+            }
+          }
+        }
+        return null;
+      };
+      
+      const discountInfo = getDiscount(deal);
+      
+      // Calculate base amount from deal value
+      const dealBaseAmount = parseFloat(deal.value) || effectiveTotalAmount;
+      
+      // Calculate discount amount
+      let discountAmount = 0;
+      if (discountInfo) {
+        if (discountInfo.type === 'percent') {
+          discountAmount = roundBankers(dealBaseAmount * discountInfo.value / 100);
+        } else {
+          discountAmount = discountInfo.value;
+        }
+      }
+      
+      // Calculate total with discount
+      const totalWithDiscount = Math.max(0, dealBaseAmount - discountAmount);
+      
       // Логируем все поля персоны для отладки
       this.logger.info(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id}`, {
         dealId,
@@ -4421,101 +4463,99 @@ class StripeProcessorService {
 
       let message = '';
       
-      // Если sessions пустые, отправляем только информацию о графике платежей
-      if (sessions.length === 0) {
-        if (paymentSchedule === '50/50') {
-          const depositAmount = effectiveTotalAmount / 2;
-          message = `Привет! Для тебя определён график платежей.\n\n`;
-          message += `Твой график платежей:\n\n`;
-          
-          let dateText = '';
-          if (firstPaymentDate) {
-            dateText = ` до *${formatDate(firstPaymentDate)}*`;
-          }
-          message += `• Предоплата 50%: ${formatAmount(depositAmount)} ${currency}${dateText}\n`;
-          
-          if (secondPaymentDate) {
-            dateText = ` до *${formatDate(secondPaymentDate)}*`;
-          }
-          message += `• Остаток 50%: ${formatAmount(depositAmount)} ${currency}${dateText}\n\n`;
-          
-          message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
-        } else {
-          // Single payment
-          let dateText = '';
-          if (singlePaymentDate) {
-            dateText = ` до *${formatDate(singlePaymentDate)}*`;
-          }
-          message = `Привет! Для тебя определён график платежей.\n\n`;
-          message += `Твой график платежей:\n\n`;
-          message += `• Полная оплата: ${formatAmount(effectiveTotalAmount)} ${currency}${dateText}\n\n`;
-          message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
-        }
-      } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
-        // Two payments: deposit and rest
-        message = `Привет! Для тебя созданы ссылки на оплату через Stripe.\n\n`;
-        message += `Твой график платежей:\n\n`;
+      const depositSession = sessions.find(s => s.type === 'deposit');
+      const restSession = sessions.find(s => s.type === 'rest');
+      const singleSession = sessions[0];
+      
+      // Сценарий 1: 100% Stripe (только Stripe, без кеша)
+      if (paymentSchedule === '100%' && sessions.length >= 1 && cashRemainder === 0) {
+        message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
+        message += `[Ссылка на оплату](${singleSession.url})\n`;
+        message += `Ссылка действует 24 часа\n\n`;
         
-        const depositSession = sessions.find(s => s.type === 'deposit');
-        const restSession = sessions.find(s => s.type === 'rest');
-
+        if (discountInfo && discountAmount > 0) {
+          const discountText = discountInfo.type === 'percent'
+            ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${currency})`
+            : `${formatAmount(discountAmount)} ${currency}`;
+          message += `Скидка: ${discountText}\n`;
+        }
+        
+        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+      }
+      // Сценарий 2: 50/50 Stripe (только Stripe, без кеша)
+      else if (paymentSchedule === '50/50' && sessions.length >= 2 && cashRemainder === 0) {
+        message = `Привет! Для тебя созданы ссылки на оплату через Stripe.\n\n`;
+        
         if (depositSession) {
-          let dateText = '';
-          if (firstPaymentDate) {
-            dateText = ` до *${formatDate(firstPaymentDate)}*`;
-          }
-          message += `1️⃣ Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}${dateText}\n`;
-          message += `   [Оплатить предоплату](${depositSession.url})\n\n`;
+          message += `1. Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}\n`;
+          message += `[Оплатить предоплату](${depositSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
         }
 
         if (restSession) {
-          let dateText = '';
+          message += `2. Остаток 50%: ${formatAmount(restSession.amount)} ${currency}`;
           if (secondPaymentDate) {
-            dateText = ` до *${formatDate(secondPaymentDate)}*`;
+            message += ` нужно будет оплатить ${formatDate(secondPaymentDate)}, тебе придет напоминание и ссылка`;
           }
-          message += `2️⃣ Остаток 50%: ${formatAmount(restSession.amount)} ${currency}${dateText}\n`;
-          message += `   [Оплатить остаток](${restSession.url})\n\n`;
+          message += `\n\n`;
         }
 
-        message += `Итого: ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
-        message += `\nВажно: каждая ссылка действует 24 часа после создания.`;
-      } else if (paymentSchedule === '100%' && sessions.length >= 1) {
-        // Single payment - different text
-        const singleSession = sessions[0];
-        let dateText = '';
-        if (singlePaymentDate) {
-          dateText = ` до *${formatDate(singlePaymentDate)}*`;
+        if (discountInfo && discountAmount > 0) {
+          const discountText = discountInfo.type === 'percent'
+            ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${currency})`
+            : `${formatAmount(discountAmount)} ${currency}`;
+          message += `Скидка: ${discountText}\n`;
         }
-        message = `Привет! Для тебя создана ссылка на оплату через Stripe.\n\n`;
-        message += `💳 Сумма к оплате: ${formatAmount(singleSession.amount)} ${currency}${dateText}\n`;
-        message += `   [Оплатить](${singleSession.url})\n\n`;
-        message += `Важно: ссылка действует 24 часа после создания.`;
-      } else {
-        // Fallback: list all sessions
-        sessions.forEach((session, index) => {
-          const paymentLabel = session.type === 'deposit' ? 'Предоплата' : session.type === 'rest' ? 'Остаток' : 'Платеж';
-          message += `${index + 1}. *${paymentLabel}:* ${formatAmount(session.amount)} ${currency}\n`;
-          message += `   [Оплатить](${session.url})\n\n`;
-        });
-        message += `*Итого:* ${formatAmount(effectiveTotalAmount)} ${currency}\n`;
-      }
 
-      if (sessions.length > 0) {
-        message += `\n💡 Нажми на ссылку выше, чтобы перейти к оплате. Ссылка активна 24 часа.`;
+        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
       }
+      // Сценарий 3: 100% с кешем (Stripe + наличные)
+      else if (paymentSchedule === '100%' && sessions.length >= 1 && cashRemainder > 0) {
+        message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
+        message += `[Ссылка на оплату](${singleSession.url})\n`;
+        message += `Ссылка действует 24 часа\n\n`;
+        
+        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
+        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
+        
+        if (discountInfo && discountAmount > 0) {
+          const discountText = discountInfo.type === 'percent'
+            ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${currency})`
+            : `${formatAmount(discountAmount)} ${currency}`;
+          message += `Скидка: ${discountText}\n`;
+        }
+        
+        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+      }
+      // Сценарий 4: 50/50 с кешем (Stripe + наличные)
+      else if (paymentSchedule === '50/50' && sessions.length >= 2 && cashRemainder > 0) {
+        message = `Привет! Для тебя созданы ссылки на оплату через Stripe.\n\n`;
+        
+        if (depositSession) {
+          message += `1. Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}\n`;
+          message += `[Оплатить предоплату](${depositSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+        }
 
-      const breakdownLines = [];
-      if (sessionsAmount > 0) {
-        breakdownLines.push(`💳 Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}`);
-      }
-      if (cashRemainder > 0) {
-        breakdownLines.push(`💵 Оплата наличными: ${formatAmount(cashRemainder)} ${currency}`);
-      }
-      if (dealTotalAmount > 0 && breakdownLines.length > 0) {
-        breakdownLines.push(`Σ Итого: ${formatAmount(dealTotalAmount)} ${currency}`);
-      }
-      if (breakdownLines.length > 0) {
-        message += `\n\nФактическая разбивка платежа:\n${breakdownLines.join('\n')}`;
+        if (restSession) {
+          message += `2. Остаток 50%: ${formatAmount(restSession.amount)} ${currency}`;
+          if (secondPaymentDate) {
+            message += ` нужно будет оплатить ${formatDate(secondPaymentDate)}, тебе придет напоминание и ссылка`;
+          }
+          message += `\n\n`;
+        }
+
+        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
+        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
+        
+        if (discountInfo && discountAmount > 0) {
+          const discountText = discountInfo.type === 'percent'
+            ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${currency})`
+            : `${formatAmount(discountAmount)} ${currency}`;
+          message += `Скидка: ${discountText}\n`;
+        }
+
+        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
       }
 
       // Send message via SendPulse
