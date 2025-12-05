@@ -113,6 +113,112 @@ class StripeProcessorService {
   /**
    * Main entrypoint for scheduler/manual trigger.
    */
+  /**
+   * Проверить и исправить статусы сделок, где оба платежа оплачены, но статус не обновлен
+   * @param {Object} options - Опции проверки
+   * @returns {Promise<Object>} - Результат проверки
+   */
+  async verifyAndFixDealStatuses(options = {}) {
+    const { limit = 100 } = options;
+    const summary = {
+      checked: 0,
+      fixed: 0,
+      errors: []
+    };
+
+    try {
+      this.logger.info('Starting deal status verification', { limit });
+
+      // Получаем все сделки с оплаченными платежами
+      const allPayments = await this.repository.listPayments({});
+      
+      // Группируем по deal_id
+      const dealPaymentsMap = new Map();
+      for (const payment of allPayments) {
+        if (!payment.deal_id || payment.payment_status !== 'paid') {
+          continue;
+        }
+        
+        if (!dealPaymentsMap.has(payment.deal_id)) {
+          dealPaymentsMap.set(payment.deal_id, []);
+        }
+        dealPaymentsMap.get(payment.deal_id).push(payment);
+      }
+
+      // Проверяем каждую сделку
+      for (const [dealId, payments] of Array.from(dealPaymentsMap.entries()).slice(0, limit)) {
+        try {
+          summary.checked++;
+          
+          // Проверяем, есть ли оба платежа
+          const depositPayment = payments.find(p => 
+            p.payment_type === 'deposit' || p.payment_type === 'first'
+          );
+          const restPayment = payments.find(p => 
+            p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final'
+          );
+
+          // Если оба платежа оплачены, проверяем статус сделки
+          if (depositPayment && restPayment) {
+            const dealResult = await this.pipedriveClient.getDeal(dealId);
+            if (!dealResult.success || !dealResult.deal) {
+              continue;
+            }
+
+            const deal = dealResult.deal;
+            const currentStageId = deal.stage_id;
+            const STAGES = {
+              CAMP_WAITER_ID: 27,
+              SECOND_PAYMENT_ID: 32
+            };
+
+            // Если сделка в статусе "Second Payment", но оба платежа оплачены - исправляем
+            if (currentStageId === STAGES.SECOND_PAYMENT_ID) {
+              this.logger.info('Found deal with both payments paid but wrong status', {
+                dealId,
+                currentStage: currentStageId,
+                expectedStage: STAGES.CAMP_WAITER_ID,
+                depositSessionId: depositPayment.session_id,
+                restSessionId: restPayment.session_id
+              });
+
+              await this.triggerCrmStatusAutomation(dealId, {
+                reason: 'stripe:both-payments-complete-status-fix'
+              });
+
+              summary.fixed++;
+              this.logger.info('Deal status fixed', {
+                dealId,
+                from: currentStageId,
+                to: STAGES.CAMP_WAITER_ID
+              });
+            }
+          }
+        } catch (error) {
+          summary.errors.push({
+            dealId,
+            error: error.message
+          });
+          this.logger.warn('Error verifying deal status', {
+            dealId,
+            error: error.message
+          });
+        }
+      }
+
+      this.logger.info('Deal status verification completed', summary);
+      return summary;
+    } catch (error) {
+      this.logger.error('Failed to verify deal statuses', {
+        error: error.message
+      });
+      return {
+        ...summary,
+        error: error.message
+      };
+    }
+  }
+
   async processPendingPayments(context = {}) {
     const {
       trigger = 'manual',
@@ -2372,6 +2478,12 @@ class StripeProcessorService {
                   dealId: deal.id,
                   sessionId: restResult.sessionId,
                   sessionUrl: restResult.sessionUrl
+                });
+                // Логируем, что задача-напоминание будет доступна в cron
+                this.logger.info('✅ Reminder task will be available in cron queue', {
+                  dealId: deal.id,
+                  sessionId: restResult.sessionId,
+                  note: 'Task will appear in /api/second-payment-scheduler/upcoming-tasks via findReminderTasks()'
                 });
                 sessionsToNotify.push({
                   id: restResult.sessionId,

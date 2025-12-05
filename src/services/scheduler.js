@@ -311,6 +311,14 @@ class SchedulerService {
           runId,
           skipTriggers: true // Пропускаем создание новых Checkout Sessions (они создаются через webhooks)
         });
+        
+        // Проверяем и исправляем статусы сделок, где оба платежа оплачены, но статус не обновлен
+        // Это исправляет случаи, когда webhook не пришел или пришел с ошибкой
+        try {
+          await this.stripeProcessor.verifyAndFixDealStatuses({ limit: 50 });
+        } catch (error) {
+          logger.warn('Failed to verify deal statuses', { error: error.message });
+        }
       } else {
         // При старте пропускаем обработку Stripe - webhooks уже обработали все платежи
         stripeResult = {
