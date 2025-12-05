@@ -1532,7 +1532,7 @@ class InvoiceProcessingService {
    * @param {Object} deal - Данные сделки из Pipedrive
    * @returns {Promise<Object>} - Результат обработки
    */
-  async processDealInvoice(deal, person = null, organization = null) {
+  async processDealInvoice(deal, person = null, organization = null, options = {}) {
     const dealStartTime = Date.now();
     try {
       logger.info(`🔄 Processing invoice for deal ${deal.id}: ${deal.title || 'Untitled'}`);
@@ -3353,11 +3353,53 @@ class InvoiceProcessingService {
         });
       }
 
+      // Получаем информацию о скидке из deal
+      const getDiscount = (deal) => {
+        const discountFields = [
+          'discount',
+          'discount_amount',
+          'discount_percent',
+          'discount_value',
+          'rabat',
+          'rabat_amount',
+          'rabat_percent'
+        ];
+        
+        for (const field of discountFields) {
+          if (deal[field] !== null && deal[field] !== undefined && deal[field] !== '') {
+            const value = typeof deal[field] === 'number' ? deal[field] : parseFloat(deal[field]);
+            if (!isNaN(value) && value > 0) {
+              return { value, type: field.includes('percent') ? 'percent' : 'amount' };
+            }
+          }
+        }
+        return null;
+      };
+
+      const discountInfo = getDiscount(deal);
+      const dealBaseAmount = parseFloat(deal.value) || totalAmount;
+      let discountAmount = 0;
+      if (discountInfo) {
+        if (discountInfo.type === 'percent') {
+          discountAmount = Math.round((dealBaseAmount * discountInfo.value / 100) * 100) / 100;
+        } else {
+          discountAmount = discountInfo.value;
+        }
+      }
+
       let scheduleDescription;
       if (use50_50Schedule && secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
         scheduleDescription = `График платежей: 50% предоплата (${formatAmount(depositAmount)} ${deal.currency}) оплачивается сейчас; 50% остаток (${formatAmount(balanceAmount)} ${deal.currency}) до ${secondPaymentDateStr}.`;
       } else {
         scheduleDescription = `График платежей: 100% оплата (${formatAmount(totalAmount)} ${deal.currency}) до ${paymentDateStr}.`;
+      }
+
+      // Добавляем информацию о скидке, если она есть
+      if (discountInfo && discountAmount > 0) {
+        const discountText = discountInfo.type === 'percent'
+          ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${deal.currency})`
+          : `${formatAmount(discountAmount)} ${deal.currency}`;
+        scheduleDescription += ` Скидка: ${discountText}.`;
       }
 
       const invoiceDescription = this.DEFAULT_DESCRIPTION
@@ -4051,6 +4093,90 @@ class InvoiceProcessingService {
     } catch (error) {
       logger.error('Error fetching deal products:', error);
       return [];
+    }
+  }
+
+  /**
+   * Обновить строки проформы в wFirma при изменении продукта
+   * @param {number} invoiceId - ID инвойса в wFirma
+   * @param {Object} options - Опции обновления
+   * @param {Object} options.product - Данные продукта
+   * @param {number} options.totalAmount - Общая сумма
+   * @param {Object} options.schedule - График платежей
+   * @returns {Promise<Object>} - Результат обновления
+   */
+  async updateProformaLines(invoiceId, { product, totalAmount, schedule } = {}) {
+    if (!invoiceId) {
+      return { success: false, error: 'invoiceId-required' };
+    }
+
+    try {
+      const axios = require('axios');
+      const xmlClient = axios.create({
+        baseURL: this.wfirmaClient.baseURL,
+        headers: {
+          'Content-Type': 'application/xml',
+          'Accept': 'application/xml',
+          'accessKey': this.wfirmaClient.accessKey,
+          'secretKey': this.wfirmaClient.secretKey,
+          'appKey': this.wfirmaClient.appKey
+        },
+        timeout: 15000
+      });
+
+      const safeName = product?.name || 'Updated service';
+      const quantity = Number(product?.quantity || 1);
+      const unitPrice = Number(product?.price || totalAmount || 0);
+      const lineBrutto = unitPrice * quantity;
+      const paymentDate = schedule?.dueDate || new Date().toISOString().split('T')[0];
+      const description = schedule?.scheduleText || this.DEFAULT_DESCRIPTION || '';
+
+      const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
+<api>
+  <invoices>
+    <invoice>
+      <id>${invoiceId}</id>
+      <description>${escapeXml(description)}</description>
+      <payment_date>${paymentDate}</payment_date>
+      <invoicecontents>
+        <invoicecontent>
+          <name>${escapeXml(safeName)}</name>
+          <count>${quantity}</count>
+          <price>${unitPrice}</price>
+          <is_net>false</is_net>
+          <brutto>${lineBrutto}</brutto>
+          <unit>${escapeXml(product?.unit || 'szt.')}</unit>
+          <vat_type>np</vat_type>
+          <vat>0</vat>
+          <description>${escapeXml(description)}</description>
+        </invoicecontent>
+      </invoicecontents>
+    </invoice>
+  </invoices>
+</api>`;
+
+      const endpoint = `/invoices/edit/${invoiceId}?inputFormat=xml&outputFormat=xml&company_id=${this.wfirmaClient.companyId}`;
+      const response = await xmlClient.post(endpoint, xmlPayload);
+
+      if (typeof response.data === 'string') {
+        if (response.data.includes('<code>OK</code>')) {
+          logger.info(`✅ Proforma lines updated successfully | Invoice ID: ${invoiceId}`);
+          return { success: true };
+        }
+        if (response.data.includes('<code>ERROR</code>')) {
+          const errorMatch = response.data.match(/<message>(.*?)<\/message>/);
+          const errorMessage = errorMatch ? errorMatch[1] : 'Unknown error';
+          throw new Error(errorMessage);
+        }
+      }
+
+      return { success: true };
+    } catch (error) {
+      logger.error('Failed to update proforma lines in wFirma', {
+        invoiceId,
+        error: error.message
+      });
+      return { success: false, error: error.message };
     }
   }
 }

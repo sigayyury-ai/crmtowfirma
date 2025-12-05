@@ -396,6 +396,21 @@ const HASH_TTL_MS = 60000; // 60 секунд
 const stripeProcessingLocks = new Map(); // Map<dealId, timestamp>
 const STRIPE_LOCK_TTL_MS = 30 * 1000; // 30 секунд блокировка
 
+// Кэш продуктов сделок для отслеживания изменений
+const productChangeCache = new Map(); // Map<dealId, { productId, productName, timestamp }>
+const PRODUCT_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 часа
+const PRODUCT_CACHE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // Очистка каждый час
+
+// Периодическая очистка устаревших записей из кэша продуктов
+setInterval(() => {
+  const now = Date.now();
+  for (const [dealId, cache] of productChangeCache.entries()) {
+    if (now - cache.timestamp > PRODUCT_CACHE_TTL_MS) {
+      productChangeCache.delete(dealId);
+    }
+  }
+}, PRODUCT_CACHE_CLEANUP_INTERVAL_MS);
+
 /**
  * POST /api/webhooks/pipedrive
  * Webhook endpoint for Pipedrive deal updates
@@ -1699,6 +1714,263 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           });
         }
       }
+    }
+
+    // ========== Обработка 4: Изменение продукта в сделке ==========
+    // Проверяем изменение продукта независимо от invoice_type
+    // Это работает для всех webhook событий (workflow automation и стандартные)
+    try {
+      const pipedriveClient = resolvePipedriveClient();
+      if (pipedriveClient && dealId) {
+        logger.info(`🔍 Проверка изменения продукта | Deal: ${dealId}`);
+        
+        // Получаем текущие продукты сделки
+        const currentProductsResult = await pipedriveClient.getDealProducts(dealId);
+        if (currentProductsResult.success && currentProductsResult.products) {
+          const currentProducts = currentProductsResult.products;
+          const currentProductId = currentProducts.length > 0 
+            ? (currentProducts[0].product?.id || currentProducts[0].product_id || currentProducts[0].id)
+            : null;
+          const currentProductName = currentProducts.length > 0 
+            ? (currentProducts[0].name || currentProducts[0].product?.name)
+            : null;
+          
+          // Получаем сохраненный продукт из кэша (если есть)
+          const cachedProduct = productChangeCache.get(dealId);
+          
+          // Проверяем, изменился ли продукт
+          const productChanged = cachedProduct && (
+            cachedProduct.productId !== currentProductId ||
+            cachedProduct.productName !== currentProductName
+          );
+          
+          if (productChanged) {
+            logger.info(`🔄 Обнаружено изменение продукта | Deal: ${dealId} | Было: ${cachedProduct.productName || cachedProduct.productId} | Стало: ${currentProductName || currentProductId}`);
+            
+            // Обновляем кэш
+            productChangeCache.set(dealId, {
+              productId: currentProductId,
+              productName: currentProductName,
+              timestamp: Date.now()
+            });
+            
+            // Обрабатываем изменение продукта независимо от invoice_type
+            logger.info(`📄 Обработка изменения продукта | Deal: ${dealId}`);
+            try {
+              // Получаем полные данные сделки для обновления проформы
+              const dealResult = await pipedriveClient.getDealWithRelatedData(dealId);
+              if (!dealResult.success) {
+                logger.error(`❌ Не удалось получить данные сделки | Deal: ${dealId} | Ошибка: ${dealResult.error}`);
+                // Продолжаем обработку других триггеров
+              } else {
+                const fullDeal = dealResult.deal;
+                
+                // Находим существующую проформу
+                const existingProforma = await invoiceProcessing.findExistingProformaForDeal(fullDeal);
+                
+                if (existingProforma?.found && existingProforma.invoiceId) {
+                  logger.info(`📝 Найдена существующая проформа | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                  
+                  // Получаем продукты сделки
+                  const dealProducts = await invoiceProcessing.getDealProducts(dealId);
+                  let product;
+                  const totalAmount = parseFloat(fullDeal.value) || 0;
+                  
+                  if (dealProducts.length > 0) {
+                    const dealProduct = dealProducts[0];
+                    const quantity = parseFloat(dealProduct.quantity) || 1;
+                    const itemPrice = typeof dealProduct.item_price === 'number'
+                      ? dealProduct.item_price
+                      : parseFloat(dealProduct.item_price);
+                    const sumPrice = typeof dealProduct.sum === 'number'
+                      ? dealProduct.sum
+                      : parseFloat(dealProduct.sum);
+                    const productPrice = itemPrice || sumPrice || totalAmount;
+                    const productName = dealProduct.name
+                      || dealProduct.product?.name
+                      || fullDeal.title || 'Camp / Tourist service';
+                    const productUnit = dealProduct.unit
+                      || dealProduct.product?.unit
+                      || 'szt.';
+                    
+                    product = {
+                      id: null,
+                      name: productName,
+                      price: productPrice,
+                      unit: productUnit,
+                      type: 'service',
+                      quantity
+                    };
+                  } else {
+                    product = {
+                      id: null,
+                      name: fullDeal.title || 'Camp / Tourist service',
+                      price: totalAmount,
+                      unit: 'szt.',
+                      type: 'service',
+                      quantity: 1
+                    };
+                  }
+                  
+                  // Рассчитываем график платежей (используем ту же логику, что и в createProformaInWfirma)
+                  const issueDate = new Date();
+                  const issueDateStr = issueDate.toISOString().split('T')[0];
+                  const paymentDate = new Date(issueDate);
+                  paymentDate.setDate(paymentDate.getDate() + invoiceProcessing.PAYMENT_TERMS_DAYS);
+                  const paymentDateStr = paymentDate.toISOString().split('T')[0];
+                  
+                  const totalAmountValue = parseFloat(fullDeal.value) || 0;
+                  const depositAmount = Math.round((totalAmountValue * invoiceProcessing.ADVANCE_PERCENT / 100) * 100) / 100;
+                  const balanceAmount = Math.round((totalAmountValue - depositAmount) * 100) / 100;
+                  const formatAmount = (value) => value.toFixed(2);
+                  
+                  // Определяем график платежей на основе разницы между сегодняшней датой и expected_close_date
+                  let secondPaymentDateStr = paymentDateStr;
+                  let use50_50Schedule = false;
+                  
+                  if (fullDeal.expected_close_date) {
+                    try {
+                      const expectedCloseDate = new Date(fullDeal.expected_close_date);
+                      const today = new Date(issueDateStr);
+                      const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+                      
+                      // Если разница >= 30 дней (месяц), используем график 50/50
+                      if (daysDiff >= 30) {
+                        use50_50Schedule = true;
+                        // Вторая дата платежа - за 1 месяц до expected_close_date
+                        const balanceDueDate = new Date(expectedCloseDate);
+                        balanceDueDate.setMonth(balanceDueDate.getMonth() - 1);
+                        secondPaymentDateStr = balanceDueDate.toISOString().split('T')[0];
+                      }
+                    } catch (error) {
+                      logger.warn('Failed to calculate payment schedule from expected close date', {
+                        dealId: fullDeal.id,
+                        expectedCloseDate: fullDeal.expected_close_date,
+                        error: error.message
+                      });
+                    }
+                  }
+                  
+                  // Получаем информацию о скидке из deal (та же логика, что и в createProformaInWfirma)
+                  const getDiscount = (deal) => {
+                    const discountFields = [
+                      'discount',
+                      'discount_amount',
+                      'discount_percent',
+                      'discount_value',
+                      'rabat',
+                      'rabat_amount',
+                      'rabat_percent'
+                    ];
+                    
+                    for (const field of discountFields) {
+                      if (deal[field] !== null && deal[field] !== undefined && deal[field] !== '') {
+                        const value = typeof deal[field] === 'number' ? deal[field] : parseFloat(deal[field]);
+                        if (!isNaN(value) && value > 0) {
+                          return { value, type: field.includes('percent') ? 'percent' : 'amount' };
+                        }
+                      }
+                    }
+                    return null;
+                  };
+                  
+                  const discountInfo = getDiscount(fullDeal);
+                  const dealBaseAmount = parseFloat(fullDeal.value) || totalAmountValue;
+                  let discountAmount = 0;
+                  if (discountInfo) {
+                    if (discountInfo.type === 'percent') {
+                      discountAmount = Math.round((dealBaseAmount * discountInfo.value / 100) * 100) / 100;
+                    } else {
+                      discountAmount = discountInfo.value;
+                    }
+                  }
+                  
+                  let scheduleDescription;
+                  if (use50_50Schedule && secondPaymentDateStr && secondPaymentDateStr !== paymentDateStr) {
+                    scheduleDescription = `График платежей: 50% предоплата (${formatAmount(depositAmount)} ${fullDeal.currency}) оплачивается сейчас; 50% остаток (${formatAmount(balanceAmount)} ${fullDeal.currency}) до ${secondPaymentDateStr}.`;
+                  } else {
+                    scheduleDescription = `График платежей: 100% оплата (${formatAmount(totalAmountValue)} ${fullDeal.currency}) до ${paymentDateStr}.`;
+                  }
+                  
+                  // Добавляем информацию о скидке, если она есть
+                  if (discountInfo && discountAmount > 0) {
+                    const discountText = discountInfo.type === 'percent'
+                      ? `${discountInfo.value}% (${formatAmount(discountAmount)} ${fullDeal.currency})`
+                      : `${formatAmount(discountAmount)} ${fullDeal.currency}`;
+                    scheduleDescription += ` Скидка: ${discountText}.`;
+                  }
+                  
+                  // Добавляем DEFAULT_DESCRIPTION, если он есть
+                  const invoiceDescription = invoiceProcessing.DEFAULT_DESCRIPTION
+                    ? `${invoiceProcessing.DEFAULT_DESCRIPTION.trim()} ${scheduleDescription}`.trim()
+                    : scheduleDescription;
+                  
+                  // Обновляем проформу
+                  const updateResult = await invoiceProcessing.updateProformaLines(existingProforma.invoiceId, {
+                    product,
+                    totalAmount: totalAmountValue,
+                    schedule: {
+                      dueDate: paymentDateStr,
+                      scheduleText: invoiceDescription
+                    }
+                  });
+                  
+                  if (updateResult.success) {
+                    logger.info(`✅ Проформа обновлена после изменения продукта | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
+                    return res.status(200).json({
+                      success: true,
+                      message: 'Proforma updated due to product change',
+                      dealId,
+                      invoiceId: existingProforma.invoiceId,
+                      invoiceNumber: existingProforma.invoiceNumber,
+                      productChange: {
+                        from: cachedProduct.productName || cachedProduct.productId,
+                        to: currentProductName || currentProductId
+                      }
+                    });
+                  } else {
+                    logger.warn(`⚠️  Не удалось обновить проформу | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId} | Ошибка: ${updateResult.error}`);
+                  }
+                } else {
+                  logger.info(`ℹ️  Проформа не найдена для сделки | Deal: ${dealId} | Создаем новую`);
+                  // Если проформы нет, создаем новую
+                  const result = await invoiceProcessing.processDealInvoiceByWebhook(dealId, currentDeal);
+                  if (result.success) {
+                    return res.status(200).json({
+                      success: true,
+                      message: 'Invoice created due to product change',
+                      dealId,
+                      invoiceType: result.invoiceType,
+                      productChange: {
+                        from: cachedProduct.productName || cachedProduct.productId,
+                        to: currentProductName || currentProductId
+                      }
+                    });
+                  } else {
+                    logger.warn(`⚠️  Не удалось создать проформу | Deal: ${dealId} | Ошибка: ${result.error || 'unknown'}`);
+                  }
+                }
+              }
+            } catch (error) {
+              logger.error(`❌ Ошибка обработки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`);
+            }
+          } else if (!cachedProduct) {
+            // Первое получение продуктов - сохраняем в кэш
+            productChangeCache.set(dealId, {
+              productId: currentProductId,
+              productName: currentProductName,
+              timestamp: Date.now()
+            });
+            logger.debug(`💾 Продукт сохранен в кэш | Deal: ${dealId} | Product: ${currentProductName || currentProductId}`);
+          }
+        }
+      }
+    } catch (error) {
+      logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
+        dealId,
+        error: error.message
+      });
+      // Не прерываем обработку webhook из-за ошибки проверки продукта
     }
 
     // Если ни один триггер не сработал, возвращаем успех
