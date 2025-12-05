@@ -324,6 +324,307 @@ class SecondPaymentSchedulerService {
   }
 
   /**
+   * Найти все задачи-напоминания о втором платеже (сессия создана, но не оплачена)
+   * @returns {Promise<Array>} - Массив задач для напоминаний
+   */
+  async findReminderTasks() {
+    try {
+      // Получаем все сделки со статусом "Stripe" (invoice_type = 75)
+      const invoiceTypeFieldKey = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+      const stripeTriggerValue = '75';
+
+      const dealsResult = await this.pipedriveClient.getDeals({
+        filter_id: null,
+        status: 'all_not_deleted',
+        limit: 500,
+        start: 0
+      });
+
+      if (!dealsResult.success || !dealsResult.deals) {
+        return [];
+      }
+
+      const reminderTasks = [];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      for (const deal of dealsResult.deals) {
+        // Проверяем, что invoice_type = "Stripe" (75)
+        const invoiceType = deal[invoiceTypeFieldKey];
+        if (String(invoiceType) !== stripeTriggerValue) {
+          continue;
+        }
+
+        // Определяем график платежей
+        const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+        if (schedule !== '50/50' || !secondPaymentDate) {
+          continue;
+        }
+
+        // Проверяем, что дата второго платежа наступила
+        if (!this.isDateReached(secondPaymentDate)) {
+          continue;
+        }
+
+        // Проверяем, что первый платеж оплачен
+        const firstPaid = await this.isFirstPaymentPaid(deal.id);
+        if (!firstPaid) {
+          continue;
+        }
+
+        // Проверяем, что вторая сессия создана
+        const payments = await this.repository.listPayments({ dealId: String(deal.id) });
+        const restPayment = payments.find(p => 
+          (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final')
+        );
+
+        if (!restPayment) {
+          continue; // Сессия еще не создана
+        }
+
+        // Проверяем, что второй платеж не оплачен
+        if (restPayment.payment_status === 'paid') {
+          continue; // Уже оплачен
+        }
+
+        // Получаем URL сессии из Stripe API или из raw_payload
+        let sessionUrl = null;
+        // Сначала пытаемся получить из raw_payload (быстрее)
+        if (restPayment.raw_payload && restPayment.raw_payload.url) {
+          sessionUrl = restPayment.raw_payload.url;
+        } else {
+          // Если нет в raw_payload, получаем из Stripe API
+          try {
+            const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
+            sessionUrl = stripeSession.url || null;
+          } catch (error) {
+            this.logger.warn('Failed to retrieve session URL from Stripe', {
+              dealId: deal.id,
+              sessionId: restPayment.session_id,
+              error: error.message
+            });
+          }
+        }
+
+        // Получаем данные персоны
+        const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(deal.id);
+        const person = dealWithRelated?.person;
+        const organization = dealWithRelated?.organization;
+        
+        const customerEmail = person?.email?.[0]?.value || 
+                             person?.email || 
+                             organization?.email?.[0]?.value || 
+                             organization?.email || 
+                             'N/A';
+        
+        const customerName = person?.name || organization?.name || 'Клиент';
+
+        const dealValue = parseFloat(deal.value) || 0;
+        const currency = deal.currency || 'PLN';
+        const secondPaymentAmount = dealValue / 2;
+        
+        const daysUntil = Math.ceil((secondPaymentDate - today) / (1000 * 60 * 60 * 24));
+
+        reminderTasks.push({
+          deal,
+          dealId: deal.id,
+          dealTitle: deal.title,
+          customerEmail,
+          customerName,
+          secondPaymentDate,
+          secondPaymentAmount,
+          currency,
+          daysUntilSecondPayment: daysUntil,
+          isDateReached: this.isDateReached(secondPaymentDate),
+          sessionId: restPayment.session_id,
+          sessionUrl: sessionUrl
+        });
+      }
+
+      // Сортируем по дате (ближайшие сначала)
+      reminderTasks.sort((a, b) => {
+        return new Date(a.secondPaymentDate) - new Date(b.secondPaymentDate);
+      });
+
+      return reminderTasks;
+    } catch (error) {
+      this.logger.error('Failed to find reminder tasks', {
+        error: error.message
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Отправить напоминание о втором платеже клиенту
+   * @param {Object} task - Задача для напоминания
+   * @param {Object} options - Опции отправки
+   * @returns {Promise<Object>} - Результат отправки
+   */
+  async sendReminder(task, options = {}) {
+    const { trigger = 'manual', runId = null } = options;
+    
+    if (!this.stripeProcessor.sendpulseClient) {
+      return {
+        success: false,
+        error: 'SendPulse not available'
+      };
+    }
+
+    try {
+      // Получаем SendPulse ID из персоны
+      const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(task.dealId);
+      const person = dealWithRelated?.person;
+      const SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+      const sendpulseId = person?.[SENDPULSE_ID_FIELD_KEY];
+
+      if (!sendpulseId) {
+        this.logger.warn('SendPulse ID not found for deal', { dealId: task.dealId });
+        return {
+          success: false,
+          error: 'SendPulse ID not found'
+        };
+      }
+
+      // Форматируем дату
+      const formatDate = (date) => {
+        if (!date) return 'не указана';
+        return date.toLocaleDateString('ru-RU', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          timeZone: 'Europe/Warsaw'
+        });
+      };
+
+      const formatAmount = (amount) => {
+        const num = Number(amount);
+        if (Number.isNaN(num)) {
+          return '0.00';
+        }
+        return num.toFixed(2);
+      };
+
+      // Формируем сообщение
+      let message = `Привет! Напоминаю о втором платеже.\n\n`;
+      
+      if (task.sessionUrl) {
+        message += `[Ссылка на оплату](${task.sessionUrl})\n`;
+        message += `Ссылка действует 24 часа\n\n`;
+      }
+      
+      message += `Сумма: ${formatAmount(task.secondPaymentAmount)} ${task.currency}\n`;
+      message += `Дата платежа: ${formatDate(task.secondPaymentDate)}\n`;
+
+      // Отправляем через SendPulse
+      const result = await this.stripeProcessor.sendpulseClient.sendTelegramMessage(sendpulseId, message);
+
+      if (result.success) {
+        this.logger.info('Stripe second payment reminder sent successfully', {
+          dealId: task.dealId,
+          sendpulseId,
+          trigger,
+          runId
+        });
+      } else {
+        this.logger.warn('Failed to send Stripe second payment reminder', {
+          dealId: task.dealId,
+          sendpulseId,
+          error: result.error
+        });
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error('Error sending Stripe second payment reminder', {
+        dealId: task.dealId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Обработать все напоминания о втором платеже
+   * @param {Object} options - Опции обработки
+   * @param {string} options.trigger - Триггер запуска
+   * @param {string} options.runId - ID запуска
+   * @returns {Promise<Object>} - Статистика обработки
+   */
+  async processAllReminders(options = {}) {
+    const { trigger = 'manual', runId = null } = options;
+    const summary = {
+      totalFound: 0,
+      sent: 0,
+      errors: [],
+      skipped: []
+    };
+
+    try {
+      this.logger.info('Starting Stripe reminder cycle', { trigger, runId });
+
+      const reminderTasks = await this.findReminderTasks();
+      summary.totalFound = reminderTasks.length;
+
+      this.logger.info('Found reminder tasks', {
+        count: reminderTasks.length,
+        trigger,
+        runId
+      });
+
+      for (const task of reminderTasks) {
+        try {
+          // Отправляем напоминание только если дата наступила
+          if (!task.isDateReached) {
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'date_not_reached'
+            });
+            continue;
+          }
+
+          const result = await this.sendReminder(task, { trigger, runId });
+          
+          if (result.success) {
+            summary.sent++;
+          } else {
+            summary.errors.push({
+              dealId: task.dealId,
+              error: result.error || 'Unknown error'
+            });
+          }
+        } catch (error) {
+          summary.errors.push({
+            dealId: task.dealId,
+            error: error.message
+          });
+        }
+      }
+
+      this.logger.info('Stripe reminder cycle completed', {
+        trigger,
+        runId,
+        summary
+      });
+
+      return summary;
+    } catch (error) {
+      this.logger.error('Error in Stripe reminder cycle', {
+        trigger,
+        runId,
+        error: error.message
+      });
+      summary.errors.push({
+        error: error.message
+      });
+      return summary;
+    }
+  }
+
+  /**
    * Обработать все сделки, требующие вторую сессию
    * @returns {Promise<Object>} - Статистика обработки
    */

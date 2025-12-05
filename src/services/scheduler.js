@@ -118,6 +118,10 @@ class SchedulerService {
         this.runProformaReminderCycle({ trigger: 'cron_proforma_reminder' }).catch((error) => {
           logger.error('Unexpected error in proforma reminder cycle:', error);
         });
+        // Также запускаем напоминания по Stripe платежам в то же время
+        this.runStripeReminderCycle({ trigger: 'cron_stripe_reminder' }).catch((error) => {
+          logger.error('Unexpected error in Stripe reminder cycle:', error);
+        });
       },
       {
         scheduled: true,
@@ -558,6 +562,42 @@ class SchedulerService {
   async runManualProcessing(label = 'manual') {
     logger.info('Manual invoice processing requested', { label });
     return this.runCycle({ trigger: label, retryAttempt: 0 });
+  }
+
+  /**
+   * Запустить цикл обработки напоминаний по Stripe платежам
+   * @param {Object} options - Опции запуска
+   * @param {string} options.trigger - Триггер запуска
+   * @returns {Promise<Object>} - Результат обработки
+   */
+  async runStripeReminderCycle({ trigger = 'manual' }) {
+    const runId = randomUUID();
+    logger.info('Stripe reminder cycle started', { trigger, runId });
+
+    try {
+      const result = await this.secondPaymentScheduler.processAllReminders({ trigger, runId });
+      if (result.errors.length > 0) {
+        logger.error('Stripe reminder processing finished with errors', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else {
+        logger.info('Stripe reminder processing finished successfully', {
+          trigger,
+          runId,
+          summary: result
+        });
+      }
+      return { success: result.errors.length === 0, summary: result };
+    } catch (error) {
+      logger.error('Stripe reminder processing crashed', {
+        trigger,
+        runId,
+        error: error.message
+      });
+      return { success: false, error: error.message };
+    }
   }
 
   /**

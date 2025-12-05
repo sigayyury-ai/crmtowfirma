@@ -973,10 +973,13 @@ router.get('/invoice-processing/scheduler-history', (req, res) => {
  */
 router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
   try {
-    // Получаем задачи для Stripe платежей
+    // Получаем задачи для Stripe платежей (создание сессии)
     const stripeDeals = await secondPaymentScheduler.findAllUpcomingTasks();
     
-    // Форматируем данные для Stripe задач
+    // Получаем задачи-напоминания для Stripe платежей (сессия создана, но не оплачена)
+    const stripeReminderTasks = await secondPaymentScheduler.findReminderTasks();
+    
+    // Форматируем данные для Stripe задач (создание сессии)
     const stripeTasks = await Promise.all(stripeDeals.map(async ({ deal, secondPaymentDate, isDateReached }) => {
       const dealWithRelated = await pipedriveClient.getDealWithRelatedData(deal.id);
       const person = dealWithRelated?.person;
@@ -1013,6 +1016,26 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
         type: 'stripe_second_payment', // Тип задачи: второй платеж Stripe
         paymentMethod: 'stripe'
       };
+    }));
+
+    // Форматируем данные для Stripe задач-напоминаний
+    const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
+    const formattedStripeReminderTasks = stripeReminderTasks.map(task => ({
+      dealId: task.dealId,
+      dealTitle: task.dealTitle,
+      dealUrl: `${CRM_DEAL_BASE_URL}${task.dealId}`,
+      customerEmail: task.customerEmail,
+      expectedCloseDate: task.deal.expected_close_date || task.deal.close_date,
+      secondPaymentDate: task.secondPaymentDate.toISOString().split('T')[0],
+      secondPaymentAmount: task.secondPaymentAmount,
+      currency: task.currency,
+      daysUntilSecondPayment: task.daysUntilSecondPayment,
+      isDateReached: task.isDateReached,
+      status: task.isDateReached ? 'overdue' : (task.daysUntilSecondPayment <= 3 ? 'soon' : 'upcoming'),
+      type: 'stripe_reminder', // Тип задачи: напоминание о втором платеже Stripe
+      paymentMethod: 'stripe',
+      sessionId: task.sessionId,
+      sessionUrl: task.sessionUrl
     }));
 
     // Получаем задачи для Proforma платежей
@@ -1066,7 +1089,7 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
     ];
 
     // Объединяем все задачи
-    const allTasks = [...stripeTasks, ...formattedProformaTasks, ...manualTasks];
+    const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedProformaTasks, ...manualTasks];
     
     // Сортируем по дате (ближайшие сначала)
     allTasks.sort((a, b) => {
@@ -1192,6 +1215,63 @@ router.post('/second-payment-scheduler/hide-task', async (req, res) => {
     });
   } catch (error) {
     logger.error('Error hiding task:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/second-payment-scheduler/send-reminder
+ * Отправить напоминание о втором платеже Stripe вручную
+ */
+router.post('/second-payment-scheduler/send-reminder', async (req, res) => {
+  try {
+    const { dealId, secondPaymentDate } = req.body;
+    
+    if (!dealId || !secondPaymentDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: dealId, secondPaymentDate'
+      });
+    }
+    
+    // Находим задачу
+    const reminderTasks = await secondPaymentScheduler.findReminderTasks();
+    const task = reminderTasks.find(t => 
+      t.dealId === dealId && 
+      t.secondPaymentDate.toISOString().split('T')[0] === secondPaymentDate
+    );
+    
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        error: 'Reminder task not found'
+      });
+    }
+    
+    // Отправляем напоминание
+    const result = await secondPaymentScheduler.sendReminder(task, {
+      trigger: 'manual',
+      runId: `manual_reminder_${Date.now()}`
+    });
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Reminder sent successfully',
+        dealId: task.dealId
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to send reminder'
+      });
+    }
+  } catch (error) {
+    logger.error('Error sending reminder:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',
