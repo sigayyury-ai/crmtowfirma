@@ -863,20 +863,85 @@ class SecondPaymentSchedulerService {
         runId
       });
 
+      // Группируем задачи по dealId, чтобы не создавать дубликаты для одной сделки
+      // Если график стал 100%, обрабатываем только single, пропускаем deposit
+      const processedDeals = new Map(); // Map<dealId, { processedTypes: Set, currentSchedule: string }>
+      
       for (const task of expiredTasks) {
         try {
+          // Определяем актуальный график платежей на основе текущей даты
+          const { schedule: currentSchedule, secondPaymentDate } = this.determinePaymentSchedule(task.deal);
+          
+          // Проверяем, не обработали ли мы уже эту сделку
+          if (processedDeals.has(task.dealId)) {
+            const dealInfo = processedDeals.get(task.dealId);
+            
+            // Если график 100%, обрабатываем только single, пропускаем deposit
+            if (currentSchedule === '100%' && task.paymentType === 'deposit') {
+              this.logger.info('Skipping deposit session for 100% schedule', {
+                dealId: task.dealId,
+                paymentType: task.paymentType,
+                currentSchedule,
+                note: 'Will process single session instead'
+              });
+              summary.skipped.push({
+                dealId: task.dealId,
+                paymentType: task.paymentType,
+                reason: 'Schedule changed to 100%, single session will be processed'
+              });
+              continue;
+            }
+            
+            // Если уже обработали этот тип платежа для этой сделки, пропускаем
+            if (dealInfo.processedTypes.has(task.paymentType)) {
+              this.logger.info('Skipping duplicate expired session task', {
+                dealId: task.dealId,
+                paymentType: task.paymentType,
+                note: 'Already processed this payment type for this deal'
+              });
+              summary.skipped.push({
+                dealId: task.dealId,
+                paymentType: task.paymentType,
+                reason: 'Duplicate payment type for this deal'
+              });
+              continue;
+            }
+            
+            dealInfo.processedTypes.add(task.paymentType);
+          } else {
+            processedDeals.set(task.dealId, {
+              processedTypes: new Set([task.paymentType]),
+              currentSchedule
+            });
+          }
+          
           let result;
           
           // Определяем тип платежа и пересоздаем соответствующую сессию
           if (task.paymentType === 'deposit') {
-            // Пересоздаем сессию для первого платежа
-            result = await this.stripeProcessor.createCheckoutSessionForDeal(task.deal, {
-              trigger: 'cron_expired_session',
-              runId: runId || `expired_deposit_${Date.now()}`,
-              paymentType: 'deposit',
-              paymentSchedule: task.deal.expected_close_date ? '50/50' : '100%',
-              paymentIndex: 1
-            });
+            // Если график изменился на 100%, создаем single сессию вместо deposit
+            if (currentSchedule === '100%') {
+              this.logger.info('Payment schedule changed to 100%, creating single session instead of deposit', {
+                dealId: task.dealId,
+                oldSchedule: '50/50',
+                newSchedule: '100%'
+              });
+              result = await this.stripeProcessor.createCheckoutSessionForDeal(task.deal, {
+                trigger: 'cron_expired_session',
+                runId: runId || `expired_single_${Date.now()}`,
+                paymentType: 'single',
+                paymentSchedule: '100%'
+              });
+            } else {
+              // График все еще 50/50, пересоздаем deposit сессию
+              result = await this.stripeProcessor.createCheckoutSessionForDeal(task.deal, {
+                trigger: 'cron_expired_session',
+                runId: runId || `expired_deposit_${Date.now()}`,
+                paymentType: 'deposit',
+                paymentSchedule: '50/50',
+                paymentIndex: 1
+              });
+            }
           } else if (task.paymentType === 'rest' || task.paymentType === 'second' || task.paymentType === 'final') {
             // Пересоздаем сессию для второго платежа
             result = await this.createSecondPaymentSession(task.deal, task.secondPaymentDate);
@@ -889,15 +954,30 @@ class SecondPaymentSchedulerService {
           }
           
           if (result.success) {
-            // Отправляем уведомление с новой ссылкой
-            const notificationResult = await this.sendReminder({
-              ...task,
-              sessionId: result.sessionId,
-              sessionUrl: result.sessionUrl
-            }, { 
-              trigger, 
-              runId,
-              isRecreated: true 
+            // Для пересозданных сессий используем sendPaymentNotificationForDeal
+            // чтобы правильно показать скидку и общую сумму
+            const sessions = [{
+              id: result.sessionId,
+              url: result.sessionUrl,
+              amount: result.amount,
+              type: task.paymentType === 'deposit' ? 'deposit' : 'rest'
+            }];
+            
+            // Определяем актуальный график платежей на основе текущей даты
+            const { schedule: paymentSchedule } = this.determinePaymentSchedule(task.deal);
+            
+            // Получаем правильную общую сумму из deal.value (уже включает скидку)
+            // или из result.totalAmount (который должен быть sumPrice со скидкой)
+            const dealValue = parseFloat(task.deal.value) || 0;
+            const totalAmount = result.totalAmount || dealValue;
+            
+            // Отправляем уведомление через sendPaymentNotificationForDeal
+            // который правильно рассчитывает скидку и показывает общую сумму
+            const notificationResult = await this.stripeProcessor.sendPaymentNotificationForDeal(task.dealId, {
+              paymentSchedule,
+              sessions,
+              currency: task.currency,
+              totalAmount: totalAmount
             });
             
             if (notificationResult.success) {

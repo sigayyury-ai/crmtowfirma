@@ -559,8 +559,8 @@ class PipedriveClient {
       const response = await this.client.get(`/persons/${personId}`, {
         params: { 
           api_token: this.apiToken,
-          // Запрашиваем все поля или конкретное кастомное поле SendPulse ID
-          fields: SENDPULSE_ID_FIELD_KEY
+          // Запрашиваем SendPulse ID и телефон (phone поле)
+          fields: `${SENDPULSE_ID_FIELD_KEY},phone`
         }
       });
       

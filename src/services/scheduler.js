@@ -5,6 +5,7 @@ const StripeProcessorService = require('./stripe/processor');
 const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
 const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentReminderService');
 const StripeEventAggregationService = require('./stripe/eventAggregationService');
+const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderService');
 const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
@@ -14,6 +15,8 @@ const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке
 const DELETION_CRON_EXPRESSION = '0 2 * * *'; // Раз в сутки в 2:00 ночи (редкий кейс)
 const SECOND_PAYMENT_CRON_EXPRESSION = '0 9 * * *'; // Ежедневно в 9:00 утра для создания вторых платежей
 const STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION = '10 * * * *'; // каждый час в hh:10
+const GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION = '0 8 * * *'; // Ежедневно в 8:00 утра для сканирования календаря
+const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Каждые 5 минут для обработки напоминаний
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -25,6 +28,15 @@ class SchedulerService {
     this.proformaReminderService = options.proformaReminderService || new ProformaSecondPaymentReminderService();
     this.stripeEventAggregationService =
       options.stripeEventAggregationService || new StripeEventAggregationService();
+    
+    // Initialize Google Meet Reminder Service (may fail if credentials not configured)
+    try {
+      this.googleMeetReminderService = options.googleMeetReminderService || new GoogleMeetReminderService();
+    } catch (error) {
+      logger.warn('Google Meet Reminder Service not available', { error: error.message });
+      this.googleMeetReminderService = null;
+    }
+    
     this.timezone = options.timezone || DEFAULT_TIMEZONE;
     this.cronExpression = options.cronExpression || CRON_EXPRESSION;
     this.retryDelayMinutes = options.retryDelayMinutes || RETRY_DELAY_MINUTES;
@@ -38,6 +50,8 @@ class SchedulerService {
     this.deletionCronJob = null;
     this.secondPaymentCronJob = null;
     this.stripeEventsCronJob = null;
+    this.googleMeetCalendarScanCronJob = null;
+    this.googleMeetReminderProcessCronJob = null;
     this.retryTimeout = null;
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -151,6 +165,46 @@ class SchedulerService {
       }
     );
 
+    // Cron для ежедневного сканирования Google Calendar (ежедневно в 8:00)
+    if (this.googleMeetReminderService) {
+      logger.info('Configuring daily cron job for Google Meet calendar scan', {
+        cronExpression: GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION,
+        timezone: this.timezone
+      });
+      this.googleMeetCalendarScanCronJob = cron.schedule(
+        GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION,
+        () => {
+          this.runGoogleMeetCalendarScan({ trigger: 'cron_calendar_scan' }).catch((error) => {
+            logger.error('Unexpected error in Google Meet calendar scan:', error);
+          });
+        },
+        {
+          scheduled: true,
+          timezone: this.timezone
+        }
+      );
+
+      // Cron для обработки запланированных напоминаний (каждые 5 минут)
+      logger.info('Configuring cron job for Google Meet reminder processing', {
+        cronExpression: GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION,
+        timezone: this.timezone
+      });
+      this.googleMeetReminderProcessCronJob = cron.schedule(
+        GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION,
+        () => {
+          this.runGoogleMeetReminderProcessing({ trigger: 'cron_reminder_process' }).catch((error) => {
+            logger.error('Unexpected error in Google Meet reminder processing:', error);
+          });
+        },
+        {
+          scheduled: true,
+          timezone: this.timezone
+        }
+      );
+    } else {
+      logger.warn('Google Meet Reminder Service not available, skipping cron job setup');
+    }
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
@@ -170,6 +224,14 @@ class SchedulerService {
     if (this.stripeEventsCronJob) {
       this.stripeEventsCronJob.stop();
       this.stripeEventsCronJob = null;
+    }
+    if (this.googleMeetCalendarScanCronJob) {
+      this.googleMeetCalendarScanCronJob.stop();
+      this.googleMeetCalendarScanCronJob = null;
+    }
+    if (this.googleMeetReminderProcessCronJob) {
+      this.googleMeetReminderProcessCronJob.stop();
+      this.googleMeetReminderProcessCronJob = null;
     }
 
     if (this.retryTimeout) {
@@ -675,10 +737,105 @@ class SchedulerService {
       }
       return { success: result.errors.length === 0, summary: result };
     } catch (error) {
-      logger.error('Proforma reminder processing crashed', {
+      logger.error('Error in proforma reminder cycle:', {
+        error: error.message,
+        stack: error.stack,
         trigger,
-        runId,
-        error: error.message
+        runId
+      });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Run Google Meet calendar scan cycle
+   * Scans Google Calendar for upcoming Google Meet events and creates reminder tasks
+   * @param {Object} options - Options with trigger
+   * @returns {Promise<Object>} - Result of scan
+   */
+  async runGoogleMeetCalendarScan({ trigger = 'manual' }) {
+    if (!this.googleMeetReminderService) {
+      logger.warn('Google Meet Reminder Service not available, skipping calendar scan');
+      return { success: false, error: 'Service not available' };
+    }
+
+    const runId = randomUUID();
+    logger.info('Google Meet calendar scan cycle started', { trigger, runId });
+
+    try {
+      const result = await this.googleMeetReminderService.dailyCalendarScan({ trigger, runId });
+      
+      if (result.success) {
+        logger.info('Google Meet calendar scan finished successfully', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else {
+        logger.error('Google Meet calendar scan finished with errors', {
+          trigger,
+          runId,
+          error: result.error
+        });
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error('Error in Google Meet calendar scan cycle:', {
+        error: error.message,
+        stack: error.stack,
+        trigger,
+        runId
+      });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Run Google Meet reminder processing cycle
+   * Processes scheduled reminders and sends notifications via SendPulse
+   * @param {Object} options - Options with trigger
+   * @returns {Promise<Object>} - Result of processing
+   */
+  async runGoogleMeetReminderProcessing({ trigger = 'manual' }) {
+    if (!this.googleMeetReminderService) {
+      logger.warn('Google Meet Reminder Service not available, skipping reminder processing');
+      return { success: false, error: 'Service not available' };
+    }
+
+    const runId = randomUUID();
+    logger.debug('Google Meet reminder processing cycle started', { trigger, runId });
+
+    try {
+      const result = await this.googleMeetReminderService.processScheduledReminders({ trigger, runId });
+      
+      if (result.success && result.sent > 0) {
+        logger.info('Google Meet reminder processing finished successfully', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else if (result.success) {
+        logger.debug('Google Meet reminder processing completed (no reminders to send)', {
+          trigger,
+          runId,
+          summary: result
+        });
+      } else {
+        logger.error('Google Meet reminder processing finished with errors', {
+          trigger,
+          runId,
+          error: result.error
+        });
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error('Error in Google Meet reminder processing cycle:', {
+        error: error.message,
+        stack: error.stack,
+        trigger,
+        runId
       });
       return { success: false, error: error.message };
     }
