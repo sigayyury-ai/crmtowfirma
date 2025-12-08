@@ -3297,13 +3297,17 @@ class StripeProcessorService {
       // eslint-disable-next-line no-console
       console.log(`\n💡 To complete the payment, open the URL above in your browser.\n`);
 
+      // Return totalAmount as sumPrice (with discount) to match Stripe session amount
+      // This ensures notification shows correct total that matches the Stripe session
+      const returnedTotalAmount = sumPrice || parseFloat(fullDeal.value) || productPrice;
+      
       return {
         success: true,
         sessionId: session.id,
         sessionUrl: session.url,
         amount: productPrice,
         currency,
-        totalAmount: itemPrice || sumPrice || parseFloat(fullDeal.value) || 0
+        totalAmount: returnedTotalAmount
       };
     } catch (error) {
       const errorDuration = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -4645,8 +4649,21 @@ class StripeProcessorService {
       const discountInfo = getDiscount(deal);
       const productDiscountInfo = await getProductDiscount(dealId);
       
-      // Calculate base amount from deal value
-      const dealBaseAmount = parseFloat(deal.value) || effectiveTotalAmount;
+      // Calculate base amount - IMPORTANT: if product discount exists, use itemPrice as base
+      // because deal.value already includes the discount
+      let dealBaseAmount = parseFloat(deal.value) || effectiveTotalAmount;
+      
+      // If product discount exists, use itemPrice as base amount (before discount)
+      // because deal.value and sumPrice already include the discount
+      if (productDiscountInfo && productDiscountInfo.itemPrice > 0) {
+        dealBaseAmount = productDiscountInfo.itemPrice;
+        this.logger.info('💰 Используем itemPrice как базовую сумму (до скидки)', {
+          dealId,
+          itemPrice: productDiscountInfo.itemPrice,
+          dealValue: deal.value,
+          note: 'deal.value уже включает скидку продукта'
+        });
+      }
       
       // Calculate discount amount (prioritize product discount over deal discount)
       let discountAmount = 0;
@@ -4671,8 +4688,10 @@ class StripeProcessorService {
         });
       } else if (discountInfo) {
         // Fall back to deal discount
+        // For deal discount, use deal.value as base (it doesn't include deal-level discount)
+        const baseForDealDiscount = parseFloat(deal.value) || effectiveTotalAmount;
         if (discountInfo.type === 'percent') {
-          discountAmount = roundBankers(dealBaseAmount * discountInfo.value / 100);
+          discountAmount = roundBankers(baseForDealDiscount * discountInfo.value / 100);
         } else {
           discountAmount = discountInfo.value;
         }
@@ -4681,14 +4700,18 @@ class StripeProcessorService {
           dealId,
           discountValue: discountInfo.value,
           discountType: discountInfo.type,
-          dealBaseAmount,
+          dealBaseAmount: baseForDealDiscount,
           discountAmount,
           discountSource
         });
       }
       
       // Calculate total with discount
-      const totalWithDiscount = Math.max(0, dealBaseAmount - discountAmount);
+      // If product discount was used, totalWithDiscount should match deal.value (which already includes discount)
+      // If deal discount was used, calculate from deal.value
+      const totalWithDiscount = productDiscountInfo 
+        ? Math.max(0, dealBaseAmount - discountAmount)  // itemPrice - discount = correct total
+        : Math.max(0, (parseFloat(deal.value) || effectiveTotalAmount) - discountAmount);  // deal.value - deal discount
       
       this.logger.info('💰 Итоговый расчет суммы с учетом скидки', {
         dealId,
@@ -4811,6 +4834,8 @@ class StripeProcessorService {
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;
           if (discountInfoToUse) {
+            // Show base amount, discount, and total
+            message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
             const discountText = discountInfoToUse.type === 'percent'
               ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
               : `${formatAmount(discountAmount)} ${currency}`;
@@ -4841,6 +4866,8 @@ class StripeProcessorService {
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;
           if (discountInfoToUse) {
+            // Show base amount, discount, and total for clarity
+            message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
             const discountText = discountInfoToUse.type === 'percent'
               ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
               : `${formatAmount(discountAmount)} ${currency}`;
@@ -4856,20 +4883,21 @@ class StripeProcessorService {
         message += `[Ссылка на оплату](${singleSession.url})\n`;
         message += `Ссылка действует 24 часа\n\n`;
         
-        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
-        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
-        
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;
           if (discountInfoToUse) {
+            // Show base amount, discount, and total
+            message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
             const discountText = discountInfoToUse.type === 'percent'
               ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
               : `${formatAmount(discountAmount)} ${currency}`;
             message += `Скидка: ${discountText}\n`;
+            message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n\n`;
           }
         }
         
-        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
+        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
       }
       // Сценарий 4: 50/50 с кешем (Stripe + наличные)
       else if (paymentSchedule === '50/50' && sessions.length >= 2 && cashRemainder > 0) {
@@ -4889,20 +4917,21 @@ class StripeProcessorService {
           message += `\n\n`;
         }
 
-        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
-        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
-        
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;
           if (discountInfoToUse) {
+            // Show base amount, discount, and total for clarity
+            message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
             const discountText = discountInfoToUse.type === 'percent'
               ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
               : `${formatAmount(discountAmount)} ${currency}`;
             message += `Скидка: ${discountText}\n`;
+            message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n\n`;
           }
         }
 
-        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+        message += `Оплата через Stripe: ${formatAmount(sessionsAmount)} ${currency}\n`;
+        message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
       }
 
       // Send message via SendPulse
