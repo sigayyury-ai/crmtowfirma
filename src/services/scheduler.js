@@ -183,10 +183,22 @@ class SchedulerService {
           timezone: this.timezone
         }
       );
+      let nextRunCalendarScan = 'N/A';
+      if (this.googleMeetCalendarScanCronJob && typeof this.googleMeetCalendarScanCronJob.nextDates === 'function') {
+        try {
+          const nextDate = this.googleMeetCalendarScanCronJob.nextDates();
+          if (nextDate) {
+            const nextRunDate = Array.isArray(nextDate) ? nextDate[0].toDate() : nextDate.toDate();
+            nextRunCalendarScan = nextRunDate.toISOString();
+          }
+        } catch (error) {
+          logger.debug('Unable to compute next calendar scan run:', error.message);
+        }
+      }
       logger.info('Google Meet calendar scan cron job registered successfully', {
         cronExpression: GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION,
         timezone: this.timezone,
-        nextRun: this.googleMeetCalendarScanCronJob.nextDates()?.toISOString() || 'N/A'
+        nextRun: nextRunCalendarScan
       });
 
       // Cron для обработки запланированных напоминаний (каждые 5 минут)
@@ -206,10 +218,22 @@ class SchedulerService {
           timezone: this.timezone
         }
       );
+      let nextRunReminderProcess = 'N/A';
+      if (this.googleMeetReminderProcessCronJob && typeof this.googleMeetReminderProcessCronJob.nextDates === 'function') {
+        try {
+          const nextDate = this.googleMeetReminderProcessCronJob.nextDates();
+          if (nextDate) {
+            const nextRunDate = Array.isArray(nextDate) ? nextDate[0].toDate() : nextDate.toDate();
+            nextRunReminderProcess = nextRunDate.toISOString();
+          }
+        } catch (error) {
+          logger.debug('Unable to compute next reminder processing run:', error.message);
+        }
+      }
       logger.info('Google Meet reminder processing cron job registered successfully', {
         cronExpression: GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION,
         timezone: this.timezone,
-        nextRun: this.googleMeetReminderProcessCronJob.nextDates()?.toISOString() || 'N/A'
+        nextRun: nextRunReminderProcess
       });
     } else {
       logger.warn('Google Meet Reminder Service not available, skipping cron job setup');
