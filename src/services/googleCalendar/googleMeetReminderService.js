@@ -2,6 +2,7 @@ const GoogleCalendarService = require('./googleCalendarService');
 const PipedriveClient = require('../pipedrive');
 const SendPulseClient = require('../sendpulse');
 const { calculateReminderTimes, convertToClientTimezone } = require('../../utils/timezone');
+const { normalizePhoneNumberWithCountry, isValidE164 } = require('../../utils/phoneNumber');
 const logger = require('../../utils/logger');
 const { randomUUID } = require('crypto');
 
@@ -99,10 +100,10 @@ class GoogleMeetReminderService {
       if (searchResult.success && searchResult.persons?.length > 0) {
         const personId = searchResult.persons[0].id;
         
-        // Get person data with SendPulse ID field using getPerson
+        // Get person data with SendPulse ID field, phone, country and address (for country) using getPerson
         // This is necessary because searchPersons doesn't return custom fields
         const personResult = await this.pipedriveClient.getPerson(personId, {
-          fields: this.SENDPULSE_ID_FIELD_KEY
+          fields: `${this.SENDPULSE_ID_FIELD_KEY},phone,country,address`
         });
         
         if (personResult.success && personResult.person) {
@@ -146,9 +147,9 @@ class GoogleMeetReminderService {
   }
   
   /**
-   * Get phone number from person
+   * Get phone number from person with proper normalization
    * @param {Object} person - Pipedrive person object
-   * @returns {string|null} - Phone number in international format or null
+   * @returns {string|null} - Phone number in E.164 format or null
    */
   getPhoneNumberFromPerson(person) {
     if (!person) {
@@ -173,15 +174,22 @@ class GoogleMeetReminderService {
     for (const phone of phones) {
       const phoneValue = phone?.value || phone;
       if (phoneValue && typeof phoneValue === 'string') {
-        // Нормализуем номер: убираем пробелы, дефисы, скобки
-        const normalized = phoneValue.replace(/[\s\-\(\)]/g, '');
-        // Проверяем, что номер начинается с + (международный формат)
-        if (normalized.startsWith('+') && normalized.length >= 10) {
+        // Используем нормализацию с учетом страны из person
+        const normalized = normalizePhoneNumberWithCountry(phoneValue, person);
+        
+        if (normalized && isValidE164(normalized)) {
+          this.logger.debug('Phone number normalized successfully', {
+            original: phoneValue,
+            normalized: normalized,
+            personId: person.id
+          });
           return normalized;
-        }
-        // Если номер без +, но начинается с цифры, добавляем +
-        if (/^\d/.test(normalized) && normalized.length >= 10) {
-          return '+' + normalized;
+        } else {
+          this.logger.warn('Phone number normalization failed', {
+            original: phoneValue,
+            personId: person.id,
+            reason: normalized ? 'Invalid E.164 format' : 'Normalization failed'
+          });
         }
       }
     }
@@ -248,11 +256,16 @@ class GoogleMeetReminderService {
         this.reminderTasks.set(taskId30, task30);
         tasks.push(task30);
         
-        this.logger.info('Created 30-minute reminder task', {
+        this.logger.info('Created 30-minute reminder task and added to queue', {
           taskId: taskId30,
           eventId: event.id,
+          eventSummary: event.summary || 'Meeting',
           clientEmail,
-          scheduledTime: reminder30Min.toISOString()
+          contactType,
+          scheduledTime: reminder30Min.toISOString(),
+          meetingTime: clientMeetingTime.toISOString(),
+          queueSize: this.reminderTasks.size,
+          hasMeetLink: !!meetLink
         });
       } else {
         this.logger.debug('Skipping 30-minute reminder (time has passed)', {
@@ -284,11 +297,16 @@ class GoogleMeetReminderService {
         this.reminderTasks.set(taskId5, task5);
         tasks.push(task5);
         
-        this.logger.info('Created 5-minute reminder task', {
+        this.logger.info('Created 5-minute reminder task and added to queue', {
           taskId: taskId5,
           eventId: event.id,
+          eventSummary: event.summary || 'Meeting',
           clientEmail,
-          scheduledTime: reminder5Min.toISOString()
+          contactType,
+          scheduledTime: reminder5Min.toISOString(),
+          meetingTime: clientMeetingTime.toISOString(),
+          queueSize: this.reminderTasks.size,
+          hasMeetLink: !!meetLink
         });
       } else {
         this.logger.debug('Skipping 5-minute reminder (time has passed)', {
@@ -435,7 +453,12 @@ class GoogleMeetReminderService {
         tasksCreated,
         clientsMatched,
         clientsSkipped,
-        totalReminderTasks: this.reminderTasks.size
+        totalReminderTasks: this.reminderTasks.size,
+        queueStatus: {
+          totalTasks: this.reminderTasks.size,
+          pendingTasks: Array.from(this.reminderTasks.values()).filter(t => !t.sent).length,
+          sentTasks: Array.from(this.reminderTasks.values()).filter(t => t.sent).length
+        }
       };
       
       this.logger.info('Google Meet reminder calendar scan completed', summary);
@@ -510,14 +533,36 @@ class GoogleMeetReminderService {
             this.markReminderSent(task.eventId, task.clientEmail, task.reminderType);
             sent++;
             
-            this.logger.info('Reminder sent successfully', {
+            // Подробное логирование успешной отправки
+            const logData = {
               taskId: task.taskId,
               eventId: task.eventId,
+              eventSummary: task.eventSummary,
               clientEmail: task.clientEmail,
               reminderType: task.reminderType,
               channel: result.channel || 'unknown',
+              messageId: result.messageId || 'N/A',
+              scheduledTime: task.scheduledTime.toISOString(),
+              meetingTime: task.meetingTime.toISOString(),
               runId
-            });
+            };
+            
+            // Добавляем детали в зависимости от канала
+            if (result.channel === 'sms') {
+              // Маскируем номер телефона для безопасности
+              const phoneNumber = task.phoneNumber || task.sendpulseId || 'N/A';
+              const maskedPhone = phoneNumber && phoneNumber.length > 5 
+                ? `${phoneNumber.substring(0, 3)}***${phoneNumber.substring(phoneNumber.length - 2)}`
+                : 'N/A';
+              logData.phoneNumber = maskedPhone;
+              logData.messageLength = task.reminderType === '30min' 
+                ? 'Привет это COMOON у нас с тобой звонок через час. Ссылка на почте.'.length
+                : `Через 5 мин: ${task.meetLink}`.length;
+            } else if (result.channel === 'telegram') {
+              logData.sendpulseId = task.sendpulseId ? '***masked***' : 'N/A';
+            }
+            
+            this.logger.info('Reminder sent successfully', logData);
           } else {
             failed++;
             this.logger.error('Failed to send reminder', {
@@ -601,12 +646,13 @@ class GoogleMeetReminderService {
       
       if (contactType === 'sms') {
         // SMS версии - короткие, без эмодзи (для экономии символов)
+        // Лимит: 70 символов для кириллицы, 160 для латиницы
         if (task.reminderType === '30min') {
-          // Короткая версия для SMS (до 160 символов для латиницы, ~70 для кириллицы)
-          message = `Привет это COMOON у нас с тобой звонок через час. Ссылка: ${task.meetLink}`;
+          // 30-минутное напоминание без ссылки (ссылка будет в 5-минутном)
+          message = `Привет это COMOON у нас с тобой звонок через час. Ссылка на почте.`;
         } else {
-          // 5-minute reminder - максимально короткая версия
-          message = `Встреча через 5 мин! ${task.meetLink}`;
+          // 5-minute reminder - с ссылкой (последнее напоминание перед встречей)
+          message = `Через 5 мин: ${task.meetLink}`;
         }
       } else {
         // Telegram версии - полные с эмодзи
@@ -616,7 +662,7 @@ class GoogleMeetReminderService {
 🔗 Ссылка на встречу: ${task.meetLink}`;
         } else {
           // 5-minute reminder - shorter and more urgent
-          message = `⏰ Встреча через 5 минут!
+          message = `Встреча через 5 минут!
 
 Ссылка: ${task.meetLink}
 
