@@ -44,3 +44,19 @@ quick-test.js
 
 # Local deployment scripts (not tracked)
 scripts/deploy.js
+
+# Custom case scripts (not tracked)
+scripts/test-sendpulse-custom-bot.js
+scripts/*-custom-*.js
+scripts/*-case-*.js
+scripts/create-first-payment-deal-*.js
+scripts/debug-expired-session-*.js
+scripts/find-all-stripe-second-payments.js
+scripts/find-mixed-payment-schedules.js
+scripts/find-stripe-sessions-for-deal-*.js
+scripts/create-stripe-session-direct.js
+scripts/restart-server.sh
+
+# Research and custom documentation (not tracked)
+RESEARCH-*.md
+.cursorrules
