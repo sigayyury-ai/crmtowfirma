@@ -848,6 +848,141 @@ router.get('/pipedrive/deals/:id', async (req, res) => {
 });
 
 /**
+ * GET /api/pipedrive/deals/:id/payments
+ * Получить все платежи для сделки (Stripe + Proforma)
+ */
+router.get('/pipedrive/deals/:id/payments', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const allPayments = [];
+
+    // 1. Получаем Stripe платежи из базы данных
+    try {
+      const StripeRepository = require('../services/stripe/repository');
+      const stripeRepository = new StripeRepository();
+      
+      if (stripeRepository.isEnabled()) {
+        const stripePayments = await stripeRepository.listPayments({ dealId: String(dealId) });
+        
+        if (stripePayments && stripePayments.length > 0) {
+          stripePayments.forEach(payment => {
+            allPayments.push({
+              id: payment.id || payment.session_id,
+              type: 'stripe',
+              paymentType: payment.payment_type, // deposit, rest, single
+              paymentStatus: payment.payment_status, // paid, unpaid
+              amount: payment.original_amount || payment.amount,
+              currency: payment.currency || 'PLN',
+              sessionId: payment.session_id,
+              sessionUrl: payment.session_id ? `https://dashboard.stripe.com/checkout_sessions/${payment.session_id}` : null,
+              createdAt: payment.created_at,
+              updatedAt: payment.updated_at,
+              paymentSchedule: payment.payment_schedule || null
+            });
+          });
+        }
+      }
+    } catch (stripeError) {
+      logger.warn('Failed to fetch Stripe payments', {
+        dealId,
+        error: stripeError.message
+      });
+    }
+
+    // 2. Получаем платежи по проформам
+    try {
+      if (supabase) {
+        // Сначала находим проформы для этой сделки
+        const { data: proformas, error: proformasError } = await supabase
+          .from('proformas')
+          .select('id, fullnumber, total, currency, pipedrive_deal_id')
+          .eq('pipedrive_deal_id', String(dealId))
+          .is('deleted_at', null);
+
+        if (!proformasError && proformas && proformas.length > 0) {
+          const proformaIds = proformas.map(p => p.id);
+          
+          // Получаем платежи по проформам
+          const { data: proformaPayments, error: paymentsError } = await supabase
+            .from('payments')
+            .select('*')
+            .in('proforma_id', proformaIds)
+            .neq('manual_status', 'rejected')
+            .order('payment_date', { ascending: true });
+
+          if (!paymentsError && proformaPayments && proformaPayments.length > 0) {
+            // Создаем мапу проформ для быстрого доступа
+            const proformaMap = new Map();
+            proformas.forEach(p => {
+              proformaMap.set(p.id, p);
+            });
+
+            proformaPayments.forEach(payment => {
+              const proforma = proformaMap.get(payment.proforma_id);
+              allPayments.push({
+                id: payment.id,
+                type: 'proforma',
+                paymentType: 'proforma',
+                paymentStatus: payment.manual_status === 'approved' ? 'paid' : 'unpaid',
+                amount: payment.amount || 0,
+                currency: payment.currency || proforma?.currency || 'PLN',
+                proformaId: payment.proforma_id,
+                proformaNumber: proforma?.fullnumber || null,
+                paymentDate: payment.payment_date,
+                createdAt: payment.created_at,
+                updatedAt: payment.updated_at,
+                manualStatus: payment.manual_status,
+                description: payment.description || null
+              });
+            });
+          }
+        }
+      }
+    } catch (proformaError) {
+      logger.warn('Failed to fetch proforma payments', {
+        dealId,
+        error: proformaError.message
+      });
+    }
+
+    // Сортируем по дате создания (новые сначала)
+    allPayments.sort((a, b) => {
+      const dateA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const dateB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return dateB - dateA;
+    });
+
+    res.json({
+      success: true,
+      dealId,
+      payments: allPayments,
+      count: allPayments.length,
+      summary: {
+        stripe: allPayments.filter(p => p.type === 'stripe').length,
+        proforma: allPayments.filter(p => p.type === 'proforma').length,
+        paid: allPayments.filter(p => p.paymentStatus === 'paid').length,
+        unpaid: allPayments.filter(p => p.paymentStatus !== 'paid').length
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting deal payments:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pipedrive/organizations/:id
  * Получить организацию по ID
  */
@@ -1184,57 +1319,64 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       try {
         const googleMeetTasks = await scheduler.googleMeetReminderService.getAllReminderTasks();
         
-        formattedGoogleMeetTasks = googleMeetTasks.map(task => {
+        formattedGoogleMeetTasks = await Promise.all(googleMeetTasks.map(async (task) => {
           const scheduledDate = new Date(task.scheduledTime);
-          const meetingDate = new Date(task.meetingTime);
           const now = new Date();
+          const today = new Date(now);
+          today.setHours(0, 0, 0, 0);
           
-          // Рассчитываем дни до напоминания
-          const daysUntilReminder = Math.ceil((scheduledDate - now) / (1000 * 60 * 60 * 24));
-          const isReminderTimeReached = scheduledDate <= now;
+          scheduledDate.setHours(0, 0, 0, 0);
+          // Используем такую же логику расчета дней как у других задач
+          const daysUntilSecondPayment = Math.ceil((scheduledDate - today) / (1000 * 60 * 60 * 24));
+          const isDateReached = scheduledDate < today;
           
-          // Рассчитываем дни до встречи
-          const daysUntilMeeting = Math.ceil((meetingDate - now) / (1000 * 60 * 60 * 24));
+          // Ищем сделку по email клиента
+          let dealId = null;
+          let dealTitle = null;
+          let dealUrl = null;
+          
+          try {
+            // Используем метод из GoogleMeetReminderService для поиска персоны
+            const person = await scheduler.googleMeetReminderService.findPersonByEmail(task.clientEmail);
+            if (person && person.id) {
+              // Получаем активные сделки для этого контакта
+              const dealsResult = await pipedriveClient.getPersonDeals(person.id, { status: 'open' });
+              if (dealsResult && dealsResult.success && dealsResult.deals && dealsResult.deals.length > 0) {
+                // Берем первую открытую сделку
+                const deal = dealsResult.deals[0];
+                dealId = deal.id;
+                dealTitle = deal.title;
+                dealUrl = `${CRM_DEAL_BASE_URL}${deal.id}`;
+              }
+            }
+          } catch (error) {
+            logger.debug('Could not find deal for Google Meet reminder', {
+              clientEmail: task.clientEmail,
+              error: error.message
+            });
+          }
           
           return {
             taskId: task.taskId,
-            eventId: task.eventId,
-            eventSummary: task.eventSummary || 'Google Meet',
-            clientEmail: task.clientEmail,
-            meetLink: task.meetLink,
-            scheduledTime: scheduledDate.toISOString(),
-            scheduledDate: scheduledDate.toISOString().split('T')[0],
-            scheduledTimeFormatted: scheduledDate.toLocaleString('ru-RU', { 
-              day: '2-digit', 
-              month: '2-digit', 
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            }),
-            meetingTime: meetingDate.toISOString(),
-            meetingDate: meetingDate.toISOString().split('T')[0],
-            meetingTimeFormatted: meetingDate.toLocaleString('ru-RU', { 
-              day: '2-digit', 
-              month: '2-digit', 
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit'
-            }),
-            reminderType: task.reminderType, // '30min' или '5min'
-            contactType: task.contactType, // 'telegram' или 'sms'
-            daysUntilReminder: daysUntilReminder,
-            daysUntilMeeting: daysUntilMeeting,
-            isReminderTimeReached: isReminderTimeReached,
-            isSent: task.sent || false,
-            status: isReminderTimeReached ? (task.sent ? 'sent' : 'overdue') : (daysUntilReminder <= 1 ? 'soon' : 'upcoming'),
+            dealId: dealId,
+            dealTitle: dealTitle,
+            dealUrl: dealUrl,
+            customerEmail: task.clientEmail,
+            secondPaymentDate: scheduledDate.toISOString().split('T')[0],
+            daysUntilSecondPayment: daysUntilSecondPayment ?? null,
+            isDateReached: isDateReached ?? false,
+            status: isDateReached ? 'overdue' : ((daysUntilSecondPayment ?? 0) <= 3 ? 'soon' : 'upcoming'),
             type: 'google_meet_reminder',
+            paymentMethod: 'google_meet',
             label: 'Google Meet',
             taskDescription: `Напоминание о звонке (${task.reminderType === '30min' ? 'за 30 мин' : 'за 5 мин'})`,
-            // Используем scheduledDate для сортировки
-            secondPaymentDate: scheduledDate.toISOString().split('T')[0],
-            expectedCloseDate: meetingDate.toISOString().split('T')[0]
+            reminderType: task.reminderType,
+            // Для совместимости с другими задачами
+            secondPaymentAmount: 0,
+            currency: 'PLN',
+            expectedCloseDate: scheduledDate.toISOString().split('T')[0]
           };
-        });
+        }));
       } catch (error) {
         logger.error('Error getting Google Meet reminder tasks', {
           error: error.message,
@@ -1246,8 +1388,70 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
     // Объединяем все задачи (только разовые задачи по сделкам, без системных cron задач)
     const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedExpiredSessionTasks, ...formattedProformaTasks, ...formattedGoogleMeetTasks, ...manualTasks];
     
+    // Дедупликация: для одной сделки с одним типом платежа должна быть только одна задача
+    // Приоритет: активные задачи > просроченные сессии
+    // Группируем по dealId + paymentType, игнорируя тип задачи и sessionId
+    const taskMap = new Map();
+    
+    // Определяем приоритет типов задач (чем меньше число, тем выше приоритет)
+    const getTaskPriority = (task) => {
+      if (task.type === 'stripe_second_payment' || task.type === 'proforma_reminder') return 1; // Создание сессии/проформы
+      if (task.type === 'stripe_reminder') return 2; // Напоминание о сессии
+      if (task.type === 'stripe_expired_session') return 3; // Просроченная сессия
+      return 4; // Остальные
+    };
+    
+    for (const task of allTasks) {
+      // Для Stripe задач группируем по dealId + paymentType (deposit/rest)
+      // Для Proforma задач группируем по dealId (только один тип - второй платеж)
+      const paymentType = task.paymentType || (task.type === 'proforma_reminder' ? 'rest' : 'default');
+      const key = `${task.dealId || 'no-deal'}:${paymentType}`;
+      
+      if (!taskMap.has(key)) {
+        taskMap.set(key, task);
+      } else {
+        // Если задача уже есть, выбираем лучшую по приоритету
+        const existing = taskMap.get(key);
+        const existingPriority = getTaskPriority(existing);
+        const taskPriority = getTaskPriority(task);
+        
+        // Приоритет: активные задачи (создание сессии) > напоминания > просроченные
+        if (taskPriority < existingPriority) {
+          taskMap.set(key, task);
+        } else if (taskPriority === existingPriority) {
+          // Если приоритет одинаковый, выбираем по другим критериям
+          const isExistingSent = existing.isSent || existing.status === 'sent';
+          const isTaskSent = task.isSent || task.status === 'sent';
+          
+          // Приоритет: неотправленные задачи
+          if (isExistingSent && !isTaskSent) {
+            taskMap.set(key, task);
+          } else if (!isExistingSent && !isTaskSent) {
+            // Если обе неотправленные, для просроченных сессий берем с большим daysExpired
+            if (task.type === 'stripe_expired_session') {
+              const taskDaysExpired = task.daysExpired || 0;
+              const existingDaysExpired = existing.daysExpired || 0;
+              if (taskDaysExpired > existingDaysExpired) {
+                taskMap.set(key, task);
+              }
+            } else {
+              // Для остальных задач берем более новую (по дате платежа)
+              const taskDate = task.secondPaymentDate || task.expectedCloseDate || '';
+              const existingDate = existing.secondPaymentDate || existing.expectedCloseDate || '';
+              if (taskDate > existingDate) {
+                taskMap.set(key, task);
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Преобразуем Map обратно в массив
+    const deduplicatedTasks = Array.from(taskMap.values());
+    
     // Сортируем по дате (ближайшие сначала)
-    allTasks.sort((a, b) => {
+    deduplicatedTasks.sort((a, b) => {
       // Для задач без даты ставим в конец
       const dateA = a.secondPaymentDate ? new Date(a.secondPaymentDate) : 
                      (a.expectedCloseDate ? new Date(a.expectedCloseDate) : new Date('9999-12-31'));
@@ -1258,7 +1462,7 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
     
     // Фильтруем скрытые задачи
     const hiddenTasks = await getHiddenTasksFromSupabase();
-    const visibleTasks = allTasks.filter(task => {
+    const visibleTasks = deduplicatedTasks.filter(task => {
       const isHidden = hiddenTasks.some(hidden => {
         // Для deposit задач не проверяем second_payment_date
         if (task.paymentType === 'deposit') {
