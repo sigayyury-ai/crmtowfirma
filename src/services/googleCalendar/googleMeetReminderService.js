@@ -351,39 +351,61 @@ class GoogleMeetReminderService {
       // Create 30-minute reminder task
       if (reminder30Min > now) {
         const taskId30 = this.generateTaskId(event.id, clientEmail, '30min');
-        const task30 = {
-          taskId: taskId30,
-          eventId: event.id,
-          eventSummary: event.summary || 'Meeting',
-          clientEmail,
-          sendpulseId: contactType === 'telegram' ? contactId : null,
-          phoneNumber: contactType === 'sms' ? contactId : phoneNumber,
-          contactType, // 'telegram' или 'sms'
-          meetLink,
-          meetingTime: clientMeetingTime,
-          reminderType: '30min',
-          scheduledTime: reminder30Min,
-          sent: false,
-          createdAt: now
-        };
         
-        // Сохраняем в кэш и БД
-        this.reminderTasksCache.set(taskId30, task30);
-        const saved = await this.saveTaskToDatabase(task30);
-        tasks.push(task30);
+        // Проверяем, не существует ли уже такая задача в БД
+        let existingTask = null;
+        if (this.supabase) {
+          const { data } = await this.supabase
+            .from('google_meet_reminders')
+            .select('*')
+            .eq('task_id', taskId30)
+            .maybeSingle();
+          existingTask = data;
+        }
         
-        this.logger.info('Created 30-minute reminder task', {
-          taskId: taskId30,
-          eventId: event.id,
-          eventSummary: event.summary || 'Meeting',
-          clientEmail,
-          contactType,
-          scheduledTime: reminder30Min.toISOString(),
-          meetingTime: clientMeetingTime.toISOString(),
-          savedToDatabase: saved,
-          cacheSize: this.reminderTasksCache.size,
-          hasMeetLink: !!meetLink
-        });
+        // Если задача уже существует и не отправлена, пропускаем создание
+        if (existingTask && !existingTask.sent) {
+          this.logger.debug('Task already exists and not sent, skipping creation', {
+            taskId: taskId30,
+            eventId: event.id,
+            clientEmail,
+            scheduledTime: existingTask.scheduled_time
+          });
+        } else {
+          const task30 = {
+            taskId: taskId30,
+            eventId: event.id,
+            eventSummary: event.summary || 'Meeting',
+            clientEmail,
+            sendpulseId: contactType === 'telegram' ? contactId : null,
+            phoneNumber: contactType === 'sms' ? contactId : phoneNumber,
+            contactType, // 'telegram' или 'sms'
+            meetLink,
+            meetingTime: clientMeetingTime,
+            reminderType: '30min',
+            scheduledTime: reminder30Min,
+            sent: false,
+            createdAt: now
+          };
+          
+          // Сохраняем в кэш и БД
+          this.reminderTasksCache.set(taskId30, task30);
+          const saved = await this.saveTaskToDatabase(task30);
+          tasks.push(task30);
+          
+          this.logger.info('Created 30-minute reminder task', {
+            taskId: taskId30,
+            eventId: event.id,
+            eventSummary: event.summary || 'Meeting',
+            clientEmail,
+            contactType,
+            scheduledTime: reminder30Min.toISOString(),
+            meetingTime: clientMeetingTime.toISOString(),
+            savedToDatabase: saved,
+            cacheSize: this.reminderTasksCache.size,
+            hasMeetLink: !!meetLink
+          });
+        }
       } else {
         this.logger.debug('Skipping 30-minute reminder (time has passed)', {
           eventId: event.id,
@@ -395,39 +417,61 @@ class GoogleMeetReminderService {
       // Create 5-minute reminder task
       if (reminder5Min > now) {
         const taskId5 = this.generateTaskId(event.id, clientEmail, '5min');
-        const task5 = {
-          taskId: taskId5,
-          eventId: event.id,
-          eventSummary: event.summary || 'Meeting',
-          clientEmail,
-          sendpulseId: contactType === 'telegram' ? contactId : null,
-          phoneNumber: contactType === 'sms' ? contactId : phoneNumber,
-          contactType, // 'telegram' или 'sms'
-          meetLink,
-          meetingTime: clientMeetingTime,
-          reminderType: '5min',
-          scheduledTime: reminder5Min,
-          sent: false,
-          createdAt: now
-        };
         
-        // Сохраняем в кэш и БД
-        this.reminderTasksCache.set(taskId5, task5);
-        const saved = await this.saveTaskToDatabase(task5);
-        tasks.push(task5);
+        // Проверяем, не существует ли уже такая задача в БД
+        let existingTask = null;
+        if (this.supabase) {
+          const { data } = await this.supabase
+            .from('google_meet_reminders')
+            .select('*')
+            .eq('task_id', taskId5)
+            .maybeSingle();
+          existingTask = data;
+        }
         
-        this.logger.info('Created 5-minute reminder task', {
-          taskId: taskId5,
-          eventId: event.id,
-          eventSummary: event.summary || 'Meeting',
-          clientEmail,
-          contactType,
-          scheduledTime: reminder5Min.toISOString(),
-          meetingTime: clientMeetingTime.toISOString(),
-          savedToDatabase: saved,
-          cacheSize: this.reminderTasksCache.size,
-          hasMeetLink: !!meetLink
-        });
+        // Если задача уже существует и не отправлена, пропускаем создание
+        if (existingTask && !existingTask.sent) {
+          this.logger.debug('Task already exists and not sent, skipping creation', {
+            taskId: taskId5,
+            eventId: event.id,
+            clientEmail,
+            scheduledTime: existingTask.scheduled_time
+          });
+        } else {
+          const task5 = {
+            taskId: taskId5,
+            eventId: event.id,
+            eventSummary: event.summary || 'Meeting',
+            clientEmail,
+            sendpulseId: contactType === 'telegram' ? contactId : null,
+            phoneNumber: contactType === 'sms' ? contactId : phoneNumber,
+            contactType, // 'telegram' или 'sms'
+            meetLink,
+            meetingTime: clientMeetingTime,
+            reminderType: '5min',
+            scheduledTime: reminder5Min,
+            sent: false,
+            createdAt: now
+          };
+          
+          // Сохраняем в кэш и БД
+          this.reminderTasksCache.set(taskId5, task5);
+          const saved = await this.saveTaskToDatabase(task5);
+          tasks.push(task5);
+          
+          this.logger.info('Created 5-minute reminder task', {
+            taskId: taskId5,
+            eventId: event.id,
+            eventSummary: event.summary || 'Meeting',
+            clientEmail,
+            contactType,
+            scheduledTime: reminder5Min.toISOString(),
+            meetingTime: clientMeetingTime.toISOString(),
+            savedToDatabase: saved,
+            cacheSize: this.reminderTasksCache.size,
+            hasMeetLink: !!meetLink
+          });
+        }
       } else {
         this.logger.debug('Skipping 5-minute reminder (time has passed)', {
           eventId: event.id,
@@ -565,6 +609,9 @@ class GoogleMeetReminderService {
         }
       }
       
+      // Очищаем задачи для отмененных/перенесенных событий
+      const cleanupResult = await this.cleanupOrphanedTasks({ trigger, runId });
+
       const summary = {
         success: true,
         runId,
@@ -574,6 +621,7 @@ class GoogleMeetReminderService {
         tasksCreated,
         clientsMatched,
         clientsSkipped,
+        orphanedTasksDeleted: cleanupResult.deleted || 0,
         totalReminderTasks: this.reminderTasksCache.size,
         queueStatus: {
           totalTasks: this.reminderTasksCache.size,
@@ -891,9 +939,53 @@ class GoogleMeetReminderService {
   
   /**
    * Get all upcoming reminder tasks (for monitoring/debugging)
-   * @returns {Array<Object>} - Array of reminder tasks
+   * Загружает из БД, если доступна, иначе из кэша
+   * @returns {Promise<Array<Object>>} - Array of reminder tasks
    */
-  getAllReminderTasks() {
+  async getAllReminderTasks() {
+    if (this.supabase) {
+      try {
+        // Загружаем все неотправленные задачи из БД
+        const { data, error } = await this.supabase
+          .from('google_meet_reminders')
+          .select('*')
+          .eq('sent', false)
+          .order('scheduled_time', { ascending: true });
+
+        if (error) {
+          this.logger.error('Error loading tasks from database', { error: error.message });
+          // Fallback to cache
+          return Array.from(this.reminderTasksCache.values());
+        }
+
+        if (data && data.length > 0) {
+          // Конвертируем данные из БД в объекты задач
+          return data.map(task => ({
+            taskId: task.task_id,
+            eventId: task.event_id,
+            eventSummary: task.event_summary,
+            clientEmail: task.client_email,
+            sendpulseId: task.sendpulse_id,
+            phoneNumber: task.phone_number,
+            contactType: task.contact_type,
+            meetLink: task.meet_link,
+            meetingTime: new Date(task.meeting_time),
+            reminderType: task.reminder_type,
+            scheduledTime: new Date(task.scheduled_time),
+            sent: task.sent,
+            createdAt: new Date(task.created_at)
+          }));
+        }
+
+        return [];
+      } catch (error) {
+        this.logger.error('Error in getAllReminderTasks', { error: error.message });
+        // Fallback to cache
+        return Array.from(this.reminderTasksCache.values());
+      }
+    }
+
+    // Fallback: используем кэш
     return Array.from(this.reminderTasksCache.values());
   }
   
@@ -911,6 +1003,232 @@ class GoogleMeetReminderService {
       }
     }
     return tasks.sort((a, b) => a.scheduledTime - b.scheduledTime);
+  }
+
+  /**
+   * Delete reminder task by task ID
+   * @param {string} taskId - Task ID to delete
+   * @returns {Promise<boolean>} - Success status
+   */
+  async deleteReminderTask(taskId) {
+    if (!this.supabase) {
+      this.logger.warn('Supabase not available, cannot delete task', { taskId });
+      return false;
+    }
+
+    try {
+      const { error } = await this.supabase
+        .from('google_meet_reminders')
+        .delete()
+        .eq('task_id', taskId);
+
+      if (error) {
+        this.logger.error('Error deleting reminder task', {
+          error: error.message,
+          taskId
+        });
+        return false;
+      }
+
+      // Удаляем из кэша
+      this.reminderTasksCache.delete(taskId);
+
+      this.logger.info('Reminder task deleted', { taskId });
+      return true;
+    } catch (error) {
+      this.logger.error('Error deleting reminder task', {
+        error: error.message,
+        taskId
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Delete reminder tasks for a specific event
+   * @param {string} eventId - Google Calendar event ID
+   * @returns {Promise<number>} - Number of deleted tasks
+   */
+  async deleteReminderTasksForEvent(eventId) {
+    if (!this.supabase) {
+      this.logger.warn('Supabase not available, cannot delete tasks', { eventId });
+      return 0;
+    }
+
+    try {
+      // Получаем все задачи для этого события
+      const { data: tasks, error: fetchError } = await this.supabase
+        .from('google_meet_reminders')
+        .select('task_id')
+        .eq('event_id', eventId);
+
+      if (fetchError) {
+        this.logger.error('Error fetching tasks for event', {
+          error: fetchError.message,
+          eventId
+        });
+        return 0;
+      }
+
+      if (!tasks || tasks.length === 0) {
+        return 0;
+      }
+
+      // Удаляем задачи
+      const { error: deleteError } = await this.supabase
+        .from('google_meet_reminders')
+        .delete()
+        .eq('event_id', eventId);
+
+      if (deleteError) {
+        this.logger.error('Error deleting tasks for event', {
+          error: deleteError.message,
+          eventId
+        });
+        return 0;
+      }
+
+      // Удаляем из кэша
+      tasks.forEach(task => {
+        this.reminderTasksCache.delete(task.task_id);
+      });
+
+      this.logger.info('Deleted reminder tasks for event', {
+        eventId,
+        count: tasks.length
+      });
+
+      return tasks.length;
+    } catch (error) {
+      this.logger.error('Error deleting reminder tasks for event', {
+        error: error.message,
+        eventId
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Clean up orphaned reminder tasks - удаляет задачи для событий, которых больше нет в календаре
+   * @param {Object} options - Options with trigger, runId
+   * @returns {Promise<Object>} - Summary of cleanup results
+   */
+  async cleanupOrphanedTasks(options = {}) {
+    const { trigger = 'manual', runId = randomUUID() } = options;
+
+    this.logger.info('Starting cleanup of orphaned reminder tasks', { trigger, runId });
+
+    try {
+      if (!this.supabase) {
+        this.logger.warn('Supabase not available, skipping cleanup');
+        return { success: false, error: 'Supabase not available' };
+      }
+
+      // Получаем все неотправленные задачи
+      const { data: allTasks, error: fetchError } = await this.supabase
+        .from('google_meet_reminders')
+        .select('*')
+        .eq('sent', false);
+
+      if (fetchError) {
+        this.logger.error('Error fetching tasks for cleanup', {
+          error: fetchError.message,
+          runId
+        });
+        return { success: false, error: fetchError.message };
+      }
+
+      if (!allTasks || allTasks.length === 0) {
+        this.logger.info('No tasks to check for cleanup', { runId });
+        return { success: true, checked: 0, deleted: 0, runId };
+      }
+
+      // Группируем задачи по event_id
+      const tasksByEventId = new Map();
+      allTasks.forEach(task => {
+        if (!tasksByEventId.has(task.event_id)) {
+          tasksByEventId.set(task.event_id, []);
+        }
+        tasksByEventId.get(task.event_id).push(task);
+      });
+
+      this.logger.info('Checking events in calendar', {
+        uniqueEvents: tasksByEventId.size,
+        totalTasks: allTasks.length,
+        runId
+      });
+
+      // Получаем все события из календаря за период (сегодня + 30 дней)
+      const now = new Date();
+      const timeMin = new Date(now);
+      timeMin.setHours(0, 0, 0, 0);
+      
+      const timeMax = new Date(now);
+      timeMax.setDate(timeMax.getDate() + 30);
+      timeMax.setHours(23, 59, 59, 999);
+
+      const events = await this.calendarService.listCalendarEvents(
+        timeMin.toISOString(),
+        timeMax.toISOString()
+      );
+
+      // Создаем Set из event IDs для быстрого поиска
+      const existingEventIds = new Set(events.map(event => event.id));
+
+      let deleted = 0;
+      const deletedTasks = [];
+
+      // Проверяем каждое событие
+      for (const [eventId, tasks] of tasksByEventId.entries()) {
+        if (!existingEventIds.has(eventId)) {
+          // Событие не найдено в календаре - удаляем все задачи для него
+          this.logger.info('Event not found in calendar, deleting tasks', {
+            eventId,
+            taskCount: tasks.length,
+            runId
+          });
+
+          const deletedCount = await this.deleteReminderTasksForEvent(eventId);
+          deleted += deletedCount;
+          
+          tasks.forEach(task => {
+            deletedTasks.push({
+              taskId: task.task_id,
+              eventId: task.event_id,
+              eventSummary: task.event_summary,
+              clientEmail: task.client_email
+            });
+          });
+        }
+      }
+
+      const summary = {
+        success: true,
+        runId,
+        trigger,
+        checked: allTasks.length,
+        deleted,
+        deletedTasks: deletedTasks.slice(0, 10) // Показываем первые 10 для логов
+      };
+
+      this.logger.info('Cleanup of orphaned reminder tasks completed', summary);
+
+      return summary;
+    } catch (error) {
+      this.logger.error('Error cleaning up orphaned tasks', {
+        error: error.message,
+        stack: error.stack,
+        trigger,
+        runId
+      });
+
+      return {
+        success: false,
+        error: error.message,
+        runId,
+        trigger
+      };
+    }
   }
 }
 

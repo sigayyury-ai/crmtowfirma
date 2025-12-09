@@ -603,20 +603,28 @@ function displayCronTasks(tasks, nextRun) {
         const taskTypeLabel = task.type === 'manual_rest' ? 'Ручная задача (остаток)' : 
                              task.type === 'stripe_second_payment' ? 'Автоматическая (Stripe, второй платеж)' :
                              task.type === 'proforma_reminder' ? 'Напоминание (Проформа)' :
+                             task.type === 'google_meet_reminder' ? 'Напоминание (Google Meet)' :
                              task.type === 'second_payment' ? 'Автоматическая (второй платеж)' : 
                              'Задача';
         
         return `
-            <div class="cron-task-item ${itemClass}" data-task-id="${task.dealId}-${task.type}-${task.secondPaymentDate}">
+            <div class="cron-task-item ${itemClass}" data-task-id="${task.taskId || task.dealId || 'unknown'}-${task.type}-${task.secondPaymentDate || task.scheduledDate || 'unknown'}">
                 <div class="cron-task-header">
                     <div>
-                        ${task.dealUrl ? `<a href="${task.dealUrl}" target="_blank" class="cron-task-title">Deal #${task.dealId}</a>` : `<span class="cron-task-title">Deal #${task.dealId}</span>`}
+                        ${task.type === 'google_meet_reminder' 
+                          ? `<span class="cron-task-title">${task.eventSummary || 'Google Meet'}</span>`
+                          : (task.dealUrl ? `<a href="${task.dealUrl}" target="_blank" class="cron-task-title">Deal #${task.dealId}</a>` : `<span class="cron-task-title">Deal #${task.dealId || 'N/A'}</span>`)
+                        }
                         <span class="cron-task-badge ${badgeClass}">${badgeText}</span>
                         ${task.type === 'manual_rest' ? '<span class="cron-task-badge manual" style="background: #805ad5; margin-left: 8px;">Ручная</span>' : ''}
                         ${task.paymentMethod === 'proforma' ? '<span class="cron-task-badge" style="background: #38a169; margin-left: 8px;">Проформа</span>' : ''}
-                        <button class="cron-task-delete-btn" onclick="hideCronTask(${task.dealId}, '${task.type}', '${task.secondPaymentDate}')" title="Удалить из очереди">×</button>
+                        ${task.type === 'google_meet_reminder' ? '<span class="cron-task-badge" style="background: #3182ce; margin-left: 8px;">Google Meet</span>' : ''}
+                        ${task.type === 'google_meet_reminder' 
+                          ? `<button class="cron-task-delete-btn" onclick="deleteGoogleMeetReminder('${task.taskId}', '${task.eventSummary || 'Google Meet'}')" title="Удалить напоминание">×</button>`
+                          : (task.dealId ? `<button class="cron-task-delete-btn" onclick="hideCronTask(${task.dealId}, '${task.type}', '${task.secondPaymentDate}')" title="Удалить из очереди">×</button>` : '')
+                        }
                     </div>
-                    <div class="cron-task-date">${formatDateOnly(task.secondPaymentDate)}</div>
+                    <div class="cron-task-date">${formatDateOnly(task.secondPaymentDate || task.scheduledDate)}</div>
                 </div>
                 <div class="cron-task-details">
                     <div class="cron-task-detail">
@@ -625,15 +633,33 @@ function displayCronTasks(tasks, nextRun) {
                     <div class="cron-task-detail">
                         <strong>Клиент:</strong> ${task.customerEmail}
                     </div>
+                    ${task.type === 'google_meet_reminder' ? `
                     <div class="cron-task-detail">
-                        <strong>Сумма:</strong> ${task.secondPaymentAmount.toFixed(2)} ${task.currency}
+                        <strong>Событие:</strong> ${task.eventSummary || 'Google Meet'}
                     </div>
+                    <div class="cron-task-detail">
+                        <strong>Время напоминания:</strong> ${task.scheduledTimeFormatted || formatDateTime(task.scheduledTime)}
+                    </div>
+                    <div class="cron-task-detail">
+                        <strong>Время встречи:</strong> ${task.meetingTimeFormatted || formatDateTime(task.meetingTime)}
+                    </div>
+                    <div class="cron-task-detail">
+                        <strong>Тип напоминания:</strong> ${task.reminderType === '30min' ? 'За 30 минут' : 'За 5 минут'}
+                    </div>
+                    ${task.meetLink ? `<div class="cron-task-detail"><strong>Ссылка:</strong> <a href="${task.meetLink}" target="_blank">${task.meetLink}</a></div>` : ''}
+                    ` : `
+                    ${task.secondPaymentAmount !== undefined ? `
+                    <div class="cron-task-detail">
+                        <strong>Сумма:</strong> ${task.secondPaymentAmount.toFixed(2)} ${task.currency || 'PLN'}
+                    </div>
+                    ` : ''}
                     ${task.proformaNumber ? `<div class="cron-task-detail"><strong>Проформа:</strong> ${task.proformaNumber}</div>` : ''}
                     ${task.bankAccountNumber ? `<div class="cron-task-detail"><strong>Банковский счет:</strong> ${task.bankAccountNumber}</div>` : ''}
-                    <div class="cron-task-detail">
+                    ${task.expectedCloseDate ? `<div class="cron-task-detail">
                         <strong>Начало лагеря:</strong> ${formatDateOnly(task.expectedCloseDate)}
-                    </div>
+                    </div>` : ''}
                     ${task.note ? `<div class="cron-task-detail" style="color: #718096; font-style: italic;">${task.note}</div>` : ''}
+                    `}
                 </div>
             </div>
         `;
@@ -671,5 +697,25 @@ async function hideCronTask(dealId, taskType, secondPaymentDate) {
         }
     } catch (error) {
         addLog('error', `Ошибка удаления задачи: ${error.message}`);
+    }
+}
+
+async function deleteGoogleMeetReminder(taskId, eventSummary) {
+    if (!confirm(`Удалить напоминание "${eventSummary}"?`)) {
+        return;
+    }
+    
+    try {
+        const result = await apiCall(`/google-meet-reminders/${encodeURIComponent(taskId)}`, 'DELETE');
+        
+        if (result.success) {
+            addLog('success', `Напоминание "${eventSummary}" удалено`);
+            // Перезагружаем список задач
+            await loadCronTasks();
+        } else {
+            addLog('error', `Ошибка удаления напоминания: ${result.error || result.message}`);
+        }
+    } catch (error) {
+        addLog('error', `Ошибка удаления напоминания: ${error.message}`);
     }
 }

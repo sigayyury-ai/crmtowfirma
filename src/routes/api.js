@@ -1178,8 +1178,73 @@ router.get('/second-payment-scheduler/upcoming-tasks', async (req, res) => {
       }
     ];
 
+    // Получаем задачи для Google Meet reminders
+    let formattedGoogleMeetTasks = [];
+    if (scheduler.googleMeetReminderService) {
+      try {
+        const googleMeetTasks = await scheduler.googleMeetReminderService.getAllReminderTasks();
+        
+        formattedGoogleMeetTasks = googleMeetTasks.map(task => {
+          const scheduledDate = new Date(task.scheduledTime);
+          const meetingDate = new Date(task.meetingTime);
+          const now = new Date();
+          
+          // Рассчитываем дни до напоминания
+          const daysUntilReminder = Math.ceil((scheduledDate - now) / (1000 * 60 * 60 * 24));
+          const isReminderTimeReached = scheduledDate <= now;
+          
+          // Рассчитываем дни до встречи
+          const daysUntilMeeting = Math.ceil((meetingDate - now) / (1000 * 60 * 60 * 24));
+          
+          return {
+            taskId: task.taskId,
+            eventId: task.eventId,
+            eventSummary: task.eventSummary || 'Google Meet',
+            clientEmail: task.clientEmail,
+            meetLink: task.meetLink,
+            scheduledTime: scheduledDate.toISOString(),
+            scheduledDate: scheduledDate.toISOString().split('T')[0],
+            scheduledTimeFormatted: scheduledDate.toLocaleString('ru-RU', { 
+              day: '2-digit', 
+              month: '2-digit', 
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            }),
+            meetingTime: meetingDate.toISOString(),
+            meetingDate: meetingDate.toISOString().split('T')[0],
+            meetingTimeFormatted: meetingDate.toLocaleString('ru-RU', { 
+              day: '2-digit', 
+              month: '2-digit', 
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            }),
+            reminderType: task.reminderType, // '30min' или '5min'
+            contactType: task.contactType, // 'telegram' или 'sms'
+            daysUntilReminder: daysUntilReminder,
+            daysUntilMeeting: daysUntilMeeting,
+            isReminderTimeReached: isReminderTimeReached,
+            isSent: task.sent || false,
+            status: isReminderTimeReached ? (task.sent ? 'sent' : 'overdue') : (daysUntilReminder <= 1 ? 'soon' : 'upcoming'),
+            type: 'google_meet_reminder',
+            label: 'Google Meet',
+            taskDescription: `Напоминание о звонке (${task.reminderType === '30min' ? 'за 30 мин' : 'за 5 мин'})`,
+            // Используем scheduledDate для сортировки
+            secondPaymentDate: scheduledDate.toISOString().split('T')[0],
+            expectedCloseDate: meetingDate.toISOString().split('T')[0]
+          };
+        });
+      } catch (error) {
+        logger.error('Error getting Google Meet reminder tasks', {
+          error: error.message,
+          stack: error.stack
+        });
+      }
+    }
+
     // Объединяем все задачи (только разовые задачи по сделкам, без системных cron задач)
-    const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedExpiredSessionTasks, ...formattedProformaTasks, ...manualTasks];
+    const allTasks = [...stripeTasks, ...formattedStripeReminderTasks, ...formattedExpiredSessionTasks, ...formattedProformaTasks, ...formattedGoogleMeetTasks, ...manualTasks];
     
     // Сортируем по дате (ближайшие сначала)
     allTasks.sort((a, b) => {
@@ -1250,6 +1315,55 @@ async function getHiddenTasksFromSupabase() {
     return [];
   }
 }
+
+/**
+ * DELETE /api/google-meet-reminders/:taskId
+ * Удалить задачу напоминания Google Meet
+ */
+router.delete('/google-meet-reminders/:taskId', async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    
+    if (!taskId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required field: taskId'
+      });
+    }
+
+    if (!scheduler.googleMeetReminderService) {
+      return res.status(503).json({
+        success: false,
+        error: 'Google Meet Reminder Service not available'
+      });
+    }
+
+    const deleted = await scheduler.googleMeetReminderService.deleteReminderTask(taskId);
+
+    if (deleted) {
+      logger.info('Google Meet reminder task deleted via API', { taskId });
+      return res.json({
+        success: true,
+        message: 'Reminder task deleted successfully'
+      });
+    } else {
+      return res.status(404).json({
+        success: false,
+        error: 'Task not found or could not be deleted'
+      });
+    }
+  } catch (error) {
+    logger.error('Error deleting Google Meet reminder task', {
+      error: error.message,
+      stack: error.stack
+    });
+    return res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
 
 /**
  * POST /api/second-payment-scheduler/hide-task
