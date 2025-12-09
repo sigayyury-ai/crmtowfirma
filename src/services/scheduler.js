@@ -32,8 +32,12 @@ class SchedulerService {
     // Initialize Google Meet Reminder Service (may fail if credentials not configured)
     try {
       this.googleMeetReminderService = options.googleMeetReminderService || new GoogleMeetReminderService();
+      logger.info('Google Meet Reminder Service initialized successfully');
     } catch (error) {
-      logger.warn('Google Meet Reminder Service not available', { error: error.message });
+      logger.warn('Google Meet Reminder Service not available', { 
+        error: error.message,
+        stack: error.stack 
+      });
       this.googleMeetReminderService = null;
     }
     

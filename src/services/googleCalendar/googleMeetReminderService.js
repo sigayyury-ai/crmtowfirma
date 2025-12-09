@@ -5,6 +5,7 @@ const { calculateReminderTimes, convertToClientTimezone } = require('../../utils
 const { normalizePhoneNumberWithCountry, isValidE164 } = require('../../utils/phoneNumber');
 const logger = require('../../utils/logger');
 const { randomUUID } = require('crypto');
+const supabase = require('../supabaseClient');
 
 /**
  * Service for managing Google Meet reminder notifications via SendPulse
@@ -15,10 +16,11 @@ class GoogleMeetReminderService {
     this.calendarService = options.calendarService || new GoogleCalendarService();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.logger = options.logger || logger;
+    this.supabase = options.supabase || supabase;
     
-    // In-memory storage for reminder tasks
-    // Format: Map<taskId, {meetingTime, meetLink, sendpulseId, clientEmail, reminderType, scheduledTime, sent}>
-    this.reminderTasks = new Map();
+    // In-memory cache for quick access (опционально, для производительности)
+    // Основное хранилище - Supabase
+    this.reminderTasksCache = new Map();
     
     // Cache for sent reminders to prevent duplicates
     this.sentCache = new Set();
@@ -33,6 +35,11 @@ class GoogleMeetReminderService {
       this.logger.warn('SendPulse not available, reminders will be skipped', { error: error.message });
       this.sendpulseClient = null;
     }
+    
+    // Load pending tasks from database on startup
+    this.loadPendingTasksFromDatabase().catch((error) => {
+      this.logger.error('Failed to load pending tasks from database on startup', { error: error.message });
+    });
   }
   
   /**
@@ -210,6 +217,113 @@ class GoogleMeetReminderService {
   }
   
   /**
+   * Load pending tasks from database on startup
+   * @returns {Promise<void>}
+   */
+  async loadPendingTasksFromDatabase() {
+    if (!this.supabase) {
+      this.logger.warn('Supabase not available, skipping task loading from database');
+      return;
+    }
+
+    try {
+      const { data, error } = await this.supabase
+        .from('google_meet_reminders')
+        .select('*')
+        .eq('sent', false)
+        .gte('scheduled_time', new Date().toISOString())
+        .order('scheduled_time', { ascending: true });
+
+      if (error) {
+        this.logger.error('Error loading pending tasks from database', { error: error.message });
+        return;
+      }
+
+      if (data && data.length > 0) {
+        // Загружаем задачи в кэш для быстрого доступа
+        for (const task of data) {
+          // Конвертируем даты из строк в Date объекты
+          const taskObj = {
+            ...task,
+            meetingTime: new Date(task.meeting_time),
+            scheduledTime: new Date(task.scheduled_time),
+            createdAt: new Date(task.created_at)
+          };
+          this.reminderTasksCache.set(task.task_id, taskObj);
+        }
+
+        this.logger.info('Loaded pending tasks from database', {
+          count: data.length,
+          cacheSize: this.reminderTasksCache.size
+        });
+      } else {
+        this.logger.info('No pending tasks found in database');
+      }
+    } catch (error) {
+      this.logger.error('Error loading pending tasks from database', {
+        error: error.message,
+        stack: error.stack
+      });
+    }
+  }
+
+  /**
+   * Save reminder task to database
+   * @param {Object} task - Task object
+   * @returns {Promise<boolean>} - Success status
+   */
+  async saveTaskToDatabase(task) {
+    if (!this.supabase) {
+      this.logger.warn('Supabase not available, task will not be persisted', { taskId: task.taskId });
+      return false;
+    }
+
+    try {
+      const payload = {
+        task_id: task.taskId,
+        event_id: task.eventId,
+        event_summary: task.eventSummary,
+        client_email: task.clientEmail,
+        sendpulse_id: task.sendpulseId || null,
+        phone_number: task.phoneNumber || null,
+        contact_type: task.contactType,
+        meet_link: task.meetLink,
+        meeting_time: task.meetingTime.toISOString(),
+        reminder_type: task.reminderType,
+        scheduled_time: task.scheduledTime.toISOString(),
+        sent: task.sent || false,
+        sent_at: task.sentAt ? task.sentAt.toISOString() : null,
+        created_at: task.createdAt.toISOString()
+      };
+
+      const { error } = await this.supabase
+        .from('google_meet_reminders')
+        .upsert(payload, { onConflict: 'task_id' });
+
+      if (error) {
+        // Игнорируем ошибку дубликата (задача уже существует)
+        if (error.code === '23505') {
+          this.logger.debug('Task already exists in database', { taskId: task.taskId });
+          return true;
+        }
+        this.logger.error('Error saving task to database', {
+          error: error.message,
+          taskId: task.taskId
+        });
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.error('Error saving task to database', {
+        error: error.message,
+        taskId: task.taskId
+      });
+      return false;
+    }
+  }
+
+  /**
    * Create reminder tasks for a Google Meet event
    * @param {Object} eventData - Event data from filterGoogleMeetEvents
    * @param {string} clientEmail - Client email address
@@ -217,9 +331,9 @@ class GoogleMeetReminderService {
    * @param {string} clientTimezone - Client timezone (IANA)
    * @param {string} contactType - 'telegram' или 'sms'
    * @param {string} phoneNumber - Номер телефона (если используется SMS)
-   * @returns {Array<Object>} - Array of created reminder tasks
+   * @returns {Promise<Array<Object>>} - Array of created reminder tasks
    */
-  createReminderTasks(eventData, clientEmail, contactId, clientTimezone, contactType = 'telegram', phoneNumber = null) {
+  async createReminderTasks(eventData, clientEmail, contactId, clientTimezone, contactType = 'telegram', phoneNumber = null) {
     try {
       const { event, meetLink, eventStart, eventTimezone } = eventData;
       
@@ -253,10 +367,12 @@ class GoogleMeetReminderService {
           createdAt: now
         };
         
-        this.reminderTasks.set(taskId30, task30);
+        // Сохраняем в кэш и БД
+        this.reminderTasksCache.set(taskId30, task30);
+        const saved = await this.saveTaskToDatabase(task30);
         tasks.push(task30);
         
-        this.logger.info('Created 30-minute reminder task and added to queue', {
+        this.logger.info('Created 30-minute reminder task', {
           taskId: taskId30,
           eventId: event.id,
           eventSummary: event.summary || 'Meeting',
@@ -264,7 +380,8 @@ class GoogleMeetReminderService {
           contactType,
           scheduledTime: reminder30Min.toISOString(),
           meetingTime: clientMeetingTime.toISOString(),
-          queueSize: this.reminderTasks.size,
+          savedToDatabase: saved,
+          cacheSize: this.reminderTasksCache.size,
           hasMeetLink: !!meetLink
         });
       } else {
@@ -294,10 +411,12 @@ class GoogleMeetReminderService {
           createdAt: now
         };
         
-        this.reminderTasks.set(taskId5, task5);
+        // Сохраняем в кэш и БД
+        this.reminderTasksCache.set(taskId5, task5);
+        const saved = await this.saveTaskToDatabase(task5);
         tasks.push(task5);
         
-        this.logger.info('Created 5-minute reminder task and added to queue', {
+        this.logger.info('Created 5-minute reminder task', {
           taskId: taskId5,
           eventId: event.id,
           eventSummary: event.summary || 'Meeting',
@@ -305,7 +424,8 @@ class GoogleMeetReminderService {
           contactType,
           scheduledTime: reminder5Min.toISOString(),
           meetingTime: clientMeetingTime.toISOString(),
-          queueSize: this.reminderTasks.size,
+          savedToDatabase: saved,
+          cacheSize: this.reminderTasksCache.size,
           hasMeetLink: !!meetLink
         });
       } else {
@@ -320,6 +440,7 @@ class GoogleMeetReminderService {
     } catch (error) {
       this.logger.error('Error creating reminder tasks', {
         error: error.message,
+        stack: error.stack,
         eventId: eventData.event.id,
         clientEmail
       });
@@ -420,7 +541,7 @@ class GoogleMeetReminderService {
             const contactId = sendpulseId || phoneNumber;
             const contactType = sendpulseId ? 'telegram' : 'sms';
             
-            const tasks = this.createReminderTasks(eventData, clientEmail, contactId, clientTimezone, contactType, phoneNumber);
+            const tasks = await this.createReminderTasks(eventData, clientEmail, contactId, clientTimezone, contactType, phoneNumber);
             tasksCreated += tasks.length;
             clientsMatched++;
             
@@ -453,11 +574,11 @@ class GoogleMeetReminderService {
         tasksCreated,
         clientsMatched,
         clientsSkipped,
-        totalReminderTasks: this.reminderTasks.size,
+        totalReminderTasks: this.reminderTasksCache.size,
         queueStatus: {
-          totalTasks: this.reminderTasks.size,
-          pendingTasks: Array.from(this.reminderTasks.values()).filter(t => !t.sent).length,
-          sentTasks: Array.from(this.reminderTasks.values()).filter(t => t.sent).length
+          totalTasks: this.reminderTasksCache.size,
+          pendingTasks: Array.from(this.reminderTasksCache.values()).filter(t => !t.sent).length,
+          sentTasks: Array.from(this.reminderTasksCache.values()).filter(t => t.sent).length
         }
       };
       
@@ -483,24 +604,58 @@ class GoogleMeetReminderService {
   
   /**
    * Process scheduled reminders - send notifications for tasks whose time has arrived
+   * Оптимизировано: загружает только задачи, которые должны быть отправлены сейчас
    * @param {Object} options - Options with trigger, runId
    * @returns {Promise<Object>} - Summary of processing results
    */
   async processScheduledReminders(options = {}) {
     const { trigger = 'manual', runId = randomUUID() } = options;
     
-    this.logger.info('Processing scheduled Google Meet reminders', { trigger, runId });
+    this.logger.debug('Processing scheduled Google Meet reminders', { trigger, runId });
     
     try {
       const now = new Date();
-      const tasksToProcess = [];
-      
-      // Find tasks that are due (within last 5 minutes to account for cron timing)
       const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
       
-      for (const [taskId, task] of this.reminderTasks.entries()) {
-        if (!task.sent && task.scheduledTime <= now && task.scheduledTime >= fiveMinutesAgo) {
-          tasksToProcess.push(task);
+      // Оптимизация: загружаем только задачи, которые должны быть отправлены сейчас
+      let tasksToProcess = [];
+      
+      if (this.supabase) {
+        // Загружаем задачи из БД, которые должны быть отправлены
+        const { data, error } = await this.supabase
+          .from('google_meet_reminders')
+          .select('*')
+          .eq('sent', false)
+          .lte('scheduled_time', now.toISOString())
+          .gte('scheduled_time', fiveMinutesAgo.toISOString())
+          .order('scheduled_time', { ascending: true });
+
+        if (error) {
+          this.logger.error('Error loading tasks from database', { error: error.message });
+        } else if (data && data.length > 0) {
+          // Конвертируем данные из БД в объекты задач
+          tasksToProcess = data.map(task => ({
+            taskId: task.task_id,
+            eventId: task.event_id,
+            eventSummary: task.event_summary,
+            clientEmail: task.client_email,
+            sendpulseId: task.sendpulse_id,
+            phoneNumber: task.phone_number,
+            contactType: task.contact_type,
+            meetLink: task.meet_link,
+            meetingTime: new Date(task.meeting_time),
+            reminderType: task.reminder_type,
+            scheduledTime: new Date(task.scheduled_time),
+            sent: task.sent,
+            createdAt: new Date(task.created_at)
+          }));
+        }
+      } else {
+        // Fallback: используем кэш, если БД недоступна
+        for (const [taskId, task] of this.reminderTasksCache.entries()) {
+          if (!task.sent && task.scheduledTime <= now && task.scheduledTime >= fiveMinutesAgo) {
+            tasksToProcess.push(task);
+          }
         }
       }
       
@@ -530,7 +685,23 @@ class GoogleMeetReminderService {
           
           if (result.success) {
             task.sent = true;
+            task.sentAt = new Date();
             this.markReminderSent(task.eventId, task.clientEmail, task.reminderType);
+            
+            // Обновляем в БД
+            if (this.supabase) {
+              await this.supabase
+                .from('google_meet_reminders')
+                .update({
+                  sent: true,
+                  sent_at: task.sentAt.toISOString(),
+                  updated_at: new Date().toISOString()
+                })
+                .eq('task_id', task.taskId);
+            }
+            
+            // Обновляем кэш
+            this.reminderTasksCache.set(task.taskId, task);
             sent++;
             
             // Подробное логирование успешной отправки
@@ -723,7 +894,7 @@ class GoogleMeetReminderService {
    * @returns {Array<Object>} - Array of reminder tasks
    */
   getAllReminderTasks() {
-    return Array.from(this.reminderTasks.values());
+    return Array.from(this.reminderTasksCache.values());
   }
   
   /**
@@ -734,7 +905,7 @@ class GoogleMeetReminderService {
    */
   getReminderTasksInRange(startTime, endTime) {
     const tasks = [];
-    for (const task of this.reminderTasks.values()) {
+    for (const task of this.reminderTasksCache.values()) {
       if (task.scheduledTime >= startTime && task.scheduledTime <= endTime) {
         tasks.push(task);
       }
