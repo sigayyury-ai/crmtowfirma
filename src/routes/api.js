@@ -910,13 +910,47 @@ router.get('/pipedrive/deals/:id/payments', async (req, res) => {
         if (!proformasError && proformas && proformas.length > 0) {
           const proformaIds = proformas.map(p => p.id);
           
-          // Получаем платежи по проформам
-          const { data: proformaPayments, error: paymentsError } = await supabase
-            .from('payments')
-            .select('*')
-            .in('proforma_id', proformaIds)
-            .neq('manual_status', 'rejected')
-            .order('payment_date', { ascending: true });
+          // Получаем платежи по проформам (ищем и по proforma_id, и по manual_proforma_id)
+          // Делаем два запроса и объединяем результаты
+          const [paymentsByProformaId, paymentsByManualProformaId] = await Promise.all([
+            supabase
+              .from('payments')
+              .select('*')
+              .in('proforma_id', proformaIds)
+              .neq('manual_status', 'rejected')
+              .order('payment_date', { ascending: true }),
+            supabase
+              .from('payments')
+              .select('*')
+              .in('manual_proforma_id', proformaIds)
+              .neq('manual_status', 'rejected')
+              .order('payment_date', { ascending: true })
+          ]);
+
+          // Объединяем результаты, убирая дубликаты по ID
+          const allProformaPayments = [];
+          const paymentIds = new Set();
+          
+          if (!paymentsByProformaId.error && paymentsByProformaId.data) {
+            paymentsByProformaId.data.forEach(p => {
+              if (!paymentIds.has(p.id)) {
+                paymentIds.add(p.id);
+                allProformaPayments.push(p);
+              }
+            });
+          }
+          
+          if (!paymentsByManualProformaId.error && paymentsByManualProformaId.data) {
+            paymentsByManualProformaId.data.forEach(p => {
+              if (!paymentIds.has(p.id)) {
+                paymentIds.add(p.id);
+                allProformaPayments.push(p);
+              }
+            });
+          }
+
+          const proformaPayments = allProformaPayments;
+          const paymentsError = paymentsByProformaId.error || paymentsByManualProformaId.error;
 
           if (!paymentsError && proformaPayments && proformaPayments.length > 0) {
             // Создаем мапу проформ для быстрого доступа
@@ -926,7 +960,9 @@ router.get('/pipedrive/deals/:id/payments', async (req, res) => {
             });
 
             proformaPayments.forEach(payment => {
-              const proforma = proformaMap.get(payment.proforma_id);
+              // Определяем проформу по proforma_id или manual_proforma_id
+              const proformaId = payment.proforma_id || payment.manual_proforma_id;
+              const proforma = proformaMap.get(proformaId);
               allPayments.push({
                 id: payment.id,
                 type: 'proforma',
@@ -934,7 +970,7 @@ router.get('/pipedrive/deals/:id/payments', async (req, res) => {
                 paymentStatus: payment.manual_status === 'approved' ? 'paid' : 'unpaid',
                 amount: payment.amount || 0,
                 currency: payment.currency || proforma?.currency || 'PLN',
-                proformaId: payment.proforma_id,
+                proformaId: payment.proforma_id || payment.manual_proforma_id,
                 proformaNumber: proforma?.fullnumber || null,
                 paymentDate: payment.payment_date,
                 createdAt: payment.created_at,
