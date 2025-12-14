@@ -60,3 +60,31 @@ scripts/restart-server.sh
 # Research and custom documentation (not tracked)
 RESEARCH-*.md
 .cursorrules
+
+# Backup files
+.env.backup
+.env.bak
+
+# Temporary/debug scripts (not tracked)
+scripts/find-payments-deal-*.js
+scripts/analyze-deal-*.js
+scripts/cancel-deal-*.js
+scripts/export-rooms-*.js
+scripts/export-rooms-*.php
+scripts/get-rooms-*.js
+scripts/get-rooms-*.php
+scripts/sync-coliving-*.js
+scripts/generate-coliving-*.js
+scripts/show-product-*.js
+scripts/get-real-data.md
+scripts/check-proforma-*.js
+
+# Temporary documentation
+QUICK_START_PRODUCTS.md
+README_ROOMS_DATA.md
+README_VPS_CONNECTION.md
+
+# Temporary data files
+data/coliving-*.json
+data/rooms-*.json
+data/rooms-*-template.json
