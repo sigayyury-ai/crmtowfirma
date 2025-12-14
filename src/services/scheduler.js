@@ -962,11 +962,12 @@ class SchedulerService {
       const results = [];
 
       for (const year of years) {
-        logger.info('Running MQL sync for year', { year, trigger, runId });
+        logger.info('Running MQL sync for year', { year, trigger, runId, currentMonthOnly: year === currentYear });
         try {
-          await this.mqlSyncService.run({ year });
+          // Для текущего года обновляем только текущий месяц, для прошлого - полная синхронизация
+          await this.mqlSyncService.run({ year, currentMonthOnly: year === currentYear });
           totalSynced++;
-          results.push({ year, success: true });
+          results.push({ year, success: true, currentMonthOnly: year === currentYear });
         } catch (error) {
           logger.error('MQL sync failed for year', {
             year,

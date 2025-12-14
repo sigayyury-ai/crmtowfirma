@@ -23,8 +23,18 @@ class MqlSyncService {
     );
   }
 
-  async run({ year } = {}) {
+  async run({ year, currentMonthOnly = true } = {}) {
     const targetYear = Number(year) || new Date().getFullYear();
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    
+    // Если обновляем только текущий месяц, используем специальную логику
+    if (currentMonthOnly && targetYear === currentYear) {
+      return await this.runCurrentMonthOnly(targetYear, currentMonth);
+    }
+    
+    // Полная синхронизация для прошлых годов или при явном запросе
     const dataset = this.createDataset(targetYear);
 
     await this.collectSendpulse(dataset, targetYear);
@@ -42,6 +52,111 @@ class MqlSyncService {
     return {
       year: targetYear,
       months: dataset.months,
+      sync: dataset.sync
+    };
+  }
+
+  /**
+   * Обновляет только текущий месяц, сохраняя данные остальных месяцев из существующих snapshots
+   */
+  async runCurrentMonthOnly(year, month) {
+    logger.info('Running MQL sync for current month only', { year, month });
+    
+    const monthKey = `${year}-${String(month).padStart(2, '0')}`;
+    const dataset = this.createDataset(year);
+    
+    // Загружаем существующие snapshots для сохранения данных других месяцев
+    const existingSnapshots = await mqlRepository.fetchSnapshots(year);
+    const snapshotMap = new Map();
+    existingSnapshots.forEach(s => {
+      const key = `${s.year}-${String(s.month).padStart(2, '0')}`;
+      snapshotMap.set(key, s);
+    });
+
+    // Загружаем существующие данные в dataset для других месяцев, чтобы они не потерялись
+    for (const monthKeyIter of dataset.months) {
+      if (monthKeyIter !== monthKey) {
+        const existing = snapshotMap.get(monthKeyIter);
+        if (existing) {
+          // Восстанавливаем данные из существующего snapshot
+          dataset.sources[monthKeyIter].sendpulse.mql = existing.sendpulse_mql || 0;
+          dataset.sources[monthKeyIter].pipedrive.mql = existing.pipedrive_mql || 0;
+          dataset.sources[monthKeyIter].combined.mql = existing.combined_mql || 0;
+          dataset.sources[monthKeyIter].combined.won = existing.won_deals || 0;
+          dataset.sources[monthKeyIter].combined.repeat = existing.repeat_deals || 0;
+          dataset.sources[monthKeyIter].combined.closed = existing.closed_deals || 0;
+          dataset.metrics[monthKeyIter].budget = existing.marketing_expense || 0;
+          dataset.metrics[monthKeyIter].subscribers = existing.subscribers || 0;
+          dataset.metrics[monthKeyIter].newSubscribers = existing.new_subscribers || 0;
+          dataset.metrics[monthKeyIter].costPerSubscriber = existing.cost_per_subscriber || null;
+          dataset.metrics[monthKeyIter].costPerMql = existing.cost_per_mql || null;
+          dataset.metrics[monthKeyIter].costPerDeal = existing.cost_per_deal || null;
+          dataset.channels[monthKeyIter] = existing.channel_breakdown || {};
+        }
+      }
+    }
+
+    // Собираем новые данные (они попадут только в текущий месяц, так как фильтруются по дате)
+    await this.collectSendpulse(dataset, year);
+    if (!this.skipPipedrive) {
+      await this.collectPipedrive(dataset, year);
+    }
+    await this.collectMarketingExpenses(dataset, year);
+    this.applySendpulseBaseline(dataset, year);
+    this.updateConversion(dataset);
+    this.updateCostMetrics(dataset);
+
+    // Обновляем все snapshots, но для текущего месяца используем новые данные
+    for (const monthKeyIter of dataset.months) {
+      const [yearStr, monthStr] = monthKeyIter.split('-');
+      const row = dataset.sources[monthKeyIter];
+      
+      await mqlRepository.upsertSnapshot(Number(yearStr), Number(monthStr), {
+        sendpulseMql: row.sendpulse.mql,
+        pipedriveMql: row.pipedrive.mql,
+        combinedMql: row.combined.mql,
+        wonDeals: row.combined.won,
+        repeatDeals: row.combined.repeat,
+        closedDeals: row.combined.closed,
+        marketingExpense: dataset.metrics[monthKeyIter].budget,
+        subscribers: dataset.metrics[monthKeyIter].subscribers,
+        newSubscribers: dataset.metrics[monthKeyIter].newSubscribers,
+        costPerSubscriber: dataset.metrics[monthKeyIter].costPerSubscriber,
+        costPerMql: dataset.metrics[monthKeyIter].costPerMql,
+        costPerDeal: dataset.metrics[monthKeyIter].costPerDeal,
+        retentionRate: row.combined.retention ?? null,
+        channelBreakdown: dataset.channels[monthKeyIter],
+        // Обновляем даты синхронизации только для текущего месяца
+        pipedriveSyncAt: monthKeyIter === monthKey ? dataset.sync.pipedrive : snapshotMap.get(monthKeyIter)?.pipedrive_sync_at,
+        sendpulseSyncAt: monthKeyIter === monthKey ? dataset.sync.sendpulse : snapshotMap.get(monthKeyIter)?.sendpulse_sync_at,
+        pnlSyncAt: monthKeyIter === monthKey ? dataset.sync.pnl : snapshotMap.get(monthKeyIter)?.pnl_sync_at
+      });
+      
+      if (monthKeyIter === monthKey) {
+        logger.info('Updated current month snapshot', { monthKey: monthKeyIter });
+      }
+    }
+
+    // Сохраняем новые лиды
+    const leads = dataset.leads
+      .filter((lead) => lead.firstSeenMonth)
+      .map((lead) => ({
+        source: lead.source,
+        externalId: lead.externalId,
+        email: lead.email || null,
+        username: lead.username,
+        firstSeenMonth: lead.firstSeenMonth,
+        channelBucket: lead.channelBucket || null,
+        payload: lead.payload
+      }));
+
+    if (leads.length) {
+      await mqlRepository.bulkUpsertLeads(leads);
+    }
+
+    return {
+      year,
+      months: [monthKey],
       sync: dataset.sync
     };
   }
