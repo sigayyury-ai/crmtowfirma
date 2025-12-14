@@ -78,6 +78,20 @@ function formatPercent(value) {
   return `${(value * 100).toFixed(1)}%`;
 }
 
+function formatDateTime(iso) {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('ru-RU', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+}
+
 function renderTable() {
   const dataset = currentSummary;
   if (!dataset) return;
@@ -304,8 +318,8 @@ function renderChannelRows(body, months, dataset, totals) {
 }
 
 function updateSyncInfo() {
-  sendpulseSyncEl.textContent = currentSummary?.sync.sendpulse || '—';
-  pipedriveSyncEl.textContent = currentSummary?.sync.pipedrive || '—';
+  sendpulseSyncEl.textContent = formatDateTime(currentSummary?.sync.sendpulse);
+  pipedriveSyncEl.textContent = formatDateTime(currentSummary?.sync.pipedrive);
 }
 
 function bindEvents() {
