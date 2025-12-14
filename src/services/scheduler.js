@@ -6,6 +6,7 @@ const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerSe
 const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentReminderService');
 const StripeEventAggregationService = require('./stripe/eventAggregationService');
 const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderService');
+const MqlSyncService = require('./analytics/mqlSyncService');
 const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
@@ -17,6 +18,7 @@ const SECOND_PAYMENT_CRON_EXPRESSION = '0 9 * * *'; // Ежедневно в 9:0
 const STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION = '10 * * * *'; // каждый час в hh:10
 const GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION = '0 8 * * *'; // Ежедневно в 8:00 утра для сканирования календаря
 const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Каждые 5 минут для обработки напоминаний
+const MQL_SYNC_CRON_EXPRESSION = '0 10 * * 1'; // Еженедельно в понедельник в 10:00 утра для обновления MQL аналитики
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -56,7 +58,20 @@ class SchedulerService {
     this.stripeEventsCronJob = null;
     this.googleMeetCalendarScanCronJob = null;
     this.googleMeetReminderProcessCronJob = null;
+    this.mqlSyncCronJob = null;
     this.retryTimeout = null;
+    
+    // Инициализируем MQL Sync Service
+    try {
+      this.mqlSyncService = options.mqlSyncService || new MqlSyncService();
+      logger.info('MQL Sync Service initialized successfully');
+    } catch (error) {
+      logger.warn('MQL Sync Service not available', { 
+        error: error.message,
+        stack: error.stack 
+      });
+      this.mqlSyncService = null;
+    }
     this.retryScheduled = false;
     this.nextRetryAt = null;
     this.lastRunAt = null;
@@ -243,6 +258,45 @@ class SchedulerService {
       logger.warn('Google Meet Reminder Service not available, skipping cron job setup');
     }
 
+    // Cron для обновления MQL аналитики (еженедельно в понедельник в 10:00)
+    if (this.mqlSyncService) {
+      logger.info('Configuring weekly cron job for MQL analytics sync', {
+        cronExpression: MQL_SYNC_CRON_EXPRESSION,
+        timezone: this.timezone
+      });
+      this.mqlSyncCronJob = cron.schedule(
+        MQL_SYNC_CRON_EXPRESSION,
+        () => {
+          this.runMqlSyncCycle({ trigger: 'cron_mql_sync' }).catch((error) => {
+            logger.error('Unexpected error in MQL sync cycle:', error);
+          });
+        },
+        {
+          scheduled: true,
+          timezone: this.timezone
+        }
+      );
+      let nextRunMqlSync = 'N/A';
+      if (this.mqlSyncCronJob && typeof this.mqlSyncCronJob.nextDates === 'function') {
+        try {
+          const nextDate = this.mqlSyncCronJob.nextDates();
+          if (nextDate) {
+            const nextRunDate = Array.isArray(nextDate) ? nextDate[0].toDate() : nextDate.toDate();
+            nextRunMqlSync = nextRunDate.toISOString();
+          }
+        } catch (error) {
+          logger.debug('Unable to compute next MQL sync run:', error.message);
+        }
+      }
+      logger.info('MQL sync cron job registered successfully', {
+        cronExpression: MQL_SYNC_CRON_EXPRESSION,
+        timezone: this.timezone,
+        nextRun: nextRunMqlSync
+      });
+    } else {
+      logger.warn('MQL Sync Service not available, skipping cron job setup');
+    }
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
@@ -270,6 +324,10 @@ class SchedulerService {
     if (this.googleMeetReminderProcessCronJob) {
       this.googleMeetReminderProcessCronJob.stop();
       this.googleMeetReminderProcessCronJob = null;
+    }
+    if (this.mqlSyncCronJob) {
+      this.mqlSyncCronJob.stop();
+      this.mqlSyncCronJob = null;
     }
 
     if (this.retryTimeout) {
@@ -870,6 +928,71 @@ class SchedulerService {
       return result;
     } catch (error) {
       logger.error('Error in Google Meet reminder processing cycle:', {
+        error: error.message,
+        stack: error.stack,
+        trigger,
+        runId
+      });
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Run MQL analytics sync cycle
+   * Updates marketing analytics data from Pipedrive and SendPulse
+   * @param {Object} options - Options with trigger
+   * @returns {Promise<Object>} - Result of sync
+   */
+  async runMqlSyncCycle({ trigger = 'manual' }) {
+    if (!this.mqlSyncService) {
+      logger.warn('MQL Sync Service not available, skipping MQL sync');
+      return { success: false, error: 'Service not available' };
+    }
+
+    const runId = randomUUID();
+    logger.info('MQL analytics sync cycle started', { trigger, runId });
+
+    try {
+      // Определяем годы для синхронизации (текущий год и предыдущий)
+      const now = new Date();
+      const currentYear = now.getUTCFullYear();
+      const years = [currentYear - 1, currentYear];
+
+      let totalSynced = 0;
+      const results = [];
+
+      for (const year of years) {
+        logger.info('Running MQL sync for year', { year, trigger, runId });
+        try {
+          await this.mqlSyncService.run({ year });
+          totalSynced++;
+          results.push({ year, success: true });
+        } catch (error) {
+          logger.error('MQL sync failed for year', {
+            year,
+            error: error.message,
+            stack: error.stack,
+            trigger,
+            runId
+          });
+          results.push({ year, success: false, error: error.message });
+        }
+      }
+
+      logger.info('MQL analytics sync cycle finished', {
+        trigger,
+        runId,
+        totalSynced,
+        results
+      });
+
+      return {
+        success: totalSynced > 0,
+        totalSynced,
+        results
+      };
+    } catch (error) {
+      logger.error('Error in MQL sync cycle:', {
         error: error.message,
         stack: error.stack,
         trigger,
