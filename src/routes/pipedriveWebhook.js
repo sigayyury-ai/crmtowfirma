@@ -1354,7 +1354,48 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               }
             }
 
-            if (!hasRest || !restPaid) {
+            // ВАЖНО: Второй платеж (rest) для графика 50/50 НЕ создается сразу в webhook
+            // Он создается автоматически через крон (secondPaymentSchedulerService) когда:
+            // 1. Первый платеж оплачен
+            // 2. Дата второго платежа наступила (за 1 месяц до начала лагеря)
+            // Это предотвращает создание сессий заранее и дублирование
+            
+            // Проверяем, нужно ли создавать второй платеж сейчас
+            const closeDate = dealWithWebhookData.expected_close_date || dealWithWebhookData.close_date;
+            let shouldCreateSecondPayment = false;
+            let secondPaymentDate = null;
+            
+            if (closeDate) {
+              try {
+                const expectedCloseDate = new Date(closeDate);
+                secondPaymentDate = new Date(expectedCloseDate);
+                secondPaymentDate.setMonth(secondPaymentDate.getMonth() - 1); // За 1 месяц до начала лагеря
+                
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                secondPaymentDate.setHours(0, 0, 0, 0);
+                
+                // Создаем второй платеж только если:
+                // 1. Первый платеж оплачен (depositPaid)
+                // 2. Дата второго платежа наступила
+                shouldCreateSecondPayment = depositPaid && secondPaymentDate <= today;
+                
+                if (!depositPaid) {
+                  logger.info(`⏸️  Второй платеж не создается: первый платеж еще не оплачен | Deal: ${dealId}`);
+                } else if (secondPaymentDate > today) {
+                  logger.info(`⏸️  Второй платеж не создается: дата еще не наступила | Deal: ${dealId} | Дата: ${secondPaymentDate.toISOString().split('T')[0]}`);
+                  logger.info(`💡 Второй платеж будет создан автоматически через крон, когда дата наступит`);
+                }
+              } catch (error) {
+                logger.warn('Failed to calculate second payment date', {
+                  dealId,
+                  closeDate,
+                  error: error.message
+                });
+              }
+            }
+            
+            if (shouldCreateSecondPayment && (!hasRest || !restPaid)) {
               // Дополнительная проверка: если есть активный rest, не создаем новый
               const doubleCheckRestPayments = await stripeProcessor.repository.listPayments({
                 dealId: String(dealId),
@@ -1383,7 +1424,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 });
               } else {
                 const restAmount = totalAmount / 2;
-                logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency}`);
+                logger.info(`💳 Создание второго платежа (остаток 50%) | Deal: ${dealId} | Сумма: ${restAmount} ${currency} | Дата наступила: ${secondPaymentDate?.toISOString().split('T')[0]}`);
                 const restResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
                   trigger: 'pipedrive_webhook',
                   runId,
@@ -1412,8 +1453,10 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             } else {
               if (restPaid) {
                 logger.info(`✅ Второй платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
-              } else {
-                logger.info(`⚠️  Второй платеж существует, но не оплачен, создаем новый | Deal: ${dealId}`);
+              } else if (hasRest) {
+                logger.info(`⚠️  Второй платеж существует, но не оплачен | Deal: ${dealId}`);
+              } else if (!shouldCreateSecondPayment) {
+                logger.info(`⏸️  Второй платеж не создается в webhook (будет создан через крон при наступлении даты) | Deal: ${dealId}`);
               }
             }
           } else {
