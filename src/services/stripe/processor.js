@@ -2344,11 +2344,72 @@ class StripeProcessorService {
       // Process each deal
       for (const deal of dealsToProcess) {
         try {
+          // Check if deal is closed - skip closed deals
+          if (deal.status === 'won' || deal.status === 'lost') {
+            this.logger.info('Deal is closed, skipping Checkout Session creation', {
+              dealId: deal.id,
+              status: deal.status
+            });
+            summary.skipped++;
+            continue;
+          }
+          
           // Check if Checkout Sessions already exist for this deal to avoid duplicates
           const existingPayments = await this.repository.listPayments({
             dealId: String(deal.id),
             limit: 10
           });
+          
+          // Check if all payments are already paid - skip if fully paid
+          if (existingPayments && existingPayments.length > 0) {
+            const allPaid = existingPayments.every(p => p.payment_status === 'paid');
+            if (allPaid) {
+              this.logger.info('All payments for deal are already paid, skipping Checkout Session creation', {
+                dealId: deal.id,
+                paidCount: existingPayments.filter(p => p.payment_status === 'paid').length,
+                totalCount: existingPayments.length
+              });
+              summary.skipped++;
+              continue;
+            }
+          }
+
+          // Если в базе нет сессий, проверяем Stripe напрямую (на случай, если сессии не сохранились в базу)
+          // Это предотвращает создание дубликатов
+          let hasActiveSessionsInStripe = false;
+          if (!existingPayments || existingPayments.length === 0) {
+            try {
+              const now = Math.floor(Date.now() / 1000);
+              const sevenDaysAgo = now - (7 * 24 * 60 * 60);
+              
+              const sessions = await this.stripe.checkout.sessions.list({
+                limit: 10,
+                created: { gte: sevenDaysAgo }
+              });
+
+              const dealSessions = sessions.data.filter(s => 
+                s.metadata?.deal_id === String(deal.id) &&
+                (s.status === 'open' || s.payment_status === 'paid')
+              );
+
+              if (dealSessions.length > 0) {
+                hasActiveSessionsInStripe = true;
+                this.logger.info('Found active sessions in Stripe (not in database), skipping creation', {
+                  dealId: deal.id,
+                  activeSessionsCount: dealSessions.length,
+                  sessionIds: dealSessions.map(s => s.id)
+                });
+                summary.skipped++;
+                continue;
+              }
+            } catch (stripeError) {
+              this.logger.warn('Failed to check Stripe sessions, continuing with database check only', {
+                dealId: deal.id,
+                error: stripeError.message
+              });
+              // Продолжаем работу, если не удалось проверить Stripe
+            }
+          }
           
           // Determine payment schedule based on close_date (expected_close_date)
           const closeDate = deal.expected_close_date || deal.close_date;
@@ -2433,11 +2494,41 @@ class StripeProcessorService {
                 p.payment_type === 'single' || p.payment_type === 'payment' || !p.payment_type
               );
               
-              // If session exists, skip creation
-              if (hasSinglePayment) {
-                this.logger.info('Deal already has Checkout Session, skipping creation', {
+              // ВАЖНО: Проверяем, есть ли deposit платеж (оплаченный ИЛИ неоплаченный)
+              // Это нужно для случая, когда график изменился с 50/50 на 100%
+              const depositPayments = existingPayments.filter(p => 
+                p.payment_type === 'deposit' || p.payment_type === 'first'
+              );
+              
+              const paidDepositPayments = depositPayments.filter(p => 
+                p.payment_status === 'paid'
+              );
+              
+              const restPayments = existingPayments.filter(p => 
+                (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+                p.payment_status === 'paid'
+              );
+              
+              // Если есть deposit (оплаченный или нет), но нет rest - нужно создать rest с остатком
+              if (depositPayments.length > 0 && restPayments.length === 0 && !hasSinglePayment) {
+                // Продолжим создание rest платежа ниже
+                const depositAmount = depositPayments.reduce((sum, p) => 
+                  sum + parseFloat(p.original_amount || p.amount_pln || 0), 0);
+                this.logger.info('Deal has deposit payment (paid or unpaid) but no rest payment, will create rest with remainder', {
                   dealId: deal.id,
-                  existingCount: existingPayments.length
+                  depositCount: depositPayments.length,
+                  paidDepositCount: paidDepositPayments.length,
+                  depositAmount,
+                  note: 'Graph changed from 50/50 to 100%, need to create rest payment for remainder'
+                });
+              } else if (hasSinglePayment || (paidDepositPayments.length > 0 && restPayments.length > 0)) {
+                // Если уже есть single платеж или оба платежа оплачены - пропускаем
+                this.logger.info('Deal already has Checkout Session or is fully paid, skipping creation', {
+                  dealId: deal.id,
+                  existingCount: existingPayments.length,
+                  hasSinglePayment,
+                  depositPaid: paidDepositPayments.length > 0,
+                  restPaid: restPayments.length > 0
                 });
                 summary.skipped++;
                 continue;
@@ -2548,27 +2639,74 @@ class StripeProcessorService {
             // Уведомления теперь отправляются только после создания ВСЕХ сессий
             // (в pipedriveWebhook.js после цикла создания сессий)
           } else {
-            // Create single payment (100%)
-            const result = await this.createCheckoutSessionForDeal(deal, {
-              trigger,
-              runId,
-              paymentType: 'single',
-              paymentSchedule: '100%'
-            });
+            // Create payment for 100% schedule
+            // ВАЖНО: Проверяем, есть ли deposit платеж (оплаченный или нет)
+            // Если есть - создаем rest с остатком, иначе создаем single на полную сумму
+            const depositPayments = existingPayments.filter(p => 
+              p.payment_type === 'deposit' || p.payment_type === 'first'
+            );
             
-            if (result.success) {
-              summary.sessionsCreated++;
-              this.logger.info('Created single Checkout Session', {
+            if (depositPayments.length > 0) {
+              // Есть deposit платеж - создаем rest с остатком
+              const dealValue = parseFloat(deal.value) || 0;
+              const depositAmount = depositPayments.reduce((sum, p) => 
+                sum + parseFloat(p.original_amount || p.amount_pln || 0), 0);
+              const remainderAmount = dealValue - depositAmount;
+              
+              this.logger.info('Creating rest payment for remainder after deposit', {
                 dealId: deal.id,
-                sessionId: result.sessionId,
-                sessionUrl: result.sessionUrl
+                dealValue,
+                depositAmount,
+                remainderAmount,
+                note: 'Graph changed from 50/50 to 100%, deposit exists but not paid'
               });
+              
+              const result = await this.createCheckoutSessionForDeal(deal, {
+                trigger,
+                runId,
+                paymentType: 'rest',
+                paymentSchedule: '100%',
+                customAmount: remainderAmount
+              });
+              
+              if (result.success) {
+                summary.sessionsCreated++;
+                this.logger.info('Created rest Checkout Session for remainder', {
+                  dealId: deal.id,
+                  sessionId: result.sessionId,
+                  sessionUrl: result.sessionUrl,
+                  amount: remainderAmount
+                });
+              } else {
+                summary.skipped++;
+                summary.errors.push({
+                  dealId: deal.id,
+                  reason: result.error || 'unknown'
+                });
+              }
             } else {
-              summary.skipped++;
-              summary.errors.push({
-                dealId: deal.id,
-                reason: result.error || 'unknown'
+              // Нет deposit платежа - создаем single на полную сумму
+              const result = await this.createCheckoutSessionForDeal(deal, {
+                trigger,
+                runId,
+                paymentType: 'single',
+                paymentSchedule: '100%'
               });
+              
+              if (result.success) {
+                summary.sessionsCreated++;
+                this.logger.info('Created single Checkout Session', {
+                  dealId: deal.id,
+                  sessionId: result.sessionId,
+                  sessionUrl: result.sessionUrl
+                });
+              } else {
+                summary.skipped++;
+                summary.errors.push({
+                  dealId: deal.id,
+                  reason: result.error || 'unknown'
+                });
+              }
             }
           }
         } catch (error) {
