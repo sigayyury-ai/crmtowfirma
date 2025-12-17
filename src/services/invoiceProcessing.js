@@ -1191,14 +1191,26 @@ class InvoiceProcessingService {
 
     if (result.found && result.invoiceId && !result.invoiceNumber && this.wfirmaLookup) {
       try {
-        const wfirmaProforma = await this.wfirmaLookup.getFullProformaById(result.invoiceId);
-        const fetchedNumber = typeof wfirmaProforma?.fullnumber === 'string'
-          ? wfirmaProforma.fullnumber.trim()
-          : null;
+        // Проверяем, что invoiceId - это числовой ID, а не URL или другой текст
+        const invoiceIdStr = String(result.invoiceId).trim();
+        const isNumericId = /^\d+$/.test(invoiceIdStr);
+        
+        if (!isNumericId) {
+          logger.warn('Skipping wFirma lookup: invoiceId is not numeric (might be URL or invalid value)', {
+            dealId: deal.id,
+            invoiceId: result.invoiceId,
+            invoiceIdPreview: invoiceIdStr.substring(0, 100)
+          });
+        } else {
+          const wfirmaProforma = await this.wfirmaLookup.getFullProformaById(result.invoiceId);
+          const fetchedNumber = typeof wfirmaProforma?.fullnumber === 'string'
+            ? wfirmaProforma.fullnumber.trim()
+            : null;
 
-        if (fetchedNumber) {
-          result.invoiceNumber = fetchedNumber;
-          result.source = result.source || 'wfirma_lookup';
+          if (fetchedNumber) {
+            result.invoiceNumber = fetchedNumber;
+            result.source = result.source || 'wfirma_lookup';
+          }
         }
       } catch (error) {
         logger.warn('Failed to fetch proforma from wFirma while checking duplicates', {
@@ -1218,6 +1230,16 @@ class InvoiceProcessingService {
       : '';
 
     if (!normalizedId) {
+      return { found: false };
+    }
+
+    // Проверяем, что это числовой ID, а не URL или другой текст
+    // Если это не число, пропускаем проверку через wFirma API
+    const isNumericId = /^\d+$/.test(normalizedId);
+    if (!isNumericId) {
+      logger.debug('Skipping proforma resolution: invoiceId is not numeric', {
+        invoiceId: normalizedId.substring(0, 100) // Логируем первые 100 символов для отладки
+      });
       return { found: false };
     }
 
