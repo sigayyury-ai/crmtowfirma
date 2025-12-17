@@ -383,21 +383,20 @@ class WfirmaLookup {
           break;
         }
 
-        // Парсим XML ответ вручную
-        logger.info(`Parsing XML response from wFirma, page ${page}`);
-        logger.info(`Response type: ${typeof response.data}`);
-        logger.info(`Response length: ${typeof response.data === 'string' ? response.data.length : 'N/A'}`);
-        
-        // Логируем начало ответа для отладки
-        if (typeof response.data === 'string') {
-          const preview = response.data.substring(0, 1000);
-          logger.info(`XML response preview (first 1000 chars): ${preview}`);
-          
-          // Проверяем наличие ошибок в ответе
-          if (response.data.includes('<code>ERROR</code>') || response.data.includes('<error>')) {
-            logger.error('wFirma API returned an error in XML response');
-            logger.error('Full error response:', response.data);
-          }
+        // Парсим XML ответ вручную - не логируем весь ответ
+        logger.debug(`Parsing XML response from wFirma, page ${page}`, {
+          responseType: typeof response.data,
+          responseLength: typeof response.data === 'string' ? response.data.length : 'N/A'
+        });
+
+        // Проверяем наличие ошибок в ответе
+        if (typeof response.data === 'string' && (response.data.includes('<code>ERROR</code>') || response.data.includes('<error>'))) {
+          const errorMatch = response.data.match(/<message>(.*?)<\/message>/);
+          const errorMessage = errorMatch ? errorMatch[1] : 'Unknown error';
+          logger.error('wFirma API returned an error in XML response', {
+            error: errorMessage,
+            page
+          });
         }
         
         // Проверяем, есть ли invoice теги в ответе
@@ -427,7 +426,7 @@ class WfirmaLookup {
         // Если на странице меньше записей, чем лимит, значит это последняя страница
         // Но нужно проверить, сколько invoice тегов в ответе (не только CO-PROF)
         const invoiceTagsCount = (response.data.match(/<invoice>/g) || []).length;
-        logger.info(`Page ${page}: found ${invoiceTagsCount} invoice tags in XML, ${invoices.length} are CO-PROF proformas`);
+        logger.debug(`Page ${page}: found ${invoiceTagsCount} invoice tags in XML, ${invoices.length} are CO-PROF proformas`);
         
         let actualLimit = requestedLimit;
         let totalCount = null;
@@ -571,12 +570,14 @@ class WfirmaLookup {
       const invoiceMatches = sanitizedXml.match(/<invoice>[\s\S]*?<\/invoice>/g);
       
       if (!invoiceMatches) {
-        logger.info('No invoice tags found in XML response');
-        logger.debug('Full XML response:', xmlString);
+        logger.debug('No invoice tags found in XML response', {
+          responseLength: xmlString.length,
+          preview: xmlString.substring(0, 200)
+        });
         return [];
       }
 
-      logger.info(`Found ${invoiceMatches.length} invoice tags in XML`);
+      logger.debug(`Found ${invoiceMatches.length} invoice tags in XML`);
 
       let parsedCount = 0;
       let filteredCount = 0;

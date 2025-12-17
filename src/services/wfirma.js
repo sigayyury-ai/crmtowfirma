@@ -79,17 +79,31 @@ class WfirmaClient {
 
     this.client.interceptors.response.use(
       (response) => {
+        // Логируем только метаданные, не весь ответ (может быть огромным XML/JSON)
+        const dataSize = typeof response.data === 'string' 
+          ? response.data.length 
+          : (response.data ? JSON.stringify(response.data).length : 0);
         logger.debug('wFirma API Response:', {
           status: response.status,
-          data: response.data
+          url: response.config?.url,
+          dataType: typeof response.data,
+          dataSize: `${dataSize} bytes`,
+          isXML: typeof response.data === 'string' && response.data.includes('<?xml'),
+          success: response.data?.status?.code === 'OK' || (typeof response.data === 'string' && response.data.includes('<code>OK</code>'))
         });
         return response;
       },
       (error) => {
+        // Для ошибок логируем только важное, не весь response.data
+        const errorData = error.response?.data;
+        const errorPreview = typeof errorData === 'string' 
+          ? errorData.substring(0, 200) 
+          : (errorData ? JSON.stringify(errorData).substring(0, 200) : null);
         logger.error('wFirma API Response Error:', {
           status: error.response?.status,
-          data: error.response?.data,
-          message: error.message
+          url: error.config?.url,
+          message: error.message,
+          errorPreview: errorPreview
         });
         return Promise.reject(error);
       }
@@ -207,8 +221,10 @@ class WfirmaClient {
     </contractors>
 </api>`;
 
-      logger.info('Creating contractor in wFirma with XML:', xmlPayload);
-      console.log('📄 XML PAYLOAD FOR CONTRACTOR:', xmlPayload);
+      logger.debug('Creating contractor in wFirma', {
+        xmlLength: xmlPayload.length,
+        companyId: this.companyId
+      });
 
       // Используем правильный endpoint с XML форматом
       const endpoint = '/contractors/add?inputFormat=xml&outputFormat=xml';
@@ -236,11 +252,14 @@ class WfirmaClient {
           // Если это XML ответ
           if (typeof response.data === 'string' && response.data.includes('<?xml')) {
             if (response.data.includes('<code>OK</code>') || response.data.includes('<id>')) {
-              logger.info('Contractor created successfully (XML response):', response.data);
-              
-              // Извлекаем ID контрагента из XML ответа
+              // Извлекаем ID из ответа, но не логируем весь XML
               const idMatch = response.data.match(/<id>(\d+)<\/id>/);
-              const contractorId = idMatch ? idMatch[1] : null;
+              logger.info('Contractor created successfully', {
+                contractorId: idMatch ? idMatch[1] : null,
+                responseCode: response.data.includes('<code>OK</code>') ? 'OK' : 'unknown'
+              });
+              
+              // ID уже извлечен выше
               
               return {
                 success: true,
@@ -261,7 +280,10 @@ class WfirmaClient {
           }
           // Если это JSON ответ
           else if (response.data.contractor || response.data.id) {
-            logger.info('Contractor created successfully (JSON response):', response.data);
+            logger.info('Contractor created successfully', {
+              contractorId: response.data.contractor?.id || response.data.id,
+              contractorName: response.data.contractor?.name || response.data.name
+            });
             return {
               success: true,
               contractor: response.data.contractor || response.data,
@@ -453,7 +475,12 @@ class WfirmaClient {
       if (response.data) {
         // Если это XML ответ
         if (typeof response.data === 'string' && response.data.includes('<?xml')) {
-          logger.info('Bank accounts response (XML):', response.data);
+          // Не логируем весь XML, только метаданные
+          const accountMatches = response.data.match(/<company_account>/g);
+          logger.debug('Bank accounts response received', {
+            accountCount: accountMatches ? accountMatches.length : 0,
+            responseType: 'XML'
+          });
           // Парсим XML для извлечения банковских счетов
           const bankAccounts = [];
           const accountMatches = response.data.match(/<company_account>(.*?)<\/company_account>/gs);
@@ -629,7 +656,10 @@ class WfirmaClient {
     </goods>
 </api>`;
 
-      logger.info('Product XML payload:', xmlPayload);
+      logger.debug('Creating product in wFirma', {
+        xmlLength: xmlPayload.length,
+        productName: productData.name
+      });
 
       // Используем правильный endpoint с параметрами
       const endpoint = `/goods/add?outputFormat=xml&inputFormat=xml&company_id=${this.companyId}`;
@@ -641,17 +671,15 @@ class WfirmaClient {
       });
       
       if (response.data) {
-        logger.info('Product creation response received:', response.data);
-        
         // Проверяем XML ответ (ожидаемый формат)
         if (typeof response.data === 'string' && response.data.includes('<?xml')) {
           if (response.data.includes('<code>OK</code>') || response.data.includes('<id>')) {
-            logger.info('Product created successfully (XML response):', response.data);
-            
             // Извлекаем ID продукта из XML ответа
             const idMatch = response.data.match(/<id>(\d+)<\/id>/);
             const productId = idMatch ? idMatch[1] : null;
-            logger.info('Product created successfully (JSON response):', {
+            logger.info('Product created successfully', {
+              productId,
+              responseType: 'XML'
               productId: productId,
               response: response.data
             });
@@ -670,7 +698,11 @@ class WfirmaClient {
               error: `wFirma API error: ${errorMessage}`
             };
           } else {
-            logger.error('Unexpected JSON response format:', response.data);
+            const errorMessage = response.data?.error?.message || response.data?.message || 'Unknown error';
+            logger.error('Unexpected JSON response format', {
+              error: errorMessage,
+              hasError: !!response.data?.error
+            });
             return {
               success: false,
               error: 'Unexpected JSON response format from wFirma API'
@@ -680,11 +712,12 @@ class WfirmaClient {
         // Если это XML ответ (для совместимости)
         else if (typeof response.data === 'string' && response.data.includes('<?xml')) {
           if (response.data.includes('<code>OK</code>') || response.data.includes('<id>')) {
-            logger.info('Product created successfully (XML response):', response.data);
-            
             // Извлекаем ID продукта из XML ответа
             const idMatch = response.data.match(/<id>(\d+)<\/id>/);
             const productId = idMatch ? idMatch[1] : null;
+            logger.info('Product created successfully', {
+              productId,
+              responseType: 'XML'
             
             return {
               success: true,
@@ -1065,8 +1098,11 @@ class WfirmaClient {
 </api>`;
 
       // Логируем XML payload для отладки
-      logger.info('📧 Email XML Payload:', xmlPayload);
-      console.log('📧 EMAIL XML PAYLOAD:', xmlPayload);
+      logger.debug('Sending invoice by email', {
+        invoiceId,
+        email,
+        xmlLength: xmlPayload.length
+      });
 
       // Используем правильный endpoint для отправки проформы по email
       // wFirma API: POST /invoices/send/{{invoiceId}}
@@ -1109,7 +1145,11 @@ class WfirmaClient {
               response: response.data
             };
           } else {
-            logger.warn(`Unexpected XML response when sending invoice ${invoiceId} by email: ${response.data}`);
+            const errorMatch = response.data.match(/<message>(.*?)<\/message>/);
+            logger.warn(`Unexpected XML response when sending invoice ${invoiceId} by email`, {
+              error: errorMatch ? errorMatch[1] : 'Unknown error',
+              responseLength: response.data.length
+            });
             return {
               success: false,
               error: `Unexpected response format: ${response.data}`
@@ -1221,8 +1261,13 @@ class WfirmaClient {
           return { success: false, error: message };
         }
 
-        logger.warn('Unexpected XML response when deleting invoice', { invoiceId, response: data });
-        return { success: false, error: 'Unexpected response format from wFirma API', details: data };
+        const errorMatch = data.match(/<message>(.*?)<\/message>/);
+        logger.warn('Unexpected XML response when deleting invoice', { 
+          invoiceId, 
+          error: errorMatch ? errorMatch[1] : 'Unknown error',
+          responseLength: data.length
+        });
+        return { success: false, error: 'Unexpected response format from wFirma API' };
       }
 
       if (typeof data === 'object') {
@@ -1231,8 +1276,7 @@ class WfirmaClient {
         logger.debug('Parsed wFirma delete response', {
           invoiceId,
           statusCode,
-          statusMessage,
-          raw: data
+          statusMessage
         });
         if (statusCode === 'OK' || data.success === true) {
           return { success: true };
@@ -1267,10 +1311,15 @@ class WfirmaClient {
         return { success: false, error: 'Invoice not found', notFound: true };
       }
 
-      logger.error('Error deleting invoice in wFirma:', {
+      // Не логируем весь response.data, только важное
+      const errorData = error.response?.data;
+      const errorPreview = typeof errorData === 'string' 
+        ? errorData.substring(0, 200) 
+        : (errorData ? JSON.stringify(errorData).substring(0, 200) : null);
+      logger.error('Error deleting invoice in wFirma', {
         invoiceId,
         status: error.response?.status,
-        data: error.response?.data,
+        errorPreview,
         message: error.message
       });
 

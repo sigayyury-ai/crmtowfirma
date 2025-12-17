@@ -3445,10 +3445,10 @@ class InvoiceProcessingService {
       
       const bankAccount = bankAccountResult.bankAccount;
       
-      // Логируем данные продукта для XML
-      logger.info('Product data for XML generation:', {
+      // Данные продукта только в debug
+      logger.debug('Product data for XML generation', {
         productId: product.id,
-        productName: product.name,
+        productName: product.name?.substring(0, 100), // Ограничиваем длину
         productUnit: product.unit,
         productType: product.type,
         hasId: !!product.id
@@ -3507,8 +3507,13 @@ class InvoiceProcessingService {
         }
       };
 
-      logger.info('📋 COMPLETE INVOICE DATA FOR XML GENERATION:');
-      logger.info('JSON DATA:', JSON.stringify(invoiceData, null, 2));
+      // Не логируем весь JSON - слишком много данных
+      logger.debug('Invoice data prepared for XML generation', {
+        dealId: invoiceData.dealId,
+        currency: invoiceData.currency,
+        totalAmount: invoiceData.totalAmount,
+        productsCount: invoiceData.products?.length || 0
+      });
 
       // Создаем XML payload для wFirma API (Proforma) - РАБОТАЮЩИЙ ВАРИАНТ!
       const xmlPayload = `<?xml version="1.0" encoding="UTF-8"?>
@@ -3544,17 +3549,14 @@ class InvoiceProcessingService {
     </invoices>
 </api>`;
 
-      logger.info('🔍 DETAILED XML ENTRY ANALYSIS:');
-      logger.info('Product Name in XML:', `"${product.name}"`);
-      logger.info('Product Name Length:', product.name?.length || 0);
-      logger.info('Product Name Type:', typeof product.name);
-      logger.info('Product Price in XML:', parseFloat(amount));
-      logger.info('Product Unit in XML:', product.unit || 'szt.');
-      logger.info('Product ID in XML:', product.id || 'НЕТ ID');
-      
-      // Логируем весь XML
-      logger.info('📄 FULL XML PAYLOAD:');
-      logger.debug('XML payload prepared for wFirma');
+      // Детальный анализ только в debug, не логируем весь XML
+      logger.debug('XML entry analysis', {
+        productName: product.name?.substring(0, 50), // Только первые 50 символов
+        productNameLength: product.name?.length || 0,
+        productPrice: parseFloat(amount),
+        productUnit: product.unit || 'szt.',
+        productId: product.id || null
+      });
 
       // Используем правильный XML endpoint для Proforma
       const endpoint = `/invoices/add?outputFormat=xml&inputFormat=xml&company_id=${this.wfirmaClient.companyId}`;
@@ -3576,7 +3578,12 @@ class InvoiceProcessingService {
       
       // Проверяем ответ
       if (response.data) {
-        logger.info('Proforma invoice response received:', response.data);
+        // Не логируем весь ответ, только метаданные
+        logger.debug('Proforma invoice response received', {
+          responseType: typeof response.data === 'object' ? 'JSON' : 'XML',
+          hasId: typeof response.data === 'object' ? !!response.data.id : response.data.includes('<id>'),
+          isSuccess: typeof response.data === 'object' ? response.data.status?.code === 'OK' : response.data.includes('<code>OK</code>')
+        });
         
         // Если это JSON ответ (ожидаемый формат)
         if (typeof response.data === 'object') {
@@ -3625,11 +3632,15 @@ class InvoiceProcessingService {
         // Если это XML ответ (для совместимости)
         else if (typeof response.data === 'string' && response.data.includes('<?xml')) {
           if (response.data.includes('<code>OK</code>') || response.data.includes('<id>')) {
-            logger.info('Proforma invoice created successfully (XML response):', response.data);
-            
-            // Извлекаем ID фактуры из XML ответа
+            // Извлекаем ID из XML, но не логируем весь ответ
             const idMatch = response.data.match(/<id>(\d+)<\/id>/);
             const invoiceId = idMatch ? idMatch[1] : null;
+            logger.info('Proforma invoice created successfully', {
+              invoiceId,
+              responseType: 'XML'
+            });
+            
+            // ID уже извлечен выше
             
             // Извлекаем номер проформы (number) из XML ответа
             // Пробуем разные варианты: <number>, <fullnumber>, <invoice_number>
