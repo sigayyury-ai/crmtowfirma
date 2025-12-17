@@ -1128,7 +1128,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const restActive = restStatus.active;
           const singleActive = singleStatus.active;
 
-          logger.info(`🔍 Проверка статуса сессий в Stripe API | Deal: ${dealId}`, {
+          logger.debug(`🔍 Проверка статуса сессий в Stripe API | Deal: ${dealId}`, {
             dealId,
             paymentSchedule,
             deposit: {

@@ -3592,10 +3592,10 @@ class InvoiceProcessingService {
             const invoiceId = response.data.invoice?.id || response.data.id;
             const invoiceNumber = response.data.invoice?.number || response.data.number || null;
             
-            logger.info('Proforma invoice created successfully (JSON response):', {
+            logger.info('Proforma invoice created successfully', {
               invoiceId: invoiceId,
               invoiceNumber: invoiceNumber,
-              response: response.data
+              responseType: 'JSON'
             });
             
             // Подготавливаем информацию о графике платежей

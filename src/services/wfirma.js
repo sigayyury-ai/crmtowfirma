@@ -734,10 +734,16 @@ class WfirmaClient {
               error: `wFirma API error: ${errorMessage}`
             };
           } else {
-            logger.error('Unexpected XML response:', response.data);
+            // Извлекаем только сообщение об ошибке, не весь XML
+            const errorMatch = response.data.match(/<message>(.*?)<\/message>/);
+            const errorMessage = errorMatch ? errorMatch[1] : 'Unknown XML error';
+            logger.error('Unexpected XML response', {
+              error: errorMessage,
+              responseLength: response.data.length
+            });
             return {
               success: false,
-              error: `wFirma API error: ${response.data}`
+              error: `wFirma API error: ${errorMessage}`
             };
           }
         } else {
