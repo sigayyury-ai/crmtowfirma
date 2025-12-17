@@ -33,6 +33,7 @@
     "express-session": "^1.18.2",
     "googleapis": "^167.0.0",
     "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.15.3",
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.3",
     "papaparse": "^5.5.3",
@@ -40,6 +41,7 @@
     "passport-google-oauth20": "^2.0.0",
     "pg": "^8.13.0",
     "stripe": "^14.25.0",
+    "tunnel-ssh": "^5.2.0",
     "winston": "^3.11.0",
     "yargs": "^18.0.0"
   },

@@ -64,7 +64,7 @@ class WfirmaClient {
     // Добавляем interceptor для логирования
     this.client.interceptors.request.use(
       (config) => {
-        logger.info('wFirma API Request:', {
+        logger.debug('wFirma API Request:', {
           method: config.method,
           url: config.url,
           data: config.data
@@ -79,7 +79,7 @@ class WfirmaClient {
 
     this.client.interceptors.response.use(
       (response) => {
-        logger.info('wFirma API Response:', {
+        logger.debug('wFirma API Response:', {
           status: response.status,
           data: response.data
         });

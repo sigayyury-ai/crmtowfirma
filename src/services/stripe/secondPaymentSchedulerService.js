@@ -98,18 +98,78 @@ class SecondPaymentSchedulerService {
 
   /**
    * Проверить, существует ли вторая сессия
+   * Проверяет как в базе данных, так и в Stripe напрямую (на случай, если сессии нет в базе)
    * @param {string} dealId - ID сделки
    * @returns {Promise<boolean>}
    */
   async hasSecondPaymentSession(dealId) {
     try {
+      // Сначала проверяем в базе данных
       const payments = await this.repository.listPayments({ dealId: String(dealId) });
       
       const restPayment = payments.find(p => 
         (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final')
       );
 
-      return !!restPayment;
+      if (restPayment) {
+        return true;
+      }
+
+      // Если в базе нет, проверяем в Stripe напрямую
+      // Ищем активные или недавно просроченные сессии (за последние 7 дней)
+      const now = Math.floor(Date.now() / 1000);
+      const sevenDaysAgo = now - (7 * 24 * 60 * 60);
+
+      let hasMore = true;
+      let startingAfter = null;
+      const limit = 100;
+
+      while (hasMore) {
+        const params = {
+          limit,
+          created: { gte: sevenDaysAgo }
+        };
+
+        if (startingAfter) {
+          params.starting_after = startingAfter;
+        }
+
+        const sessions = await this.stripeProcessor.stripe.checkout.sessions.list(params);
+
+        for (const session of sessions.data) {
+          if (session.metadata?.deal_id === String(dealId)) {
+            const paymentType = session.metadata?.payment_type || '';
+            // Проверяем, что это второй платеж (rest/second/final)
+            if (paymentType === 'rest' || paymentType === 'second' || paymentType === 'final') {
+              // Если сессия активна (open) или оплачена - считаем, что сессия существует
+              // Просроченные неоплаченные сессии не считаем, чтобы можно было создать новую
+              if (session.status === 'open' || session.payment_status === 'paid') {
+                this.logger.info('Found active or paid second payment session in Stripe', {
+                  dealId,
+                  sessionId: session.id,
+                  status: session.status,
+                  paymentStatus: session.payment_status
+                });
+                return true;
+              }
+            }
+          }
+        }
+
+        hasMore = sessions.has_more;
+        if (sessions.data.length > 0) {
+          startingAfter = sessions.data[sessions.data.length - 1].id;
+        } else {
+          hasMore = false;
+        }
+
+        // Ограничиваем поиск 500 сессиями
+        if (sessions.data.length < limit) {
+          hasMore = false;
+        }
+      }
+
+      return false;
     } catch (error) {
       this.logger.error('Failed to check second payment session', {
         dealId,

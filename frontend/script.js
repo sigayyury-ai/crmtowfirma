@@ -611,16 +611,13 @@ function displayCronTasks(tasks, nextRun) {
             <div class="cron-task-item ${itemClass}" data-task-id="${task.taskId || task.dealId || 'unknown'}-${task.type}-${task.secondPaymentDate || task.scheduledDate || 'unknown'}">
                 <div class="cron-task-header">
                     <div>
-                        ${task.type === 'google_meet_reminder' 
-                          ? `<span class="cron-task-title">${task.eventSummary || 'Google Meet'}</span>`
-                          : (task.dealUrl ? `<a href="${task.dealUrl}" target="_blank" class="cron-task-title">Deal #${task.dealId}</a>` : `<span class="cron-task-title">Deal #${task.dealId || 'N/A'}</span>`)
-                        }
+                        ${task.dealUrl ? `<a href="${task.dealUrl}" target="_blank" class="cron-task-title">Deal #${task.dealId || 'N/A'}</a>` : `<span class="cron-task-title">Deal #${task.dealId || 'N/A'}</span>`}
                         <span class="cron-task-badge ${badgeClass}">${badgeText}</span>
                         ${task.type === 'manual_rest' ? '<span class="cron-task-badge manual" style="background: #805ad5; margin-left: 8px;">Ручная</span>' : ''}
                         ${task.paymentMethod === 'proforma' ? '<span class="cron-task-badge" style="background: #38a169; margin-left: 8px;">Проформа</span>' : ''}
                         ${task.type === 'google_meet_reminder' ? '<span class="cron-task-badge" style="background: #3182ce; margin-left: 8px;">Google Meet</span>' : ''}
                         ${task.type === 'google_meet_reminder' 
-                          ? `<button class="cron-task-delete-btn" onclick="deleteGoogleMeetReminder('${task.taskId}', '${task.eventSummary || 'Google Meet'}')" title="Удалить напоминание">×</button>`
+                          ? `<button class="cron-task-delete-btn" onclick="deleteGoogleMeetReminder('${task.taskId}', '${task.taskDescription || 'Google Meet'}')" title="Удалить напоминание">×</button>`
                           : (task.dealId ? `<button class="cron-task-delete-btn" onclick="hideCronTask(${task.dealId}, '${task.type}', '${task.secondPaymentDate}')" title="Удалить из очереди">×</button>` : '')
                         }
                     </div>
@@ -633,22 +630,7 @@ function displayCronTasks(tasks, nextRun) {
                     <div class="cron-task-detail">
                         <strong>Клиент:</strong> ${task.customerEmail}
                     </div>
-                    ${task.type === 'google_meet_reminder' ? `
-                    <div class="cron-task-detail">
-                        <strong>Событие:</strong> ${task.eventSummary || 'Google Meet'}
-                    </div>
-                    <div class="cron-task-detail">
-                        <strong>Время напоминания:</strong> ${task.scheduledTimeFormatted || formatDateTime(task.scheduledTime)}
-                    </div>
-                    <div class="cron-task-detail">
-                        <strong>Время встречи:</strong> ${task.meetingTimeFormatted || formatDateTime(task.meetingTime)}
-                    </div>
-                    <div class="cron-task-detail">
-                        <strong>Тип напоминания:</strong> ${task.reminderType === '30min' ? 'За 30 минут' : 'За 5 минут'}
-                    </div>
-                    ${task.meetLink ? `<div class="cron-task-detail"><strong>Ссылка:</strong> <a href="${task.meetLink}" target="_blank">${task.meetLink}</a></div>` : ''}
-                    ` : `
-                    ${task.secondPaymentAmount !== undefined ? `
+                    ${task.secondPaymentAmount !== undefined && task.secondPaymentAmount > 0 ? `
                     <div class="cron-task-detail">
                         <strong>Сумма:</strong> ${task.secondPaymentAmount.toFixed(2)} ${task.currency || 'PLN'}
                     </div>
@@ -659,7 +641,6 @@ function displayCronTasks(tasks, nextRun) {
                         <strong>Начало лагеря:</strong> ${formatDateOnly(task.expectedCloseDate)}
                     </div>` : ''}
                     ${task.note ? `<div class="cron-task-detail" style="color: #718096; font-style: italic;">${task.note}</div>` : ''}
-                    `}
                 </div>
             </div>
         `;

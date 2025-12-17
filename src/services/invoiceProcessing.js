@@ -295,7 +295,7 @@ class InvoiceProcessingService {
       }
       
       // 1. Получаем все сделки с измененным полем Invoice type
-      logger.info('📋 Step 2: Fetching pending deals from Pipedrive...');
+      logger.debug('📋 Step 2: Fetching pending deals from Pipedrive...');
       const pendingDeals = await this.getPendingInvoiceDeals();
       
       if (!pendingDeals.success) {
@@ -305,15 +305,21 @@ class InvoiceProcessingService {
         return pendingDeals;
       }
       
-      logger.info(`📊 Found ${pendingDeals.deals.length} deals with pending invoices`, {
-        dealIds: pendingDeals.deals.map(d => d.id).slice(0, 10) // Первые 10 ID для примера
-      });
+      // Логируем только если есть сделки для обработки
+      if (pendingDeals.deals.length > 0) {
+        logger.info(`📊 Found ${pendingDeals.deals.length} deals with pending invoices`);
+      }
       
       this.stats.dealsProcessed = pendingDeals.deals.length;
       const results = [];
       
       // 2. Обрабатываем каждую сделку
-      logger.info(`📋 Step 3: Processing ${pendingDeals.deals.length} deals...`);
+      // Логируем только итоги обработки, детали в debug
+    if (pendingDeals.deals.length > 0) {
+      logger.info(`📋 Processing ${pendingDeals.deals.length} pending invoice deals...`);
+    } else {
+      logger.debug('📋 No pending deals to process');
+    }
       for (let i = 0; i < pendingDeals.deals.length; i++) {
         const deal = pendingDeals.deals[i];
         const dealStartTime = Date.now();
@@ -534,7 +540,7 @@ class InvoiceProcessingService {
     }
 
     const originalInvoiceFieldValue = this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null;
-    logger.info(`🔍 Поиск проформ для удаления | Deal ID: ${dealId} | Invoice Number Field Key: ${this.INVOICE_NUMBER_FIELD_KEY} | Значение поля: ${originalInvoiceFieldValue || 'не указано'}`, {
+    logger.debug(`🔍 Поиск проформ для удаления | Deal ID: ${dealId} | Invoice Number Field Key: ${this.INVOICE_NUMBER_FIELD_KEY} | Значение поля: ${originalInvoiceFieldValue || 'не указано'}`, {
       dealId,
       invoiceNumberFieldKey: this.INVOICE_NUMBER_FIELD_KEY,
       invoiceNumberFieldValue: originalInvoiceFieldValue,
@@ -545,7 +551,7 @@ class InvoiceProcessingService {
       this.INVOICE_NUMBER_FIELD_KEY ? deal?.[this.INVOICE_NUMBER_FIELD_KEY] : null
     );
     
-    logger.info(`📋 Распарсенные номера проформ: ${Array.from(expectedNumbers).join(', ') || 'нет'}`, {
+    logger.debug(`📋 Распарсенные номера проформ: ${Array.from(expectedNumbers).join(', ') || 'нет'}`, {
       dealId,
       expectedNumbers: Array.from(expectedNumbers),
       expectedNumbersCount: expectedNumbers.size
@@ -554,7 +560,7 @@ class InvoiceProcessingService {
     const proformaMap = new Map();
     try {
       const linkedProformas = await this.proformaRepository.findByDealId(dealId);
-      logger.info(`🔍 Поиск по deal_id: найдено ${linkedProformas?.length || 0} проформ`, {
+      logger.debug(`🔍 Поиск по deal_id: найдено ${linkedProformas?.length || 0} проформ`, {
         dealId,
         foundCount: linkedProformas?.length || 0,
         proformaIds: (linkedProformas || []).map(p => p.id)
@@ -612,7 +618,7 @@ class InvoiceProcessingService {
 
     // Если проформы не найдены по deal_id, пробуем найти по номеру проформы из INVOICE_NUMBER_FIELD_KEY
     if (proformaMap.size === 0 && expectedNumbers.size > 0 && this.proformaRepository?.isEnabled()) {
-      logger.info(`🔍 Проформы не найдены по deal_id, ищем по номерам | Deal ID: ${dealId} | Номера для поиска: ${Array.from(expectedNumbers).join(', ')}`, {
+      logger.debug(`🔍 Проформы не найдены по deal_id, ищем по номерам | Deal ID: ${dealId} | Номера для поиска: ${Array.from(expectedNumbers).join(', ')}`, {
         dealId,
         expectedNumbers: Array.from(expectedNumbers),
         invoiceNumberFieldValue: originalInvoiceFieldValue
@@ -620,13 +626,13 @@ class InvoiceProcessingService {
       
       try {
         const invoiceNumberCandidates = Array.from(expectedNumbers);
-        logger.info(`📋 Запрос к базе данных по номерам: ${invoiceNumberCandidates.join(', ')}`, {
+        logger.debug(`📋 Запрос к базе данных по номерам: ${invoiceNumberCandidates.join(', ')}`, {
           dealId,
           candidates: invoiceNumberCandidates
         });
         
         const matches = await this.proformaRepository.findByFullnumbers(invoiceNumberCandidates);
-        logger.info(`📋 Результат поиска по номерам: найдено ${matches?.length || 0} проформ`, {
+        logger.debug(`📋 Результат поиска по номерам: найдено ${matches?.length || 0} проформ`, {
           dealId,
           foundCount: matches?.length || 0,
           foundIds: (matches || []).map(m => m.id),

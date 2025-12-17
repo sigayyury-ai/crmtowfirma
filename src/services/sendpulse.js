@@ -30,7 +30,7 @@ class SendPulseClient {
     // Добавляем interceptor для логирования
     this.client.interceptors.request.use(
       (config) => {
-        logger.info('SendPulse API Request:', {
+        logger.debug('SendPulse API Request:', {
           method: config.method,
           url: config.url
         });
@@ -44,7 +44,7 @@ class SendPulseClient {
 
     this.client.interceptors.response.use(
       (response) => {
-        logger.info('SendPulse API Response:', {
+        logger.debug('SendPulse API Response:', {
           status: response.status,
           url: response.config.url
         });
@@ -109,6 +109,16 @@ class SendPulseClient {
   async sendTelegramMessage(sendpulseId, message, file = null, fileName = null) {
     let payload = null; // Объявляем payload вне try блока для использования в catch
     try {
+      // Валидация входных параметров
+      if (!sendpulseId) {
+        throw new Error('sendpulseId is required');
+      }
+      
+      // Проверяем, что message не пустой (если нет файла)
+      if (!file && (!message || typeof message !== 'string' || message.trim().length === 0)) {
+        throw new Error('Message text cannot be empty when no file is attached');
+      }
+      
       logger.info('Preparing to send Telegram message:', {
         sendpulseId,
         messageLength: message?.length || 0,
@@ -137,11 +147,15 @@ class SendPulseClient {
       // { "contact_id": "...", "message": { "type": "text", "text": "...", "parse_mode": "Markdown" } }
       // contact_id должен быть строкой согласно API (ошибка: "The contact id must be a string")
       // Используем Markdown для форматирования (жирный текст, ссылки)
+      
+      // Нормализуем message: если есть файл, но нет текста, используем дефолтное сообщение
+      const messageText = (message && message.trim()) || (file ? '📎 Файл' : '');
+      
       payload = {
         contact_id: String(sendpulseId),
         message: {
           type: 'text',
-          text: message,
+          text: messageText,
           parse_mode: 'Markdown' // Включаем Markdown форматирование для Telegram
         }
       };

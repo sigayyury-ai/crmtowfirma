@@ -24,6 +24,12 @@ let productSlug = null;
 let productDetail = null;
 let isSaving = false;
 
+const productPayerPaymentsModalState = {
+  context: null,
+  payments: [],
+  totalPayments: 0
+};
+
 document.addEventListener('DOMContentLoaded', () => {
   cacheDom();
   parseProductSlug();
@@ -88,9 +94,13 @@ function bindEvents() {
     }
     const payerName = trigger.dataset.payerName || '';
     const proforma = trigger.dataset.proformaFullnumber || '';
+    const dealId = trigger.dataset.dealId || '';
+    const dealUrl = trigger.dataset.dealUrl || '';
     openProductPayerPaymentsModal({
       payerName: payerName || null,
-      proformaFullnumber: proforma || null
+      proformaFullnumber: proforma || null,
+      dealId: dealId || null,
+      dealUrl: dealUrl || null
     });
   });
   elements.proformasContainer?.addEventListener('keydown', (event) => {
@@ -102,11 +112,17 @@ function bindEvents() {
     event.preventDefault();
     const payerName = trigger.dataset.payerName || '';
     const proforma = trigger.dataset.proformaFullnumber || '';
+    const dealId = trigger.dataset.dealId || '';
+    const dealUrl = trigger.dataset.dealUrl || '';
     openProductPayerPaymentsModal({
       payerName: payerName || null,
-      proformaFullnumber: proforma || null
+      proformaFullnumber: proforma || null,
+      dealId: dealId || null,
+      dealUrl: dealUrl || null
     });
   });
+
+  elements.payerModalBody?.addEventListener('click', handleProductPayerPaymentsBodyClick);
 
   elements.payerModalClose?.addEventListener('click', closeProductPayerPaymentsModal);
   elements.payerModal?.addEventListener('click', (event) => {
@@ -118,6 +134,33 @@ function bindEvents() {
     if (event.key === 'Escape' && isProductPayerModalOpen()) {
       closeProductPayerPaymentsModal();
     }
+  });
+
+  elements.stripePaymentsContainer?.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-payer-action="show-stripe-payments"]');
+    if (!trigger || !elements.stripePaymentsContainer.contains(trigger)) {
+      return;
+    }
+    const payerName = trigger.dataset.payerName || '';
+    const dealId = trigger.dataset.dealId || '';
+    openProductStripePaymentsModal({
+      payerName: payerName || null,
+      dealId: dealId || null
+    });
+  });
+  elements.stripePaymentsContainer?.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const trigger = event.target.closest('[data-payer-action="show-stripe-payments"]');
+    if (!trigger || !elements.stripePaymentsContainer.contains(trigger)) {
+      return;
+    }
+    event.preventDefault();
+    const payerName = trigger.dataset.payerName || '';
+    const dealId = trigger.dataset.dealId || '';
+    openProductStripePaymentsModal({
+      payerName: payerName || null,
+      dealId: dealId || null
+    });
   });
 }
 
@@ -471,6 +514,8 @@ function renderProformasTable(items, { isStripeOnly = false } = {}) {
                 data-payer-action="show-payments"
                 data-payer-name="${escapeHtml(buyerName)}"
                 data-proforma-fullnumber="${escapeHtml(item.fullnumber)}"
+                ${item.dealId ? `data-deal-id="${escapeHtml(String(item.dealId))}"` : ''}
+                ${item.dealUrl ? `data-deal-url="${escapeHtml(item.dealUrl)}"` : ''}
                 role="button"
                 tabindex="0"
               >
@@ -780,46 +825,130 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
     return;
   }
 
-  const rows = items
-    .map((payment) => {
-      const sessionCell = payment.sessionId
-        ? buildStripePaymentLink(payment.sessionId, payment.paymentMode)
-        : '—';
-      const paymentType = payment.paymentType ? escapeHtml(payment.paymentType) : '—';
-      const amountPln = formatCurrency(payment.amountPln || 0, 'PLN');
-      const amountOriginal = formatCurrency(payment.amount || 0, payment.currency || 'PLN');
-      const taxPln = formatCurrency(payment.taxAmountPln || 0, 'PLN');
-      const customerInfo = renderStripeCustomer(payment);
-      const flags = renderStripeFlags(payment);
-      const createdAt = formatDateTime(payment.createdAt);
+  // Группируем Stripe платежи по сделке (stripe_deal_id)
+  // Если у плательщика несколько платежей по одной сделке - объединяем в одну строку
+  // Если сделки разные - показываем отдельными строками
+  const dealGroups = new Map();
+
+  items.forEach((payment) => {
+    const payerName = payment.customerName || payment.companyName || payment.customerEmail || 'Stripe клиент';
+    const dealId = payment.stripe_deal_id || null;
+    const dealUrl = payment.stripe_deal_url || null;
+    
+    // Ключ группировки: сделка (если есть) или плательщик (если сделки нет)
+    // Если сделки разные - будут разные группы
+    const groupKey = dealId 
+      ? `deal:${dealId}` 
+      : `payer:${payerName.toLowerCase().trim()}`;
+
+    if (!dealGroups.has(groupKey)) {
+      dealGroups.set(groupKey, {
+        payerName,
+        payments: [],
+        currencyTotals: {},
+        totalPln: 0,
+        firstDate: null,
+        lastDate: null,
+        dealId,
+        dealUrl
+      });
+    }
+
+    const group = dealGroups.get(groupKey);
+    group.payments.push(payment);
+
+    const amount = Number(payment.amount || 0);
+    const currency = (payment.currency || 'PLN').toUpperCase();
+    group.currencyTotals[currency] = (group.currencyTotals[currency] || 0) + amount;
+
+    const amountPln = Number(payment.amountPln || 0);
+    group.totalPln += amountPln;
+
+    const paymentDate = payment.createdAt ? new Date(payment.createdAt) : null;
+    if (paymentDate && !isNaN(paymentDate.getTime())) {
+      if (!group.firstDate || paymentDate < group.firstDate) {
+        group.firstDate = paymentDate;
+      }
+      if (!group.lastDate || paymentDate > group.lastDate) {
+        group.lastDate = paymentDate;
+      }
+    }
+
+    // Обновляем dealId и dealUrl если появились (для группы без сделки)
+    if (dealId && !group.dealId) {
+      group.dealId = dealId;
+    }
+    if (dealUrl && !group.dealUrl) {
+      group.dealUrl = dealUrl;
+    }
+  });
+
+  const rows = Array.from(dealGroups.values())
+    .map((group) => {
+      const entryCurrencyTotals = Object.entries(group.currencyTotals)
+        .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
+        .map(([cur, amount]) => formatCurrency(amount, cur))
+        .join(' + ') || '—';
+      const entryPlnTotal = formatCurrency(group.totalPln, 'PLN');
+
+      const firstDate = group.firstDate ? formatDate(group.firstDate.toISOString()) : null;
+      const lastDate = group.lastDate ? formatDate(group.lastDate.toISOString()) : null;
+      let dateLabel = firstDate || '—';
+      if (firstDate && lastDate && firstDate !== lastDate) {
+        dateLabel = `${firstDate} → ${lastDate}`;
+      }
+
+      const dealLink = group.dealUrl && group.dealId
+        ? `<div class="deal-link-wrapper"><a class="deal-link" href="${escapeHtml(group.dealUrl)}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(group.dealId))}</a></div>`
+        : '';
+
+      const dealCell = dealLink || '—';
+
+      const hasPayments = group.payments.length > 0;
+      const payerLabel = escapeHtml(group.payerName);
+
+      const payerCellContent = hasPayments && payerLabel !== '—'
+        ? `
+            <span
+              class="payer-link"
+              data-payer-action="show-stripe-payments"
+              data-payer-name="${escapeHtml(group.payerName)}"
+              ${group.dealId ? `data-deal-id="${escapeHtml(String(group.dealId))}"` : ''}
+              role="button"
+              tabindex="0"
+            >
+              ${payerLabel}
+            </span>
+          `
+        : payerLabel;
 
       return `
         <tr>
-          <td>${sessionCell}</td>
-          <td>${paymentType}</td>
-          <td>${customerInfo}</td>
-          <td class="numeric">${amountPln}</td>
-          <td>${amountOriginal}</td>
-          <td class="numeric">${taxPln}</td>
-          <td>${flags}</td>
-          <td>${createdAt}</td>
+          <td>
+            <div>${dateLabel}</div>
+          </td>
+          <td>${payerCellContent}</td>
+          <td class="amount">${entryCurrencyTotals}</td>
+          <td class="amount">${entryPlnTotal}</td>
+          <td>${dealCell}</td>
+          <td>
+            <span class="status auto">Stripe</span>
+          </td>
         </tr>
       `;
     })
     .join('');
 
   elements.stripePaymentsContainer.innerHTML = `
-    <table class="detail-table">
+    <table class="payments-table group-table">
       <thead>
         <tr>
-          <th>Платёж</th>
-          <th>Тип</th>
-          <th>Клиент</th>
-          <th>Сумма (PLN)</th>
-          <th>Сумма</th>
-          <th>VAT (PLN)</th>
-          <th>Статусы</th>
           <th>Дата</th>
+          <th>Плательщик</th>
+          <th>Сумма</th>
+          <th>Сумма (PLN)</th>
+          <th>Deal</th>
+          <th>Статус</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -827,7 +956,7 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
   `;
 }
 
-function showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber }) {
+function showProductPayerPaymentsModalLoading({ payerName, proforma }) {
   if (elements.payerModalTitle) {
     elements.payerModalTitle.textContent = payerName
       ? `Платежи: ${payerName}`
@@ -838,8 +967,8 @@ function showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber })
   if (payerName) {
     metaParts.push(`Контрагент: ${escapeHtml(payerName)}`);
   }
-  if (proformaFullnumber) {
-    metaParts.push(`Проформа: ${escapeHtml(proformaFullnumber)}`);
+  if (proforma?.fullnumber) {
+    metaParts.push(`Проформа: ${escapeHtml(proforma.fullnumber)}`);
   }
 
   if (elements.payerModalBody) {
@@ -855,10 +984,11 @@ function showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber })
   document.body.classList.add('modal-open');
 }
 
-async function openProductPayerPaymentsModal({ payerName, proformaFullnumber }) {
+async function openProductPayerPaymentsModal({ payerName, proformaFullnumber, dealId, dealUrl }) {
   if (!elements.payerModalBody) return;
 
-  showProductPayerPaymentsModalLoading({ payerName, proformaFullnumber });
+  const proforma = proformaFullnumber ? { fullnumber: proformaFullnumber, pipedrive_deal_id: dealId, pipedrive_deal_url: dealUrl } : null;
+  showProductPayerPaymentsModalLoading({ payerName, proforma });
 
   const params = new URLSearchParams();
   if (payerName) {
@@ -912,9 +1042,9 @@ async function openProductPayerPaymentsModal({ payerName, proformaFullnumber }) 
 
   renderProductPayerPaymentsModal({
     payerName,
-    proformaFullnumber,
+    proforma,
     payments,
-    totalCount,
+    totalPayments: totalCount,
     filterNote: fallbackUsed
   });
 }
@@ -927,35 +1057,82 @@ function showProductPayerPaymentsError(message) {
 
 function renderProductPayerPaymentsModal({
   payerName,
-  proformaFullnumber,
+  proforma,
   payments = [],
-  totalCount = 0,
+  totalPayments = 0,
   filterNote = false
 }) {
   if (!elements.payerModalBody) return;
 
-  const rows = payments.length
-    ? payments.map((payment) => `
+  const visiblePayments = Array.isArray(payments) ? payments : [];
+  const totalPln = visiblePayments.reduce(
+    (sum, payment) => sum + (Number(payment.amount_pln) || 0),
+    0
+  );
+
+  productPayerPaymentsModalState.context = { payerName, proforma };
+  productPayerPaymentsModalState.payments = visiblePayments.slice();
+  productPayerPaymentsModalState.totalPayments = totalPayments;
+
+  if (elements.payerModalTitle) {
+    elements.payerModalTitle.textContent = payerName
+      ? `Платежи: ${payerName}`
+      : 'Все платежи';
+  }
+
+  const metaParts = [];
+  if (payerName) {
+    metaParts.push(`Контрагент: ${escapeHtml(payerName)}`);
+  }
+  if (proforma?.fullnumber) {
+    metaParts.push(`Проформа: ${escapeHtml(proforma.fullnumber)}`);
+  }
+  if (proforma?.pipedrive_deal_id && proforma?.pipedrive_deal_url) {
+    const dealUrl = escapeHtml(proforma.pipedrive_deal_url);
+    metaParts.push(
+      `<a href="${dealUrl}" target="_blank" rel="noopener noreferrer">Deal #${escapeHtml(String(proforma.pipedrive_deal_id))}</a>`
+    );
+  }
+  if (filterNote) {
+    metaParts.push('Показаны платежи по проформе');
+  }
+
+  const paymentsCountLabel = totalPayments && payerName && visiblePayments.length !== totalPayments
+    ? `${visiblePayments.length} из ${totalPayments}`
+    : `${visiblePayments.length}`;
+
+  const rows = visiblePayments.length
+    ? visiblePayments
+      .map((payment) => `
         <tr>
-          <td>${escapeHtml(String(payment.id || '—'))}</td>
+          <td>${payment?.id != null ? escapeHtml(String(payment.id)) : '—'}</td>
           <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
-          <td class="numeric">${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
+          <td>${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
+          <td>${Number.isFinite(Number(payment.amount_pln)) ? formatCurrency(Number(payment.amount_pln), 'PLN') : '—'}</td>
           <td>${escapeHtml(payment.description || '—')}</td>
-          <td>${escapeHtml(payment.proforma_fullnumber || '—')}</td>
-          <td>${escapeHtml(payment.manual_status || payment.match_status || '—')}</td>
+          <td>${escapeHtml(payment.status?.label || payment.manual_status || payment.match_status || '—')}</td>
+          <td class="actions-col">
+            <button
+              type="button"
+              class="payer-payment-action"
+              data-payer-payment-action="delete"
+              data-payment-id="${escapeHtml(String(payment.id || ''))}"
+              title="Удалить платёж и отвязать от проформы"
+            >
+              🗑
+            </button>
+          </td>
         </tr>
-      `).join('')
-    : '<tr><td colspan="5" class="payer-payments-empty">Платежи не найдены</td></tr>';
+      `)
+      .join('')
+    : '<tr><td colspan="7" class="payer-payments-empty">Нет платежей для выбранного плательщика</td></tr>';
 
   elements.payerModalBody.innerHTML = `
     <div class="payer-payments-summary">
-      <div class="summary-meta">
-        ${payerName ? `Контрагент: ${escapeHtml(payerName)}` : ''}
-        ${proformaFullnumber ? ` • Проформа: ${escapeHtml(proformaFullnumber)}` : ''}
-        ${filterNote ? ' • Показаны платежи по проформе' : ''}
-      </div>
+      ${metaParts.length ? `<div class="summary-meta">${metaParts.join(' • ')}</div>` : ''}
       <div class="summary-stats">
-        <span>Платежей: ${(totalCount || payments.length || 0).toLocaleString('ru-RU')}</span>
+        <span>Платежей: ${paymentsCountLabel}</span>
+        <span>Сумма (PLN): ${formatCurrency(totalPln, 'PLN')}</span>
       </div>
     </div>
     <table class="payer-payments-table">
@@ -964,14 +1141,101 @@ function renderProductPayerPaymentsModal({
           <th>ID</th>
           <th>Дата</th>
           <th>Сумма</th>
+          <th>Сумма (PLN)</th>
           <th>Описание</th>
-          <th>Проформа</th>
           <th>Статус</th>
+          <th class="actions-col">Действия</th>
         </tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody>
+        ${rows}
+      </tbody>
     </table>
   `;
+}
+
+function handleProductPayerPaymentsBodyClick(event) {
+  const actionButton = event.target.closest('[data-payer-payment-action]');
+  if (!actionButton || !elements.payerModalBody?.contains(actionButton)) {
+    return;
+  }
+
+  event.preventDefault();
+
+  const { payerPaymentAction: action, paymentId } = actionButton.dataset;
+  if (!action || !paymentId) {
+    return;
+  }
+
+  if (action === 'delete') {
+    deleteProductPayerPayment(paymentId, actionButton);
+  }
+}
+
+async function deleteProductPayerPayment(paymentId, triggerButton) {
+  const idLabel = String(paymentId);
+  if (!idLabel) return;
+
+  const { payerName, proforma } = productPayerPaymentsModalState.context || {};
+  const confirmationMessage = [
+    `Удалить платёж ${idLabel}?`,
+    payerName ? `Плательщик: ${payerName}` : null,
+    proforma?.fullnumber ? `Проформа: ${proforma.fullnumber}` : null,
+    '',
+    'Привязка к проформе будет удалена.'
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  if (!window.confirm(confirmationMessage)) {
+    return;
+  }
+
+  if (triggerButton) {
+    triggerButton.disabled = true;
+  }
+
+  try {
+    showAlert('info', `Удаляю платёж ${idLabel}...`);
+    const result = await apiCall(`/vat-margin/payments/${encodeURIComponent(idLabel)}`, 'DELETE');
+    if (!result?.success) {
+      throw new Error(result?.error || 'Не удалось удалить платёж');
+    }
+    applyProductPayerPaymentRemoval(idLabel);
+    showAlert('success', `Платёж ${idLabel} удалён`);
+  } catch (error) {
+    console.error('Failed to delete payment from modal', error);
+    showAlert('error', `Не удалось удалить платёж ${idLabel}: ${error.message}`);
+  } finally {
+    if (triggerButton) {
+      triggerButton.disabled = false;
+    }
+  }
+}
+
+function applyProductPayerPaymentRemoval(paymentId) {
+  const idKey = String(paymentId);
+  if (!productPayerPaymentsModalState.context) {
+    return;
+  }
+
+  productPayerPaymentsModalState.payments = productPayerPaymentsModalState.payments
+    .filter((payment) => String(payment.id) !== idKey);
+
+  productPayerPaymentsModalState.totalPayments = Math.max(
+    productPayerPaymentsModalState.totalPayments - 1,
+    productPayerPaymentsModalState.payments.length
+  );
+
+  const { context } = productPayerPaymentsModalState;
+  renderProductPayerPaymentsModal({
+    ...context,
+    payments: productPayerPaymentsModalState.payments,
+    totalPayments: productPayerPaymentsModalState.totalPayments
+  });
+
+  // Перезагружаем данные продукта для обновления таблицы проформ
+  loadProductDetail().catch(() => {});
 }
 
 function closeProductPayerPaymentsModal() {
@@ -983,6 +1247,64 @@ function closeProductPayerPaymentsModal() {
 
 function isProductPayerModalOpen() {
   return Boolean(elements.payerModal && elements.payerModal.style.display === 'block');
+}
+
+async function openProductStripePaymentsModal({ payerName, dealId }) {
+  if (!elements.payerModalBody || !productDetail) return;
+
+  const stripePayments = Array.isArray(productDetail.stripePayments) ? productDetail.stripePayments : [];
+  
+  // Фильтруем по плательщику и сделке (если указана)
+  let filteredPayments = stripePayments;
+  
+  if (payerName) {
+    filteredPayments = filteredPayments.filter((payment) => {
+      const paymentPayerName = payment.customerName || payment.companyName || payment.customerEmail || '';
+      return paymentPayerName.toLowerCase().trim() === payerName.toLowerCase().trim();
+    });
+  }
+  
+  if (dealId) {
+    filteredPayments = filteredPayments.filter((payment) => {
+      return payment.stripe_deal_id && String(payment.stripe_deal_id) === String(dealId);
+    });
+  }
+
+  if (!filteredPayments.length) {
+    showProductPayerPaymentsError('Stripe платежи не найдены');
+    return;
+  }
+
+  // Находим информацию о сделке для отображения
+  const firstPayment = filteredPayments[0];
+  const dealUrl = firstPayment?.stripe_deal_url || null;
+  const proforma = dealId && dealUrl 
+    ? { fullnumber: null, pipedrive_deal_id: dealId, pipedrive_deal_url: dealUrl }
+    : null;
+    
+  showProductPayerPaymentsModalLoading({ payerName, proforma });
+
+  // Преобразуем Stripe платежи в формат для модального окна
+  const payments = filteredPayments.map((payment) => ({
+    id: payment.sessionId || payment.id || null,
+    date: payment.createdAt || null,
+    amount: payment.amount || 0,
+    amount_pln: payment.amountPln || 0,
+    currency: payment.currency || 'PLN',
+    description: `Stripe ${payment.paymentType || 'платёж'}`,
+    proforma_fullnumber: null,
+    status: { label: 'Stripe' },
+    manual_status: null,
+    match_status: null
+  }));
+
+  renderProductPayerPaymentsModal({
+    payerName,
+    proforma,
+    payments,
+    totalPayments: payments.length,
+    filterNote: false
+  });
 }
 
 function renderPaymentStatusBadge(status) {

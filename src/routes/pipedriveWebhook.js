@@ -518,17 +518,17 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       .filter(([key]) => key.toLowerCase().includes('invoice') || key.toLowerCase().includes('invoice'))
       .map(([key, value]) => `${key}: ${value}`)
       .join(', ') : 'нет';
-    logger.info(`🔍 Поля Invoice в webhook | Deal: ${dealIdForHash || 'неизвестен'} | Поля: ${invoiceFields || 'нет'}`);
+    logger.debug(`🔍 Поля Invoice в webhook | Deal: ${dealIdForHash || 'неизвестен'} | Поля: ${invoiceFields || 'нет'}`);
     
     webhookHistory.unshift(webhookEvent); // Добавляем в начало
     if (webhookHistory.length > MAX_HISTORY_SIZE) {
       webhookHistory.pop(); // Удаляем старые события
     }
     
-    // Log webhook received
+    // Log webhook received - только важное на info, детали в debug
     const eventType = webhookData.event || 'workflow_automation';
-    logger.info(`📥 Webhook получен | Deal: ${webhookEvent.dealId || 'неизвестен'}`);
-    logger.info(`🔍 Начало обработки webhook | Deal: ${webhookEvent.dealId || 'неизвестен'} | Event type: ${eventType}`);
+    logger.debug(`📥 Webhook получен | Deal: ${webhookEvent.dealId || 'неизвестен'}`);
+    logger.debug(`🔍 Начало обработки webhook | Deal: ${webhookEvent.dealId || 'неизвестен'} | Event type: ${eventType}`);
 
     // Поддержка двух форматов:
     // 1. Стандартный формат Pipedrive: { event: "updated.deal", current: {...}, previous: {...} }
@@ -770,15 +770,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Нормализуем invoice_type к ID (основной метод)
     const currentInvoiceType = normalizeInvoiceTypeToId(rawInvoiceType);
     
-    // Логируем извлечение invoice_type для диагностики
-    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId} | Сырое значение: ${rawInvoiceType || 'null'} | Нормализовано к ID: ${currentInvoiceType || 'null'}`);
+    // Логируем извлечение invoice_type для диагностики - только в debug
+    logger.debug(`🔍 Извлечение invoice_type | Deal: ${dealId} | Сырое значение: ${rawInvoiceType || 'null'} | Нормализовано к ID: ${currentInvoiceType || 'null'}`);
     
     // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
                          currentDeal?.status ||
                          'open';
     
-    logger.info(`🔍 Извлечение статуса | Deal: ${dealId} | Status: ${currentStatus}`);
+    logger.debug(`🔍 Извлечение статуса | Deal: ${dealId} | Status: ${currentStatus}`);
     
     // Get stage - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStageId = (webhookData && (webhookData['Deal_stage_id'] || webhookData['Deal stage id'] || webhookData['deal_stage_id'] || webhookData['stage_id'])) ||
@@ -944,7 +944,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       // Stripe trigger - используем только ID "75" (основной метод)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
       
-      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
+      logger.debug(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
       
         if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
           logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
@@ -1060,7 +1060,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           logger.info(`📅 Итоговый график платежей | Deal: ${dealId} | График: ${paymentSchedule}`);
 
           // Проверяем, какие сессии уже существуют
-          logger.info(`🔍 Проверка существующих Stripe сессий | Deal: ${dealId} | Ожидаемый график: ${paymentSchedule}`);
+          logger.debug(`🔍 Проверка существующих Stripe сессий | Deal: ${dealId} | Ожидаемый график: ${paymentSchedule}`);
           const existingPayments = await stripeProcessor.repository.listPayments({
             dealId: String(dealId),
             limit: 10
@@ -1223,7 +1223,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const currency = normaliseCurrency(rawCurrency);
           
           if (rawCurrency !== currency) {
-            logger.info(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
+            logger.debug(`💰 Валюта нормализована | Deal: ${dealId} | Было: ${rawCurrency} | Стало: ${currency}`);
           }
 
           if (!needToCreate && existingPayments && existingPayments.length > 0) {
@@ -1768,11 +1768,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     try {
       const pipedriveClient = resolvePipedriveClient();
       if (pipedriveClient && dealId) {
-        logger.info(`🔍 Проверка изменения продукта | Deal: ${dealId}`);
+        logger.debug(`🔍 Проверка изменения продукта | Deal: ${dealId}`);
         
         // Получаем текущие продукты сделки
         const currentProductsResult = await pipedriveClient.getDealProducts(dealId);
-        logger.info(`📦 Результат получения продуктов | Deal: ${dealId} | Success: ${currentProductsResult.success} | Products count: ${currentProductsResult.products?.length || 0}`);
+        logger.debug(`📦 Результат получения продуктов | Deal: ${dealId} | Success: ${currentProductsResult.success} | Products count: ${currentProductsResult.products?.length || 0}`);
         
         if (currentProductsResult.success && currentProductsResult.products) {
           const currentProducts = currentProductsResult.products;

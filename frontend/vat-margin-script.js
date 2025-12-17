@@ -1480,7 +1480,66 @@ function renderPaymentReport(groups) {
     const proformaCount = group.totals?.proforma_count || 0;
     const paymentsCount = group.totals?.payments_count || 0;
 
-    const rows = (group.entries || []).map((entry, entryIndex) => {
+    // Объединяем entries: если у одного плательщика несколько платежей по одной проформе,
+    // добавляем их к одной строке вместо показа отдельными строками
+    const entriesMap = new Map();
+    (group.entries || []).forEach((entry, entryIndex) => {
+      const proforma = entry.proforma || null;
+      const proformaKey = proforma?.fullnumber || 'no-proforma';
+      const hasPayerNames = Array.isArray(entry.payer_names) && entry.payer_names.length > 0;
+      const fallbackPayerName = entry.proforma?.buyer?.name || entry.proforma?.buyer?.alt_name || '—';
+      const payerKey = hasPayerNames
+        ? entry.payer_names.join(',').toLowerCase().trim()
+        : (fallbackPayerName || '—').toLowerCase().trim();
+      
+      // Ключ: плательщик + проформа (если у плательщика платежи по разным проформам - показываем отдельно)
+      const uniqueKey = `${payerKey}::${proformaKey}`;
+      
+      if (entriesMap.has(uniqueKey)) {
+        // Это второй (или последующий) платёж того же плательщика по той же проформе - объединяем
+        const existing = entriesMap.get(uniqueKey);
+        existing.entryIndex = entryIndex; // Обновляем индекс на последний для корректного открытия модального окна
+        
+        // Объединяем массивы платежей
+        const existingPayments = Array.isArray(existing.entry.payments) ? existing.entry.payments : [];
+        const newPayments = Array.isArray(entry.payments) ? entry.payments : [];
+        existing.entry.payments = [...existingPayments, ...newPayments];
+        
+        // Суммируем суммы в PLN
+        const existingPln = Number(existing.entry.totals?.pln_total || 0);
+        const newPln = Number(entry.totals?.pln_total || 0);
+        existing.entry.totals = existing.entry.totals || {};
+        existing.entry.totals.pln_total = existingPln + newPln;
+        
+        // Объединяем валютные суммы
+        const existingCurrencyTotals = existing.entry.totals.currency_totals || {};
+        const newCurrencyTotals = entry.totals?.currency_totals || {};
+        Object.entries(newCurrencyTotals).forEach(([cur, amount]) => {
+          existingCurrencyTotals[cur] = (existingCurrencyTotals[cur] || 0) + (Number(amount) || 0);
+        });
+        existing.entry.totals.currency_totals = existingCurrencyTotals;
+        
+        // Обновляем диапазон дат (первая и последняя дата платежей)
+        if (entry.first_payment_date) {
+          if (!existing.entry.first_payment_date || entry.first_payment_date < existing.entry.first_payment_date) {
+            existing.entry.first_payment_date = entry.first_payment_date;
+          }
+        }
+        if (entry.last_payment_date) {
+          if (!existing.entry.last_payment_date || entry.last_payment_date > existing.entry.last_payment_date) {
+            existing.entry.last_payment_date = entry.last_payment_date;
+          }
+        }
+        
+        // Суммируем количество платежей
+        existing.entry.totals.payment_count = (existing.entry.totals.payment_count || 0) + (entry.totals?.payment_count || 0);
+      } else {
+        // Первый платёж этого плательщика по этой проформе - создаём новую entry
+        entriesMap.set(uniqueKey, { entry, entryIndex });
+      }
+    });
+
+    const rows = Array.from(entriesMap.values()).map(({ entry, entryIndex }) => {
       const paymentCount = entry.totals?.payment_count || 0;
       const entryCurrencyTotals = Object.entries(entry.totals?.currency_totals || {})
         .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)

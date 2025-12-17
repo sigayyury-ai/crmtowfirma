@@ -2883,7 +2883,7 @@ class StripeProcessorService {
       }
       
       // Log price calculation details for debugging
-      this.logger.info('💰 Расчет цены продукта', {
+      this.logger.debug('💰 Расчет цены продукта', {
         dealId,
         itemPriceRaw,
         itemPrice,
@@ -3334,7 +3334,8 @@ class StripeProcessorService {
       }
 
       // ВАЖНО: Проверка что sessionParams НЕ содержит tax_id_collection и automatic_tax
-      this.logger.info('✅ Проверка: sessionParams не содержит налоговых настроек Stripe', {
+      // Детали проверки только в debug (слишком много логов)
+      this.logger.debug('✅ Проверка: sessionParams не содержит налоговых настроек Stripe', {
         dealId,
         hasTaxIdCollection: !!sessionParams.tax_id_collection,
         hasAutomaticTax: !!sessionParams.automatic_tax,
@@ -3345,7 +3346,8 @@ class StripeProcessorService {
 
       // 12. Create Checkout Session in Stripe
       apiCallCount++;
-      this.logger.info(`💳 [Deal #${dealId}] API Call #${apiCallCount}: Creating Checkout Session in Stripe`, {
+      // Детали создания только в debug, итог останется в info ниже
+      this.logger.debug(`💳 [Deal #${dealId}] API Call #${apiCallCount}: Creating Checkout Session in Stripe`, {
         amount: productPrice,
         currency,
         paymentSchedule,
@@ -3356,17 +3358,17 @@ class StripeProcessorService {
       const session = await this.stripe.checkout.sessions.create(sessionParams);
       
       // ВАЖНО: Проверка что сессия создана без налога от Stripe
+      // Проверка только в debug, ошибка логируется отдельно если налог > 0
       const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-      this.logger.info(`✅ [Deal #${dealId}] Checkout Session создан успешно`, {
-        sessionId: session.id,
-        duration: `${duration}s`,
-        totalApiCalls: apiCallCount,
-        amountTotal: session.amount_total,
-        amountSubtotal: session.amount_subtotal,
-        amountTax: session.total_details?.amount_tax || 0,
-        hasTaxFromStripe: (session.total_details?.amount_tax || 0) > 0,
-        note: 'amount_tax должен быть 0 (Stripe не удерживает VAT)'
-      });
+      const amountTax = session.total_details?.amount_tax || 0;
+      if (amountTax > 0) {
+        // Если налог есть - это ошибка, логируем как warning
+        this.logger.warn(`⚠️ [Deal #${dealId}] Checkout Session создан с налогом от Stripe (не должно быть)`, {
+          sessionId: session.id,
+          amountTax,
+          note: 'amount_tax должен быть 0 (Stripe не удерживает VAT)'
+        });
+      }
 
       // 13. Create tasks in CRM after successful session creation (if address is missing)
       // Задачи создаются только если адрес не найден и нужен VAT
@@ -3390,7 +3392,8 @@ class StripeProcessorService {
         await this.pipedriveClient.updateDeal(dealId, {
           [this.invoiceTypeFieldKey]: nextInvoiceTypeValue
         });
-        this.logger.info(`✅ [Deal #${dealId}] Updated deal invoice_type to ${nextInvoiceTypeLabel}`, {
+        // Обновление invoice_type только в debug (не критично)
+        this.logger.debug(`✅ [Deal #${dealId}] Updated deal invoice_type to ${nextInvoiceTypeLabel}`, {
           totalApiCalls: apiCallCount
         });
       } catch (updateError) {
@@ -3403,22 +3406,16 @@ class StripeProcessorService {
       // Уведомления теперь отправляются только после создания ВСЕХ сессий
       // (в pipedriveWebhook.js после цикла создания сессий)
 
-      // 14. Log session creation with final statistics
+      // 14. Log session creation with final statistics - упрощенная версия
+      // Оставляем только критически важную информацию
       const finalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
-      this.logger.info(`✅ [Deal #${dealId}] Checkout Session creation completed`, {
+      this.logger.info(`✅ [Deal #${dealId}] Checkout Session created`, {
         sessionId: session.id,
-        sessionUrl: session.url,
         amount: productPrice,
         currency,
-        customerEmail,
-        customerType,
-        shouldApplyVat,
-        duration: `${finalDuration}s`,
-        totalApiCalls: apiCallCount,
-        apiBreakdown: {
-          pipedrive: apiCallCount - 1, // Все кроме последнего (Stripe)
-          stripe: 1 // Создание checkout session
-        }
+        paymentType,
+        paymentSchedule,
+        duration: `${finalDuration}s`
       });
 
       // Output session URL to console for easy access
@@ -4795,7 +4792,7 @@ class StripeProcessorService {
       // because deal.value and sumPrice already include the discount
       if (productDiscountInfo && productDiscountInfo.itemPrice > 0) {
         dealBaseAmount = productDiscountInfo.itemPrice;
-        this.logger.info('💰 Используем itemPrice как базовую сумму (до скидки)', {
+        this.logger.debug('💰 Используем itemPrice как базовую сумму (до скидки)', {
           dealId,
           itemPrice: productDiscountInfo.itemPrice,
           dealValue: deal.value,
@@ -4815,7 +4812,7 @@ class StripeProcessorService {
           discountAmount = productDiscountInfo.value;
         }
         discountSource = 'product';
-        this.logger.info('💰 Скидка продукта найдена', {
+        this.logger.debug('💰 Скидка продукта найдена', {
           dealId,
           productName: productDiscountInfo.productName,
           discountValue: productDiscountInfo.value,
@@ -4834,7 +4831,7 @@ class StripeProcessorService {
           discountAmount = discountInfo.value;
         }
         discountSource = 'deal';
-        this.logger.info('💰 Скидка сделки найдена', {
+        this.logger.debug('💰 Скидка сделки найдена', {
           dealId,
           discountValue: discountInfo.value,
           discountType: discountInfo.type,
@@ -4851,7 +4848,8 @@ class StripeProcessorService {
         ? Math.max(0, dealBaseAmount - discountAmount)  // itemPrice - discount = correct total
         : Math.max(0, (parseFloat(deal.value) || effectiveTotalAmount) - discountAmount);  // deal.value - deal discount
       
-      this.logger.info('💰 Итоговый расчет суммы с учетом скидки', {
+      // Детали расчетов только в debug (слишком много логов)
+      this.logger.debug('💰 Итоговый расчет суммы с учетом скидки', {
         dealId,
         dealBaseAmount,
         discountAmount,
@@ -4861,8 +4859,8 @@ class StripeProcessorService {
         hasDealDiscount: !!discountInfo
       });
       
-      // Логируем все поля персоны для отладки
-      this.logger.info(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id}`, {
+      // Детали персоны только в debug
+      this.logger.debug(`📧 Данные персоны получены | Deal ID: ${dealId} | Person ID: ${person.id}`, {
         dealId,
         personId: person.id,
         personName: person.name,
@@ -4872,7 +4870,8 @@ class StripeProcessorService {
       
       const sendpulseId = this.getSendpulseId(person);
       
-      this.logger.info(`📧 SendPulse ID проверка | Deal ID: ${dealId} | Person ID: ${person.id} | SendPulse ID: ${sendpulseId || 'не найден'} | Поле: ${this.SENDPULSE_ID_FIELD_KEY}`, {
+      // SendPulse ID проверка только в debug
+      this.logger.debug(`📧 SendPulse ID проверка | Deal ID: ${dealId} | Person ID: ${person.id} | SendPulse ID: ${sendpulseId || 'не найден'} | Поле: ${this.SENDPULSE_ID_FIELD_KEY}`, {
         dealId,
         personId: person.id,
         sendpulseId,

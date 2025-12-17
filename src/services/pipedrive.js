@@ -5,21 +5,30 @@ class PipedriveClient {
   constructor() {
     this.apiToken = process.env.PIPEDRIVE_API_TOKEN?.trim();
     this.baseURL = process.env.PIPEDRIVE_BASE_URL || 'https://api.pipedrive.com/v1';
+    this.baseURLv2 = 'https://api.pipedrive.com';
     
     if (!this.apiToken) {
       throw new Error('PIPEDRIVE_API_TOKEN must be set in environment variables');
     }
     
-    // Создаем axios клиент для Pipedrive API
+    // Создаем axios клиент для Pipedrive API v1
     this.client = axios.create({
       baseURL: this.baseURL,
       timeout: 15000
     });
+    
+    // Создаем axios клиент для Pipedrive API v2 (для вариаций)
+    this.clientV2 = axios.create({
+      baseURL: this.baseURLv2,
+      timeout: 15000
+    });
 
-    // Добавляем interceptor для логирования
+    // Добавляем interceptor для логирования (v1)
+    // Request/Response логи только на debug уровне (слишком много логов)
+    // Ошибки всегда логируются
     this.client.interceptors.request.use(
       (config) => {
-        logger.info('Pipedrive API Request:', {
+        logger.debug('Pipedrive API Request:', {
           method: config.method,
           url: config.url,
           params: config.params
@@ -34,7 +43,7 @@ class PipedriveClient {
 
     this.client.interceptors.response.use(
       (response) => {
-        logger.info('Pipedrive API Response:', {
+        logger.debug('Pipedrive API Response:', {
           status: response.status,
           url: response.config.url,
           success: response.data?.success
@@ -43,6 +52,42 @@ class PipedriveClient {
       },
       (error) => {
         logger.error('Pipedrive API Response Error:', {
+          status: error.response?.status,
+          url: error.config?.url,
+          message: error.message,
+          data: error.response?.data
+        });
+        return Promise.reject(error);
+      }
+    );
+    
+    // Добавляем interceptor для логирования (v2)
+    this.clientV2.interceptors.request.use(
+      (config) => {
+        logger.debug('Pipedrive API v2 Request:', {
+          method: config.method,
+          url: config.url,
+          params: config.params
+        });
+        return config;
+      },
+      (error) => {
+        logger.error('Pipedrive API v2 Request Error:', error);
+        return Promise.reject(error);
+      }
+    );
+
+    this.clientV2.interceptors.response.use(
+      (response) => {
+        logger.debug('Pipedrive API v2 Response:', {
+          status: response.status,
+          url: response.config.url,
+          success: response.data?.success
+        });
+        return response;
+      },
+      (error) => {
+        logger.error('Pipedrive API v2 Response Error:', {
           status: error.response?.status,
           url: error.config?.url,
           message: error.message,
@@ -512,6 +557,425 @@ class PipedriveClient {
         error: error.message,
         details: error.response?.data || null,
         products: []
+      };
+    }
+  }
+
+  /**
+   * Создать продукт в Pipedrive
+   * @param {Object} productData - Данные продукта
+   * @param {string} productData.name - Название продукта
+   * @param {number} [productData.price] - Цена продукта
+   * @param {string} [productData.currency] - Валюта (по умолчанию EUR)
+   * @param {string} [productData.code] - Код продукта
+   * @param {string} [productData.description] - Описание продукта
+   * @param {number} [productData.unit] - Единица измерения
+   * @param {number} [productData.tax] - Налоговая ставка
+   * @param {boolean} [productData.active_flag] - Активен ли продукт
+   * @returns {Promise<Object>} - Результат создания продукта
+   */
+  async createProduct(productData = {}) {
+    try {
+      if (!productData.name) {
+        return {
+          success: false,
+          error: 'Product name is required'
+        };
+      }
+
+      const payload = {
+        name: productData.name,
+        price: productData.price || 0,
+        currency: productData.currency || 'EUR',
+        code: productData.code || null,
+        unit: productData.unit || null,
+        tax: productData.tax || 0,
+        active_flag: productData.active_flag !== undefined ? productData.active_flag : 1
+      };
+
+      // Добавляем описание, если оно есть
+      if (productData.description) {
+        payload.description = productData.description;
+      }
+
+      // Удаляем null значения
+      Object.keys(payload).forEach(key => {
+        if (payload[key] === null) {
+          delete payload[key];
+        }
+      });
+
+      const response = await this.client.post('/products', payload, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          product: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to create product'
+      };
+    } catch (error) {
+      logger.error('Error creating product in Pipedrive', {
+        error: error.message,
+        payload: productData,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Создать вариацию продукта (API v2)
+   * @param {number|string} productId - ID продукта
+   * @param {Object} variationData - Данные вариации
+   * @param {string} variationData.name - Название вариации
+   * @param {Array} variationData.prices - Массив цен [{currency, price, cost?, direct_cost?, notes?}]
+   * @returns {Promise<Object>} - Результат создания вариации
+   */
+  async createProductVariation(productId, variationData = {}) {
+    try {
+      if (!productId) {
+        return {
+          success: false,
+          error: 'Product ID is required'
+        };
+      }
+
+      if (!variationData.name) {
+        return {
+          success: false,
+          error: 'Variation name is required'
+        };
+      }
+
+      const payload = {
+        name: variationData.name
+      };
+
+      // Добавляем цены, если они есть
+      if (variationData.prices && Array.isArray(variationData.prices) && variationData.prices.length > 0) {
+        payload.prices = variationData.prices.map(price => ({
+          currency: price.currency || 'EUR',
+          price: parseFloat(price.price) || 0,
+          cost: price.cost !== undefined ? parseFloat(price.cost) : 0,
+          direct_cost: price.direct_cost !== undefined ? parseFloat(price.direct_cost) : 0,
+          notes: price.notes || ''
+        }));
+      } else if (variationData.price !== undefined) {
+        // Если передана одна цена (для обратной совместимости)
+        payload.prices = [{
+          currency: variationData.currency || 'EUR',
+          price: parseFloat(variationData.price) || 0,
+          cost: variationData.cost !== undefined ? parseFloat(variationData.cost) : 0,
+          direct_cost: 0,
+          notes: ''
+        }];
+      }
+
+      const response = await this.clientV2.post(`/api/v2/products/${productId}/variations`, payload, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          variation: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to create product variation'
+      };
+    } catch (error) {
+      logger.error('Error creating product variation in Pipedrive', {
+        productId,
+        error: error.message,
+        payload: variationData,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Получить все вариации продукта (API v2)
+   * @param {number|string} productId - ID продукта
+   * @returns {Promise<Object>} - Результат с массивом вариаций
+   */
+  async getProductVariations(productId) {
+    try {
+      if (!productId) {
+        return {
+          success: false,
+          error: 'Product ID is required',
+          variations: []
+        };
+      }
+
+      const response = await this.clientV2.get(`/api/v2/products/${productId}/variations`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          variations: response.data.data || []
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to fetch product variations',
+        variations: []
+      };
+    } catch (error) {
+      logger.error('Error fetching product variations from Pipedrive', {
+        productId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null,
+        variations: []
+      };
+    }
+  }
+
+  /**
+   * Обновить вариацию продукта (API v2)
+   * @param {number|string} productId - ID продукта
+   * @param {number|string} variationId - ID вариации
+   * @param {Object} variationData - Данные для обновления
+   * @returns {Promise<Object>} - Результат обновления
+   */
+  async updateProductVariation(productId, variationId, variationData = {}) {
+    try {
+      if (!productId || !variationId) {
+        return {
+          success: false,
+          error: 'Product ID and Variation ID are required'
+        };
+      }
+
+      const payload = {};
+      if (variationData.name) {
+        payload.name = variationData.name;
+      }
+      if (variationData.prices && Array.isArray(variationData.prices)) {
+        payload.prices = variationData.prices.map(price => ({
+          currency: price.currency || 'EUR',
+          price: parseFloat(price.price) || 0,
+          cost: price.cost !== undefined ? parseFloat(price.cost) : 0,
+          direct_cost: price.direct_cost !== undefined ? parseFloat(price.direct_cost) : 0,
+          notes: price.notes || ''
+        }));
+      }
+
+      if (Object.keys(payload).length === 0) {
+        return {
+          success: false,
+          error: 'No data provided for update'
+        };
+      }
+
+      const response = await this.clientV2.patch(`/api/v2/products/${productId}/variations/${variationId}`, payload, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          variation: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to update product variation'
+      };
+    } catch (error) {
+      logger.error('Error updating product variation in Pipedrive', {
+        productId,
+        variationId,
+        error: error.message,
+        payload: variationData,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Удалить вариацию продукта (API v2)
+   * @param {number|string} productId - ID продукта
+   * @param {number|string} variationId - ID вариации
+   * @returns {Promise<Object>} - Результат удаления
+   */
+  async deleteProductVariation(productId, variationId) {
+    try {
+      if (!productId || !variationId) {
+        return {
+          success: false,
+          error: 'Product ID and Variation ID are required'
+        };
+      }
+
+      const response = await this.clientV2.delete(`/api/v2/products/${productId}/variations/${variationId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          message: 'Product variation deleted successfully'
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to delete product variation'
+      };
+    } catch (error) {
+      logger.error('Error deleting product variation in Pipedrive', {
+        productId,
+        variationId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
+  /**
+   * Добавить вариацию цены к продукту (устаревший метод, используйте createProductVariation)
+   * @deprecated Используйте createProductVariation вместо этого
+   */
+  async addProductPrice(productId, priceData = {}) {
+    // Для обратной совместимости перенаправляем на createProductVariation
+    return this.createProductVariation(productId, {
+      name: priceData.name,
+      price: priceData.price,
+      currency: priceData.currency,
+      cost: priceData.cost
+    });
+  }
+
+  /**
+   * Получить все вариации цен продукта (устаревший метод)
+   * @deprecated Используйте getProductVariations вместо этого
+   */
+  async getProductPrices(productId) {
+    const result = await this.getProductVariations(productId);
+    if (result.success) {
+      // Преобразуем вариации в формат цен для обратной совместимости
+      const prices = [];
+      result.variations.forEach(variation => {
+        if (variation.prices && Array.isArray(variation.prices)) {
+          variation.prices.forEach(price => {
+            prices.push({
+              id: price.id,
+              name: variation.name,
+              price: price.price,
+              currency: price.currency,
+              cost: price.cost,
+              product_variation_id: variation.id
+            });
+          });
+        }
+      });
+      return {
+        success: true,
+        prices: prices
+      };
+    }
+    return {
+      success: false,
+      error: result.error,
+      prices: []
+    };
+  }
+
+  /**
+   * Обновить продукт в Pipedrive
+   * @param {number|string} productId - ID продукта
+   * @param {Object} productData - Данные для обновления
+   * @returns {Promise<Object>} - Результат обновления продукта
+   */
+  async updateProduct(productId, productData = {}) {
+    try {
+      if (!productId) {
+        return {
+          success: false,
+          error: 'Product ID is required'
+        };
+      }
+
+      // Удаляем null и undefined значения
+      const payload = {};
+      Object.keys(productData).forEach(key => {
+        if (productData[key] !== null && productData[key] !== undefined) {
+          payload[key] = productData[key];
+        }
+      });
+
+      if (Object.keys(payload).length === 0) {
+        return {
+          success: false,
+          error: 'No data provided for update'
+        };
+      }
+
+      const response = await this.client.put(`/products/${productId}`, payload, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          product: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to update product'
+      };
+    } catch (error) {
+      logger.error('Error updating product in Pipedrive', {
+        productId,
+        error: error.message,
+        payload: productData,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
       };
     }
   }
