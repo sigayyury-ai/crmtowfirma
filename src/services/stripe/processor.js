@@ -5072,6 +5072,21 @@ class StripeProcessorService {
         message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
       }
 
+      // Проверяем, что сообщение не пустое
+      if (!message || message.trim().length === 0) {
+        this.logger.warn('Message is empty, cannot send notification', {
+          dealId,
+          paymentSchedule,
+          sessionsCount: sessions.length,
+          cashRemainder,
+          sessionsAmount
+        });
+        return {
+          success: false,
+          error: 'Message is empty - no notification template matched the payment scenario'
+        };
+      }
+
       // Send message via SendPulse
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 

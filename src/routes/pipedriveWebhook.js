@@ -1828,12 +1828,31 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 } else {
                   logger.debug(`💾 Проформа найдена, но продукт не найден в proforma_products | Deal: ${dealId} | Invoice ID: ${existingProforma.invoiceId}`);
                 }
-              } else {
-                logger.debug(`💾 Проформа не найдена для сделки | Deal: ${dealId}`);
               }
             }
           } catch (error) {
             logger.warn(`⚠️  Ошибка получения продукта из базы данных | Deal: ${dealId} | Ошибка: ${error.message}`);
+          }
+          
+          // Получаем normalized name для текущего и предыдущего продукта
+          let currentProductNormalized = null;
+          let previousProductNormalized = null;
+          
+          if (currentProductName) {
+            try {
+              // Нормализуем название продукта для сравнения (приводим к нижнему регистру и убираем лишние пробелы)
+              currentProductNormalized = currentProductName.toLowerCase().trim().replace(/\s+/g, ' ');
+            } catch (error) {
+              logger.warn(`⚠️  Ошибка нормализации текущего продукта | Deal: ${dealId} | Ошибка: ${error.message}`);
+            }
+          }
+          
+          if (previousProductName) {
+            try {
+              previousProductNormalized = previousProductName.toLowerCase().trim().replace(/\s+/g, ' ');
+            } catch (error) {
+              logger.warn(`⚠️  Ошибка нормализации предыдущего продукта | Deal: ${dealId} | Ошибка: ${error.message}`);
+            }
           }
           
           // Проверяем, изменился ли продукт (сравниваем по product_id из нашей базы)
