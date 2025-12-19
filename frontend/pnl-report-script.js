@@ -475,6 +475,36 @@ function renderReport(data) {
     ? ((margin / revenue) * 100) 
     : 0;
 
+  // Calculate real margin (excluding certain expense categories)
+  // Categories to exclude: "Продукты и бытовые вещи" (ID: 44) and "Авто и обслуживание"
+  // Ищем по ID и по имени для надежности
+  const excludedCategoryIds = [44]; // Продукты и бытовые вещи
+  const excludedCategoryNames = ['продукты и бытовые', 'авто и обслуживание', 'food', 'car', 'auto', 'автомобиль'];
+  let realExpensesAmount = expensesAmount;
+  
+  if (hasExpenses) {
+    const excludedAmount = expenses
+      .filter(cat => {
+        // Проверяем по ID
+        if (excludedCategoryIds.includes(cat.id)) {
+          return true;
+        }
+        // Проверяем по имени
+        const categoryName = (cat.name || '').toLowerCase();
+        return excludedCategoryNames.some(excludedName => 
+          categoryName.includes(excludedName.toLowerCase())
+        );
+      })
+      .reduce((sum, cat) => sum + (Number(cat.total?.amountPln) || 0), 0);
+    
+    realExpensesAmount = expensesAmount - excludedAmount;
+  }
+  
+  const realMargin = revenue - realExpensesAmount;
+  const realMarginPercent = (revenue > 0 && Number.isFinite(revenue) && Number.isFinite(realMargin)) 
+    ? ((realMargin / revenue) * 100) 
+    : 0;
+
   let html = `
     <div class="pnl-summary">
       <h3>Год: ${year || 'N/A'}</h3>
@@ -490,7 +520,11 @@ function renderReport(data) {
         </div>
         <div class="stat-item">
           <span class="stat-label">Маржинальность:</span>
-          <span class="stat-value">${formatCurrency(margin)} PLN (${Number.isFinite(marginPercent) ? marginPercent.toFixed(2) : '0.00'}%)</span>
+          <span class="stat-value">${formatCurrency(margin)} PLN (${Number.isFinite(marginPercent) ? Math.round(marginPercent * 100) / 100 : '0'}%)</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Реальная маржинальность:</span>
+          <span class="stat-value">${formatCurrency(realMargin)} PLN (${Number.isFinite(realMarginPercent) ? Math.round(realMarginPercent * 100) / 100 : '0'}%)</span>
         </div>
         ` : ''}
       </div>
@@ -717,9 +751,10 @@ async function saveCellValue(cell, categoryId, expenseCategoryId, entryType, yea
 
 function formatCurrency(amount) {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
-    return '0.00';
+    return '0';
   }
-  return amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  // Округляем до целых чисел
+  return Math.round(amount).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
 function showLoading(show) {
