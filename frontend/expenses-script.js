@@ -240,7 +240,61 @@ async function loadExpenses() {
     console.log('Raw payments count:', payments.length);
     console.log('Sample payments:', payments.slice(0, 3));
     
-    addLog('info', `Получено расходов: ${payments.length}`);
+    // Дедупликация: убираем дубликаты по ID, дате, сумме и описанию
+    const seenPayments = new Map();
+    const uniquePayments = [];
+    let duplicatesCount = 0;
+    
+    for (const payment of payments) {
+      if (!payment || !payment.id) {
+        continue;
+      }
+      
+      // Создаем ключ для дедупликации: ID платежа (самый надежный способ)
+      const key = `id_${payment.id}`;
+      
+      if (seenPayments.has(key)) {
+        duplicatesCount++;
+        console.warn('Duplicate payment found by ID:', {
+          id: payment.id,
+          date: payment.operation_date,
+          amount: payment.amount,
+          description: payment.description?.substring(0, 50)
+        });
+        continue;
+      }
+      
+      // Также проверяем дубликаты по дате, сумме и началу описания (для случаев когда один платеж импортирован дважды с разными ID)
+      const date = payment.operation_date || '';
+      const amount = payment.amount || 0;
+      const descriptionStart = (payment.description || '').substring(0, 50).toLowerCase().trim();
+      const duplicateKey = `${date}_${amount}_${descriptionStart}`;
+      
+      if (seenPayments.has(duplicateKey)) {
+        duplicatesCount++;
+        console.warn('Duplicate payment found by date/amount/description:', {
+          id: payment.id,
+          date: payment.operation_date,
+          amount: payment.amount,
+          description: payment.description?.substring(0, 50),
+          existingId: seenPayments.get(duplicateKey).id
+        });
+        continue;
+      }
+      
+      seenPayments.set(key, payment);
+      seenPayments.set(duplicateKey, payment);
+      uniquePayments.push(payment);
+    }
+    
+    if (duplicatesCount > 0) {
+      addLog('warning', `Найдено дубликатов: ${duplicatesCount}. Показано уникальных: ${uniquePayments.length}`);
+      console.warn(`Removed ${duplicatesCount} duplicate payments`);
+    }
+    
+    payments = uniquePayments;
+    
+    addLog('info', `Получено расходов: ${payments.length}${duplicatesCount > 0 ? ` (удалено дубликатов: ${duplicatesCount})` : ''}`);
     
     if (payments.length === 0) {
       const message = 'Нет расходов в базе данных';
