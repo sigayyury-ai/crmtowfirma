@@ -1668,6 +1668,18 @@ class StripeProcessorService {
   }
 
   extractAddressParts(context) {
+    // Если context равен null или undefined, возвращаем пустые части адреса
+    if (!context) {
+      return {
+        line1: null,
+        line2: null,
+        postalCode: null,
+        city: null,
+        state: null,
+        country: null
+      };
+    }
+    
     const organization = context.organization || {};
     const person = context.person || {};
     const deal = context.deal || {};
