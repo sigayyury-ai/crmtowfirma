@@ -1569,7 +1569,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             
             let noteContent = `💳 *График платежей: ${paymentSchedule}*\n\n`;
             
-            if (paymentSchedule === '50/50' && sessions.length >= 2) {
+            if (paymentSchedule === '50/50' && sessions.length === 1) {
+              // Только первый платеж (deposit) создан
+              const firstSession = sessions[0];
+              noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(firstSession.amount)} ${currency}\n`;
+              noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${firstSession.id})\n\n`;
+              noteContent += `2️⃣ *Остаток 50%:* будет создан позже\n\n`;
+            } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
+              // Оба платежа созданы
               const depositSession = sessions.find(s => s.type === 'deposit');
               const restSession = sessions.find(s => s.type === 'rest');
               
