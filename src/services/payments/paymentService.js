@@ -1818,8 +1818,29 @@ class PaymentService {
     }
     
     if (!proforma) {
-      const notFoundError = new Error(`Проформа ${normalizedNumber} не найдена`);
+      // Пробуем найти похожие проформы для более информативного сообщения
+      let suggestions = [];
+      const match = normalizedNumber.match(/CO-PROF\s+(\d+)\//);
+      if (match) {
+        const number = match[1];
+        try {
+          const similarProformas = await this.proformaRepository.findByFullnumberPartial(`CO-PROF ${number}/`);
+          suggestions = similarProformas.slice(0, 5).map(p => p.fullnumber);
+        } catch (suggestError) {
+          logger.debug('Failed to get suggestions for similar proformas', { error: suggestError.message });
+        }
+      }
+      
+      let errorMessage = `Проформа ${normalizedNumber} не найдена`;
+      if (suggestions.length > 0) {
+        errorMessage += `. Возможно, вы имели в виду: ${suggestions.join(', ')}`;
+      }
+      
+      const notFoundError = new Error(errorMessage);
       notFoundError.statusCode = 404;
+      if (suggestions.length > 0) {
+        notFoundError.suggestions = suggestions;
+      }
       throw notFoundError;
     }
 
