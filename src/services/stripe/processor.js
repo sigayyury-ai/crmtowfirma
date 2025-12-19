@@ -4983,9 +4983,10 @@ class StripeProcessorService {
         message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
       }
       // Сценарий 2: 50/50 Stripe (только Stripe, без кеша) - только первый платеж
-      else if (paymentSchedule === '50/50' && sessions.length === 1 && depositSession && cashRemainder === 0) {
+      else if (paymentSchedule === '50/50' && sessions.length === 1 && cashRemainder === 0) {
+        const firstSession = sessions[0];
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${depositSession.url})\n`;
+        message += `[Ссылка на оплату](${firstSession.url})\n`;
         message += `Ссылка действует 24 часа\n\n`;
         
         message += `График: 50/50 (первый платеж)\n`;
@@ -5008,7 +5009,7 @@ class StripeProcessorService {
         }
         
         message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
-        message += `Предоплата: ${formatAmount(depositSession.amount)} ${currency}\n`;
+        message += `Предоплата: ${formatAmount(firstSession.amount)} ${currency}\n`;
       }
       // Сценарий 2b: 50/50 Stripe (только Stripe, без кеша) - оба платежа
       else if (paymentSchedule === '50/50' && sessions.length >= 2 && cashRemainder === 0) {
@@ -5065,9 +5066,10 @@ class StripeProcessorService {
         message += `Оплата наличными: ${formatAmount(cashRemainder)} ${currency}\n`;
       }
       // Сценарий 4: 50/50 с кешем (Stripe + наличные) - только первый платеж
-      else if (paymentSchedule === '50/50' && sessions.length === 1 && depositSession && cashRemainder > 0) {
+      else if (paymentSchedule === '50/50' && sessions.length === 1 && cashRemainder > 0) {
+        const firstSession = sessions[0];
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${depositSession.url})\n`;
+        message += `[Ссылка на оплату](${firstSession.url})\n`;
         message += `Ссылка действует 24 часа\n\n`;
         
         message += `График: 50/50 (первый платеж)\n`;
