@@ -1772,16 +1772,32 @@ class PaymentService {
           searchVariants.push(`CO-PROF ${number}/${century - 100 + parseInt(year)}`);
         }
         
-        // Если год 3-значный (например, "202"), пробуем как 2-значный и 4-значный
+        // Если год 3-значный (например, "202"), пробуем разные варианты
         if (year.length === 3) {
           const currentYear = new Date().getFullYear();
           const century = Math.floor(currentYear / 100) * 100;
+          
           // Пробуем как 2-значный год (последние 2 цифры)
           const shortYear = year.slice(-2);
           searchVariants.push(`CO-PROF ${number}/${century + parseInt(shortYear)}`);
           searchVariants.push(`CO-PROF ${number}/${century - 100 + parseInt(shortYear)}`);
-          // Пробуем как 4-значный (добавляем 2 в начало)
-          searchVariants.push(`CO-PROF ${number}/2${year}`);
+          
+          // Пробуем как начало 4-значного года (202 -> 2020-2029)
+          // Если текущий год в диапазоне 2020-2029, пробуем текущий год и соседние
+          const yearPrefix = parseInt(year);
+          if (yearPrefix >= 200 && yearPrefix <= 209) {
+            const baseYear = 2000 + yearPrefix;
+            // Пробуем текущий год и несколько соседних
+            for (let offset = -2; offset <= 2; offset++) {
+              const candidateYear = baseYear + offset;
+              if (candidateYear >= 2000 && candidateYear <= 2099) {
+                searchVariants.push(`CO-PROF ${number}/${candidateYear}`);
+              }
+            }
+          } else {
+            // Если не в диапазоне 200-209, пробуем просто добавить цифру в начало
+            searchVariants.push(`CO-PROF ${number}/2${year}`);
+          }
         }
         
         // Если год 4-значный, пробуем с 2-значным
