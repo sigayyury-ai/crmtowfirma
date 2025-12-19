@@ -293,6 +293,37 @@ class ProformaRepository {
     return data || [];
   }
 
+  async findByFullnumberPartial(fullnumber) {
+    if (!this.isEnabled()) {
+      return [];
+    }
+
+    if (!fullnumber) {
+      return [];
+    }
+
+    const sanitized = normalizeWhitespace(String(fullnumber)).toUpperCase();
+    if (!sanitized.length) {
+      return [];
+    }
+
+    // Используем ILIKE для частичного поиска
+    const { data, error } = await this.supabase
+      .from('proformas')
+      .select('id, fullnumber, currency, total, payments_total, buyer_name, buyer_normalized_name')
+      .ilike('fullnumber', `%${sanitized}%`)
+      .is('deleted_at', null)
+      .eq('status', 'active')
+      .limit(10);
+
+    if (error) {
+      logger.error('Supabase error while fetching proformas by partial fullnumber:', error);
+      throw error;
+    }
+
+    return data || [];
+  }
+
   async findByBuyerNames(normalizedNames = []) {
     if (!this.isEnabled()) {
       return [];

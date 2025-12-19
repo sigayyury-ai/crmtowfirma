@@ -1748,7 +1748,75 @@ class PaymentService {
       throw validationError;
     }
 
-    const [proforma] = await this.proformaRepository.findByFullnumbers([normalizedNumber]);
+    // Сначала пробуем точный поиск
+    let [proforma] = await this.proformaRepository.findByFullnumbers([normalizedNumber]);
+    
+    // Если не найдено, пробуем гибкий поиск (для случаев когда год указан сокращенно или полностью)
+    if (!proforma) {
+      // Извлекаем номер и год из формата CO-PROF XXX/YYYY или CO-PROF XXX/YY
+      const match = normalizedNumber.match(/CO-PROF\s+(\d+)\/(\d{2,4})/);
+      if (match) {
+        const number = match[1];
+        const year = match[2];
+        
+        // Генерируем варианты поиска
+        const searchVariants = [];
+        
+        // Если год 2-значный (например, "202"), пробуем разные варианты
+        if (year.length === 2) {
+          const currentYear = new Date().getFullYear();
+          const century = Math.floor(currentYear / 100) * 100;
+          // Пробуем текущий век (например, 202 -> 2025)
+          searchVariants.push(`CO-PROF ${number}/${century + parseInt(year)}`);
+          // Пробуем предыдущий век (например, 202 -> 2024)
+          searchVariants.push(`CO-PROF ${number}/${century - 100 + parseInt(year)}`);
+        }
+        
+        // Если год 3-значный (например, "202"), пробуем как 2-значный и 4-значный
+        if (year.length === 3) {
+          const currentYear = new Date().getFullYear();
+          const century = Math.floor(currentYear / 100) * 100;
+          // Пробуем как 2-значный год (последние 2 цифры)
+          const shortYear = year.slice(-2);
+          searchVariants.push(`CO-PROF ${number}/${century + parseInt(shortYear)}`);
+          searchVariants.push(`CO-PROF ${number}/${century - 100 + parseInt(shortYear)}`);
+          // Пробуем как 4-значный (добавляем 2 в начало)
+          searchVariants.push(`CO-PROF ${number}/2${year}`);
+        }
+        
+        // Если год 4-значный, пробуем с 2-значным
+        if (year.length === 4) {
+          const shortYear = year.slice(-2);
+          searchVariants.push(`CO-PROF ${number}/${shortYear}`);
+        }
+        
+        // Пробуем найти по вариантам
+        if (searchVariants.length > 0) {
+          const proformas = await this.proformaRepository.findByFullnumbers(searchVariants);
+          if (proformas.length > 0) {
+            proforma = proformas[0];
+            logger.info('Proforma found with flexible year search', {
+              requested: normalizedNumber,
+              found: proforma.fullnumber,
+              variants: searchVariants
+            });
+          }
+        }
+      }
+      
+      // Если все еще не найдено, пробуем частичный поиск через ILIKE
+      if (!proforma) {
+        const partialSearch = await this.proformaRepository.findByFullnumberPartial(normalizedNumber);
+        if (partialSearch.length > 0) {
+          proforma = partialSearch[0];
+          logger.info('Proforma found with partial search', {
+            requested: normalizedNumber,
+            found: proforma.fullnumber
+          });
+        }
+      }
+    }
+    
     if (!proforma) {
       const notFoundError = new Error(`Проформа ${normalizedNumber} не найдена`);
       notFoundError.statusCode = 404;
