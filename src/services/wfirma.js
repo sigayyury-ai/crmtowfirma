@@ -475,15 +475,13 @@ class WfirmaClient {
       if (response.data) {
         // Если это XML ответ
         if (typeof response.data === 'string' && response.data.includes('<?xml')) {
-          // Не логируем весь XML, только метаданные
-          const accountMatches = response.data.match(/<company_account>/g);
+          // Парсим XML для извлечения банковских счетов
+          const bankAccounts = [];
+          const accountMatches = response.data.match(/<company_account>(.*?)<\/company_account>/gs);
           logger.debug('Bank accounts response received', {
             accountCount: accountMatches ? accountMatches.length : 0,
             responseType: 'XML'
           });
-          // Парсим XML для извлечения банковских счетов
-          const bankAccounts = [];
-          const accountMatches = response.data.match(/<company_account>(.*?)<\/company_account>/gs);
           if (accountMatches) {
             accountMatches.forEach(match => {
               const idMatch = match.match(/<id>(\d+)<\/id>/);
