@@ -3678,8 +3678,7 @@ class InvoiceProcessingService {
               message: 'Proforma invoice created successfully',
               invoiceId: invoiceId,
               invoiceNumber: invoiceNumber,
-              paymentSchedule: paymentSchedule,
-              response: response.data
+              paymentSchedule: paymentSchedule
             };
           } else if (response.data.includes('<code>ERROR</code>')) {
             // Извлекаем детали ошибки из XML
