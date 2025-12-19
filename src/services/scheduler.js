@@ -558,6 +558,28 @@ class SchedulerService {
       const apiStats = invoiceResult?.stats?.apiCalls || {};
       
       if (!combinedSuccess) {
+        // Извлекаем детали ошибок из результатов
+        const stripeErrorDetails = Array.isArray(stripeResult?.results)
+          ? stripeResult.results
+              .filter((item) => !item.success)
+              .slice(0, 10)
+              .map((item) => ({
+                sessionId: item.sessionId,
+                dealId: item.dealId,
+                error: item.error
+              }))
+          : [];
+        
+        const invoiceErrorDetails = Array.isArray(invoiceResult?.results)
+          ? invoiceResult.results
+              .filter((item) => !item.success)
+              .slice(0, 10)
+              .map((item) => ({
+                dealId: item.dealId,
+                error: item.error || item.message
+              }))
+          : [];
+
         logger.error('Invoice processing finished with errors', {
           trigger,
           retryAttempt,
@@ -566,7 +588,9 @@ class SchedulerService {
           error: entry.message,
           invoiceSummary,
           stripeSummary,
-          apiCalls: apiStats
+          apiCalls: apiStats,
+          stripeErrorDetails: stripeErrorDetails.length > 0 ? stripeErrorDetails : undefined,
+          invoiceErrorDetails: invoiceErrorDetails.length > 0 ? invoiceErrorDetails : undefined
         });
       } else {
         logger.info('Invoice processing finished successfully', {

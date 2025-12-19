@@ -341,10 +341,20 @@ class StripeProcessorService {
               summary.successful += 1;
             } catch (error) {
               summary.errors += 1;
-              results.push({
+              const dealId = session.metadata?.deal_id || null;
+              const errorResult = {
                 sessionId: session.id,
+                dealId,
                 success: false,
-                error: error.message
+                error: error.message,
+                stack: error.stack
+              };
+              results.push(errorResult);
+              this.logger.error('Failed to persist Stripe session', {
+                sessionId: session.id,
+                dealId,
+                error: error.message,
+                errorStack: error.stack?.split('\n').slice(0, 3).join('\n')
               });
             }
             if (summary.total >= this.maxSessions) {
@@ -375,7 +385,12 @@ class StripeProcessorService {
         trigger,
         summary,
         resultsCount: results.length,
-        mode: this.mode
+        mode: this.mode,
+        errorDetails: results.slice(0, 5).map(r => ({
+          sessionId: r.sessionId,
+          dealId: r.dealId,
+          error: r.error
+        }))
       };
       this.logger.error('Stripe processing finished with errors', logPayload);
       return {
@@ -391,6 +406,26 @@ class StripeProcessorService {
     const plans = Array.isArray(this.paymentPlanService)
       ? []
       : this.paymentPlanService;
+
+    // Логируем ошибки, если они есть
+    if (summary.errors > 0) {
+      const errorDetails = results
+        .filter(r => !r.success)
+        .slice(0, 10)
+        .map(r => ({
+          sessionId: r.sessionId,
+          dealId: r.dealId,
+          error: r.error
+        }));
+      this.logger.warn('Stripe processing completed with errors', {
+        runId,
+        trigger,
+        totalErrors: summary.errors,
+        totalProcessed: summary.total,
+        successful: summary.successful,
+        errorDetails
+      });
+    }
 
     return {
       success: summary.errors === 0,
