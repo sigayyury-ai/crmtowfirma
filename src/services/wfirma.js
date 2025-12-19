@@ -714,6 +714,7 @@ class WfirmaClient {
             logger.info('Product created successfully', {
               productId,
               responseType: 'XML'
+            });
             
             return {
               success: true,
