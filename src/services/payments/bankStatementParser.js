@@ -252,8 +252,11 @@ function parseRevolutStatement(content) {
     let payerName = payer || extractPayer(description) || 'Unknown';
 
     // Create operation hash from transaction ID and date
+    // Нормализуем описание для устойчивости к различиям в форматировании
+    const normalizedDescription = (description || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    const normalizedAmount = amountStr.trim();
     const operationHash = crypto.createHash('sha256')
-      .update(`${transactionId}-${dateCompleted}-${amountStr}-${description}`)
+      .update(`${transactionId}-${dateCompleted}-${normalizedAmount}-${normalizedDescription}`)
       .digest('hex');
 
     const record = {
@@ -505,8 +508,12 @@ function parseOldBankStatement(content) {
     }
 
     // Create operation hash
+    // Нормализуем данные для устойчивости к различиям в форматировании
+    const normalizedDescription = (description || '').toLowerCase().trim().replace(/\s+/g, ' ');
+    const normalizedAmount = (amountRaw || '').trim();
+    const normalizedAccount = (account || '').toLowerCase().trim();
     const operationHash = crypto.createHash('sha256')
-      .update(`${operationDate}-${amountRaw}-${description}-${account}`)
+      .update(`${operationDate}-${normalizedAmount}-${normalizedDescription}-${normalizedAccount}`)
       .digest('hex');
 
     // Try to extract proforma number from description
@@ -748,7 +755,11 @@ function parseBankStatement(content) {
       payer_name: payer,
       payer_normalized_name: normalizedPayer,
       proforma_fullnumber: proformaFullnumber,
-      operation_hash: crypto.createHash('sha256').update(rawLine).digest('hex'),
+      // Нормализуем rawLine для устойчивости к различиям в форматировании
+      // Убираем лишние пробелы и приводим к нижнему регистру (кроме сумм)
+      operation_hash: crypto.createHash('sha256')
+        .update(rawLine.toLowerCase().trim().replace(/\s+/g, ' '))
+        .digest('hex'),
       raw_line: rawLine
     };
 
