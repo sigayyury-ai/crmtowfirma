@@ -4688,10 +4688,32 @@ class StripeProcessorService {
     const dealTotalAmount =
       normalizedTotalAmount > 0 ? normalizedTotalAmount : (sessionsAmount || 0);
     const effectiveTotalAmount = sessions.length > 0 ? sessionsAmount : dealTotalAmount;
-    const cashRemainder =
-      dealTotalAmount > 0 && sessionsAmount > 0
-        ? Math.max(dealTotalAmount - sessionsAmount, 0)
-        : 0;
+    
+    // ВАЖНО: cashRemainder должен учитывать только реальные наличные платежи из полей сделки
+    // Для графика 50/50 с одной сессией разница между dealTotalAmount и sessionsAmount - это не наличные,
+    // а вторая часть платежа, которая еще не создана
+    let cashRemainder = 0;
+    try {
+      const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
+      if (fullDealResult.success && fullDealResult.deal) {
+        const cashFields = extractCashFields(fullDealResult.deal);
+        if (cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
+          cashRemainder = roundBankers(cashFields.amount);
+        }
+      }
+    } catch (error) {
+      this.logger.warn('Failed to get cash fields for notification', {
+        dealId,
+        error: error.message
+      });
+      // Fallback: если не удалось получить наличные, используем старую логику
+      // но только если график не 50/50 с одной сессией
+      if (paymentSchedule !== '50/50' || sessions.length >= 2) {
+        cashRemainder = dealTotalAmount > 0 && sessionsAmount > 0
+          ? Math.max(dealTotalAmount - sessionsAmount, 0)
+          : 0;
+      }
+    }
 
     this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
       dealId,
