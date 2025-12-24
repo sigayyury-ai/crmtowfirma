@@ -1532,7 +1532,12 @@ class StripeProcessorService {
     try {
       const dealResponse = await this.pipedriveClient.getDeal(dealId);
       if (!dealResponse.success) {
-        this.logger.warn('Failed to load deal for Stripe payment', { dealId });
+        // 404 для удаленной сделки - это ожидаемая ситуация, логируем как debug
+        if (dealResponse.isNotFound) {
+          this.logger.debug('Deal not found (likely deleted), skipping CRM context', { dealId });
+        } else {
+          this.logger.warn('Failed to load deal for Stripe payment', { dealId, error: dealResponse.error });
+        }
         this.crmCache.set(dealId, null);
         return null;
       }
@@ -1568,10 +1573,16 @@ class StripeProcessorService {
       this.crmCache.set(dealId, context);
       return context;
     } catch (error) {
-      this.logger.error('Failed to load CRM context for Stripe payment', {
-        dealId,
-        error: error.message
-      });
+      // 404 для удаленной сделки - это ожидаемая ситуация, не ошибка
+      const isNotFound = error.response?.status === 404 || error.message?.includes('404') || error.message?.includes('not found');
+      if (isNotFound) {
+        this.logger.debug('Deal not found (likely deleted), skipping CRM context', { dealId });
+      } else {
+        this.logger.error('Failed to load CRM context for Stripe payment', {
+          dealId,
+          error: error.message
+        });
+      }
       this.crmCache.set(dealId, null);
       return null;
     }

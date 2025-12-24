@@ -36,8 +36,17 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
-    logger.error('Stripe webhook signature verification failed', { error: err.message });
-    return res.status(400).json({ error: `Webhook signature verification failed: ${err.message}` });
+    // Логируем детали для отладки проблем с верификацией
+    logger.warn('Stripe webhook signature verification failed', { 
+      error: err.message,
+      errorType: err.type,
+      hasSignature: !!sig,
+      signatureLength: sig?.length || 0,
+      bodyLength: req.body?.length || 0,
+      hint: 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard'
+    });
+    // Возвращаем 401 для неавторизованных запросов (неправильная подпись)
+    return res.status(401).json({ error: `Webhook signature verification failed: ${err.message}` });
   }
 
   try {

@@ -51,12 +51,24 @@ class PipedriveClient {
         return response;
       },
       (error) => {
-        logger.error('Pipedrive API Response Error:', {
-          status: error.response?.status,
-          url: error.config?.url,
-          message: error.message,
-          data: error.response?.data
-        });
+        // 404 для удаленных ресурсов - это ожидаемая ситуация, не ошибка
+        const status = error.response?.status;
+        const isNotFound = status === 404;
+        
+        if (isNotFound) {
+          logger.debug('Pipedrive API Resource Not Found:', {
+            status: 404,
+            url: error.config?.url,
+            message: error.response?.data?.error || 'Resource not found'
+          });
+        } else {
+          logger.error('Pipedrive API Response Error:', {
+            status: status,
+            url: error.config?.url,
+            message: error.message,
+            data: error.response?.data
+          });
+        }
         return Promise.reject(error);
       }
     );
@@ -148,11 +160,18 @@ class PipedriveClient {
         throw new Error('Failed to get deal');
       }
     } catch (error) {
-      logger.error('Error getting deal:', error);
+      // 404 для удаленной сделки - это ожидаемая ситуация, не ошибка
+      const isNotFound = error.response?.status === 404;
+      if (isNotFound) {
+        logger.debug('Deal not found (likely deleted):', { dealId });
+      } else {
+        logger.error('Error getting deal:', error);
+      }
       return {
         success: false,
         error: error.message,
-        details: error.response?.data || null
+        details: error.response?.data || null,
+        isNotFound: isNotFound
       };
     }
   }
