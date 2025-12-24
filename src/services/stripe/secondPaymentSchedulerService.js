@@ -725,8 +725,50 @@ class SecondPaymentSchedulerService {
           // Определяем график платежей
           const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
           
-          // Обрабатываем каждую просроченную сессию отдельно
+          // Группируем сессии по типу платежа, чтобы обработать только одну сессию каждого типа
+          // Это предотвращает дубликаты напоминаний, если для одной сделки есть несколько просроченных сессий
+          // (например, если первая сессия создалась автоматически, но уведомление не отправилось,
+          // а потом создали вторую сессию вручную)
+          const sessionsByType = new Map();
           for (const expiredSession of dealExpiredSessions) {
+            // Нормализуем тип платежа (rest/second/final считаются одним типом)
+            let paymentType = expiredSession.paymentType || 'unknown';
+            if (paymentType === 'second' || paymentType === 'final') {
+              paymentType = 'rest';
+            }
+            
+            if (!sessionsByType.has(paymentType)) {
+              sessionsByType.set(paymentType, []);
+            }
+            sessionsByType.get(paymentType).push(expiredSession);
+          }
+          
+          // Для каждого типа платежа обрабатываем только одну сессию (самую новую по expiresAt)
+          for (const [paymentType, sessions] of sessionsByType.entries()) {
+            // Сортируем по expiresAt (самая новая первая) и берем только первую
+            const sortedSessions = sessions.sort((a, b) => {
+              const aExpires = a.expiresAt || 0;
+              const bExpires = b.expiresAt || 0;
+              return bExpires - aExpires; // Сортируем по убыванию (новая первая)
+            });
+            
+            const expiredSession = sortedSessions[0];
+            
+            // Логируем, если было несколько сессий одного типа
+            if (sortedSessions.length > 1) {
+              this.logger.info('Multiple expired sessions of same type found, processing only the newest', {
+                dealId,
+                paymentType,
+                totalSessions: sortedSessions.length,
+                selectedSessionId: expiredSession.sessionId,
+                selectedExpiresAt: expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000).toISOString() : 'N/A',
+                skippedSessions: sortedSessions.slice(1).map(s => ({
+                  sessionId: s.sessionId,
+                  expiresAt: s.expiresAt ? new Date(s.expiresAt * 1000).toISOString() : 'N/A'
+                }))
+              });
+            }
+            
             const isDeposit = expiredSession.paymentType === 'deposit';
             const isRest = expiredSession.paymentType === 'rest' || 
                           expiredSession.paymentType === 'second' || 
