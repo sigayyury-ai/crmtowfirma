@@ -60,32 +60,74 @@ async function analyzeDeal1680() {
       return;
     }
 
-    // Пробуем разные варианты названий таблиц
-    let sessions = null;
-    let sessionsError = null;
-    
-    // Вариант 1: stripe_sessions
-    const result1 = await supabase
-      .from('stripe_sessions')
+    // Ищем Stripe платежи напрямую через Supabase
+    console.log('Поиск Stripe платежей...');
+    const { data: stripePayments, error: paymentsError } = await supabase
+      .from('stripe_payments')
       .select('*')
-      .eq('deal_id', dealId)
+      .eq('deal_id', String(dealId))
       .order('created_at', { ascending: false });
     
-    if (result1.error && result1.error.code === 'PGRST116') {
-      // Таблица не найдена, пробуем другой вариант
-      console.log('⚠️  Таблица stripe_sessions не найдена, пробуем другие варианты...');
+    if (paymentsError && paymentsError.code !== 'PGRST116') {
+      console.log(`❌ Ошибка при поиске платежей: ${paymentsError.message}`);
     } else {
-      sessions = result1.data;
-      sessionsError = result1.error;
+      console.log(`\nНайдено Stripe платежей: ${stripePayments?.length || 0}`);
+      
+      if (stripePayments && stripePayments.length > 0) {
+      let totalPaid = 0;
+      let totalPaidPln = 0;
+      
+      stripePayments.forEach((payment, i) => {
+        console.log(`\n  Платеж ${i + 1}:`);
+        console.log(`    ID: ${payment.id}`);
+        console.log(`    Session ID: ${payment.session_id}`);
+        console.log(`    Payment Intent: ${payment.payment_intent_id || 'N/A'}`);
+        console.log(`    Статус: ${payment.status}`);
+        console.log(`    Сумма: ${payment.amount} ${payment.currency}`);
+        console.log(`    Сумма в PLN: ${payment.amount_pln || 'N/A'}`);
+        console.log(`    Создан: ${payment.created_at}`);
+        console.log(`    Обновлен: ${payment.updated_at}`);
+        console.log(`    Тип: ${payment.payment_type || 'N/A'}`);
+        console.log(`    График: ${payment.payment_schedule || 'N/A'}`);
+        
+        if (payment.status === 'paid' || payment.status === 'succeeded') {
+          totalPaid += parseFloat(payment.amount || 0);
+          totalPaidPln += parseFloat(payment.amount_pln || 0);
+        }
+      });
+      
+      console.log(`\n💰 ИТОГО ОПЛАЧЕНО:`);
+      console.log(`    ${totalPaid.toFixed(2)} EUR`);
+      console.log(`    ${totalPaidPln.toFixed(2)} PLN`);
+      console.log(`    Ожидаемая сумма: ${deal.value} ${deal.currency}`);
+      
+      const expectedAmount = parseFloat(deal.value || 0);
+      const paidPercent = expectedAmount > 0 ? (totalPaid / expectedAmount * 100).toFixed(1) : 0;
+      console.log(`    Оплачено: ${paidPercent}%`);
+      
+      if (totalPaid === 0) {
+        console.log(`\n⚠️  ВНИМАНИЕ: Нет оплаченных платежей!`);
+      }
+      } else {
+        console.log(`\n⚠️  ВНИМАНИЕ: Stripe платежи не найдены!`);
+      }
     }
 
-    if (sessionsError) {
+    // Ищем Stripe сессии напрямую через Supabase
+    console.log('\nПоиск Stripe сессий...');
+    const { data: stripeSessions, error: sessionsError } = await supabase
+      .from('stripe_sessions')
+      .select('*')
+      .eq('deal_id', String(dealId))
+      .order('created_at', { ascending: false });
+    
+    if (sessionsError && sessionsError.code !== 'PGRST116') {
       console.log(`❌ Ошибка при поиске сессий: ${sessionsError.message}`);
     } else {
-      console.log(`Найдено Stripe сессий: ${sessions?.length || 0}`);
+      console.log(`Найдено Stripe сессий: ${stripeSessions?.length || 0}`);
       
-      if (sessions && sessions.length > 0) {
-        sessions.forEach((session, i) => {
+      if (stripeSessions && stripeSessions.length > 0) {
+        stripeSessions.forEach((session, i) => {
           console.log(`\n  Сессия ${i + 1}:`);
           console.log(`    ID: ${session.id}`);
           console.log(`    Session ID: ${session.session_id}`);
@@ -94,32 +136,8 @@ async function analyzeDeal1680() {
           console.log(`    Создана: ${session.created_at}`);
           console.log(`    Обновлена: ${session.updated_at}`);
           console.log(`    Payment Intent: ${session.payment_intent_id || 'N/A'}`);
-          console.log(`    Metadata: ${JSON.stringify(session.metadata || {})}`);
-        });
-      }
-    }
-
-    // Ищем Stripe платежи
-    const { data: payments, error: paymentsError } = await supabase
-      .from('stripe_payments')
-      .select('*')
-      .eq('deal_id', dealId)
-      .order('created_at', { ascending: false });
-
-    if (paymentsError && paymentsError.code !== 'PGRST116') {
-      console.log(`❌ Ошибка при поиске платежей: ${paymentsError.message}`);
-    } else {
-      console.log(`\nНайдено Stripe платежей: ${payments?.length || 0}`);
-      
-      if (payments && payments.length > 0) {
-        payments.forEach((payment, i) => {
-          console.log(`\n  Платеж ${i + 1}:`);
-          console.log(`    ID: ${payment.id}`);
-          console.log(`    Session ID: ${payment.session_id}`);
-          console.log(`    Статус: ${payment.status}`);
-          console.log(`    Сумма: ${payment.amount} ${payment.currency}`);
-          console.log(`    Создан: ${payment.created_at}`);
-          console.log(`    Обновлен: ${payment.updated_at}`);
+          console.log(`    Тип: ${session.payment_type || 'N/A'}`);
+          console.log(`    График: ${session.payment_schedule || 'N/A'}`);
         });
       }
     }
@@ -240,8 +258,8 @@ async function analyzeDeal1680() {
     console.log('📊 РЕЗЮМЕ');
     console.log('='.repeat(80));
     console.log(`Сделка: ${deal.title} (${deal.status})`);
-    console.log(`Stripe сессий: ${sessions?.length || 0}`);
-    console.log(`Stripe платежей: ${payments?.length || 0}`);
+    console.log(`Stripe сессий: ${stripeSessions?.length || 0}`);
+    console.log(`Stripe платежей: ${stripePayments?.length || 0}`);
     console.log(`Напоминаний о вторых платежах: ${proformaReminders?.length || 0}`);
     
     if (proformaReminders && proformaReminders.length > 0) {
