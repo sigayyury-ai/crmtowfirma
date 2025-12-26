@@ -167,6 +167,7 @@
                 <div class="payments-subnav">
                     <button class="subtab-button active" data-payments-tab="incoming">Входящие</button>
                     <button class="subtab-button" data-payments-tab="outgoing">Исходящие</button>
+                    <button class="subtab-button" data-payments-tab="diagnostics">🔍 Диагностика</button>
                 </div>
                 <section class="payments-section payments-subtab-content active" id="payments-incoming">
                     <div class="section-header">
@@ -200,6 +201,19 @@
                             src="expenses.html?embedded=1"
                             title="Исходящие платежи"
                             loading="lazy"></iframe>
+                    </div>
+                </section>
+                <section class="payments-section payments-subtab-content" id="payments-diagnostics">
+                    <div class="section-header">
+                        <h2>🔍 Диагностика сделок</h2>
+                        <div class="controls">
+                            <input type="number" id="diagnostics-deal-id" placeholder="ID сделки" class="input-field" style="width: 150px; margin-right: 10px;">
+                            <button id="diagnostics-load-btn" class="btn btn-primary">Загрузить</button>
+                            <button id="diagnostics-clear-btn" class="btn btn-secondary">Очистить</button>
+                        </div>
+                    </div>
+                    <div id="diagnostics-content" class="diagnostics-content">
+                        <div class="placeholder">Введите ID сделки и нажмите "Загрузить" для получения диагностической информации</div>
                     </div>
                 </section>
             </div>

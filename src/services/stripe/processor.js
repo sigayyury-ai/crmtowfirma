@@ -533,6 +533,28 @@ class StripeProcessorService {
       });
       return;
     }
+    
+    // Проверка несоответствия валюты платежа и валюты сделки
+    const dealCurrency = crmContext?.deal?.currency || null;
+    if (dealId && dealCurrency && currency && currency !== dealCurrency) {
+      const dealValue = crmContext?.deal?.value || null;
+      this.logger.warn('⚠️ Currency mismatch detected: payment currency differs from deal currency', {
+        dealId,
+        sessionId: session.id,
+        paymentCurrency: currency,
+        dealCurrency: dealCurrency,
+        paymentAmount: amount,
+        dealValue: dealValue,
+        note: 'User may have changed currency in Stripe Checkout. Payment will be processed based on webhook confirmation, not amount comparison. This is a normal situation if user changed currency during checkout.'
+      });
+      
+      // ВАЖНО: При разных валютах мы полагаемся на webhook подтверждение факта оплаты,
+      // а не на сравнение сумм. Это нормальная ситуация, если пользователь изменил валюту в Checkout.
+      // Платеж все равно должен быть обработан, так как webhook подтверждает факт оплаты.
+      // Диагностика будет показывать это как информационное сообщение, если есть webhook подтверждение,
+      // или как предупреждение, если webhook подтверждения нет.
+    }
+    
     const customerType = crmContext?.isB2B ? 'organization' : 'person';
     
     // Определяем, должен ли применяться VAT (для расчета)

@@ -145,6 +145,11 @@ function cacheDom() {
     paymentsSubtabButtons: Array.from(document.querySelectorAll('[data-payments-tab]')),
     paymentsIncomingSection: document.getElementById('payments-incoming'),
     paymentsOutgoingSection: document.getElementById('payments-outgoing'),
+    paymentsDiagnosticsSection: document.getElementById('payments-diagnostics'),
+    diagnosticsDealId: document.getElementById('diagnostics-deal-id'),
+    diagnosticsLoadBtn: document.getElementById('diagnostics-load-btn'),
+    diagnosticsClearBtn: document.getElementById('diagnostics-clear-btn'),
+    diagnosticsContent: document.getElementById('diagnostics-content'),
     outgoingExpensesIframe: document.getElementById('outgoing-expenses-iframe'),
     outgoingUploadButton: document.getElementById('outgoing-upload-btn'),
     outgoingRefreshButton: document.getElementById('outgoing-refresh-btn'),
@@ -214,6 +219,15 @@ function bindEvents() {
     }
   });
   initPaymentsSubtabs();
+  
+  // Диагностика сделок
+  elements.diagnosticsLoadBtn?.addEventListener('click', loadDealDiagnostics);
+  elements.diagnosticsClearBtn?.addEventListener('click', clearDealDiagnostics);
+  elements.diagnosticsDealId?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      loadDealDiagnostics();
+    }
+  });
 
   initDeletedTab();
 
@@ -329,7 +343,8 @@ function togglePaymentsSubtab(subtab, options = {}) {
   activePaymentsSubtab = subtab || 'incoming';
   const sections = {
     incoming: elements.paymentsIncomingSection,
-    outgoing: elements.paymentsOutgoingSection
+    outgoing: elements.paymentsOutgoingSection,
+    diagnostics: elements.paymentsDiagnosticsSection
   };
 
   elements.paymentsSubtabButtons.forEach((btn) => {
@@ -352,7 +367,9 @@ function togglePaymentsSubtab(subtab, options = {}) {
 
   if (!suppressPathUpdate && activeTab === 'payments') {
     const targetPath =
-      activePaymentsSubtab === 'incoming' ? '/vat-margin/payments' : '/vat-margin/expenses';
+      activePaymentsSubtab === 'incoming' ? '/vat-margin/payments' : 
+      activePaymentsSubtab === 'outgoing' ? '/vat-margin/expenses' :
+      '/vat-margin/diagnostics';
     if (window.location.pathname !== targetPath) {
       window.history.replaceState(null, '', targetPath);
     }
@@ -3172,5 +3189,329 @@ function getInitialPaymentsSubtabFromPath(pathname) {
   if (pathname === '/expenses' || pathname === '/vat-margin/expenses') {
     return 'outgoing';
   }
+  if (pathname === '/vat-margin/diagnostics') {
+    return 'diagnostics';
+  }
   return 'incoming';
+}
+
+// Диагностика сделок
+async function loadDealDiagnostics() {
+  const dealId = elements.diagnosticsDealId?.value?.trim();
+  if (!dealId) {
+    alert('Введите ID сделки');
+    return;
+  }
+  
+  const dealIdNum = parseInt(dealId);
+  if (isNaN(dealIdNum)) {
+    alert('ID сделки должен быть числом');
+    return;
+  }
+  
+  const contentEl = elements.diagnosticsContent;
+  if (!contentEl) return;
+  
+  contentEl.innerHTML = '<div class="loading">Загрузка диагностики...</div>';
+  
+  try {
+    const response = await fetch(`${API_BASE}/pipedrive/deals/${dealIdNum}/diagnostics`);
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.message || 'Ошибка загрузки диагностики');
+    }
+    
+    renderDiagnostics(data);
+  } catch (error) {
+    console.error('Error loading diagnostics:', error);
+    contentEl.innerHTML = `<div class="error">Ошибка: ${error.message}</div>`;
+  }
+}
+
+function clearDealDiagnostics() {
+  if (elements.diagnosticsDealId) {
+    elements.diagnosticsDealId.value = '';
+  }
+  if (elements.diagnosticsContent) {
+    elements.diagnosticsContent.innerHTML = '<div class="placeholder">Введите ID сделки и нажмите "Загрузить" для получения диагностической информации</div>';
+  }
+}
+
+function renderDiagnostics(data) {
+  const contentEl = elements.diagnosticsContent;
+  if (!contentEl) return;
+  
+  if (!data.success) {
+    contentEl.innerHTML = `<div class="error">Ошибка: ${data.error || 'Неизвестная ошибка'}</div>`;
+    return;
+  }
+  
+  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues } = data;
+  
+  let html = '<div class="diagnostics-container">';
+  
+  // Заголовок
+  html += `<div class="diagnostics-header">
+    <h3>Диагностика сделки #${data.dealId}</h3>
+    <div class="diagnostics-meta">Сгенерировано: ${new Date(data.generatedAt).toLocaleString('ru-RU')}</div>
+  </div>`;
+  
+  // Информация о сделке
+  if (dealInfo.found) {
+    html += `<div class="diagnostics-section">
+      <h4>📋 Информация о сделке</h4>
+      <div class="diagnostics-grid">
+        <div><strong>Название:</strong> ${escapeHtml(dealInfo.title || 'N/A')}</div>
+        <div><strong>Сумма:</strong> ${dealInfo.value || 0} ${dealInfo.currency || 'PLN'}</div>
+        <div><strong>Статус:</strong> ${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</div>
+        <div><strong>Дата закрытия:</strong> ${dealInfo.closeDate || 'N/A'}</div>
+        ${dealInfo.person ? `<div><strong>Клиент:</strong> ${escapeHtml(dealInfo.person.name || 'N/A')}</div>` : ''}
+        ${dealInfo.person?.email ? `<div><strong>Email:</strong> ${escapeHtml(dealInfo.person.email)}</div>` : ''}
+      </div>
+    </div>`;
+  } else {
+    html += `<div class="diagnostics-section error">
+      <h4>❌ Сделка не найдена</h4>
+      <p>${dealInfo.error || 'Неизвестная ошибка'}</p>
+    </div>`;
+  }
+  
+  // Сводка
+  const dealCurrency = summary.dealCurrency || dealInfo.currency || 'PLN';
+  html += `<div class="diagnostics-section">
+    <h4>📊 Сводка</h4>
+    <div class="diagnostics-grid">
+      <div><strong>Сумма сделки:</strong> ${summary.dealValue || 0} ${dealCurrency}</div>
+      <div><strong>Оплачено:</strong> ${summary.totalPaidInOriginalCurrency || summary.totalPaid || 0} ${dealCurrency}</div>
+      ${summary.totalPaid && summary.totalPaidInOriginalCurrency && summary.totalPaid !== summary.totalPaidInOriginalCurrency 
+        ? `<div><strong>Оплачено (в PLN):</strong> ${summary.totalPaid || 0} PLN</div>` 
+        : ''}
+      ${summary.hasCurrencyMismatch 
+        ? `<div class="warning"><strong>⚠️ Разные валюты:</strong> Проверка по факту webhook подтверждения</div>
+           <div><strong>Webhook подтверждений:</strong> ${summary.stripeWebhookVerifiedCount || 0}</div>` 
+        : ''}
+      <div><strong>Остаток:</strong> ${summary.remaining !== null ? `${summary.remaining || 0} ${dealCurrency}` : 'N/A (разные валюты)'}</div>
+      <div><strong>Прогресс оплаты:</strong> ${summary.paymentProgress?.toFixed(1) || 0}%</div>
+      <div><strong>Stripe платежей:</strong> ${summary.stripePaymentsCount || 0} (оплачено: ${summary.stripePaidCount || 0}, webhook: ${summary.stripeWebhookVerifiedCount || 0})</div>
+      <div><strong>Proforma платежей:</strong> ${summary.proformaPaymentsCount || 0}</div>
+      <div><strong>Проформ:</strong> ${summary.proformasCount || 0}</div>
+      <div><strong>Наличных платежей:</strong> ${summary.cashPaymentsCount || 0}</div>
+      <div><strong>Возвратов:</strong> ${summary.refundsCount || 0}</div>
+    </div>
+  </div>`;
+  
+  // Проблемы
+  if (issues && issues.length > 0) {
+    html += `<div class="diagnostics-section">
+      <h4>⚠️ Проблемы и предупреждения</h4>
+      <div class="issues-list">`;
+    
+    issues.forEach(issue => {
+      const severityClass = issue.severity === 'critical' ? 'critical' : 
+                           issue.severity === 'warning' ? 'warning' : 'info';
+      html += `<div class="issue-item ${severityClass}">
+        <div class="issue-header">
+          <strong>${issue.severity === 'critical' ? '🔴' : issue.severity === 'warning' ? '🟡' : 'ℹ️'} ${issue.message}</strong>
+        </div>
+        <div class="issue-details">${formatIssueDetails(issue.details)}</div>
+      </div>`;
+    });
+    
+    html += `</div></div>`;
+  }
+  
+  // Платежи
+  html += `<div class="diagnostics-section">
+    <h4>💳 Платежи</h4>`;
+  
+  if (payments.stripe.length > 0) {
+    html += `<h5>Stripe платежи (${payments.stripe.length})</h5>
+    <table class="diagnostics-table">
+      <thead>
+        <tr>
+          <th>Тип</th>
+          <th>Статус</th>
+          <th>Сумма</th>
+          <th>Валюта</th>
+          <th>В PLN</th>
+          <th>Дата создания</th>
+          <th>Webhook</th>
+          <th>Сессия</th>
+        </tr>
+      </thead>
+      <tbody>`;
+    
+    payments.stripe.forEach(p => {
+      html += `<tr>
+        <td>${p.paymentType || 'N/A'}</td>
+        <td><span class="status-badge ${p.paymentStatus}">${p.paymentStatus}</span></td>
+        <td>${p.amount || 0} ${p.currency || 'PLN'}</td>
+        <td>${p.currency || 'PLN'}</td>
+        ${p.amountPln && p.amountPln !== p.amount 
+          ? `<td>${p.amountPln} PLN<br><small>курс: ${p.exchangeRate || 'N/A'}</small></td>` 
+          : '<td>-</td>'}
+        <td>${p.createdAt ? new Date(p.createdAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
+        <td>
+          ${p.webhookVerified ? '<span class="status-badge success">✅ Webhook</span>' : '<span class="status-badge warning">❌ Нет webhook</span>'}
+          ${p.webhookEvents && p.webhookEvents.length > 0 
+            ? `<br><small>${p.webhookEvents.length} событий</small>` 
+            : ''}
+        </td>
+        <td>${p.sessionUrl ? `<a href="${p.sessionUrl}" target="_blank">Открыть</a>` : 'N/A'}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table>`;
+  }
+  
+  if (payments.proforma.length > 0) {
+    html += `<h5>Proforma платежи (${payments.proforma.length})</h5>
+    <table class="diagnostics-table">
+      <thead>
+        <tr>
+          <th>Сумма</th>
+          <th>Валюта</th>
+          <th>Дата</th>
+          <th>Проформа</th>
+          <th>Статус</th>
+          <th>Описание</th>
+        </tr>
+      </thead>
+      <tbody>`;
+    
+    payments.proforma.forEach(p => {
+      html += `<tr>
+        <td>${p.amount || 0}</td>
+        <td>${p.currency || 'PLN'}</td>
+        <td>${p.operationDate ? new Date(p.operationDate).toLocaleDateString('ru-RU') : 'N/A'}</td>
+        <td>${p.proformaNumber || 'N/A'}</td>
+        <td><span class="status-badge ${p.paymentStatus}">${p.paymentStatus}</span></td>
+        <td>${escapeHtml(p.description || '')}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table>`;
+  }
+  
+  html += `</div>`;
+  
+  // Проформы
+  if (proformas && proformas.length > 0) {
+    html += `<div class="diagnostics-section">
+      <h4>🧾 Проформы (${proformas.length})</h4>
+      <table class="diagnostics-table">
+        <thead>
+          <tr>
+            <th>Номер</th>
+            <th>Сумма</th>
+            <th>Оплачено</th>
+            <th>Остаток</th>
+            <th>Статус</th>
+            <th>Дата выдачи</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+    proformas.forEach(p => {
+      html += `<tr>
+        <td>${escapeHtml(p.fullnumber || 'N/A')}</td>
+        <td>${p.total || 0} ${p.currency || 'PLN'}</td>
+        <td>${p.paymentsTotal || 0} ${p.currency || 'PLN'}</td>
+        <td>${p.remaining || 0} ${p.currency || 'PLN'}</td>
+        <td><span class="status-badge ${p.status}">${p.status}</span></td>
+        <td>${p.issuedAt ? new Date(p.issuedAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table></div>`;
+  }
+  
+  // Возвраты
+  if (refunds && (refunds.stripe.length > 0 || refunds.cash.length > 0)) {
+    html += `<div class="diagnostics-section">
+      <h4>↩️ Возвраты (${refunds.stripe.length + refunds.cash.length})</h4>`;
+    
+    if (refunds.stripe.length > 0) {
+      html += `<h5>Stripe возвраты</h5>
+      <table class="diagnostics-table">
+        <thead>
+          <tr>
+            <th>Сумма</th>
+            <th>Валюта</th>
+            <th>Причина</th>
+            <th>Дата</th>
+          </tr>
+        </thead>
+        <tbody>`;
+      
+      refunds.stripe.forEach(r => {
+        html += `<tr>
+          <td>${Math.abs(r.amount || 0)}</td>
+          <td>${r.currency || 'PLN'}</td>
+          <td>${r.reason || 'N/A'}</td>
+          <td>${r.loggedAt ? new Date(r.loggedAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
+        </tr>`;
+      });
+      
+      html += `</tbody></table>`;
+    }
+    
+    html += `</div>`;
+  }
+  
+  // Уведомления
+  if (notifications && notifications.proformaReminders.length > 0) {
+    html += `<div class="diagnostics-section">
+      <h4>📨 Уведомления</h4>
+      <p>Отправлено напоминаний о проформах: ${notifications.proformaReminders.length}</p>
+      <table class="diagnostics-table">
+        <thead>
+          <tr>
+            <th>Дата платежа</th>
+            <th>Дата отправки</th>
+            <th>Проформа</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+    notifications.proformaReminders.forEach(n => {
+      html += `<tr>
+        <td>${n.secondPaymentDate || 'N/A'}</td>
+        <td>${n.sentAt ? new Date(n.sentAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
+        <td>${escapeHtml(n.proformaNumber || 'N/A')}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table></div>`;
+  }
+  
+  html += '</div>';
+  
+  contentEl.innerHTML = html;
+}
+
+function formatIssueDetails(details) {
+  if (!details || Object.keys(details).length === 0) {
+    return '';
+  }
+  
+  return Object.entries(details)
+    .map(([key, value]) => {
+      if (Array.isArray(value)) {
+        return `<strong>${key}:</strong> ${value.length} элементов`;
+      }
+      if (typeof value === 'object') {
+        return `<strong>${key}:</strong> ${JSON.stringify(value)}`;
+      }
+      return `<strong>${key}:</strong> ${value}`;
+    })
+    .join('<br>');
+}
+
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }

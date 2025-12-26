@@ -1019,6 +1019,38 @@ router.get('/pipedrive/deals/:id/payments', async (req, res) => {
 });
 
 /**
+ * GET /api/pipedrive/deals/:id/diagnostics
+ * Получить полную диагностическую информацию по сделке
+ * Включает: все платежи, проформы, возвраты, автоматизации, уведомления, проблемы
+ */
+router.get('/pipedrive/deals/:id/diagnostics', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const DealDiagnosticsService = require('../services/dealDiagnosticsService');
+    const diagnosticsService = new DealDiagnosticsService();
+    
+    const diagnostics = await diagnosticsService.getDealDiagnostics(dealId);
+    
+    res.json(diagnostics);
+  } catch (error) {
+    logger.error('Error getting deal diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pipedrive/organizations/:id
  * Получить организацию по ID
  */
