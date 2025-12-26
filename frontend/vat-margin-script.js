@@ -3243,7 +3243,13 @@ function renderDiagnostics(data) {
   if (!contentEl) return;
   
   if (!data.success) {
-    contentEl.innerHTML = `<div class="error">Ошибка: ${data.error || 'Неизвестная ошибка'}</div>`;
+    contentEl.innerHTML = `<div class="diagnostics-error-box">
+      <div class="error-icon">❌</div>
+      <div class="error-content">
+        <h3>Ошибка загрузки диагностики</h3>
+        <p>${data.error || 'Неизвестная ошибка'}</p>
+      </div>
+    </div>`;
     return;
   }
   
@@ -3251,239 +3257,467 @@ function renderDiagnostics(data) {
   
   let html = '<div class="diagnostics-container">';
   
-  // Заголовок
+  // Заголовок с иконкой и метаданными
   html += `<div class="diagnostics-header">
-    <h3>Диагностика сделки #${data.dealId}</h3>
-    <div class="diagnostics-meta">Сгенерировано: ${new Date(data.generatedAt).toLocaleString('ru-RU')}</div>
+    <div class="diagnostics-header-main">
+      <div class="diagnostics-icon">🔍</div>
+      <div class="diagnostics-title">
+        <h2>Диагностика сделки #${data.dealId}</h2>
+        <div class="diagnostics-meta">
+          <span class="meta-item">🕐 ${new Date(data.generatedAt).toLocaleString('ru-RU')}</span>
+        </div>
+      </div>
+    </div>
+    ${issues && issues.length > 0 
+      ? `<div class="diagnostics-status-badge ${issues.some(i => i.severity === 'critical') ? 'critical' : issues.some(i => i.severity === 'warning') ? 'warning' : 'info'}">
+          ${issues.filter(i => i.severity === 'critical').length > 0 ? '🔴 Критические проблемы' : 
+            issues.filter(i => i.severity === 'warning').length > 0 ? '🟡 Есть предупреждения' : 
+            'ℹ️ Информация'}
+        </div>`
+      : `<div class="diagnostics-status-badge success">✅ Проблем не обнаружено</div>`}
   </div>`;
   
-  // Информация о сделке
+  // 1. ИНФОРМАЦИЯ О СДЕЛКЕ (Flow Step 1)
   if (dealInfo.found) {
-    html += `<div class="diagnostics-section">
-      <h4>📋 Информация о сделке</h4>
-      <div class="diagnostics-grid">
-        <div><strong>Название:</strong> ${escapeHtml(dealInfo.title || 'N/A')}</div>
-        <div><strong>Сумма:</strong> ${dealInfo.value || 0} ${dealInfo.currency || 'PLN'}</div>
-        <div><strong>Статус:</strong> ${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</div>
-        <div><strong>Дата закрытия:</strong> ${dealInfo.closeDate || 'N/A'}</div>
-        ${dealInfo.person ? `<div><strong>Клиент:</strong> ${escapeHtml(dealInfo.person.name || 'N/A')}</div>` : ''}
-        ${dealInfo.person?.email ? `<div><strong>Email:</strong> ${escapeHtml(dealInfo.person.email)}</div>` : ''}
+    html += `<div class="diagnostics-flow-section" data-flow-step="1">
+      <div class="flow-section-header">
+        <div class="flow-step-number">1</div>
+        <h3>📋 Информация о сделке</h3>
+      </div>
+      <div class="diagnostics-card">
+        <div class="deal-info-grid">
+          <div class="info-item">
+            <div class="info-label">Название</div>
+            <div class="info-value">${escapeHtml(dealInfo.title || 'N/A')}</div>
+          </div>
+          <div class="info-item highlight">
+            <div class="info-label">Сумма сделки</div>
+            <div class="info-value large">${dealInfo.value || 0} ${dealInfo.currency || 'PLN'}</div>
+          </div>
+          <div class="info-item">
+            <div class="info-label">Текущий статус</div>
+            <div class="info-value">
+              <span class="status-badge stage">${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</span>
+            </div>
+          </div>
+          ${dealInfo.closeDate ? `<div class="info-item">
+            <div class="info-label">Дата закрытия</div>
+            <div class="info-value">${new Date(dealInfo.closeDate).toLocaleDateString('ru-RU')}</div>
+          </div>` : ''}
+          ${dealInfo.person ? `<div class="info-item">
+            <div class="info-label">Клиент</div>
+            <div class="info-value">${escapeHtml(dealInfo.person.name || 'N/A')}</div>
+          </div>` : ''}
+          ${dealInfo.person?.email ? `<div class="info-item">
+            <div class="info-label">Email</div>
+            <div class="info-value"><a href="mailto:${escapeHtml(dealInfo.person.email)}">${escapeHtml(dealInfo.person.email)}</a></div>
+          </div>` : ''}
+        </div>
       </div>
     </div>`;
   } else {
-    html += `<div class="diagnostics-section error">
-      <h4>❌ Сделка не найдена</h4>
-      <p>${dealInfo.error || 'Неизвестная ошибка'}</p>
+    html += `<div class="diagnostics-flow-section error" data-flow-step="1">
+      <div class="flow-section-header">
+        <div class="flow-step-number error">1</div>
+        <h3>❌ Сделка не найдена</h3>
+      </div>
+      <div class="diagnostics-card error">
+        <p>${dealInfo.error || 'Неизвестная ошибка'}</p>
+      </div>
     </div>`;
   }
   
-  // Сводка
+  // 2. СВОДКА ПЛАТЕЖЕЙ (Flow Step 2)
   const dealCurrency = summary.dealCurrency || dealInfo.currency || 'PLN';
-  html += `<div class="diagnostics-section">
-    <h4>📊 Сводка</h4>
-    <div class="diagnostics-grid">
-      <div><strong>Сумма сделки:</strong> ${summary.dealValue || 0} ${dealCurrency}</div>
-      <div><strong>Оплачено:</strong> ${summary.totalPaidInOriginalCurrency || summary.totalPaid || 0} ${dealCurrency}</div>
-      ${summary.totalPaid && summary.totalPaidInOriginalCurrency && summary.totalPaid !== summary.totalPaidInOriginalCurrency 
-        ? `<div><strong>Оплачено (в PLN):</strong> ${summary.totalPaid || 0} PLN</div>` 
-        : ''}
+  const progressPercent = summary.paymentProgress || 0;
+  const progressColor = progressPercent >= 100 ? '#10b981' : progressPercent >= 50 ? '#f59e0b' : '#ef4444';
+  
+  html += `<div class="diagnostics-flow-section" data-flow-step="2">
+    <div class="flow-section-header">
+      <div class="flow-step-number">2</div>
+      <h3>💰 Сводка платежей</h3>
+    </div>
+    <div class="diagnostics-card">
+      <div class="payment-summary-grid">
+        <div class="summary-item primary">
+          <div class="summary-label">Сумма сделки</div>
+          <div class="summary-value">${summary.dealValue || 0} ${dealCurrency}</div>
+        </div>
+        <div class="summary-item ${summary.totalPaid > 0 ? 'success' : 'warning'}">
+          <div class="summary-label">Оплачено</div>
+          <div class="summary-value">${summary.totalPaidInOriginalCurrency || summary.totalPaid || 0} ${dealCurrency}</div>
+          ${summary.totalPaid && summary.totalPaidInOriginalCurrency && summary.totalPaid !== summary.totalPaidInOriginalCurrency 
+            ? `<div class="summary-sublabel">(${summary.totalPaid || 0} PLN)</div>` 
+            : ''}
+        </div>
+        <div class="summary-item ${summary.remaining > 0 ? 'warning' : 'success'}">
+          <div class="summary-label">Остаток</div>
+          <div class="summary-value">${summary.remaining !== null ? `${summary.remaining || 0} ${dealCurrency}` : 'N/A'}</div>
+        </div>
+        <div class="summary-item progress">
+          <div class="summary-label">Прогресс оплаты</div>
+          <div class="progress-container">
+            <div class="progress-bar">
+              <div class="progress-fill" style="width: ${progressPercent}%; background: ${progressColor};"></div>
+            </div>
+            <div class="progress-text">${progressPercent.toFixed(1)}%</div>
+          </div>
+        </div>
+      </div>
+      
       ${summary.hasCurrencyMismatch 
-        ? `<div class="warning"><strong>⚠️ Разные валюты:</strong> Проверка по факту webhook подтверждения</div>
-           <div><strong>Webhook подтверждений:</strong> ${summary.stripeWebhookVerifiedCount || 0}</div>` 
+        ? `<div class="currency-warning-box">
+            <div class="warning-icon">⚠️</div>
+            <div class="warning-content">
+              <strong>Разные валюты</strong>
+              <p>Проверка выполняется по факту webhook подтверждения, а не по сумме</p>
+              <div class="warning-stats">Webhook подтверждений: ${summary.stripeWebhookVerifiedCount || 0}</div>
+            </div>
+          </div>` 
         : ''}
-      <div><strong>Остаток:</strong> ${summary.remaining !== null ? `${summary.remaining || 0} ${dealCurrency}` : 'N/A (разные валюты)'}</div>
-      <div><strong>Прогресс оплаты:</strong> ${summary.paymentProgress?.toFixed(1) || 0}%</div>
-      <div><strong>Stripe платежей:</strong> ${summary.stripePaymentsCount || 0} (оплачено: ${summary.stripePaidCount || 0}, webhook: ${summary.stripeWebhookVerifiedCount || 0})</div>
-      <div><strong>Proforma платежей:</strong> ${summary.proformaPaymentsCount || 0}</div>
-      <div><strong>Проформ:</strong> ${summary.proformasCount || 0}</div>
-      <div><strong>Наличных платежей:</strong> ${summary.cashPaymentsCount || 0}</div>
-      <div><strong>Возвратов:</strong> ${summary.refundsCount || 0}</div>
+      
+      <div class="payment-stats-grid">
+        <div class="stat-item">
+          <div class="stat-icon">💳</div>
+          <div class="stat-content">
+            <div class="stat-value">${summary.stripePaymentsCount || 0}</div>
+            <div class="stat-label">Stripe платежей</div>
+            <div class="stat-sublabel">оплачено: ${summary.stripePaidCount || 0}, webhook: ${summary.stripeWebhookVerifiedCount || 0}</div>
+          </div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-icon">🧾</div>
+          <div class="stat-content">
+            <div class="stat-value">${summary.proformaPaymentsCount || 0}</div>
+            <div class="stat-label">Proforma платежей</div>
+          </div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-icon">📄</div>
+          <div class="stat-content">
+            <div class="stat-value">${summary.proformasCount || 0}</div>
+            <div class="stat-label">Проформ</div>
+          </div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-icon">💵</div>
+          <div class="stat-content">
+            <div class="stat-value">${summary.cashPaymentsCount || 0}</div>
+            <div class="stat-label">Наличных платежей</div>
+          </div>
+        </div>
+        ${summary.refundsCount > 0 ? `<div class="stat-item warning">
+          <div class="stat-icon">↩️</div>
+          <div class="stat-content">
+            <div class="stat-value">${summary.refundsCount || 0}</div>
+            <div class="stat-label">Возвратов</div>
+          </div>
+        </div>` : ''}
+      </div>
     </div>
   </div>`;
   
-  // Проблемы
+  // 3. ПРОБЛЕМЫ И ПРЕДУПРЕЖДЕНИЯ (Flow Step 3)
   if (issues && issues.length > 0) {
-    html += `<div class="diagnostics-section">
-      <h4>⚠️ Проблемы и предупреждения</h4>
-      <div class="issues-list">`;
+    const criticalIssues = issues.filter(i => i.severity === 'critical');
+    const warningIssues = issues.filter(i => i.severity === 'warning');
+    const infoIssues = issues.filter(i => i.severity === 'info');
     
-    issues.forEach(issue => {
+    html += `<div class="diagnostics-flow-section ${criticalIssues.length > 0 ? 'has-critical' : ''}" data-flow-step="3">
+      <div class="flow-section-header">
+        <div class="flow-step-number ${criticalIssues.length > 0 ? 'error' : warningIssues.length > 0 ? 'warning' : 'info'}">3</div>
+        <h3>⚠️ Проблемы и предупреждения</h3>
+        <div class="issues-count">
+          ${criticalIssues.length > 0 ? `<span class="count-badge critical">${criticalIssues.length} критических</span>` : ''}
+          ${warningIssues.length > 0 ? `<span class="count-badge warning">${warningIssues.length} предупреждений</span>` : ''}
+          ${infoIssues.length > 0 ? `<span class="count-badge info">${infoIssues.length} информационных</span>` : ''}
+        </div>
+      </div>
+      <div class="diagnostics-card">
+        <div class="issues-list">`;
+    
+    issues.forEach((issue, index) => {
       const severityClass = issue.severity === 'critical' ? 'critical' : 
                            issue.severity === 'warning' ? 'warning' : 'info';
+      const severityIcon = issue.severity === 'critical' ? '🔴' : 
+                          issue.severity === 'warning' ? '🟡' : 'ℹ️';
+      
       html += `<div class="issue-item ${severityClass}">
-        <div class="issue-header">
-          <strong>${issue.severity === 'critical' ? '🔴' : issue.severity === 'warning' ? '🟡' : 'ℹ️'} ${issue.message}</strong>
+        <div class="issue-icon">${severityIcon}</div>
+        <div class="issue-content">
+          <div class="issue-header">
+            <strong>${issue.message}</strong>
+            <span class="issue-code">${issue.code || 'N/A'}</span>
+          </div>
+          ${issue.details && Object.keys(issue.details).length > 0 
+            ? `<div class="issue-details">${formatIssueDetails(issue.details)}</div>` 
+            : ''}
         </div>
-        <div class="issue-details">${formatIssueDetails(issue.details)}</div>
       </div>`;
     });
+    
+    html += `</div></div></div>`;
+  } else {
+    html += `<div class="diagnostics-flow-section success" data-flow-step="3">
+      <div class="flow-section-header">
+        <div class="flow-step-number success">3</div>
+        <h3>✅ Проверка проблем</h3>
+      </div>
+      <div class="diagnostics-card success">
+        <div class="success-message">
+          <div class="success-icon">✅</div>
+          <div class="success-text">Проблем не обнаружено. Все системы работают корректно.</div>
+        </div>
+      </div>
+    </div>`;
+  }
+  
+  // 4. ДЕТАЛИ ПЛАТЕЖЕЙ (Flow Step 4)
+  html += `<div class="diagnostics-flow-section" data-flow-step="4">
+    <div class="flow-section-header">
+      <div class="flow-step-number">4</div>
+      <h3>💳 Детали платежей</h3>
+    </div>
+    <div class="diagnostics-card">`;
+  
+  if (payments.stripe.length > 0) {
+    html += `<div class="payment-type-section">
+      <div class="payment-type-header">
+        <div class="payment-type-icon">💳</div>
+        <h4>Stripe платежи <span class="count-badge">${payments.stripe.length}</span></h4>
+      </div>
+      <div class="table-wrapper">
+        <table class="diagnostics-table modern-table">
+          <thead>
+            <tr>
+              <th>Тип</th>
+              <th>Статус</th>
+              <th>Сумма</th>
+              <th>Валюта</th>
+              <th>В PLN</th>
+              <th>Дата</th>
+              <th>Webhook</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>`;
+    
+    payments.stripe.forEach(p => {
+      const statusClass = p.paymentStatus === 'paid' ? 'success' : p.paymentStatus === 'unpaid' ? 'warning' : 'info';
+      html += `<tr class="payment-row ${statusClass}">
+        <td><span class="payment-type-badge">${p.paymentType || 'N/A'}</span></td>
+        <td><span class="status-badge ${statusClass}">${p.paymentStatus}</span></td>
+        <td class="amount-cell"><strong>${p.amount || 0}</strong></td>
+        <td><span class="currency-badge">${p.currency || 'PLN'}</span></td>
+        <td>${p.amountPln && p.amountPln !== p.amount 
+          ? `<div class="amount-pln">${p.amountPln.toFixed(2)} PLN</div><small class="exchange-rate">курс: ${p.exchangeRate?.toFixed(4) || 'N/A'}</small>` 
+          : '<span class="no-conversion">-</span>'}
+        </td>
+        <td>${p.createdAt ? new Date(p.createdAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+        <td>
+          ${p.webhookVerified 
+            ? '<span class="webhook-badge success" title="Webhook подтвержден">✅</span>' 
+            : '<span class="webhook-badge warning" title="Webhook не подтвержден">❌</span>'}
+          ${p.webhookEvents && p.webhookEvents.length > 0 
+            ? `<div class="webhook-events-count">${p.webhookEvents.length} событий</div>` 
+            : ''}
+        </td>
+        <td>${p.sessionUrl ? `<a href="${p.sessionUrl}" target="_blank" class="action-link">Открыть в Stripe</a>` : '-'}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table></div></div>`;
+  }
+  
+  if (payments.proforma.length > 0) {
+    html += `<div class="payment-type-section">
+      <div class="payment-type-header">
+        <div class="payment-type-icon">🧾</div>
+        <h4>Proforma платежи <span class="count-badge">${payments.proforma.length}</span></h4>
+      </div>
+      <div class="table-wrapper">
+        <table class="diagnostics-table modern-table">
+          <thead>
+            <tr>
+              <th>Сумма</th>
+              <th>Валюта</th>
+              <th>Дата</th>
+              <th>Проформа</th>
+              <th>Статус</th>
+              <th>Описание</th>
+            </tr>
+          </thead>
+          <tbody>`;
+    
+    payments.proforma.forEach(p => {
+      html += `<tr>
+        <td class="amount-cell"><strong>${p.amount || 0}</strong></td>
+        <td><span class="currency-badge">${p.currency || 'PLN'}</span></td>
+        <td>${p.operationDate ? new Date(p.operationDate).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+        <td><code class="proforma-number">${escapeHtml(p.proformaNumber || 'N/A')}</code></td>
+        <td><span class="status-badge ${p.matchStatus || 'matched'}">${p.matchStatus || 'matched'}</span></td>
+        <td class="description-cell">${escapeHtml(p.description || '')}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table></div></div>`;
+  }
+  
+  if (payments.stripe.length === 0 && payments.proforma.length === 0) {
+    html += `<div class="empty-state">
+      <div class="empty-icon">💳</div>
+      <div class="empty-text">Платежи не найдены</div>
+    </div>`;
+  }
+  
+  html += `</div></div>`;
+  
+  // 5. ПРОФОРМЫ (Flow Step 5)
+  if (proformas && proformas.length > 0) {
+    html += `<div class="diagnostics-flow-section" data-flow-step="5">
+      <div class="flow-section-header">
+        <div class="flow-step-number">5</div>
+        <h3>🧾 Проформы</h3>
+        <div class="issues-count"><span class="count-badge">${proformas.length}</span></div>
+      </div>
+      <div class="diagnostics-card">
+        <div class="table-wrapper">
+          <table class="diagnostics-table modern-table">
+            <thead>
+              <tr>
+                <th>Номер</th>
+                <th>Сумма</th>
+                <th>Оплачено</th>
+                <th>Остаток</th>
+                <th>Статус</th>
+                <th>Дата выдачи</th>
+              </tr>
+            </thead>
+            <tbody>`;
+    
+    proformas.forEach(p => {
+      const isPaid = (p.remaining || 0) <= 0.01;
+      html += `<tr class="${isPaid ? 'proforma-paid' : 'proforma-unpaid'}">
+        <td><code class="proforma-number">${escapeHtml(p.fullnumber || 'N/A')}</code></td>
+        <td class="amount-cell"><strong>${p.total || 0}</strong> <span class="currency-badge">${p.currency || 'PLN'}</span></td>
+        <td class="amount-cell">${p.paymentsTotal || 0} <span class="currency-badge">${p.currency || 'PLN'}</span></td>
+        <td class="amount-cell ${isPaid ? 'success' : 'warning'}">${p.remaining || 0} <span class="currency-badge">${p.currency || 'PLN'}</span></td>
+        <td><span class="status-badge ${p.status}">${p.status}</span></td>
+        <td>${p.issuedAt ? new Date(p.issuedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+      </tr>`;
+    });
+    
+    html += `</tbody></table></div></div></div>`;
+  }
+  
+  // 6. ВОЗВРАТЫ (Flow Step 6)
+  if (refunds && (refunds.stripe.length > 0 || refunds.cash.length > 0)) {
+    html += `<div class="diagnostics-flow-section" data-flow-step="6">
+      <div class="flow-section-header">
+        <div class="flow-step-number warning">6</div>
+        <h3>↩️ Возвраты</h3>
+        <div class="issues-count"><span class="count-badge warning">${refunds.stripe.length + refunds.cash.length}</span></div>
+      </div>
+      <div class="diagnostics-card">`;
+    
+    if (refunds.stripe.length > 0) {
+      html += `<div class="refund-type-section">
+        <div class="payment-type-header">
+          <div class="payment-type-icon">💳</div>
+          <h4>Stripe возвраты <span class="count-badge warning">${refunds.stripe.length}</span></h4>
+        </div>
+        <div class="table-wrapper">
+          <table class="diagnostics-table modern-table">
+            <thead>
+              <tr>
+                <th>Сумма</th>
+                <th>Валюта</th>
+                <th>Причина</th>
+                <th>Дата</th>
+              </tr>
+            </thead>
+            <tbody>`;
+      
+      refunds.stripe.forEach(r => {
+        html += `<tr class="refund-row">
+          <td class="amount-cell warning"><strong>-${Math.abs(r.amount || 0)}</strong></td>
+          <td><span class="currency-badge">${r.currency || 'PLN'}</span></td>
+          <td>${escapeHtml(r.reason || 'N/A')}</td>
+          <td>${r.loggedAt ? new Date(r.loggedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+        </tr>`;
+      });
+      
+      html += `</tbody></table></div></div>`;
+    }
     
     html += `</div></div>`;
   }
   
-  // Платежи
-  html += `<div class="diagnostics-section">
-    <h4>💳 Платежи</h4>`;
-  
-  if (payments.stripe.length > 0) {
-    html += `<h5>Stripe платежи (${payments.stripe.length})</h5>
-    <table class="diagnostics-table">
-      <thead>
-        <tr>
-          <th>Тип</th>
-          <th>Статус</th>
-          <th>Сумма</th>
-          <th>Валюта</th>
-          <th>В PLN</th>
-          <th>Дата создания</th>
-          <th>Webhook</th>
-          <th>Сессия</th>
-        </tr>
-      </thead>
-      <tbody>`;
-    
-    payments.stripe.forEach(p => {
-      html += `<tr>
-        <td>${p.paymentType || 'N/A'}</td>
-        <td><span class="status-badge ${p.paymentStatus}">${p.paymentStatus}</span></td>
-        <td>${p.amount || 0} ${p.currency || 'PLN'}</td>
-        <td>${p.currency || 'PLN'}</td>
-        ${p.amountPln && p.amountPln !== p.amount 
-          ? `<td>${p.amountPln} PLN<br><small>курс: ${p.exchangeRate || 'N/A'}</small></td>` 
-          : '<td>-</td>'}
-        <td>${p.createdAt ? new Date(p.createdAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
-        <td>
-          ${p.webhookVerified ? '<span class="status-badge success">✅ Webhook</span>' : '<span class="status-badge warning">❌ Нет webhook</span>'}
-          ${p.webhookEvents && p.webhookEvents.length > 0 
-            ? `<br><small>${p.webhookEvents.length} событий</small>` 
-            : ''}
-        </td>
-        <td>${p.sessionUrl ? `<a href="${p.sessionUrl}" target="_blank">Открыть</a>` : 'N/A'}</td>
-      </tr>`;
-    });
-    
-    html += `</tbody></table>`;
+  // 7. АВТОМАТИЗАЦИИ (Flow Step 7)
+  if (automations) {
+    html += `<div class="diagnostics-flow-section" data-flow-step="7">
+      <div class="flow-section-header">
+        <div class="flow-step-number">7</div>
+        <h3>🤖 Автоматизации статусов</h3>
+      </div>
+      <div class="diagnostics-card">
+        <div class="automation-info">
+          <div class="automation-item">
+            <div class="automation-label">Текущий статус</div>
+            <div class="automation-value">
+              <span class="status-badge stage">${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</span>
+            </div>
+          </div>
+          ${automations.expectedStage ? `<div class="automation-item">
+            <div class="automation-label">Ожидаемый статус</div>
+            <div class="automation-value">
+              <span class="status-badge stage">${automations.expectedStageName || `ID: ${automations.expectedStage}`}</span>
+            </div>
+          </div>` : ''}
+          ${automations.calculation ? `<div class="automation-item">
+            <div class="automation-label">Расчет автоматизации</div>
+            <div class="automation-value">${escapeHtml(automations.calculation.reason || 'N/A')}</div>
+          </div>` : ''}
+        </div>
+      </div>
+    </div>`;
   }
   
-  if (payments.proforma.length > 0) {
-    html += `<h5>Proforma платежи (${payments.proforma.length})</h5>
-    <table class="diagnostics-table">
-      <thead>
-        <tr>
-          <th>Сумма</th>
-          <th>Валюта</th>
-          <th>Дата</th>
-          <th>Проформа</th>
-          <th>Статус</th>
-          <th>Описание</th>
-        </tr>
-      </thead>
-      <tbody>`;
-    
-    payments.proforma.forEach(p => {
-      html += `<tr>
-        <td>${p.amount || 0}</td>
-        <td>${p.currency || 'PLN'}</td>
-        <td>${p.operationDate ? new Date(p.operationDate).toLocaleDateString('ru-RU') : 'N/A'}</td>
-        <td>${p.proformaNumber || 'N/A'}</td>
-        <td><span class="status-badge ${p.paymentStatus}">${p.paymentStatus}</span></td>
-        <td>${escapeHtml(p.description || '')}</td>
-      </tr>`;
-    });
-    
-    html += `</tbody></table>`;
-  }
-  
-  html += `</div>`;
-  
-  // Проформы
-  if (proformas && proformas.length > 0) {
-    html += `<div class="diagnostics-section">
-      <h4>🧾 Проформы (${proformas.length})</h4>
-      <table class="diagnostics-table">
-        <thead>
-          <tr>
-            <th>Номер</th>
-            <th>Сумма</th>
-            <th>Оплачено</th>
-            <th>Остаток</th>
-            <th>Статус</th>
-            <th>Дата выдачи</th>
-          </tr>
-        </thead>
-        <tbody>`;
-    
-    proformas.forEach(p => {
-      html += `<tr>
-        <td>${escapeHtml(p.fullnumber || 'N/A')}</td>
-        <td>${p.total || 0} ${p.currency || 'PLN'}</td>
-        <td>${p.paymentsTotal || 0} ${p.currency || 'PLN'}</td>
-        <td>${p.remaining || 0} ${p.currency || 'PLN'}</td>
-        <td><span class="status-badge ${p.status}">${p.status}</span></td>
-        <td>${p.issuedAt ? new Date(p.issuedAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
-      </tr>`;
-    });
-    
-    html += `</tbody></table></div>`;
-  }
-  
-  // Возвраты
-  if (refunds && (refunds.stripe.length > 0 || refunds.cash.length > 0)) {
-    html += `<div class="diagnostics-section">
-      <h4>↩️ Возвраты (${refunds.stripe.length + refunds.cash.length})</h4>`;
-    
-    if (refunds.stripe.length > 0) {
-      html += `<h5>Stripe возвраты</h5>
-      <table class="diagnostics-table">
-        <thead>
-          <tr>
-            <th>Сумма</th>
-            <th>Валюта</th>
-            <th>Причина</th>
-            <th>Дата</th>
-          </tr>
-        </thead>
-        <tbody>`;
-      
-      refunds.stripe.forEach(r => {
-        html += `<tr>
-          <td>${Math.abs(r.amount || 0)}</td>
-          <td>${r.currency || 'PLN'}</td>
-          <td>${r.reason || 'N/A'}</td>
-          <td>${r.loggedAt ? new Date(r.loggedAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
-        </tr>`;
-      });
-      
-      html += `</tbody></table>`;
-    }
-    
-    html += `</div>`;
-  }
-  
-  // Уведомления
+  // 8. УВЕДОМЛЕНИЯ (Flow Step 8)
   if (notifications && notifications.proformaReminders.length > 0) {
-    html += `<div class="diagnostics-section">
-      <h4>📨 Уведомления</h4>
-      <p>Отправлено напоминаний о проформах: ${notifications.proformaReminders.length}</p>
-      <table class="diagnostics-table">
-        <thead>
-          <tr>
-            <th>Дата платежа</th>
-            <th>Дата отправки</th>
-            <th>Проформа</th>
-          </tr>
-        </thead>
-        <tbody>`;
+    html += `<div class="diagnostics-flow-section" data-flow-step="8">
+      <div class="flow-section-header">
+        <div class="flow-step-number">8</div>
+        <h3>📨 Уведомления</h3>
+        <div class="issues-count"><span class="count-badge">${notifications.proformaReminders.length}</span></div>
+      </div>
+      <div class="diagnostics-card">
+        <div class="notification-info">
+          <div class="notification-header">
+            <div class="notification-icon">📧</div>
+            <div>Отправлено напоминаний о проформах: <strong>${notifications.proformaReminders.length}</strong></div>
+          </div>
+        </div>
+        <div class="table-wrapper">
+          <table class="diagnostics-table modern-table">
+            <thead>
+              <tr>
+                <th>Дата платежа</th>
+                <th>Дата отправки</th>
+                <th>Проформа</th>
+              </tr>
+            </thead>
+            <tbody>`;
     
     notifications.proformaReminders.forEach(n => {
       html += `<tr>
         <td>${n.secondPaymentDate || 'N/A'}</td>
-        <td>${n.sentAt ? new Date(n.sentAt).toLocaleDateString('ru-RU') : 'N/A'}</td>
-        <td>${escapeHtml(n.proformaNumber || 'N/A')}</td>
+        <td>${n.sentAt ? new Date(n.sentAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+        <td><code class="proforma-number">${escapeHtml(n.proformaNumber || 'N/A')}</code></td>
       </tr>`;
     });
     
-    html += `</tbody></table></div>`;
+    html += `</tbody></table></div></div></div>`;
   }
   
   html += '</div>';
