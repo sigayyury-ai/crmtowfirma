@@ -657,6 +657,29 @@ class SecondPaymentSchedulerService {
         message += `Дата платежа: ${formatDate(task.secondPaymentDate)}\n`;
       }
 
+      // ВАЖНО: Проверяем статус сделки перед отправкой уведомления
+      // Если сделка закрыта как "lost", не отправляем уведомления
+      try {
+        const dealResult = await this.pipedriveClient.getDeal(task.dealId);
+        if (dealResult.success && dealResult.deal) {
+          const dealStatus = dealResult.deal.status;
+          if (dealStatus === 'lost') {
+            this.logger.warn('⚠️  Сделка закрыта как потерянная, уведомление не отправляется', {
+              dealId: task.dealId,
+              status: dealStatus,
+              lostReason: dealResult.deal.lost_reason || 'не указан'
+            });
+            return { success: false, error: 'Deal is lost, notifications disabled' };
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Failed to check deal status before sending reminder', {
+          dealId: task.dealId,
+          error: error.message
+        });
+        // Продолжаем отправку, если не удалось проверить статус
+      }
+
       // Отправляем через SendPulse
       const result = await this.stripeProcessor.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 

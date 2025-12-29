@@ -1311,7 +1311,9 @@ class StripeProcessorService {
       // 5. If final flag → Camp Waiter (stage 27)
 
       // Если сделка уже в стадии "First payment" и приходит оплата → Camp Waiter (один платеж)
-      if (currentDealStageId === STAGES.FIRST_PAYMENT_ID) {
+      // Проверяем по ID: 18 (основной пайплайн) или 37 (другой пайплайн)
+      const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT_ID, 37];
+      if (FIRST_PAYMENT_STAGE_IDS.includes(currentDealStageId)) {
         await this.triggerCrmStatusAutomation(dealId, {
           reason: 'stripe:first-stage-paid'
         });
@@ -3316,7 +3318,10 @@ class StripeProcessorService {
         line_items: [lineItem],
         metadata,
         success_url: this.buildCheckoutUrl(this.checkoutSuccessUrl, dealId, 'success'),
-        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel')
+        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel'),
+        // Ограничиваем выбор валюты только валютой сделки
+        // Это предотвращает ситуацию, когда пользователь выбирает другую валюту (например, PLN вместо EUR)
+        payment_currency_types: [currency.toLowerCase()]
       };
 
       // 10. Set customer (B2B) or customer_email (B2C)
@@ -4094,39 +4099,69 @@ class StripeProcessorService {
       return { cancelled: 0, removed: 0 };
     }
 
-    const payments = await this.repository.listPayments({ dealId: String(dealId) });
     let cancelled = 0;
+    const sessionIdsToCancel = new Set();
 
+    // 1. Получаем сессии из базы данных
+    const payments = await this.repository.listPayments({ dealId: String(dealId) });
     for (const payment of payments) {
-      if (!payment?.session_id) {
-        continue;
+      if (payment?.session_id && payment.payment_status !== 'paid') {
+        sessionIdsToCancel.add(payment.session_id);
       }
-      if (payment.payment_status && payment.payment_status === 'paid') {
-        continue;
+    }
+
+    // 2. Также ищем сессии в Stripe по metadata.deal_id (важно для случаев, когда сессии не сохранены в БД)
+    try {
+      const sessions = await this.stripe.checkout.sessions.list({
+        limit: 100
+      });
+      
+      const dealSessions = sessions.data.filter(s => 
+        s.metadata && s.metadata.deal_id === String(dealId) &&
+        s.status === 'open' && // Только активные сессии
+        s.payment_status !== 'paid' // Не оплаченные
+      );
+      
+      for (const session of dealSessions) {
+        sessionIdsToCancel.add(session.id);
       }
+      
+      if (dealSessions.length > 0) {
+        this.logger.info(`Найдено активных сессий в Stripe для отмены | Deal: ${dealId} | Количество: ${dealSessions.length}`);
+      }
+    } catch (error) {
+      this.logger.warn('Failed to list Stripe sessions for cancellation', {
+        dealId,
+        error: error.message
+      });
+    }
+
+    // 3. Отменяем все найденные сессии
+    for (const sessionId of sessionIdsToCancel) {
       try {
-        await this.stripe.checkout.sessions.expire(payment.session_id);
+        await this.stripe.checkout.sessions.expire(sessionId);
         cancelled += 1;
         this.logger.info('Expired Stripe Checkout Session for deleted deal', {
           dealId,
-          sessionId: payment.session_id
+          sessionId
         });
       } catch (error) {
         if (error.code === 'resource_missing') {
           this.logger.info('Stripe Checkout Session already missing', {
             dealId,
-            sessionId: payment.session_id
+            sessionId
           });
         } else {
           this.logger.warn('Failed to expire Stripe Checkout Session', {
             dealId,
-            sessionId: payment.session_id,
+            sessionId,
             error: error.message
           });
         }
       }
     }
 
+    // 4. Удаляем записи из базы данных
     const deletionResult = await this.repository.deletePaymentsByDealId(dealId);
     if (deletionResult.deleted > 0) {
       this.logger.info('Removed stored Stripe payments for deleted deal', {
@@ -4809,6 +4844,21 @@ class StripeProcessorService {
     try {
       // Get deal with person data
       const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
+      
+      // ВАЖНО: Проверяем статус сделки перед отправкой уведомления
+      // Если сделка закрыта как "lost", не отправляем уведомления
+      if (fullDealResult.success && fullDealResult.deal) {
+        const dealStatus = fullDealResult.deal.status;
+        if (dealStatus === 'lost') {
+          this.logger.warn(`⚠️  Сделка закрыта как потерянная, уведомление не отправляется | Deal ID: ${dealId} | Status: lost`, {
+            dealId,
+            status: dealStatus,
+            lostReason: fullDealResult.deal.lost_reason || 'не указан'
+          });
+          return { success: false, error: 'Deal is lost, notifications disabled' };
+        }
+      }
+      
       if (!fullDealResult.success || !fullDealResult.person) {
         this.logger.warn(`⚠️  Не удалось получить данные сделки/персоны для уведомления | Deal ID: ${dealId}`, { 
           dealId,
@@ -5246,6 +5296,16 @@ class StripeProcessorService {
           error: 'Message is empty - no notification template matched the payment scenario'
         };
       }
+
+      // Логируем сообщение перед отправкой для отладки
+      this.logger.info('📧 Отправка SendPulse уведомления', {
+        dealId,
+        sendpulseId,
+        paymentSchedule,
+        sessionsCount: sessions.length,
+        messageLength: message.length,
+        messagePreview: message.substring(0, 200) + (message.length > 200 ? '...' : '')
+      });
 
       // Send message via SendPulse
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);

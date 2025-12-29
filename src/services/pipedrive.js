@@ -147,7 +147,10 @@ class PipedriveClient {
   async getDeal(dealId) {
     try {
       const response = await this.client.get(`/deals/${dealId}`, {
-        params: { api_token: this.apiToken }
+        params: { 
+          api_token: this.apiToken,
+          include: 'stage' // Включаем информацию о стадии
+        }
       });
       
       if (response.data.success) {
@@ -1318,6 +1321,46 @@ class PipedriveClient {
     }
 
     return response.data;
+  }
+
+  /**
+   * Получить информацию о стадии по ID
+   * @param {number} stageId - ID стадии
+   * @returns {Promise<Object>} - Результат с информацией о стадии
+   */
+  async getStage(stageId) {
+    if (!stageId) {
+      return { success: false, error: 'stageId is required' };
+    }
+
+    try {
+      const response = await this.client.get(`/stages/${stageId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          stage: response.data.data
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to fetch stage'
+      };
+    } catch (error) {
+      logger.error('Error fetching stage from Pipedrive', {
+        stageId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
   }
 
   /**

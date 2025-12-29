@@ -3164,6 +3164,8 @@ function getInitialTabFromPath(pathname) {
     case '/payments':
     case '/vat-margin/payments':
       return 'payments';
+    case '/vat-margin/diagnostics':
+      return 'payments'; // Диагностика находится внутри вкладки payments
     case '/expenses':
     case '/vat-margin/expenses':
       return 'payments';
@@ -3253,7 +3255,7 @@ function renderDiagnostics(data) {
     return;
   }
   
-  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues } = data;
+  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues, paymentSchedules } = data;
   
   let html = '<div class="diagnostics-container">';
   
@@ -3375,6 +3377,46 @@ function renderDiagnostics(data) {
             </div>
           </div>` 
         : ''}
+      
+      ${paymentSchedules ? `<div class="payment-schedule-info" style="margin-top: 20px; padding: 16px; background: #f8f9fa; border-radius: 8px; border-left: 4px solid #3b82f6;">
+        <div style="font-weight: 600; margin-bottom: 12px; color: #1e40af;">📅 Графики платежей</div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div>
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 4px;">Первичный график (при создании первого платежа)</div>
+            <div style="font-size: 1.1em; font-weight: 600; color: #1e40af;">
+              ${paymentSchedules.initial?.schedule || 'не найден'}
+              ${paymentSchedules.initial?.firstPaymentDate 
+                ? `<div style="font-size: 0.85em; color: #6b7280; margin-top: 4px; font-weight: normal;">
+                    Дата первого платежа: ${new Date(paymentSchedules.initial.firstPaymentDate).toLocaleString('ru-RU')}
+                  </div>`
+                : ''}
+            </div>
+            ${paymentSchedules.initial?.source === 'first_payment' 
+              ? `<div style="font-size: 0.85em; color: #6b7280; margin-top: 4px;">
+                  Источник: первый платеж (${paymentSchedules.initial.firstPaymentType || 'N/A'})
+                </div>`
+              : paymentSchedules.initial?.note 
+                ? `<div style="font-size: 0.85em; color: #9ca3af; margin-top: 4px;">${paymentSchedules.initial.note}</div>`
+                : ''}
+          </div>
+          <div>
+            <div style="font-size: 0.9em; color: #6b7280; margin-bottom: 4px;">Текущий график (рассчитан сейчас)</div>
+            <div style="font-size: 1.1em; font-weight: 600; color: ${paymentSchedules.initial?.schedule && paymentSchedules.current?.schedule && paymentSchedules.initial.schedule !== paymentSchedules.current.schedule ? '#dc2626' : '#059669'};">
+              ${paymentSchedules.current?.schedule || '100%'}
+              ${paymentSchedules.initial?.schedule && paymentSchedules.current?.schedule && paymentSchedules.initial.schedule !== paymentSchedules.current.schedule
+                ? `<div style="font-size: 0.85em; color: #dc2626; margin-top: 4px; font-weight: normal;">
+                    ⚠️ График изменился! Первичный был ${paymentSchedules.initial.schedule}
+                  </div>`
+                : ''}
+            </div>
+          </div>
+        </div>
+        ${paymentSchedules.initial?.schedule && paymentSchedules.initial.schedule === '50/50'
+          ? `<div style="margin-top: 12px; padding: 12px; background: #eff6ff; border-radius: 6px; font-size: 0.9em; color: #1e40af;">
+              💡 <strong>Важно:</strong> Первичный график 50/50 используется для определения необходимости второго платежа, даже если текущий график изменился на 100%
+            </div>`
+          : ''}
+      </div>` : ''}
       
       <div class="payment-stats-grid">
         <div class="stat-item">

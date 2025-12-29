@@ -121,15 +121,66 @@ class CrmStatusAutomationService {
     );
   }
 
-  sumStripeTotals(payments = []) {
+  async sumStripeTotals(payments = [], dealCurrency = null) {
     const processed = payments.filter(
       (row) => row && row.status === 'processed' && (!row.payment_status || row.payment_status === 'paid')
     );
 
+    // Проверяем, есть ли платежи с разными валютами
+    const hasCurrencyMismatch = dealCurrency && processed.some(
+      (row) => row.currency && row.currency !== dealCurrency
+    );
+
+    // Если есть платежи с разными валютами, используем факт оплаты через webhook
+    if (hasCurrencyMismatch && this.supabase) {
+      try {
+        const sessionIds = processed.map(p => p.session_id).filter(Boolean);
+        if (sessionIds.length > 0) {
+          // Проверяем наличие webhook подтверждений
+          const { data: webhookEvents } = await this.supabase
+            .from('stripe_event_items')
+            .select('session_id')
+            .in('session_id', sessionIds)
+            .eq('payment_status', 'paid');
+
+          if (webhookEvents && webhookEvents.length > 0) {
+            // Используем количество подтвержденных платежей для расчета прогресса
+            // В этом случае мы не можем использовать сумму, так как валюты разные
+            // Используем количество подтвержденных платежей * ожидаемую сумму на платеж
+            const verifiedSessionIds = new Set(webhookEvents.map(e => e.session_id));
+            const verifiedPayments = processed.filter(p => verifiedSessionIds.has(p.session_id));
+            
+            this.logger.info('Using webhook verification for currency mismatch', {
+              dealCurrency,
+              verifiedCount: verifiedPayments.length,
+              totalProcessed: processed.length,
+              note: 'When currencies differ, we use webhook verification count instead of amount comparison'
+            });
+
+            // Для расчета используем количество подтвержденных платежей
+            // Сумма будет рассчитана на основе количества платежей и графика
+            return {
+              stripePaidPln: 0, // Не используем сумму при разных валютах
+              stripePaymentsCount: verifiedPayments.length, // Используем количество подтвержденных
+              processed: verifiedPayments,
+              hasCurrencyMismatch: true,
+              webhookVerifiedCount: verifiedPayments.length
+            };
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Failed to check webhook events for currency mismatch', {
+          error: error.message
+        });
+      }
+    }
+
+    // Если валюты совпадают или нет webhook подтверждений, используем сумму как обычно
     return {
       stripePaidPln: processed.reduce((acc, row) => acc + (toNumber(row.amount_pln) || 0), 0),
       stripePaymentsCount: processed.length,
-      processed
+      processed,
+      hasCurrencyMismatch: false
     };
   }
 
@@ -174,13 +225,45 @@ class CrmStatusAutomationService {
 
     const stripePayments = await this.loadStripePayments(dealId);
     const proformaTotals = this.sumProformaTotals(proformas);
-    const stripeTotals = this.sumStripeTotals(stripePayments);
+    const dealCurrency = deal?.currency || null;
+    const stripeTotals = await this.sumStripeTotals(stripePayments, dealCurrency);
+
+    // Если есть несоответствие валют и webhook подтверждения, используем количество платежей для расчета
+    // В этом случае мы не можем использовать сумму, так как валюты разные
+    let stripePaidPln = stripeTotals.stripePaidPln;
+    if (stripeTotals.hasCurrencyMismatch && stripeTotals.webhookVerifiedCount > 0 && deal) {
+      // Используем количество подтвержденных платежей * ожидаемую сумму на платеж
+      const dealValue = toNumber(deal.value) || 0;
+      const dealCurrency = deal.currency || 'PLN';
+      const scheduleType = this.resolveSchedule(deal, proformas, stripePayments);
+      const profile = SCHEDULE_PROFILES[scheduleType] || SCHEDULE_PROFILES['100%'];
+      const expectedPayments = profile.paymentsExpected;
+      const amountPerPayment = expectedPayments > 0 ? dealValue / expectedPayments : dealValue;
+      
+      // Конвертируем сумму в PLN для расчета
+      const amountPerPaymentPln = convertToPln(amountPerPayment, dealCurrency, null);
+      
+      // Рассчитываем сумму на основе количества подтвержденных платежей
+      stripePaidPln = stripeTotals.webhookVerifiedCount * amountPerPaymentPln;
+      
+      this.logger.info('Using webhook count for currency mismatch calculation', {
+        dealId,
+        dealCurrency,
+        dealValue,
+        webhookVerifiedCount: stripeTotals.webhookVerifiedCount,
+        expectedPayments,
+        amountPerPayment,
+        amountPerPaymentPln,
+        calculatedStripePaidPln: stripePaidPln,
+        note: 'When currencies differ, calculated amount based on webhook-verified payment count'
+      });
+    }
 
     const totals = {
       expectedAmountPln: proformaTotals.expectedAmountPln,
       bankPaidPln: proformaTotals.bankPaidPln,
       cashPaidPln: proformaTotals.cashPaidPln,
-      stripePaidPln: stripeTotals.stripePaidPln
+      stripePaidPln: stripePaidPln
     };
     totals.totalPaidPln = totals.bankPaidPln + totals.cashPaidPln + totals.stripePaidPln;
 

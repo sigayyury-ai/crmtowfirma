@@ -229,9 +229,13 @@ async function cleanupDealArtifacts(dealId) {
  * @returns {string|null} - Нормализованное значение (ID) или null
  */
 function normalizeInvoiceTypeToId(invoiceType) {
-  if (!invoiceType) return null;
+  if (!invoiceType) {
+    logger.debug('normalizeInvoiceTypeToId: invoiceType is null/undefined');
+    return null;
+  }
   
-  const normalized = String(invoiceType).trim().toLowerCase();
+  const originalValue = String(invoiceType);
+  const normalized = originalValue.trim().toLowerCase();
   
   // Маппинг строковых значений на числовые ID
   const typeMapping = {
@@ -247,16 +251,20 @@ function normalizeInvoiceTypeToId(invoiceType) {
   
   // Если это уже числовое значение, возвращаем как есть
   if (/^\d+$/.test(normalized)) {
+    logger.debug(`normalizeInvoiceTypeToId: числовое значение "${originalValue}" → "${normalized}"`);
     return normalized;
   }
   
   // Если есть маппинг, возвращаем ID
   if (typeMapping[normalized]) {
+    logger.debug(`normalizeInvoiceTypeToId: маппинг "${originalValue}" → "${typeMapping[normalized]}"`);
     return typeMapping[normalized];
   }
   
   // Если не найдено, возвращаем оригинальное значение (может быть кастомное)
-  return String(invoiceType).trim();
+  const result = String(invoiceType).trim();
+  logger.warn(`normalizeInvoiceTypeToId: неизвестное значение "${originalValue}" → "${result}" (нет маппинга)`);
+  return result;
 }
 
 function roundCurrency(value) {
@@ -425,6 +433,25 @@ setInterval(() => {
  * 5. Изменение invoice_type на "delete"/"74" → удаление инвойсов
  * 6. Удаление сделки (deleted.deal) → удаление инвойсов
  */
+// Middleware для логирования всех запросов к webhook (до парсинга body)
+router.use('/webhooks/pipedrive', (req, res, next) => {
+  const timestamp = new Date().toISOString();
+  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  const userAgent = req.headers['user-agent'] || 'unknown';
+  
+  logger.info(`📥 Pipedrive Webhook Request | Timestamp: ${timestamp} | Method: ${req.method} | URL: ${req.url} | IP: ${clientIP} | User-Agent: ${userAgent.substring(0, 100)}`);
+  
+  // Логируем заголовки для отладки
+  logger.debug('Pipedrive Webhook Headers', {
+    'content-type': req.headers['content-type'],
+    'content-length': req.headers['content-length'],
+    'x-forwarded-for': req.headers['x-forwarded-for'],
+    'user-agent': userAgent
+  });
+  
+  next();
+});
+
 router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, res) => {
   const timestamp = new Date().toISOString();
   
@@ -593,12 +620,21 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                  webhookData['Deal_status'] || 
                  webhookData['deal_status'] || 
                  webhookData['status'],
-          // Invoice поля
-          [INVOICE_TYPE_FIELD_KEY]: webhookData['Invoice type'] || 
-                                    webhookData['Invoice'] ||
-                                    webhookData['invoice_type'] || 
-                                    webhookData['invoice'] ||
-                                    webhookData[INVOICE_TYPE_FIELD_KEY],
+          // Invoice поля - обрабатываем случаи, когда значение может быть объектом с полем .value
+          [INVOICE_TYPE_FIELD_KEY]: (() => {
+            const extractInvoiceValue = (val) => {
+              if (val === null || val === undefined) return null;
+              if (typeof val === 'object' && val !== null && 'value' in val) {
+                return val.value;
+              }
+              return val;
+            };
+            return extractInvoiceValue(webhookData['Invoice type']) || 
+                   extractInvoiceValue(webhookData['Invoice']) ||
+                   extractInvoiceValue(webhookData['invoice_type']) || 
+                   extractInvoiceValue(webhookData['invoice']) ||
+                   extractInvoiceValue(webhookData[INVOICE_TYPE_FIELD_KEY]);
+          })(),
           [INVOICE_NUMBER_FIELD_KEY]: webhookData['Invoice number'] ||
                                      webhookData['Invoice_number'] ||
                                      webhookData['invoice_number'] ||
@@ -732,11 +768,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       
       // Check if this is a deal update event
       if (!eventType.includes('deal') && !eventType.includes('updated')) {
-        logger.debug('Webhook event is not a deal update or delete, skipping', {
-          event: webhookData.event
-        });
-        return res.status(200).json({ success: true, message: 'Event ignored' });
+        logger.info(`ℹ️  Webhook событие не является обновлением сделки, пропускаем | Deal: ${dealId || 'unknown'} | Event type: ${eventType}`);
+        return res.status(200).json({ success: true, message: 'Event ignored', eventType });
       }
+      
+      logger.info(`✅ Webhook событие распознано как обновление сделки | Deal: ${dealId || 'unknown'} | Event type: ${eventType}`);
 
       currentDeal = webhookData.current || webhookData.data?.current;
       previousDeal = webhookData.previous || webhookData.data?.previous;
@@ -758,20 +794,55 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     
     // Get invoice_type values - проверяем сначала webhookData для workflow automation, потом currentDeal
-    const invoiceTypeFromWebhook1 = webhookData?.['Invoice type'];
-    const invoiceTypeFromWebhook2 = webhookData?.['Invoice'];
-    const invoiceTypeFromWebhook3 = webhookData?.['invoice_type'];
-    const invoiceTypeFromWebhook4 = webhookData?.['invoice'];
-    const invoiceTypeFromWebhook5 = webhookData?.[INVOICE_TYPE_FIELD_KEY];
+    // Обрабатываем случаи, когда значение может быть объектом с полем .value (формат Pipedrive)
+    const extractValue = (val) => {
+      if (val === null || val === undefined) return null;
+      if (typeof val === 'object' && val !== null && 'value' in val) {
+        return val.value;
+      }
+      return val;
+    };
+    
+    const invoiceTypeFromWebhook1 = extractValue(webhookData?.['Invoice type']);
+    const invoiceTypeFromWebhook2 = extractValue(webhookData?.['Invoice']);
+    const invoiceTypeFromWebhook3 = extractValue(webhookData?.['invoice_type']);
+    const invoiceTypeFromWebhook4 = extractValue(webhookData?.['invoice']);
+    const invoiceTypeFromWebhook5 = extractValue(webhookData?.[INVOICE_TYPE_FIELD_KEY]);
     const invoiceFromWebhook = invoiceTypeFromWebhook1 || invoiceTypeFromWebhook2 || invoiceTypeFromWebhook3 || invoiceTypeFromWebhook4 || invoiceTypeFromWebhook5;
     const invoiceFromDeal = currentDeal?.[INVOICE_TYPE_FIELD_KEY];
     const rawInvoiceType = invoiceFromWebhook || invoiceFromDeal || null;
     
+    // Детальное логирование всех вариантов для диагностики
+    logger.info(`🔍 Детальное извлечение invoice_type | Deal: ${dealId}`, {
+      dealId,
+      'Invoice type': invoiceTypeFromWebhook1,
+      'Invoice': invoiceTypeFromWebhook2,
+      'invoice_type': invoiceTypeFromWebhook3,
+      'invoice': invoiceTypeFromWebhook4,
+      [INVOICE_TYPE_FIELD_KEY]: invoiceTypeFromWebhook5,
+      invoiceFromWebhook: invoiceFromWebhook,
+      invoiceFromDeal: invoiceFromDeal,
+      rawInvoiceType: rawInvoiceType,
+      webhookDataKeys: webhookData ? Object.keys(webhookData).filter(k => k.toLowerCase().includes('invoice')) : [],
+      // Дополнительно: все значения полей с "Invoice" в названии
+      invoiceFieldValues: webhookData ? Object.keys(webhookData)
+        .filter(k => k.toLowerCase().includes('invoice'))
+        .reduce((acc, key) => {
+          const value = webhookData[key];
+          acc[key] = {
+            value: value,
+            type: typeof value,
+            stringified: value !== null && value !== undefined ? String(value) : 'null/undefined'
+          };
+          return acc;
+        }, {}) : {}
+    });
+    
     // Нормализуем invoice_type к ID (основной метод)
     const currentInvoiceType = normalizeInvoiceTypeToId(rawInvoiceType);
     
-    // Логируем извлечение invoice_type для диагностики - только в debug
-    logger.debug(`🔍 Извлечение invoice_type | Deal: ${dealId} | Сырое значение: ${rawInvoiceType || 'null'} | Нормализовано к ID: ${currentInvoiceType || 'null'}`);
+    // Логируем извлечение invoice_type для диагностики - INFO уровень для production
+    logger.info(`🔍 Извлечение invoice_type | Deal: ${dealId} | Сырое значение: ${rawInvoiceType || 'null'} | Нормализовано к ID: ${currentInvoiceType || 'null'} | Из webhook: ${invoiceFromWebhook || 'null'} | Из deal API: ${invoiceFromDeal || 'null'}`);
     
     // Get status - проверяем сначала webhookData для workflow automation, потом currentDeal
     const currentStatus = (webhookData && (webhookData['Deal status'] || webhookData['Deal_status'] || webhookData['deal_status'] || webhookData['status'])) ||
@@ -940,13 +1011,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     // Используем только ID (основной метод)
     logger.info(`🔍 Проверка invoice_type | Deal: ${dealId} | currentInvoiceType (ID): ${currentInvoiceType || 'null'}`);
     
-    if (currentInvoiceType) {
+    if (!currentInvoiceType) {
+      logger.info(`⚠️  invoice_type не найден | Deal: ${dealId} | Проверяем webhook и API, но значение отсутствует`);
+    } else {
       // Stripe trigger - используем только ID "75" (основной метод)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
       
-      logger.debug(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
+      logger.info(`🔍 Сравнение invoice_type | Deal: ${dealId} | currentInvoiceType (ID): "${currentInvoiceType}" | STRIPE_TRIGGER_VALUE: "${STRIPE_TRIGGER_VALUE}" | Совпадает: ${currentInvoiceType === STRIPE_TRIGGER_VALUE}`);
       
-        if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
+      if (currentInvoiceType === STRIPE_TRIGGER_VALUE) {
           logger.info(`✅ Webhook сработал: invoice_type = Stripe (75) | Deal: ${dealId}`);
           
           // Проверяем блокировку обработки для этой сделки
@@ -1686,6 +1759,9 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             dealId
           });
         }
+      } else {
+        // invoice_type найден, но не соответствует ни одному известному типу
+        logger.info(`ℹ️  invoice_type найден, но не обрабатывается | Deal: ${dealId} | invoice_type: "${currentInvoiceType}" | Ожидаемые значения: Stripe (75), Proforma (70-72), Delete (74)`);
       }
     }
 
@@ -2483,18 +2559,18 @@ ${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
     }
 
     // Если ни один триггер не сработал, возвращаем успех
-    logger.debug('No trigger conditions met, webhook processed successfully', {
-      dealId,
-      currentInvoiceType,
-      currentStatus,
-      lostReason,
-      isWorkflowAutomation
-    });
+    logger.info(`ℹ️  Webhook обработан, но триггеры не сработали | Deal: ${dealId} | invoice_type: ${currentInvoiceType || 'null'} | status: ${currentStatus} | stage_id: ${currentStageId || 'null'} | lost_reason: ${lostReason || 'null'} | isWorkflowAutomation: ${isWorkflowAutomation}`);
     
     return res.status(200).json({ 
       success: true, 
       message: 'Webhook processed, no actions needed',
-      dealId
+      dealId,
+      debug: {
+        invoiceType: currentInvoiceType,
+        status: currentStatus,
+        stageId: currentStageId,
+        lostReason: lostReason
+      }
     });
   } catch (error) {
     logger.error('❌ Ошибка обработки webhook', {
@@ -2604,6 +2680,26 @@ router.delete('/webhooks/pipedrive/history', (req, res) => {
   res.json({
     success: true,
     message: `Cleared ${cleared} events`
+  });
+});
+
+/**
+ * GET /api/webhooks/pipedrive/test
+ * Тестовый endpoint для проверки доступности webhook роута
+ */
+router.get('/webhooks/pipedrive/test', (req, res) => {
+  const timestamp = new Date().toISOString();
+  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  
+  logger.info(`✅ Pipedrive Webhook Test Endpoint | Timestamp: ${timestamp} | IP: ${clientIP}`);
+  
+  res.json({
+    success: true,
+    message: 'Pipedrive webhook endpoint is accessible',
+    timestamp,
+    endpoint: '/api/webhooks/pipedrive',
+    method: 'POST',
+    note: 'Use POST method to send webhook data from Pipedrive'
   });
 });
 

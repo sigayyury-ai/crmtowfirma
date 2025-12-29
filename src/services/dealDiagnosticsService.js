@@ -49,7 +49,13 @@ class DealDiagnosticsService {
       // 7. Получаем информацию о SendPulse уведомлениях
       const notifications = await this.getNotifications(dealIdStr);
       
-      // 8. Анализируем проблемы
+      // 8. Определяем первичный график платежей
+      const initialPaymentSchedule = this.determineInitialPaymentSchedule(payments);
+      
+      // 9. Определяем текущий график платежей
+      const currentPaymentSchedule = this.determinePaymentSchedule(dealInfo);
+      
+      // 10. Анализируем проблемы
       const issues = this.analyzeIssues({
         dealInfo,
         payments,
@@ -57,16 +63,20 @@ class DealDiagnosticsService {
         refunds,
         cashPayments,
         automations,
-        notifications
+        notifications,
+        initialPaymentSchedule,
+        currentPaymentSchedule
       });
       
-      // 9. Рассчитываем сводку
+      // 11. Рассчитываем сводку
       const summary = this.calculateSummary({
         dealInfo,
         payments,
         proformas,
         refunds,
-        cashPayments
+        cashPayments,
+        initialPaymentSchedule,
+        currentPaymentSchedule
       });
       
       return {
@@ -81,6 +91,10 @@ class DealDiagnosticsService {
         automations,
         notifications,
         issues,
+        paymentSchedules: {
+          initial: initialPaymentSchedule,
+          current: currentPaymentSchedule
+        },
         generatedAt: new Date().toISOString()
       };
     } catch (error) {
@@ -110,6 +124,20 @@ class DealDiagnosticsService {
       const person = result.person;
       const organization = result.organization;
       
+      // Получаем название стадии, если оно не пришло в ответе
+      let stageName = deal.stage?.name || null;
+      if (!stageName && deal.stage_id) {
+        try {
+          // Пытаемся получить информацию о стадии через API
+          const stageResult = await this.pipedriveClient.getStage(deal.stage_id);
+          if (stageResult.success && stageResult.stage) {
+            stageName = stageResult.stage.name;
+          }
+        } catch (error) {
+          this.logger.warn('Failed to fetch stage name', { dealId, stageId: deal.stage_id, error: error.message });
+        }
+      }
+      
       return {
         found: true,
         id: deal.id,
@@ -117,7 +145,7 @@ class DealDiagnosticsService {
         value: deal.value,
         currency: deal.currency,
         stageId: deal.stage_id,
-        stageName: deal.stage?.name || null,
+        stageName: stageName || `ID: ${deal.stage_id}`,
         closeDate: deal.close_date,
         expectedCloseDate: deal.expected_close_date,
         person: person ? {
@@ -560,9 +588,39 @@ class DealDiagnosticsService {
   }
 
   /**
+   * Определить первичный график платежей из первого платежа
+   * Это график, который был установлен при создании первого платежа
+   */
+  determineInitialPaymentSchedule(payments) {
+    // Ищем первый платеж (deposit или single) по дате создания
+    const firstPayment = payments.stripe
+      .filter(p => p.paymentType === 'deposit' || p.paymentType === 'single' || !p.paymentType)
+      .sort((a, b) => {
+        const dateA = a.createdAt ? new Date(a.createdAt) : new Date(0);
+        const dateB = b.createdAt ? new Date(b.createdAt) : new Date(0);
+        return dateA - dateB;
+      })[0];
+
+    if (firstPayment && firstPayment.paymentSchedule) {
+      return {
+        schedule: firstPayment.paymentSchedule,
+        source: 'first_payment',
+        firstPaymentDate: firstPayment.createdAt,
+        firstPaymentType: firstPayment.paymentType
+      };
+    }
+
+    return {
+      schedule: null,
+      source: 'not_found',
+      note: 'Первичный график не найден - нет платежей или график не был сохранен'
+    };
+  }
+
+  /**
    * Анализ проблем и ошибок
    */
-  analyzeIssues({ dealInfo, payments, proformas, refunds, cashPayments, automations, notifications }) {
+  analyzeIssues({ dealInfo, payments, proformas, refunds, cashPayments, automations, notifications, initialPaymentSchedule, currentPaymentSchedule }) {
     const issues = [];
     
     // Проверка 1: Сделка не найдена
@@ -588,8 +646,27 @@ class DealDiagnosticsService {
       });
     }
     
-    // Определяем график платежей
-    const paymentSchedule = this.determinePaymentSchedule(dealInfo);
+    // Используем первичный график, если он есть, иначе текущий
+    const paymentSchedule = initialPaymentSchedule?.schedule 
+      ? { schedule: initialPaymentSchedule.schedule, secondPaymentDate: currentPaymentSchedule.secondPaymentDate }
+      : currentPaymentSchedule;
+    
+    // Проверяем, изменился ли график
+    if (initialPaymentSchedule?.schedule && currentPaymentSchedule.schedule && 
+        initialPaymentSchedule.schedule !== currentPaymentSchedule.schedule) {
+      issues.push({
+        severity: 'info',
+        category: 'schedule',
+        code: 'PAYMENT_SCHEDULE_CHANGED',
+        message: `График платежей изменился: первичный был ${initialPaymentSchedule.schedule}, сейчас ${currentPaymentSchedule.schedule}`,
+        details: {
+          initialSchedule: initialPaymentSchedule.schedule,
+          currentSchedule: currentPaymentSchedule.schedule,
+          firstPaymentDate: initialPaymentSchedule.firstPaymentDate,
+          note: 'Первичный график используется для определения необходимости второго платежа'
+        }
+      });
+    }
     
     // Проверка 3: Несоответствие валют
     const dealCurrency = dealInfo.currency || 'PLN';
@@ -843,7 +920,7 @@ class DealDiagnosticsService {
   /**
    * Рассчитать сводку
    */
-  calculateSummary({ dealInfo, payments, proformas, refunds, cashPayments }) {
+  calculateSummary({ dealInfo, payments, proformas, refunds, cashPayments, initialPaymentSchedule, currentPaymentSchedule }) {
     const dealValue = Number(dealInfo.value) || 0;
     const dealCurrency = dealInfo.currency || 'PLN';
     const totalPaid = payments.total; // В PLN (конвертированная сумма)
@@ -905,7 +982,9 @@ class DealDiagnosticsService {
       proformaPaymentsCount: payments.proforma.length,
       proformasCount: proformas.length,
       cashPaymentsCount: cashPayments.length,
-      refundsCount: refunds.stripe.length + refunds.cash.length
+      refundsCount: refunds.stripe.length + refunds.cash.length,
+      initialPaymentSchedule: initialPaymentSchedule?.schedule || null,
+      currentPaymentSchedule: currentPaymentSchedule?.schedule || null
     };
   }
 }
