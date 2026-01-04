@@ -97,6 +97,51 @@ class SecondPaymentSchedulerService {
   }
 
   /**
+   * Получить первичный график платежей из первого оплаченного платежа
+   * Используется для определения необходимости второго платежа, даже если текущий график изменился
+   * @param {string} dealId - ID сделки
+   * @returns {Promise<Object>} - { schedule: '50/50' | '100%' | null, firstPaymentDate: Date | null }
+   */
+  async getInitialPaymentSchedule(dealId) {
+    try {
+      const payments = await this.repository.listPayments({ dealId: String(dealId) });
+      
+      // Ищем первый оплаченный платеж (deposit или single) по дате создания
+      const firstPayment = payments
+        .filter(p => 
+          (p.payment_type === 'deposit' || p.payment_type === 'first' || p.payment_type === 'single') &&
+          p.payment_status === 'paid'
+        )
+        .sort((a, b) => {
+          const dateA = a.created_at ? new Date(a.created_at) : new Date(0);
+          const dateB = b.created_at ? new Date(b.created_at) : new Date(0);
+          return dateA - dateB;
+        })[0];
+
+      if (firstPayment && firstPayment.payment_schedule) {
+        return {
+          schedule: firstPayment.payment_schedule,
+          firstPaymentDate: firstPayment.created_at ? new Date(firstPayment.created_at) : null
+        };
+      }
+
+      return {
+        schedule: null,
+        firstPaymentDate: null
+      };
+    } catch (error) {
+      this.logger.error('Failed to get initial payment schedule', {
+        dealId,
+        error: error.message
+      });
+      return {
+        schedule: null,
+        firstPaymentDate: null
+      };
+    }
+  }
+
+  /**
    * Проверить, существует ли вторая сессия
    * Проверяет как в базе данных, так и в Stripe напрямую (на случай, если сессии нет в базе)
    * @param {string} dealId - ID сделки
@@ -204,44 +249,79 @@ class SecondPaymentSchedulerService {
    */
   async findDealsNeedingSecondPayment() {
     try {
-      // Получаем все сделки со статусом "Stripe" (invoice_type = 75)
-      const invoiceTypeFieldKey = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
-      const stripeTriggerValue = '75';
+      // ВАЖНО: Ищем сделки по оплаченным deposit платежам с графиком 50/50,
+      // а не по invoice_type, так как invoice_type сбрасывается после обработки первого платежа
+      const allPayments = await this.repository.listPayments({ limit: 1000 });
+      
+      // Находим все оплаченные deposit платежи с графиком 50/50
+      const depositPayments = allPayments.filter(p => 
+        (p.payment_type === 'deposit' || p.payment_type === 'first') &&
+        p.payment_status === 'paid' &&
+        p.payment_schedule === '50/50' &&
+        p.deal_id
+      );
 
-      const dealsResult = await this.pipedriveClient.getDeals({
-        filter_id: null,
-        status: 'all_not_deleted',
-        limit: 500, // Увеличиваем лимит для получения всех сделок
-        start: 0
-      });
-
-      if (!dealsResult.success || !dealsResult.deals) {
+      if (depositPayments.length === 0) {
         return [];
       }
 
+      // Получаем уникальные deal_id
+      const dealIds = [...new Set(depositPayments.map(p => p.deal_id))];
+
+      this.logger.info('Found deals with paid deposit payments (50/50)', {
+        depositPaymentsCount: depositPayments.length,
+        uniqueDealIds: dealIds.length
+      });
+
       const eligibleDeals = [];
 
-      for (const deal of dealsResult.deals) {
-        // Проверяем, что invoice_type = "Stripe" (75)
-        const invoiceType = deal[invoiceTypeFieldKey];
-        if (String(invoiceType) !== stripeTriggerValue) {
-          continue;
+      for (const dealId of dealIds) {
+        try {
+          // Получаем данные сделки
+          const dealResult = await this.pipedriveClient.getDeal(dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            continue;
+          }
+
+          const deal = dealResult.deal;
+
+        // ВАЖНО: Используем первичный график из первого платежа, а не текущий график
+        // Это исправляет проблему, когда график "изменился" с 50/50 на 100% из-за того,
+        // что до лагеря осталось меньше 30 дней, но первый платеж был создан с графиком 50/50
+        const initialSchedule = await this.getInitialPaymentSchedule(deal.id);
+        
+        let schedule = null;
+        let secondPaymentDate = null;
+
+        // Если есть первичный график 50/50 из первого платежа - используем его
+        if (initialSchedule.schedule === '50/50') {
+          schedule = '50/50';
+          // Вычисляем дату второго платежа на основе expected_close_date
+          const closeDate = deal.expected_close_date || deal.close_date;
+          if (closeDate) {
+            secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
+          }
+          
+          this.logger.info('Using initial payment schedule from first payment', {
+            dealId: deal.id,
+            initialSchedule: initialSchedule.schedule,
+            firstPaymentDate: initialSchedule.firstPaymentDate,
+            secondPaymentDate: secondPaymentDate ? secondPaymentDate.toISOString().split('T')[0] : null
+          });
+        } else {
+          // Если первичного графика нет, используем текущий график (fallback)
+          const currentSchedule = this.determinePaymentSchedule(deal);
+          schedule = currentSchedule.schedule;
+          secondPaymentDate = currentSchedule.secondPaymentDate;
         }
 
-        // Определяем график платежей
-        const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+        // Проверяем, что график 50/50 и дата второго платежа определена
         if (schedule !== '50/50' || !secondPaymentDate) {
           continue;
         }
 
         // Проверяем, что дата второго платежа наступила
         if (!this.isDateReached(secondPaymentDate)) {
-          continue;
-        }
-
-        // Проверяем, что первый платеж оплачен
-        const firstPaid = await this.isFirstPaymentPaid(deal.id);
-        if (!firstPaid) {
           continue;
         }
 
@@ -255,6 +335,13 @@ class SecondPaymentSchedulerService {
           deal,
           secondPaymentDate
         });
+        } catch (error) {
+          this.logger.error('Error processing deal in findDealsNeedingSecondPayment', {
+            dealId,
+            error: error.message
+          });
+          continue;
+        }
       }
 
       return eligibleDeals;
@@ -296,15 +383,37 @@ class SecondPaymentSchedulerService {
           continue;
         }
 
-        // Определяем график платежей
-        const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
-        if (schedule !== '50/50' || !secondPaymentDate) {
-          continue;
-        }
-
         // Проверяем, что первый платеж оплачен
         const firstPaid = await this.isFirstPaymentPaid(deal.id);
         if (!firstPaid) {
+          continue;
+        }
+
+        // ВАЖНО: Используем первичный график из первого платежа, а не текущий график
+        // Это исправляет проблему, когда график "изменился" с 50/50 на 100% из-за того,
+        // что до лагеря осталось меньше 30 дней, но первый платеж был создан с графиком 50/50
+        const initialSchedule = await this.getInitialPaymentSchedule(deal.id);
+        
+        let schedule = null;
+        let secondPaymentDate = null;
+
+        // Если есть первичный график 50/50 из первого платежа - используем его
+        if (initialSchedule.schedule === '50/50') {
+          schedule = '50/50';
+          // Вычисляем дату второго платежа на основе expected_close_date
+          const closeDate = deal.expected_close_date || deal.close_date;
+          if (closeDate) {
+            secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
+          }
+        } else {
+          // Если первичного графика нет, используем текущий график (fallback)
+          const currentSchedule = this.determinePaymentSchedule(deal);
+          schedule = currentSchedule.schedule;
+          secondPaymentDate = currentSchedule.secondPaymentDate;
+        }
+
+        // Проверяем, что график 50/50 и дата второго платежа определена
+        if (schedule !== '50/50' || !secondPaymentDate) {
           continue;
         }
 
@@ -434,8 +543,27 @@ class SecondPaymentSchedulerService {
 
           const deal = dealResult.deal;
 
-          // Определяем график платежей
-          const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+          // ВАЖНО: Используем первичный график из первого платежа, а не текущий график
+          const initialSchedule = await this.getInitialPaymentSchedule(deal.id);
+          
+          let schedule = null;
+          let secondPaymentDate = null;
+
+          // Если есть первичный график 50/50 из первого платежа - используем его
+          if (initialSchedule.schedule === '50/50') {
+            schedule = '50/50';
+            // Вычисляем дату второго платежа на основе expected_close_date
+            const closeDate = deal.expected_close_date || deal.close_date;
+            if (closeDate) {
+              secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
+            }
+          } else {
+            // Если первичного графика нет, используем текущий график (fallback)
+            const currentSchedule = this.determinePaymentSchedule(deal);
+            schedule = currentSchedule.schedule;
+            secondPaymentDate = currentSchedule.secondPaymentDate;
+          }
+
           if (schedule !== '50/50' || !secondPaymentDate) {
             continue;
           }
@@ -454,6 +582,56 @@ class SecondPaymentSchedulerService {
           // Получаем вторую сессию для этой сделки
           // Сначала ищем в базе данных
           const payments = await this.repository.listPayments({ dealId: String(dealId) });
+          
+          // ВАЖНО: Проверяем, есть ли уже активная сессия для этой сделки
+          // Если есть активная сессия, не показываем просроченные (они уже обработаны)
+          const hasActiveSession = payments.some(p => {
+            if (!p.session_id) return false;
+            // Проверяем статус в базе
+            if (p.status === 'open' || p.status === 'complete') {
+              return true;
+            }
+            // Если статус 'processed', но payment_status 'unpaid' - это может быть активная сессия
+            if (p.status === 'processed' && p.payment_status === 'unpaid') {
+              return true;
+            }
+            return false;
+          });
+
+          if (hasActiveSession) {
+            // Проверяем, что активная сессия создана недавно (после просроченной)
+            const activePayments = payments.filter(p => 
+              p.session_id && 
+              (p.status === 'open' || p.status === 'complete' || (p.status === 'processed' && p.payment_status === 'unpaid'))
+            );
+            
+            if (activePayments.length > 0) {
+              // Сортируем по дате создания и берем самую новую
+              activePayments.sort((a, b) => {
+                const dateA = a.created_at ? new Date(a.created_at) : new Date(0);
+                const dateB = b.created_at ? new Date(b.created_at) : new Date(0);
+                return dateB - dateA;
+              });
+              
+              const newestActivePayment = activePayments[0];
+              const newestActiveDate = newestActivePayment.created_at ? new Date(newestActivePayment.created_at) : new Date(0);
+              
+              // Если активная сессия создана недавно (за последние 7 дней), пропускаем просроченные
+              const sevenDaysAgo = new Date();
+              sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+              
+              if (newestActiveDate > sevenDaysAgo) {
+                // Активная сессия создана недавно - пропускаем просроченные
+                this.logger.info('Skipping expired sessions for reminder, active session exists', {
+                  dealId,
+                  activeSessionId: newestActivePayment.session_id,
+                  activeSessionCreated: newestActiveDate.toISOString()
+                });
+                continue;
+              }
+            }
+          }
+          
           let restPayment = payments.find(p => 
             (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
             p.payment_status !== 'paid'
@@ -739,6 +917,76 @@ class SecondPaymentSchedulerService {
 
           const deal = dealResult.deal;
 
+          // ВАЖНО: Проверяем, есть ли уже активная сессия для этой сделки
+          // Если есть активная сессия, не показываем просроченные (они уже обработаны)
+          const payments = await this.repository.listPayments({ dealId: String(dealId), limit: 100 });
+          
+          // Проверяем активные сессии в базе
+          const activePayments = payments.filter(p => {
+            if (!p.session_id) return false;
+            // Проверяем статус в базе
+            if (p.status === 'open' || p.status === 'complete') {
+              return true;
+            }
+            // Если статус 'processed', но payment_status 'unpaid' - это может быть активная сессия
+            if (p.status === 'processed' && p.payment_status === 'unpaid') {
+              return true;
+            }
+            return false;
+          });
+
+          if (activePayments.length > 0) {
+            // Проверяем статус сессий в Stripe напрямую, чтобы убедиться, что они действительно активны
+            let hasRealActiveSession = false;
+            const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
+            
+            for (const activePayment of activePayments) {
+              try {
+                const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activePayment.session_id);
+                // Если сессия активна (open) или оплачена (complete) - это реальная активная сессия
+                if (stripeSession.status === 'open' || stripeSession.payment_status === 'paid') {
+                  hasRealActiveSession = true;
+                  
+                  // Проверяем, что просроченные сессии старше активной
+                  const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                  const allExpiredOlder = dealExpiredSessions.every(s => {
+                    if (!s.expiresAt) return false;
+                    const expiredDate = new Date(s.expiresAt * 1000);
+                    return expiredDate < activeCreated;
+                  });
+                  
+                  if (allExpiredOlder && dealExpiredSessions.length > 0) {
+                    // Все просроченные сессии старше активной - пропускаем их
+                    this.logger.info('Skipping expired sessions, active session exists in Stripe', {
+                      dealId,
+                      activeSessionId: activePayment.session_id,
+                      activeSessionStatus: stripeSession.status,
+                      activeSessionCreated: activeCreated.toISOString(),
+                      expiredSessionsCount: dealExpiredSessions.length
+                    });
+                    // Устанавливаем флаг, чтобы пропустить всю сделку
+                    hasRealActiveSession = true;
+                    break;
+                  }
+                  // Если не все просроченные сессии старше, продолжаем проверку других активных сессий
+                  hasRealActiveSession = false;
+                  break;
+                }
+              } catch (error) {
+                // Если не удалось получить сессию из Stripe, продолжаем проверку
+                this.logger.warn('Failed to check session status in Stripe', {
+                  dealId,
+                  sessionId: activePayment.session_id,
+                  error: error.message
+                });
+              }
+            }
+            
+            if (hasRealActiveSession) {
+              continue;
+            }
+          }
+
           // Находим все просроченные сессии для этой сделки
           const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
           if (dealExpiredSessions.length === 0) {
@@ -994,8 +1242,32 @@ class SecondPaymentSchedulerService {
       
       for (const task of expiredTasks) {
         try {
-          // Определяем актуальный график платежей на основе текущей даты
-          const { schedule: currentSchedule, secondPaymentDate } = this.determinePaymentSchedule(task.deal);
+          // Для второго платежа (rest/second/final) используем первичный график из первого платежа
+          // Для первого платежа (deposit) используем текущий график
+          let currentSchedule = null;
+          let secondPaymentDate = null;
+          
+          if (task.paymentType === 'rest' || task.paymentType === 'second' || task.paymentType === 'final') {
+            // Для второго платежа используем первичный график
+            const initialSchedule = await this.getInitialPaymentSchedule(task.dealId);
+            if (initialSchedule.schedule === '50/50') {
+              currentSchedule = '50/50';
+              const closeDate = task.deal.expected_close_date || task.deal.close_date;
+              if (closeDate) {
+                secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
+              }
+            } else {
+              // Если первичного графика нет, используем текущий график (fallback)
+              const currentScheduleObj = this.determinePaymentSchedule(task.deal);
+              currentSchedule = currentScheduleObj.schedule;
+              secondPaymentDate = currentScheduleObj.secondPaymentDate;
+            }
+          } else {
+            // Для первого платежа (deposit) используем текущий график
+            const currentScheduleObj = this.determinePaymentSchedule(task.deal);
+            currentSchedule = currentScheduleObj.schedule;
+            secondPaymentDate = currentScheduleObj.secondPaymentDate;
+          }
           
           // Проверяем, не обработали ли мы уже эту сделку
           if (processedDeals.has(task.dealId)) {

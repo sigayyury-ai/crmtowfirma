@@ -339,6 +339,11 @@ class StripeProcessorService {
               // eslint-disable-next-line no-await-in-loop
               await this.persistSession(session);
               summary.successful += 1;
+              results.push({
+                sessionId: session.id,
+                dealId: session.metadata?.deal_id || null,
+                success: true
+              });
             } catch (error) {
               summary.errors += 1;
               const dealId = session.metadata?.deal_id || null;
@@ -347,15 +352,39 @@ class StripeProcessorService {
                 dealId,
                 success: false,
                 error: error.message,
+                errorCode: error.code,
+                errorDetails: error.details || error.response?.data || null,
                 stack: error.stack
               };
               results.push(errorResult);
-              this.logger.error('Failed to persist Stripe session', {
+              
+              // Детальное логирование для диагностики
+              const logContext = {
                 sessionId: session.id,
                 dealId,
+                sessionStatus: session.status,
+                paymentStatus: session.payment_status,
+                currency: session.currency,
+                amount: session.amount_total,
+                metadata: session.metadata,
                 error: error.message,
-                errorStack: error.stack?.split('\n').slice(0, 3).join('\n')
-              });
+                errorCode: error.code,
+                errorType: error.constructor?.name,
+                errorStack: error.stack?.split('\n').slice(0, 5).join('\n')
+              };
+              
+              // Если это ошибка базы данных, добавляем больше контекста
+              if (error.code && (error.code.startsWith('23') || error.code === '23505')) {
+                logContext.databaseError = true;
+                logContext.constraint = error.constraint || error.detail;
+                this.logger.error('Database constraint violation while persisting Stripe session', logContext);
+              } else if (error.response) {
+                logContext.apiError = true;
+                logContext.statusCode = error.response.status;
+                this.logger.error('API error while persisting Stripe session', logContext);
+              } else {
+                this.logger.error('Failed to persist Stripe session', logContext);
+              }
             }
             if (summary.total >= this.maxSessions) {
               throw new Error('Stripe session processing limit reached');
@@ -3318,10 +3347,8 @@ class StripeProcessorService {
         line_items: [lineItem],
         metadata,
         success_url: this.buildCheckoutUrl(this.checkoutSuccessUrl, dealId, 'success'),
-        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel'),
-        // Ограничиваем выбор валюты только валютой сделки
-        // Это предотвращает ситуацию, когда пользователь выбирает другую валюту (например, PLN вместо EUR)
-        payment_currency_types: [currency.toLowerCase()]
+        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel')
+        // Валюта уже задана в line_items, дополнительное ограничение не требуется
       };
 
       // 10. Set customer (B2B) or customer_email (B2C)
@@ -3440,6 +3467,14 @@ class StripeProcessorService {
         totalApiCalls: apiCallCount,
         note: 'Сумма платежа в Stripe = сумме из CRM, VAT не удерживается'
       });
+      
+      // ВАЖНО: Удаляем неподдерживаемые параметры перед созданием сессии
+      // Stripe не поддерживает payment_currency_types (это опечатка или устаревший параметр)
+      if (sessionParams.payment_currency_types) {
+        delete sessionParams.payment_currency_types;
+        this.logger.warn('Removed unsupported payment_currency_types parameter', { dealId });
+      }
+      
       const session = await this.stripe.checkout.sessions.create(sessionParams);
       
       // ВАЖНО: Проверка что сессия создана без налога от Stripe
