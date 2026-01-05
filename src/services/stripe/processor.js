@@ -16,6 +16,10 @@ const { getRate } = require('./exchangeRateService');
 const { getStripeClient } = require('./client');
 const SendPulseClient = require('../sendpulse');
 const { extractCashFields } = require('../cash/cashFieldParser');
+// Phase 0: Code Review Fixes - New unified services
+const PaymentScheduleService = require('./paymentScheduleService');
+const PaymentStateAnalyzer = require('./paymentStateAnalyzer');
+const DealAmountCalculator = require('./dealAmountCalculator');
 
 class StripeProcessorService {
   constructor(options = {}) {
@@ -2523,50 +2527,17 @@ class StripeProcessorService {
             }
           }
           
-          // Determine payment schedule based on close_date (expected_close_date)
-          const closeDate = deal.expected_close_date || deal.close_date;
-          let use50_50Schedule = false;
+          // Determine payment schedule using PaymentScheduleService (Phase 0: Code Review Fixes)
+          const schedule = PaymentScheduleService.determineScheduleFromDeal(deal);
+          const use50_50Schedule = schedule.schedule === '50/50';
           
           this.logger.info('Determining payment schedule', {
             dealId: deal.id,
             expected_close_date: deal.expected_close_date,
             close_date: deal.close_date,
-            closeDate
+            schedule: schedule.schedule,
+            daysDiff: schedule.daysDiff
           });
-          
-          if (closeDate) {
-            try {
-              const expectedCloseDate = new Date(closeDate);
-              const today = new Date();
-              const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
-              
-              // If >= 30 days, use 50/50 schedule (two payments)
-              if (daysDiff >= 30) {
-                use50_50Schedule = true;
-                this.logger.info('Using 50/50 payment schedule for deal', {
-                  dealId: deal.id,
-                  daysDiff,
-                  closeDate
-                });
-              } else {
-                this.logger.info('Using 100% payment schedule for deal', {
-                  dealId: deal.id,
-                  daysDiff,
-                  closeDate
-                });
-              }
-            } catch (error) {
-              this.logger.warn('Failed to calculate payment schedule', {
-                dealId: deal.id,
-                closeDate,
-                error: error.message
-              });
-            }
-          } else {
-            this.logger.warn('No close_date found, defaulting to 100% payment schedule', {
-              dealId: deal.id
-            });
-          }
 
           // Check if sessions already exist for this deal
           let hasDeposit = false;
@@ -2900,53 +2871,17 @@ class StripeProcessorService {
         });
       }
       
-      // Определяем график платежей, если не передан в context
+      // Определяем график платежей, если не передан в context (Phase 0: Code Review Fixes)
       // ВАЖНО: Приоритет отдаем expected_close_date из API (fullDeal), так как это основное поле
       if (!paymentSchedule) {
-        const closeDate = fullDeal.expected_close_date ||  // Приоритет 1: API deal
-                         fullDeal['expected_close_date'] ||  // Приоритет 2: API deal (bracket)
-                         fullDeal.close_date ||  // Приоритет 3: API deal close_date
-                         fullDeal['close_date'] ||  // Приоритет 4: API deal close_date (bracket)
-                         deal?.expected_close_date ||  // Приоритет 5: Webhook deal
-                         deal?.['expected_close_date'] ||
-                         deal?.close_date ||
-                         deal?.['close_date'] ||
-                         null;
-        if (closeDate) {
-          try {
-            const expectedCloseDate = new Date(closeDate);
-            const today = new Date();
-            const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
-            
-            if (daysDiff >= 30) {
-              paymentSchedule = '50/50';
-              this.logger.info('Auto-determined 50/50 payment schedule', {
-                dealId,
-                daysDiff,
-                closeDate
-              });
-            } else {
-              paymentSchedule = '100%';
-              this.logger.info('Auto-determined 100% payment schedule', {
-                dealId,
-                daysDiff,
-                closeDate
-              });
-            }
-          } catch (error) {
-            this.logger.warn('Failed to determine payment schedule, defaulting to 100%', {
-              dealId,
-              closeDate,
-              error: error.message
-            });
-            paymentSchedule = '100%';
-          }
-        } else {
-          this.logger.warn('No close_date found, defaulting to 100% payment schedule', {
-            dealId
-          });
-          paymentSchedule = '100%';
-        }
+        const schedule = PaymentScheduleService.determineScheduleFromDeal(fullDeal);
+        paymentSchedule = schedule.schedule;
+        this.logger.info('Auto-determined payment schedule', {
+          dealId,
+          schedule: paymentSchedule,
+          daysDiff: schedule.daysDiff,
+          secondPaymentDate: schedule.secondPaymentDate
+        });
       }
       
       const person = fullDealResult.person;
@@ -2963,112 +2898,49 @@ class StripeProcessorService {
         };
       }
 
-      // 3. Calculate amount and currency from first product
+      // 3. Calculate amount and currency using DealAmountCalculator (Phase 0: Code Review Fixes)
       const firstProduct = dealProductsResult.products[0];
       const quantity = parseFloat(firstProduct.quantity) || 1;
       
-      // Parse prices more carefully - handle 0 as valid value
-      const itemPriceRaw = firstProduct.item_price;
-      const sumPriceRaw = firstProduct.sum;
-      const dealValueRaw = fullDeal.value;
-      
-      const itemPrice = (itemPriceRaw !== null && itemPriceRaw !== undefined && itemPriceRaw !== '')
-        ? (typeof itemPriceRaw === 'number' ? itemPriceRaw : parseFloat(itemPriceRaw))
-        : null;
-      const sumPrice = (sumPriceRaw !== null && sumPriceRaw !== undefined && sumPriceRaw !== '')
-        ? (typeof sumPriceRaw === 'number' ? sumPriceRaw : parseFloat(sumPriceRaw))
-        : null;
-      const dealValue = (dealValueRaw !== null && dealValueRaw !== undefined && dealValueRaw !== '')
-        ? (typeof dealValueRaw === 'number' ? dealValueRaw : parseFloat(dealValueRaw))
-        : null;
-      
-      // Determine base price: prefer sumPrice (already includes discount), then itemPrice, then dealValue
-      // Use null to indicate "not found" vs 0 which is a valid price
-      // IMPORTANT: sumPrice already includes product discount, so it should be used first
-      let basePrice = null;
-      if (sumPrice !== null && !isNaN(sumPrice)) {
-        basePrice = sumPrice;
-      } else if (itemPrice !== null && !isNaN(itemPrice)) {
-        basePrice = itemPrice;
-      } else if (dealValue !== null && !isNaN(dealValue)) {
-        basePrice = dealValue;
-      }
-      
-      // Log price calculation details for debugging
-      this.logger.debug('💰 Расчет цены продукта', {
-        dealId,
-        itemPriceRaw,
-        itemPrice,
-        sumPriceRaw,
-        sumPrice,
-        dealValueRaw,
-        dealValue,
-        basePrice,
-        quantity,
-        paymentSchedule,
-        paymentType,
-        customAmount,
-        productName: firstProduct.name || firstProduct.product?.name || 'N/A'
-      });
-      
-      // If no valid price found, return error
-      if (basePrice === null || isNaN(basePrice)) {
+      // Calculate payment amount using unified calculator
+      let productPrice;
+      try {
+        if (customAmount && customAmount > 0) {
+          productPrice = customAmount;
+          this.logger.info('Использована кастомная сумма', {
+            dealId,
+            customAmount
+          });
+        } else {
+          productPrice = DealAmountCalculator.calculatePaymentAmount(
+            fullDeal,
+            dealProductsResult.products,
+            paymentSchedule,
+            paymentType
+          );
+          this.logger.debug('💰 Расчет цены продукта через DealAmountCalculator', {
+            dealId,
+            productPrice,
+            paymentSchedule,
+            paymentType,
+            quantity,
+            productName: firstProduct.name || firstProduct.product?.name || 'N/A'
+          });
+        }
+      } catch (error) {
         this.logger.error('❌ Не удалось определить цену продукта', {
           dealId,
-          itemPrice,
-          sumPrice,
-          dealValue,
+          error: error.message,
           firstProduct: JSON.stringify(firstProduct),
           dealValue: fullDeal.value
         });
         return {
           success: false,
-          error: 'Product price is zero or invalid',
+          error: `Product price calculation failed: ${error.message}`,
           details: {
-            itemPrice,
-            sumPrice,
-            dealValue,
             product: firstProduct
           }
         };
-      }
-      
-      const cashFields = extractCashFields(fullDeal);
-      let cashDeduction = 0;
-      if (!customAmount && cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
-        cashDeduction = roundBankers(cashFields.amount);
-        const netAmount = Math.max(basePrice - cashDeduction, 0);
-        if (netAmount !== basePrice) {
-          this.logger.info('Учитываем наличный платеж при расчете Stripe суммы', {
-            dealId,
-            basePrice,
-            cashDeduction,
-            netAmount
-          });
-        }
-        basePrice = netAmount;
-      }
-
-      let productPrice = basePrice;
-      
-      // Override amount if customAmount is provided (for second payment)
-      if (customAmount && customAmount > 0) {
-        productPrice = customAmount;
-        this.logger.info('Использована кастомная сумма', {
-          dealId,
-          customAmount,
-          originalBasePrice: basePrice
-        });
-      } else if (paymentSchedule === '50/50') {
-        // For 50/50 schedule, split amount in half
-        productPrice = basePrice / 2;
-        this.logger.info('Split payment amount for 50/50 schedule', {
-          dealId,
-          originalAmount: basePrice,
-          splitAmount: productPrice,
-          paymentType,
-          paymentIndex
-        });
       }
       
       // Нормализуем валюту: преобразуем полные названия (например, "Polish Zloty") в ISO коды (например, "PLN")
