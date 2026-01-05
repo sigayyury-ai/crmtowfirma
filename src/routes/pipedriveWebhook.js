@@ -1314,28 +1314,45 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           });
 
             // Собираем существующие сессии для уведомления
-            // ВАЖНО: Получаем реальные URL из Stripe API, так как они не сохраняются в БД
+            // ВАЖНО: Сначала проверяем checkout_url в БД, если его нет - получаем из Stripe API
             const existingSessions = [];
             for (const p of existingPayments) {
               if (!p.session_id) continue;
               
-              try {
-                // Получаем актуальный URL сессии из Stripe API
-                const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
-                if (session && session.url) {
-                  existingSessions.push({
-                    id: p.session_id,
-                    url: session.url, // Реальный checkout URL из Stripe
-                    type: p.payment_type,
-                    amount: p.original_amount
-                  });
-                } else {
-                  logger.warn(`⚠️  Сессия не найдена в Stripe или не имеет URL | Deal: ${dealId} | Session ID: ${p.session_id}`);
+              let sessionUrl = p.checkout_url || null;
+              
+              // Если URL нет в БД, получаем из Stripe API
+              if (!sessionUrl) {
+                try {
+                  const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+                  if (session && session.url) {
+                    sessionUrl = session.url;
+                    // Сохраняем URL в БД для будущих использований
+                    try {
+                      await stripeProcessor.repository.savePayment({
+                        session_id: p.session_id,
+                        checkout_url: sessionUrl
+                      });
+                    } catch (saveError) {
+                      logger.warn(`⚠️  Не удалось сохранить checkout_url в БД | Deal: ${dealId} | Session ID: ${p.session_id}`, {
+                        error: saveError.message
+                      });
+                    }
+                  }
+                } catch (error) {
+                  logger.warn(`⚠️  Не удалось получить URL сессии из Stripe | Deal: ${dealId} | Session ID: ${p.session_id} | Ошибка: ${error.message}`);
                 }
-              } catch (error) {
-                logger.warn(`⚠️  Не удалось получить URL сессии из Stripe | Deal: ${dealId} | Session ID: ${p.session_id} | Ошибка: ${error.message}`);
-                // Если не удалось получить URL, пропускаем эту сессию
-                // Уведомление будет отправлено только для сессий с валидными URL
+              }
+              
+              if (sessionUrl) {
+                existingSessions.push({
+                  id: p.session_id,
+                  url: sessionUrl,
+                  type: p.payment_type,
+                  amount: p.original_amount
+                });
+              } else {
+                logger.warn(`⚠️  Сессия не имеет URL (ни в БД, ни в Stripe) | Deal: ${dealId} | Session ID: ${p.session_id}`);
               }
             }
 

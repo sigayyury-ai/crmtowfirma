@@ -720,6 +720,7 @@ class StripeProcessorService {
       exchange_rate_fetched_at: amountConversion.fetchedAt,
       payment_status: session.payment_status || null,
       payment_mode: session.mode || null,
+      checkout_url: session.url || null, // Сохраняем checkout URL для уведомлений
       created_at: session.created ? new Date(session.created * 1000).toISOString() : new Date().toISOString(),
       processed_at: new Date().toISOString(),
       raw_payload: session
