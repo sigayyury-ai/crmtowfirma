@@ -1342,6 +1342,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                         session_id: p.session_id,
                         checkout_url: sessionUrl
                       });
+                      logger.debug(`✅ URL сохранен в checkout_url | Deal: ${dealId} | Session ID: ${p.session_id}`);
                     } catch (saveError) {
                       logger.warn(`⚠️  Не удалось сохранить checkout_url в БД | Deal: ${dealId} | Session ID: ${p.session_id}`, {
                         error: saveError.message
@@ -1361,7 +1362,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                   amount: p.original_amount
                 });
               } else {
-                logger.warn(`⚠️  Сессия не имеет URL (ни в БД, ни в Stripe) | Deal: ${dealId} | Session ID: ${p.session_id}`);
+                logger.warn(`⚠️  Сессия не имеет URL (ни в checkout_url, ни в raw_payload, ни в Stripe) | Deal: ${dealId} | Session ID: ${p.session_id}`);
               }
             }
 
