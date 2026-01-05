@@ -1314,14 +1314,23 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           });
 
             // Собираем существующие сессии для уведомления
-            // ВАЖНО: Сначала проверяем checkout_url в БД, если его нет - получаем из Stripe API
+            // ВАЖНО: Проверяем URL в следующем порядке:
+            // 1. checkout_url в БД (новое поле)
+            // 2. raw_payload.url (старое место, где мог сохраняться URL)
+            // 3. Stripe API (если нет в БД)
             const existingSessions = [];
             for (const p of existingPayments) {
               if (!p.session_id) continue;
               
               let sessionUrl = p.checkout_url || null;
               
-              // Если URL нет в БД, получаем из Stripe API
+              // Если нет в checkout_url, проверяем raw_payload (старое место)
+              if (!sessionUrl && p.raw_payload && p.raw_payload.url) {
+                sessionUrl = p.raw_payload.url;
+                logger.debug(`✅ URL найден в raw_payload | Deal: ${dealId} | Session ID: ${p.session_id}`);
+              }
+              
+              // Если URL все еще нет, получаем из Stripe API
               if (!sessionUrl) {
                 try {
                   const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
