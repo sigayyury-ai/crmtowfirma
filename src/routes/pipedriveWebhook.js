@@ -1106,31 +1106,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             dealKeysWithDate: Object.keys(deal).filter(k => k.toLowerCase().includes('close') || k.toLowerCase().includes('date')).join(', ')
           });
           
-          let paymentSchedule = '100%';
+          // Определяем график платежей используя PaymentScheduleService (Phase 0: Code Review Fixes)
+          const schedule = PaymentScheduleService.determineSchedule(closeDate, new Date(), { dealId });
+          const paymentSchedule = schedule.schedule;
           
-          if (closeDate) {
-            try {
-              const expectedCloseDate = new Date(closeDate);
-              const today = new Date();
-              const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
-              
-              logger.info(`📅 Расчет количества платежей | Deal: ${dealId} | Дней до закрытия: ${daysDiff} | Сегодня: ${today.toISOString().split('T')[0]} | Дата закрытия: ${expectedCloseDate.toISOString().split('T')[0]}`);
-              
-              if (daysDiff >= 30) {
-                paymentSchedule = '50/50';
-                logger.info(`📅 ✅ Определен график 50/50 (два платежа) | Deal: ${dealId} | Дней до закрытия: ${daysDiff} | Условие: >= 30 дней`);
-              } else {
-                paymentSchedule = '100%';
-                logger.info(`📅 ✅ Определен график 100% (один платеж) | Deal: ${dealId} | Дней до закрытия: ${daysDiff} | Условие: < 30 дней`);
-              }
-            } catch (error) {
-              logger.warn(`⚠️  Ошибка расчета графика платежей, используем 100% | Deal: ${dealId}`, { error: error.message });
-              paymentSchedule = '100%';
-            }
-          } else {
-            logger.warn(`⚠️  Нет даты закрытия, используем график 100% (по умолчанию) | Deal: ${dealId}`);
-            paymentSchedule = '100%';
-          }
+          logger.info(`📅 Расчет количества платежей | Deal: ${dealId} | График: ${paymentSchedule} | Дней до закрытия: ${schedule.daysDiff || 'N/A'}`);
           
           logger.info(`📅 Итоговый график платежей | Deal: ${dealId} | График: ${paymentSchedule}`);
 
