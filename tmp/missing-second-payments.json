@@ -1,0 +1,272 @@
+[
+  {
+    "dealId": 1678,
+    "dealTitle": "Заявка от vera samasionak",
+    "customerEmail": "vera.samasionak@gmail.com",
+    "dealValue": 5173,
+    "currency": "PLN",
+    "firstPayment": {
+      "id": "91a9a06e-5da1-43ec-861c-5de362e3d1c1",
+      "amount": 2586.5,
+      "currency": "PLN",
+      "createdAt": "2025-12-08T10:40:56+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1blWRxYPuEwSjGmVzAJbgBoif5kwuuuoMC533p6vLm1wuf8yIQBXfBGAV"
+    },
+    "expectedSecondPayment": {
+      "amount": 2586.5,
+      "currency": "PLN",
+      "calculatedDate": "2026-01-07"
+    },
+    "currentSchedule": "50/50",
+    "daysUntilCamp": 34,
+    "expectedCloseDate": "2026-02-07",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "Второй платеж должен быть создан, но не был"
+  },
+  {
+    "dealId": 1696,
+    "dealTitle": "Заявка от Sergey",
+    "customerEmail": "sergey@chernecov.com",
+    "dealValue": 800,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "166e98b2-397a-459f-9ec8-392a67725084",
+      "amount": 400,
+      "currency": "EUR",
+      "createdAt": "2025-12-12T15:16:25+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1KzTqouu47hzDO9dK5T1CNZIo4LUWJjv9SnPOuAzzEDul0YQG3sSf6qhg"
+    },
+    "expectedSecondPayment": {
+      "amount": 400,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1697,
+    "dealTitle": "Заявка от Никита",
+    "customerEmail": "paskalnikita@gmail.com",
+    "dealValue": 800,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "082dd7ca-f755-410d-8a66-ddf18715f0f9",
+      "amount": 400,
+      "currency": "EUR",
+      "createdAt": "2025-12-15T22:06:42+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1a5owDEjA6hn6vNV3V8D3WXHgv30PmD9s48BF7LQrSjw2HoWo7xTi1NI7"
+    },
+    "expectedSecondPayment": {
+      "amount": 400,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1685,
+    "dealTitle": "Заявка от Anna Zinczenko-Lebiedź",
+    "customerEmail": "a.zinczenko@gmail.com",
+    "dealValue": 3272,
+    "currency": "PLN",
+    "firstPayment": {
+      "id": "b1d70664-1241-4d77-9b18-db2c7a8709ba",
+      "amount": 1636,
+      "currency": "PLN",
+      "createdAt": "2025-12-17T16:15:24+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1yXoBtAxryhqMiQ5iKE6mXhcMLOoxe0rC1TKPLiq5xbBuPg46TWg5Iehk"
+    },
+    "expectedSecondPayment": {
+      "amount": 1636,
+      "currency": "PLN",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1707,
+    "dealTitle": "Заявка от Nina",
+    "customerEmail": "ninnely@gmail.com",
+    "dealValue": 2975,
+    "currency": "PLN",
+    "firstPayment": {
+      "id": "2d9e5ac8-0f9a-4adf-bba4-44a34dc1bc6b",
+      "amount": 1487.5,
+      "currency": "PLN",
+      "createdAt": "2025-12-17T16:19:21+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1baVUKRaoFzOMuIdQRqsPx6J6teomAAXYMgKlwnRD0YSh966qGvJgMojU"
+    },
+    "expectedSecondPayment": {
+      "amount": 1487.5,
+      "currency": "PLN",
+      "calculatedDate": "2026-01-07"
+    },
+    "currentSchedule": "50/50",
+    "daysUntilCamp": 34,
+    "expectedCloseDate": "2026-02-07",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "Второй платеж должен быть создан, но не был"
+  },
+  {
+    "dealId": 1718,
+    "dealTitle": "Sofia",
+    "customerEmail": "sonya.scotch@gmail.com",
+    "dealValue": 1220,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "5ad06e1d-8981-48b8-9829-6984d4b20272",
+      "amount": 610,
+      "currency": "EUR",
+      "createdAt": "2025-12-18T18:43:15+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1AOEPo8V5ODFm8TyLu9uKJYg3BpT25boidVWNeV5ERYyCvagi8Cm4JQoC"
+    },
+    "expectedSecondPayment": {
+      "amount": 610,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1688,
+    "dealTitle": "Anna Denisova",
+    "customerEmail": "anna_denisova@mail.ru",
+    "dealValue": 800,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "0da72902-9268-4959-9a57-1f24dc451bdb",
+      "amount": 400,
+      "currency": "EUR",
+      "createdAt": "2025-12-22T20:22:48+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1EYnGaZz3yFQVBctHiuIU8Sv2plZRuIHwqhmcECdUNclbQdOeF7Iu1QNn"
+    },
+    "expectedSecondPayment": {
+      "amount": 400,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1706,
+    "dealTitle": "Заявка от Саша",
+    "customerEmail": "asya.galaktionova@gmail.com",
+    "dealValue": 800,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "6a3ebed9-bead-46e9-be41-9741eb1e21da",
+      "amount": 400,
+      "currency": "EUR",
+      "createdAt": "2025-12-24T10:29:33+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1nYlIx2cSH3enmif1k04tx47hiXPJTlUbALwGIYLfyIDLPVGR45DlP8lR"
+    },
+    "expectedSecondPayment": {
+      "amount": 400,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1714,
+    "dealTitle": "Заявка от Ольга",
+    "customerEmail": "easyjobfor@gmail.com",
+    "dealValue": 800,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "7cb71b82-c398-4f33-9582-59b303762851",
+      "amount": 400,
+      "currency": "EUR",
+      "createdAt": "2025-12-24T10:33:43+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1xl0DIp2cE4eAyW66rBZw0tjloKVMjiVPAhjReqJlem5l3nyWTrXM2z5O"
+    },
+    "expectedSecondPayment": {
+      "amount": 400,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-31"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 27,
+    "expectedCloseDate": "2026-01-31",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  },
+  {
+    "dealId": 1112,
+    "dealTitle": "Заявка от Vera Vein",
+    "customerEmail": "vevavera1984@gmail.com",
+    "dealValue": 382.5,
+    "currency": "EUR",
+    "firstPayment": {
+      "id": "d6862a61-7df8-4db5-b219-3513e8d23018",
+      "amount": 191.25,
+      "currency": "EUR",
+      "createdAt": "2025-12-26T19:32:57+00:00",
+      "paymentSchedule": "50/50",
+      "sessionId": "cs_live_a1AThNwZv42Uzwg8O0jzMZS6BfISXpi2r0GRDA9AIxXA5ppinBFyYpphGa"
+    },
+    "expectedSecondPayment": {
+      "amount": 191.25,
+      "currency": "EUR",
+      "calculatedDate": "2025-12-26"
+    },
+    "currentSchedule": "100%",
+    "daysUntilCamp": 22,
+    "expectedCloseDate": "2026-01-26",
+    "isStripeDeal": false,
+    "stageId": 32,
+    "stageName": "Unknown",
+    "reason": "График изменился на 100% (до лагеря < 30 дней), поэтому cron не создал второй платеж"
+  }
+]

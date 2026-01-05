@@ -114,6 +114,18 @@ async function checkStuckPayments() {
       console.log(`   Сумма: ${fullDeal.value || deal.value} ${fullDeal.currency || deal.currency || 'PLN'}`);
       console.log(`   Клиент: ${person?.name || 'N/A'}`);
 
+      // Определяем дату закрытия заранее для использования в dealInfo
+      const closeDate = fullDeal.expected_close_date || fullDeal.close_date;
+      let daysUntilClose = null;
+      
+      if (closeDate) {
+        const expectedCloseDate = new Date(closeDate);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        expectedCloseDate.setHours(0, 0, 0, 0);
+        daysUntilClose = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+      }
+
       const dealInfo = {
         dealId: fullDeal.id || deal.id,
         title: fullDeal.title || deal.title,
@@ -123,6 +135,8 @@ async function checkStuckPayments() {
         currency: fullDeal.currency || deal.currency || 'PLN',
         personName: person?.name || 'N/A',
         personEmail: person?.email?.[0]?.value || person?.email || 'N/A',
+        expectedCloseDate: closeDate || null,
+        daysUntilClose: daysUntilClose !== null ? daysUntilClose : null,
         issues: [],
         recommendations: []
       };
@@ -229,26 +243,79 @@ async function checkStuckPayments() {
         dealInfo.issues.push('SendPulse ID не найден - уведомления не отправляются');
       }
 
+      // 4.5. Выводим информацию о дате закрытия сделки (уже определена выше)
+      let isCloseDateRelevant = false;
+      
+      if (closeDate) {
+        console.log(`   📅 Дата закрытия: ${closeDate} (${daysUntilClose > 0 ? `через ${daysUntilClose} дней` : daysUntilClose === 0 ? 'сегодня' : `${Math.abs(daysUntilClose)} дней назад`})`);
+        // Дата закрытия релевантна для определения, застряла ли сделка
+        isCloseDateRelevant = true;
+      } else {
+        console.log(`   📅 Дата закрытия: не указана`);
+      }
+
       // 5. Определяем, застряла ли сделка
       // Сделка застряла, если:
-      // - Есть проблемы (issues)
+      // - Есть проблемы (issues), НО учитываем дату закрытия
       // - Нет активных сессий И есть истекшие сессии (нужна новая сессия)
-      // - Нет платежей вообще (ни Stripe, ни проформ) - для First Payment это критично
-      // - Для Second Payment: первый платеж оплачен, но нет второго платежа
+      // - Нет платежей вообще (ни Stripe, ни проформ) - для First Payment это критично, ЕСЛИ дата закрытия близко
+      // - Для Second Payment: первый платеж оплачен, но нет второго платежа, ЕСЛИ дата закрытия уже прошла
       const hasActiveSessions = activeSessions && activeSessions.length > 0;
       const hasExpiredSessions = expiredSessions && expiredSessions.length > 0;
       const hasAnyPayments = (stripePayments && stripePayments.length > 0) || (proformas && proformas.length > 0);
       
-      // Для Second Payment: если первый платеж оплачен, но нет второго - это нормально (ждем дату)
-      // Для First Payment: если нет платежей - это проблема
       const isSecondPaymentStage = dealInfo.stageId === STAGE_IDS.SECOND_PAYMENT;
       const hasPaidFirstPayment = paidStripePayments.length > 0;
       
+      // Фильтруем issues с учетом даты закрытия
+      const relevantIssues = [];
+      
+      // Истекшие сессии - всегда проблема
+      if (hasExpiredSessions && !hasActiveSessions) {
+        relevantIssues.push('expired_sessions');
+      }
+      
+      // Проблемы с платежами - только если дата закрытия релевантна
+      if (!hasAnyPayments) {
+        if (isSecondPaymentStage) {
+          // Second Payment: проблема только если дата закрытия уже прошла или близко (в пределах 60 дней)
+          // Учитываем что второй платеж обычно выставляется за месяц до закрытия или в день закрытия
+          if (!isCloseDateRelevant || daysUntilClose <= 60) {
+            if (!hasPaidFirstPayment) {
+              relevantIssues.push('no_payments');
+            }
+          } else {
+            console.log(`   ℹ️  Дата закрытия через ${daysUntilClose} дней - второй платеж еще не требуется`);
+          }
+        } else {
+          // First Payment: проблема только если дата закрытия близко (меньше 30 дней) или уже прошла
+          if (!isCloseDateRelevant || daysUntilClose <= 30) {
+            relevantIssues.push('no_payments');
+          } else {
+            console.log(`   ℹ️  Дата закрытия через ${daysUntilClose} дней - первый платеж еще не требуется`);
+            // Убираем issue о отсутствии платежей, если дата закрытия далеко
+            const noPaymentsIssueIndex = dealInfo.issues.findIndex(i => i.includes('Нет ни Stripe платежей'));
+            if (noPaymentsIssueIndex >= 0) {
+              dealInfo.issues.splice(noPaymentsIssueIndex, 1);
+              const noPaymentsRecIndex = dealInfo.recommendations.findIndex(r => r.includes('Создать Stripe сессию'));
+              if (noPaymentsRecIndex >= 0) {
+                dealInfo.recommendations.splice(noPaymentsRecIndex, 1);
+              }
+            }
+          }
+        }
+      }
+      
+      // SendPulse ID - не критично для определения "застрявшей", но оставляем в issues
+      const sendPulseIssueIndex = dealInfo.issues.findIndex(i => i.includes('SendPulse ID'));
+      if (sendPulseIssueIndex >= 0) {
+        // Оставляем issue, но не считаем это критичным для "застрявшей"
+      }
+      
       const isStuck = 
-        dealInfo.issues.length > 0 ||
+        relevantIssues.length > 0 ||
         (hasExpiredSessions && !hasActiveSessions) ||
-        (!isSecondPaymentStage && !hasAnyPayments) || // First Payment без платежей - проблема
-        (isSecondPaymentStage && !hasPaidFirstPayment && !hasAnyPayments); // Second Payment без первого платежа - проблема
+        (dealInfo.issues.some(i => i.includes('оплачена, но статус'))); // Оплаченные, но не обновленные - всегда проблема
 
       if (isStuck) {
         results.stuck.push(dealInfo);

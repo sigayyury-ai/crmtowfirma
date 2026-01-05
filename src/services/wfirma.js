@@ -254,12 +254,11 @@ class WfirmaClient {
             if (response.data.includes('<code>OK</code>') || response.data.includes('<id>')) {
               // Извлекаем ID из ответа, но не логируем весь XML
               const idMatch = response.data.match(/<id>(\d+)<\/id>/);
+              const contractorId = idMatch ? idMatch[1] : null;
               logger.info('Contractor created successfully', {
-                contractorId: idMatch ? idMatch[1] : null,
+                contractorId: contractorId,
                 responseCode: response.data.includes('<code>OK</code>') ? 'OK' : 'unknown'
               });
-              
-              // ID уже извлечен выше
               
               return {
                 success: true,
@@ -280,13 +279,15 @@ class WfirmaClient {
           }
           // Если это JSON ответ
           else if (response.data.contractor || response.data.id) {
+            const contractorId = response.data.contractor?.id || response.data.id;
             logger.info('Contractor created successfully', {
-              contractorId: response.data.contractor?.id || response.data.id,
+              contractorId: contractorId,
               contractorName: response.data.contractor?.name || response.data.name
             });
             return {
               success: true,
               contractor: response.data.contractor || response.data,
+              contractorId: contractorId,
               message: 'Contractor created successfully'
             };
           } else {

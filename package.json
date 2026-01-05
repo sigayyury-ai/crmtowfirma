@@ -6,12 +6,17 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
     "test:supabase": "node tests/scripts/testSupabaseConnection.js",
     "migrate:proformas": "node scripts/migrateProformasToSupabase.js",
     "serve:vat": "npx http-server frontend/vat-margin -p 4173",
     "run:stripe-processor": "node scripts/runStripeProcessor.js",
-    "emulate:webhook": "node scripts/emulate-webhook.js"
+    "emulate:webhook": "node scripts/emulate-webhook.js",
+    "logs:render": "node scripts/fetch-render-logs.js",
+    "logs:render:tail": "node scripts/fetch-render-logs.js --tail",
+    "logs:render:save": "node scripts/fetch-render-logs.js --output=logs/render-$(date +%Y%m%d-%H%M%S).txt"
   },
   "keywords": [
     "pipedrive",
@@ -46,6 +51,7 @@
     "yargs": "^18.0.0"
   },
   "devDependencies": {
+    "jest": "^29.7.0",
     "nodemon": "^3.0.1",
     "render-cli": "^0.3.2"
   },

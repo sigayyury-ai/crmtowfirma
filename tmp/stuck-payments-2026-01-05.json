@@ -1,0 +1,139 @@
+{
+  "total": 29,
+  "withStripePayments": 11,
+  "withProformas": 5,
+  "withActiveSessions": 0,
+  "withExpiredSessions": 1,
+  "withoutPayments": 13,
+  "needsReminder": 0,
+  "needsNewSession": 1,
+  "stuck": [
+    {
+      "dealId": 1119,
+      "title": "Заявка от Александр",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 920,
+      "currency": "EUR",
+      "personName": "ALIAKSANDR IVANOU",
+      "personEmail": "daos.ais@gmail.com",
+      "expectedCloseDate": "2026-01-26",
+      "daysUntilClose": 21,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1121,
+      "title": "Заявка от Дашв",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 435,
+      "currency": "EUR",
+      "personName": "Darya Zaseka",
+      "personEmail": "darya.zaseka@gmail.com",
+      "expectedCloseDate": "2026-01-26",
+      "daysUntilClose": 21,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1257,
+      "title": "Заявка от Anton France",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 870,
+      "currency": "EUR",
+      "personName": "Anton Makevich",
+      "personEmail": "maktoxa@gmail.com",
+      "expectedCloseDate": "2026-01-26",
+      "daysUntilClose": 21,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1335,
+      "title": "Заявка от Владимир",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 920,
+      "currency": "EUR",
+      "personName": "Vladimir Сван",
+      "personEmail": "svan.by@gmail.com",
+      "expectedCloseDate": "2026-01-26",
+      "daysUntilClose": 21,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ",
+        "SendPulse ID не найден - уведомления не отправляются"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1686,
+      "title": "Anna",
+      "stageId": 18,
+      "stageName": "First Payment",
+      "value": 600,
+      "currency": "EUR",
+      "personName": "ANNA ZINCZENKO-LEBIEDŹ",
+      "personEmail": "a.zinczenko@gmail.com",
+      "expectedCloseDate": null,
+      "daysUntilClose": null,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1709,
+      "title": "Заявка от Sofia",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 950,
+      "currency": "EUR",
+      "personName": "Sofia Lutsinina",
+      "personEmail": "sonya.scotch@gmail.com",
+      "expectedCloseDate": "2026-01-24",
+      "daysUntilClose": 19,
+      "issues": [
+        "Сессия cs_live_a1Ah2PrlDYNiqHVM9GzDCp36QQpqYrMnZzWPXYMzCQ3MHcFzukA0A8tQFP истекла 169ч назад"
+      ],
+      "recommendations": [
+        "Создать новую сессию вместо cs_live_a1Ah2PrlDYNiqHVM9GzDCp36QQpqYrMnZzWPXYMzCQ3MHcFzukA0A8tQFP"
+      ]
+    },
+    {
+      "dealId": 1762,
+      "title": "Katsiaryna Kartashevich",
+      "stageId": 18,
+      "stageName": "First Payment",
+      "value": 700,
+      "currency": "EUR",
+      "personName": "Katsiaryna Kartashevich",
+      "personEmail": "k.kartashevich@gmail.com",
+      "expectedCloseDate": "2025-12-30",
+      "daysUntilClose": -6,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    }
+  ]
+}

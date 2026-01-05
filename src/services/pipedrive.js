@@ -1,11 +1,57 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 
+// Утилита для retry с экспоненциальной задержкой
+async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const status = error.response?.status;
+      
+      // Retry только для rate limiting (429) и временных ошибок (5xx)
+      const shouldRetry = status === 429 || (status >= 500 && status < 600);
+      
+      if (!shouldRetry || attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Экспоненциальная задержка: baseDelay * 2^attempt
+      // Для 429 добавляем дополнительную задержку из заголовка Retry-After если есть
+      let delay = baseDelay * Math.pow(2, attempt);
+      
+      if (status === 429) {
+        const retryAfter = error.response?.headers?.['retry-after'];
+        if (retryAfter) {
+          delay = Math.max(delay, parseInt(retryAfter, 10) * 1000);
+        } else {
+          // Если нет Retry-After, используем более длинную задержку для 429
+          delay = Math.max(delay, 5000 * (attempt + 1));
+        }
+      }
+      
+      logger.warn(`Pipedrive API request failed, retrying (attempt ${attempt + 1}/${maxRetries})`, {
+        status,
+        delay: `${delay}ms`,
+        url: error.config?.url,
+        retryAfter: error.response?.headers?.['retry-after']
+      });
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 class PipedriveClient {
   constructor() {
     this.apiToken = process.env.PIPEDRIVE_API_TOKEN?.trim();
     this.baseURL = process.env.PIPEDRIVE_BASE_URL || 'https://api.pipedrive.com/v1';
     this.baseURLv2 = 'https://api.pipedrive.com';
+    this.maxRetries = parseInt(process.env.PIPEDRIVE_MAX_RETRIES || '3', 10);
+    this.retryBaseDelay = parseInt(process.env.PIPEDRIVE_RETRY_BASE_DELAY || '1000', 10);
     
     if (!this.apiToken) {
       throw new Error('PIPEDRIVE_API_TOKEN must be set in environment variables');
@@ -50,16 +96,25 @@ class PipedriveClient {
         });
         return response;
       },
-      (error) => {
+      async (error) => {
         // 404 для удаленных ресурсов - это ожидаемая ситуация, не ошибка
         const status = error.response?.status;
         const isNotFound = status === 404;
+        const isRateLimited = status === 429;
         
         if (isNotFound) {
           logger.debug('Pipedrive API Resource Not Found:', {
             status: 404,
             url: error.config?.url,
             message: error.response?.data?.error || 'Resource not found'
+          });
+        } else if (isRateLimited) {
+          // Rate limiting обрабатывается через retry
+          logger.warn('Pipedrive API Rate Limited:', {
+            status: 429,
+            url: error.config?.url,
+            retryAfter: error.response?.headers?.['retry-after'],
+            message: 'Rate limit exceeded, will retry with backoff'
           });
         } else {
           logger.error('Pipedrive API Response Error:', {
@@ -146,12 +201,16 @@ class PipedriveClient {
    */
   async getDeal(dealId) {
     try {
-      const response = await this.client.get(`/deals/${dealId}`, {
-        params: { 
-          api_token: this.apiToken,
-          include: 'stage' // Включаем информацию о стадии
-        }
-      });
+      const response = await retryWithBackoff(
+        () => this.client.get(`/deals/${dealId}`, {
+          params: { 
+            api_token: this.apiToken,
+            include: 'stage' // Включаем информацию о стадии
+          }
+        }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
       
       if (response.data.success) {
         return {
@@ -252,7 +311,11 @@ class PipedriveClient {
         }
       });
 
-      const response = await this.client.get('/deals', { params });
+      const response = await retryWithBackoff(
+        () => this.client.get('/deals', { params }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
       
       if (response.data.success) {
         return {
@@ -265,11 +328,17 @@ class PipedriveClient {
         throw new Error('Failed to get deals');
       }
     } catch (error) {
-      logger.error('Error getting deals:', error);
+      const isRateLimited = error.response?.status === 429;
+      logger.error('Error getting deals:', {
+        error: error.message,
+        rateLimited: isRateLimited,
+        details: error.response?.data || null
+      });
       return {
         success: false,
         error: error.message,
-        details: error.response?.data || null
+        details: error.response?.data || null,
+        rateLimited: isRateLimited
       };
     }
   }
@@ -1009,9 +1078,13 @@ class PipedriveClient {
    */
   async getOrganization(orgId) {
     try {
-      const response = await this.client.get(`/organizations/${orgId}`, {
-        params: { api_token: this.apiToken }
-      });
+      const response = await retryWithBackoff(
+        () => this.client.get(`/organizations/${orgId}`, {
+          params: { api_token: this.apiToken }
+        }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
       
       if (response.data.success) {
         return {
@@ -1042,13 +1115,17 @@ class PipedriveClient {
       // Запрашиваем кастомное поле SendPulse ID (ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c)
       // Используем параметр fields для получения всех полей или конкретного кастомного поля
       const SENDPULSE_ID_FIELD_KEY = process.env.PIPEDRIVE_SENDPULSE_ID_FIELD_KEY || 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
-      const response = await this.client.get(`/persons/${personId}`, {
-        params: { 
-          api_token: this.apiToken,
-          // Запрашиваем SendPulse ID и телефон (phone поле)
-          fields: `${SENDPULSE_ID_FIELD_KEY},phone`
-        }
-      });
+      const response = await retryWithBackoff(
+        () => this.client.get(`/persons/${personId}`, {
+          params: { 
+            api_token: this.apiToken,
+            // Запрашиваем SendPulse ID и телефон (phone поле)
+            fields: `${SENDPULSE_ID_FIELD_KEY},phone`
+          }
+        }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
       
       if (response.data.success) {
         const person = response.data.data;
@@ -1087,9 +1164,13 @@ class PipedriveClient {
     */
   async updateDeal(dealId, data = {}) {
     try {
-      const response = await this.client.put(`/deals/${dealId}`, data, {
-        params: { api_token: this.apiToken }
-      });
+      const response = await retryWithBackoff(
+        () => this.client.put(`/deals/${dealId}`, data, {
+          params: { api_token: this.apiToken }
+        }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
 
       if (response.data.success) {
         return {
@@ -1194,7 +1275,7 @@ class PipedriveClient {
    */
   async getDealWithRelatedData(dealId) {
     try {
-      // Получаем основную информацию о сделке
+      // Получаем основную информацию о сделке (уже с retry)
       const dealResult = await this.getDeal(dealId);
       if (!dealResult.success) {
         return dealResult;
@@ -1310,11 +1391,15 @@ class PipedriveClient {
       throw new Error('dealId and stageId are required to update stage');
     }
 
-    const response = await this.client.put(`/deals/${dealId}`, {
-      stage_id: stageId
-    }, {
-      params: { api_token: this.apiToken }
-    });
+    const response = await retryWithBackoff(
+      () => this.client.put(`/deals/${dealId}`, {
+        stage_id: stageId
+      }, {
+        params: { api_token: this.apiToken }
+      }),
+      this.maxRetries,
+      this.retryBaseDelay
+    );
 
     if (!response?.data?.success) {
       throw new Error(`Failed to update deal stage: ${JSON.stringify(response?.data)}`);

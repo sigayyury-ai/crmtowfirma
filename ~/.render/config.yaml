@@ -1,0 +1,10 @@
+version: 1
+workspace: tea-d3p5a86mcj7s739q1bs0
+workspace_name: My Workspace
+api:
+    key: rnd_Ixq9ruiwDWD44e9ZaEdpvFLMGVFZ
+    expires_at: 1767649284
+    host: https://api.render.com/v1/
+    refreshtoken: rnd_BAFMim6E1mYixJu0XxhkhbRdGQOq
+dashboard_url: https://dashboard.render.com
+

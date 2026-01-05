@@ -154,9 +154,76 @@ class StripeEventAggregationService {
 
   async upsertParticipants(rows) {
     if (!rows.length) return;
-    const { error } = await this.supabase.from('stripe_event_participants').insert(rows);
+    
+    // Проверяем существующие записи перед вставкой, чтобы избежать дубликатов
+    const eventKeys = [...new Set(rows.map(r => r.event_key))];
+    const participantIds = [...new Set(rows.map(r => r.participant_id).filter(Boolean))];
+    
+    let existingRows = [];
+    if (eventKeys.length > 0 && participantIds.length > 0) {
+      try {
+        const { data, error: queryError } = await this.supabase
+          .from('stripe_event_participants')
+          .select('event_key, participant_id')
+          .in('event_key', eventKeys)
+          .in('participant_id', participantIds);
+        
+        if (queryError) {
+          this.logger.warn('Failed to check existing participants, proceeding with insert', {
+            error: queryError.message
+          });
+        } else {
+          existingRows = data || [];
+        }
+      } catch (error) {
+        this.logger.warn('Error checking existing participants, proceeding with insert', {
+          error: error.message
+        });
+      }
+    }
+    
+    // Создаем Set для быстрой проверки существующих записей
+    const existingSet = new Set(
+      existingRows.map(r => `${r.event_key}:${r.participant_id}`)
+    );
+    
+    // Фильтруем дубликаты
+    const uniqueRows = rows.filter(row => {
+      const key = `${row.event_key}:${row.participant_id}`;
+      return !existingSet.has(key);
+    });
+    
+    if (uniqueRows.length === 0) {
+      this.logger.debug('All participants already exist, skipping insert');
+      return;
+    }
+    
+    if (uniqueRows.length < rows.length) {
+      this.logger.info('Filtered duplicate participants', {
+        total: rows.length,
+        unique: uniqueRows.length,
+        duplicates: rows.length - uniqueRows.length
+      });
+    }
+    
+    // Используем upsert вместо insert для обработки конфликтов
+    const { error } = await this.supabase
+      .from('stripe_event_participants')
+      .upsert(uniqueRows, {
+        onConflict: 'event_key,participant_id',
+        ignoreDuplicates: false
+      });
+    
     if (error) {
-      throw new Error(`Failed to insert participants: ${error.message}`);
+      // Если ошибка связана с дубликатами, логируем предупреждение, но не выбрасываем ошибку
+      if (error.message && error.message.includes('duplicate') || error.code === '23505') {
+        this.logger.warn('Duplicate participants detected during upsert (this is expected)', {
+          error: error.message,
+          rowsCount: uniqueRows.length
+        });
+        return; // Не выбрасываем ошибку для дубликатов
+      }
+      throw new Error(`Failed to upsert participants: ${error.message}`);
     }
   }
 

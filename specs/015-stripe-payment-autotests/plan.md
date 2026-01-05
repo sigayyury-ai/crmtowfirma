@@ -1,46 +1,37 @@
-# Implementation Plan: Автотесты Stripe платежей
+# Implementation Plan: [FEATURE]
 
-**Branch**: `015-stripe-payment-autotests` | **Date**: 2025-01-27 | **Spec**: `specs/015-stripe-payment-autotests/spec.md`
-**Input**: Feature specification from `/specs/015-stripe-payment-autotests/spec.md`
+**Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+**Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/commands/plan.md` for the execution workflow.
 
 ## Summary
 
-Реализация автоматизированных end-to-end тестов для полного флоу Stripe платежей: от получения webhook от Pipedrive до отправки уведомления через SendPulse. Тесты будут выполняться ежедневно через cron, покрывая все критические сценарии (deposit, rest, single платежи), обработку оплат, истекших сессий и возвратов. Все результаты логируются для мониторинга стабильности функционала.
-
-**Критически важно**: Перед реализацией тестов необходимо исправить критические проблемы, выявленные в code review (`docs/stripe-payment-logic-code-review.md`):
-- Унификация дублирующейся логики определения графика платежей
-- Защита от race conditions при создании сессий
-- Рефакторинг обработки webhook'ов от Pipedrive (2700+ строк в одной функции)
-- Улучшение валидации и безопасности webhook'ов
-- Улучшение расчета остатка при изменении графика платежей
-
-**Дополнительная задача**: При отправке сообщения в SendPulse обновлять кастомное поле контакта с deal_id из CRM для связи SendPulse контакта с CRM сделкой.
+[Extract from feature spec: primary requirement + technical approach from research]
 
 ## Technical Context
 
-**Language/Version**: Node.js 18.x (Render)  
-**Primary Dependencies**: Express, node-cron, Stripe SDK, Winston logger, Supabase client, SendPulse client  
-**Storage**: Supabase (test data tracking), in-memory test results (during execution), Winston logs (persistent storage)  
-**Testing**: Custom test runner (Node.js scripts), Jest for unit tests (optional), manual smoke tests  
-**Target Platform**: Backend (Render container)  
-**Project Type**: web (single repo: backend)  
-**Performance Goals**: Test suite execution ≤ 10 minutes, individual test ≤ 2 minutes  
-**Constraints**: Must use Stripe test mode keys, test data must be isolated from production, 100% cleanup after execution, no impact on production deals/notifications  
-**Scale/Scope**: 6 test scenarios, 1 daily execution, ~18 test assertions per run, test data: 3-6 test deals, 3-6 test Stripe sessions
+<!--
+  ACTION REQUIRED: Replace the content in this section with the technical details
+  for the project. The structure here is presented in advisory capacity to guide
+  the iteration process.
+-->
+
+**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]  
+**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]  
+**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]  
+**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]  
+**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Project Type**: [single/web/mobile - determines source structure]  
+**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]  
+**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]  
+**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- **Invoice Data Fidelity**: Тесты используют тестовые данные и не влияют на production. Тестовые сделки помечаются специальным идентификатором. → ✅ при использовании тестовых ключей и изоляции данных.
-- **Reliable Automation Flow**: Тесты выполняются через cron с логированием всех операций. Ошибки не блокируют production функционал. → ✅ при правильной обработке ошибок и изоляции.
-- **Transparent Observability**: Все тесты логируют результаты через Winston с correlation identifiers. Логи содержат достаточно информации для диагностики. → ✅ при использовании существующего logger.
-- **Secure Credential Stewardship**: Тесты используют тестовые API ключи из environment variables. Никакие секреты не попадают в логи. → ✅ при использовании STRIPE_MODE=test и тестовых ключей.
-- **Spec-Driven Delivery Discipline**: Спецификация создана через `/speckit.specify`, план через `/speckit.plan`. → ✅ соответствует workflow.
-
-**Status**: ✅ All gates passed
+[Gates determined based on constitution file]
 
 ## Project Structure
 
@@ -57,57 +48,57 @@ specs/[###-feature]/
 ```
 
 ### Source Code (repository root)
+<!--
+  ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
+  for this feature. Delete unused options and expand the chosen structure with
+  real paths (e.g., apps/admin, packages/something). The delivered plan must
+  not include Option labels.
+-->
 
 ```text
+# [REMOVE IF UNUSED] Option 1: Single project (DEFAULT)
 src/
+├── models/
 ├── services/
-│   ├── stripe/
-│   │   ├── processor.js          # Existing: payment processing
-│   │   ├── repository.js         # Existing: database operations
-│   │   └── testRunner.js         # NEW: test execution service
-│   ├── scheduler.js              # Existing: cron scheduler (will add test job)
-│   └── sendpulse.js              # Existing: notification service
-├── routes/
-│   ├── stripeWebhook.js          # Existing: Stripe webhook handler
-│   └── pipedriveWebhook.js       # Existing: Pipedrive webhook handler
-└── utils/
-    └── logger.js                 # Existing: Winston logger
+├── cli/
+└── lib/
 
 tests/
+├── contract/
 ├── integration/
-│   └── stripe-payment-flow.test.js  # NEW: end-to-end test suite
-└── scripts/
-    └── runStripePaymentTests.js     # NEW: test runner script
+└── unit/
+
+# [REMOVE IF UNUSED] Option 2: Web application (when "frontend" + "backend" detected)
+backend/
+├── src/
+│   ├── models/
+│   ├── services/
+│   └── api/
+└── tests/
+
+frontend/
+├── src/
+│   ├── components/
+│   ├── pages/
+│   └── services/
+└── tests/
+
+# [REMOVE IF UNUSED] Option 3: Mobile + API (when "iOS/Android" detected)
+api/
+└── [same as backend above]
+
+ios/ or android/
+└── [platform-specific structure: feature modules, UI flows, platform tests]
 ```
 
-**Structure Decision**: Используем существующую структуру проекта (single backend). Тесты размещаются в `tests/integration/`, тестовый runner как сервис в `src/services/stripe/testRunner.js`, cron задача добавляется в `src/services/scheduler.js`. Тестовый скрипт для ручного запуска в `tests/scripts/`.
-
-## Additional Feature: SendPulse Contact Deal ID Sync
-
-**Requirement**: При отправке сообщения в SendPulse обновлять кастомное поле контакта с deal_id из CRM для связи SendPulse контакта с CRM сделкой.
-
-**Implementation Approach**:
-1. Добавить метод `updateContactCustomField()` в `SendPulseClient` для обновления кастомных полей контакта через SendPulse API
-2. Обновить все места отправки сообщений через SendPulse, чтобы после успешной отправки обновлять поле `deal_id` у контакта
-3. Использовать SendPulse API endpoint для обновления контакта: `PUT /contacts/{contact_id}` или `PATCH /contacts/{contact_id}`
-4. Обработать ошибки обновления gracefully (не блокировать отправку сообщения)
-
-**Affected Files**:
-- `src/services/sendpulse.js` - добавить метод `updateContactCustomField(contactId, customFields)`
-- `src/services/stripe/processor.js` - обновить `sendPaymentNotificationForDeal()` для обновления deal_id после отправки
-- `src/routes/pipedriveWebhook.js` - обновить места отправки уведомлений
-- `scripts/create-session-for-deal.js` - обновить для обновления deal_id
-- `scripts/recreate-expired-sessions.js` - обновить для обновления deal_id
-
-**Configuration**:
-- Environment variable: `SENDPULSE_DEAL_ID_FIELD_NAME` (default: 'deal_id' или название кастомного поля в SendPulse)
-- Кастомное поле должно быть создано в SendPulse заранее через UI или API
-
-**Testing**:
-- Unit test для `updateContactCustomField()` метода
-- Integration test для проверки обновления поля после отправки сообщения
-- Проверка обработки ошибок (если поле не существует или контакт не найден)
+**Structure Decision**: [Document the selected structure and reference the real
+directories captured above]
 
 ## Complexity Tracking
 
-No constitution violations identified. All gates passed. No complexity justification needed.
+> **Fill ONLY if Constitution Check has violations that must be justified**
+
+| Violation | Why Needed | Simpler Alternative Rejected Because |
+|-----------|------------|-------------------------------------|
+| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
+| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
