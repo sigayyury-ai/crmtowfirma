@@ -2,6 +2,8 @@ const StripeProcessorService = require('./processor');
 const StripeRepository = require('./repository');
 const PipedriveClient = require('../pipedrive');
 const logger = require('../../utils/logger');
+// Phase 0: Code Review Fixes - New unified services
+const PaymentScheduleService = require('./paymentScheduleService');
 
 /**
  * Сервис для автоматического создания вторых сессий оплаты для графика 50/50
@@ -16,60 +18,21 @@ class SecondPaymentSchedulerService {
   }
 
   /**
-   * Вычислить дату второго платежа
+   * Вычислить дату второго платежа (Phase 0: Code Review Fixes - использует PaymentScheduleService)
    * @param {string|Date} expectedCloseDate - Дата начала лагеря (expected_close_date)
    * @returns {Date|null} - Дата второго платежа (expected_close_date - 1 месяц)
    */
   calculateSecondPaymentDate(expectedCloseDate) {
-    if (!expectedCloseDate) {
-      return null;
-    }
-
-    try {
-      const closeDate = new Date(expectedCloseDate);
-      const secondPaymentDate = new Date(closeDate);
-      // Второй платеж за 1 месяц до начала лагеря
-      secondPaymentDate.setMonth(secondPaymentDate.getMonth() - 1);
-      return secondPaymentDate;
-    } catch (error) {
-      this.logger.warn('Failed to calculate second payment date', {
-        expectedCloseDate,
-        error: error.message
-      });
-      return null;
-    }
+    return PaymentScheduleService.calculateSecondPaymentDate(expectedCloseDate);
   }
 
   /**
-   * Определить график платежей на основе expected_close_date
+   * Определить график платежей на основе expected_close_date (Phase 0: Code Review Fixes)
    * @param {Object} deal - Сделка из Pipedrive
-   * @returns {Object} - { schedule: '50/50' | '100%', secondPaymentDate: Date | null }
+   * @returns {Object} - { schedule: '50/50' | '100%', secondPaymentDate: Date | null, daysDiff: number | null }
    */
   determinePaymentSchedule(deal) {
-    const closeDate = deal.expected_close_date || deal.close_date;
-    if (!closeDate) {
-      return { schedule: '100%', secondPaymentDate: null };
-    }
-
-    try {
-      const expectedCloseDate = new Date(closeDate);
-      const today = new Date();
-      const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
-
-      if (daysDiff >= 30) {
-        const secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
-        return { schedule: '50/50', secondPaymentDate };
-      } else {
-        return { schedule: '100%', secondPaymentDate: null };
-      }
-    } catch (error) {
-      this.logger.warn('Failed to determine payment schedule', {
-        dealId: deal.id,
-        closeDate,
-        error: error.message
-      });
-      return { schedule: '100%', secondPaymentDate: null };
-    }
+    return PaymentScheduleService.determineScheduleFromDeal(deal);
   }
 
   /**
