@@ -2684,6 +2684,33 @@ router.delete('/webhooks/pipedrive/history', (req, res) => {
 });
 
 /**
+ * GET /api/webhooks/pipedrive
+ * Информация о webhook endpoint и его статусе
+ */
+router.get('/webhooks/pipedrive', (req, res) => {
+  const timestamp = new Date().toISOString();
+  const clientIP = req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+  
+  logger.info(`✅ Pipedrive Webhook Info Endpoint | Timestamp: ${timestamp} | IP: ${clientIP}`);
+  
+  res.json({
+    success: true,
+    message: 'Pipedrive webhook endpoint is available',
+    endpoint: '/api/webhooks/pipedrive',
+    methods: ['POST', 'GET'],
+    timestamp,
+    historyCount: webhookHistory.length,
+    availableEndpoints: {
+      main: 'POST /api/webhooks/pipedrive - Обработка webhook событий',
+      history: 'GET /api/webhooks/pipedrive/history - История событий',
+      historyItem: 'GET /api/webhooks/pipedrive/history/:index - Конкретное событие',
+      test: 'GET /api/webhooks/pipedrive/test - Тест доступности',
+      deleteHistory: 'DELETE /api/webhooks/pipedrive/history - Очистить историю'
+    }
+  });
+});
+
+/**
  * GET /api/webhooks/pipedrive/test
  * Тестовый endpoint для проверки доступности webhook роута
  */
