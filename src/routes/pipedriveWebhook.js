@@ -1314,23 +1314,45 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           });
 
             // Собираем существующие сессии для уведомления
-            const existingSessions = existingPayments.map(p => ({
-              id: p.session_id,
-              url: `https://checkout.stripe.com/c/pay/${p.session_id}#fidnandhYHdWcXxpYCc/J2FgY2RwaXEnKSdkdWxOYHwnPyd1blppbHNgWjA0SmpRY3dHXVUyX0M1TT1XSn9zYWNraFFwQDBCU2FnfzZqYXRCQTczf1NfUlFJRF1jM1diSjdoS3dOV0BpS0ZcRm0xY208QHMyPHN/SDREMzdnQE50VU9TNTUyZHM2djV3cycpJ2N3amhWYHdzYHcnP3F3cGApJ2dkZm5id2pwa2FGamlqdyc/JyZjY2NjY2MnKSdpZHxqcHFRfHVgJz8ndmxrYmlgWmxxYGgnKSdga2RnaWBVaWRmYG1qaWFgd3YnP3F3cGB4JSUl`,
-              type: p.payment_type,
-              amount: p.original_amount
-            }));
+            // ВАЖНО: Получаем реальные URL из Stripe API, так как они не сохраняются в БД
+            const existingSessions = [];
+            for (const p of existingPayments) {
+              if (!p.session_id) continue;
+              
+              try {
+                // Получаем актуальный URL сессии из Stripe API
+                const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+                if (session && session.url) {
+                  existingSessions.push({
+                    id: p.session_id,
+                    url: session.url, // Реальный checkout URL из Stripe
+                    type: p.payment_type,
+                    amount: p.original_amount
+                  });
+                } else {
+                  logger.warn(`⚠️  Сессия не найдена в Stripe или не имеет URL | Deal: ${dealId} | Session ID: ${p.session_id}`);
+                }
+              } catch (error) {
+                logger.warn(`⚠️  Не удалось получить URL сессии из Stripe | Deal: ${dealId} | Session ID: ${p.session_id} | Ошибка: ${error.message}`);
+                // Если не удалось получить URL, пропускаем эту сессию
+                // Уведомление будет отправлено только для сессий с валидными URL
+              }
+            }
 
-            // Отправляем уведомление для существующих сессий
-            logger.info(`📧 Отправка уведомления для существующих сессий | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${existingSessions.length}`);
-            const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-              paymentSchedule,
-              sessions: existingSessions,
-              currency,
-              totalAmount
-            });
+            // Отправляем уведомление для существующих сессий только если есть сессии с валидными URL
+            if (existingSessions.length === 0) {
+              logger.warn(`⚠️  Не удалось получить URL для существующих сессий, уведомление не отправлено | Deal: ${dealId} | Всего сессий: ${existingPayments.length}`);
+            } else {
+              logger.info(`📧 Отправка уведомления для существующих сессий | Deal: ${dealId} | График: ${paymentSchedule} | Сессий с URL: ${existingSessions.length} из ${existingPayments.length}`);
+              const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+                paymentSchedule,
+                sessions: existingSessions,
+                currency,
+                totalAmount
+              });
 
-            logger.info(`📧 Результат отправки уведомления для существующих сессий | Deal: ${dealId} | Успех: ${notificationResult.success} | Ошибка: ${notificationResult.error || 'нет'}`);
+              logger.info(`📧 Результат отправки уведомления для существующих сессий | Deal: ${dealId} | Успех: ${notificationResult.success} | Ошибка: ${notificationResult.error || 'нет'}`);
+            }
 
           return res.status(200).json({
               success: true,
