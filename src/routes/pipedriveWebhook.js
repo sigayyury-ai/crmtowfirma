@@ -11,6 +11,8 @@ const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository'
 const { extractCashFields, parseDateString } = require('../services/cash/cashFieldParser');
 const { ensureCashStatus } = require('../services/cash/cashStatusSync');
 const { createCashReminder, closeCashReminders } = require('../services/cash/cashReminderService');
+// Phase 0: Code Review Fixes - New unified services
+const PaymentScheduleService = require('../services/stripe/paymentScheduleService');
 
 const stripeProcessor = new StripeProcessorService();
 const invoiceProcessing = new InvoiceProcessingService();
@@ -1482,38 +1484,22 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             // 2. Дата второго платежа наступила (за 1 месяц до начала лагеря)
             // Это предотвращает создание сессий заранее и дублирование
             
-            // Проверяем, нужно ли создавать второй платеж сейчас
-            const closeDate = dealWithWebhookData.expected_close_date || dealWithWebhookData.close_date;
+            // Проверяем, нужно ли создавать второй платеж сейчас (Phase 0: Code Review Fixes)
+            const schedule = PaymentScheduleService.determineScheduleFromDeal(dealWithWebhookData);
+            const secondPaymentDate = schedule.secondPaymentDate;
             let shouldCreateSecondPayment = false;
-            let secondPaymentDate = null;
             
-            if (closeDate) {
-              try {
-                const expectedCloseDate = new Date(closeDate);
-                secondPaymentDate = new Date(expectedCloseDate);
-                secondPaymentDate.setMonth(secondPaymentDate.getMonth() - 1); // За 1 месяц до начала лагеря
-                
-                const today = new Date();
-                today.setHours(0, 0, 0, 0);
-                secondPaymentDate.setHours(0, 0, 0, 0);
-                
-                // Создаем второй платеж только если:
-                // 1. Первый платеж оплачен (depositPaid)
-                // 2. Дата второго платежа наступила
-                shouldCreateSecondPayment = depositPaid && secondPaymentDate <= today;
-                
-                if (!depositPaid) {
-                  logger.info(`⏸️  Второй платеж не создается: первый платеж еще не оплачен | Deal: ${dealId}`);
-                } else if (secondPaymentDate > today) {
-                  logger.info(`⏸️  Второй платеж не создается: дата еще не наступила | Deal: ${dealId} | Дата: ${secondPaymentDate.toISOString().split('T')[0]}`);
-                  logger.info(`💡 Второй платеж будет создан автоматически через крон, когда дата наступит`);
-                }
-              } catch (error) {
-                logger.warn('Failed to calculate second payment date', {
-                  dealId,
-                  closeDate,
-                  error: error.message
-                });
+            if (secondPaymentDate) {
+              // Создаем второй платеж только если:
+              // 1. Первый платеж оплачен (depositPaid)
+              // 2. Дата второго платежа наступила
+              shouldCreateSecondPayment = depositPaid && PaymentScheduleService.isSecondPaymentDateReached(secondPaymentDate);
+              
+              if (!depositPaid) {
+                logger.info(`⏸️  Второй платеж не создается: первый платеж еще не оплачен | Deal: ${dealId}`);
+              } else if (!shouldCreateSecondPayment) {
+                logger.info(`⏸️  Второй платеж не создается: дата еще не наступила | Deal: ${dealId} | Дата: ${secondPaymentDate.toISOString().split('T')[0]}`);
+                logger.info(`💡 Второй платеж будет создан автоматически через крон, когда дата наступит`);
               }
             }
             
