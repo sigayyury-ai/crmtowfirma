@@ -25,9 +25,64 @@
 
 ---
 
+## Phase 0: Code Review Fixes (Critical Refactoring)
+
+**Purpose**: Fix critical issues identified in code review before implementing tests
+
+**⚠️ CRITICAL**: These fixes MUST be completed BEFORE test implementation. They improve code quality, eliminate code duplication, and make the codebase more maintainable and testable.
+
+### Payment Logic Refactoring
+
+- [ ] T091 [P] Create `PaymentScheduleService` class in `src/services/stripe/paymentScheduleService.js` to unify payment schedule determination logic (replaces duplicated logic in processor.js, pipedriveWebhook.js, secondPaymentSchedulerService.js)
+- [ ] T092 [P] Create `PaymentStateAnalyzer` class in `src/services/stripe/paymentStateAnalyzer.js` to analyze payment state for deals (replaces complex payment checking logic)
+- [ ] T093 [P] Create `PaymentSessionCreator` class in `src/services/stripe/paymentSessionCreator.js` to unify session creation logic (replaces duplicated logic in processCheckoutTriggers and pipedriveWebhook)
+- [ ] T094 [P] Create `DealAmountCalculator` class in `src/services/stripe/dealAmountCalculator.js` to unify deal amount calculation from products
+- [ ] T095 Replace duplicated payment schedule logic in `src/services/stripe/processor.js` with `PaymentScheduleService.determineSchedule()`
+- [ ] T096 Replace duplicated payment schedule logic in `src/routes/pipedriveWebhook.js` with `PaymentScheduleService.determineSchedule()`
+- [ ] T097 Replace duplicated payment schedule logic in `src/services/stripe/secondPaymentSchedulerService.js` with `PaymentScheduleService.determineSchedule()`
+- [ ] T098 Replace complex payment checking logic in `src/services/stripe/processor.js` with `PaymentStateAnalyzer.analyzePaymentState()`
+- [ ] T099 Replace complex payment checking logic in `src/routes/pipedriveWebhook.js` with `PaymentStateAnalyzer.analyzePaymentState()`
+- [ ] T100 Replace session creation logic in `src/services/stripe/processor.js` with `PaymentSessionCreator.createSessionsForDeal()`
+- [ ] T101 Replace session creation logic in `src/routes/pipedriveWebhook.js` with `PaymentSessionCreator.createSessionsForDeal()`
+- [ ] T102 [P] Implement `calculateRemainderAfterDeposit()` method in `PaymentSessionCreator` to fix remainder calculation issues when payment schedule changes
+- [ ] T103 [P] Add distributed lock mechanism for race condition protection in `PaymentSessionCreator.createSessionWithLock()` (use in-memory locks initially, document Redis option for future)
+- [ ] T104 [P] Implement atomic session creation with rollback in `PaymentSessionCreator.createSessionsAtomically()` for creating multiple sessions
+
+### Webhook Processing Refactoring
+
+- [ ] T105 [P] Create `PipedriveWebhookParser` class in `src/routes/pipedriveWebhookParser.js` to extract invoice_type and deal_id from webhook data (replaces duplicated parsing logic)
+- [ ] T106 [P] Create `PipedriveWebhookHandler` class in `src/routes/pipedriveWebhookHandler.js` to handle webhook events (replaces 2700+ line function)
+- [ ] T107 [P] Create `WebhookDeduplicationService` class in `src/services/webhookDeduplicationService.js` for improved duplicate detection (persistent storage, better hashing)
+- [ ] T108 [P] Create `WebhookHistoryService` class in `src/services/webhookHistoryService.js` for persistent webhook history storage (replace in-memory storage)
+- [ ] T109 Add webhook signature/IP validation in `src/routes/pipedriveWebhook.js` using `validatePipedriveWebhook()` function
+- [ ] T110 Replace invoice_type extraction logic in `src/routes/pipedriveWebhook.js` with `PipedriveWebhookParser.extractInvoiceType()`
+- [ ] T111 Replace deal_id extraction logic in `src/routes/pipedriveWebhook.js` with `PipedriveWebhookParser.extractDealId()`
+- [ ] T112 Refactor webhook format detection in `src/routes/pipedriveWebhook.js` using `PipedriveWebhookParser.detectWebhookFormat()`
+- [ ] T113 Replace webhook processing logic in `src/routes/pipedriveWebhook.js` with `PipedriveWebhookHandler.handleWebhook()`
+- [ ] T114 [P] Implement webhook timeout handling (30 seconds) in `src/routes/pipedriveWebhook.js`
+- [ ] T115 [P] Replace in-memory webhook history with `WebhookHistoryService` in `src/routes/pipedriveWebhook.js`
+- [ ] T116 [P] Replace simple hash-based deduplication with `WebhookDeduplicationService` in `src/routes/pipedriveWebhook.js`
+
+### Error Handling & Optimization
+
+- [ ] T117 [P] Create `PaymentErrorHandler` class in `src/services/stripe/paymentErrorHandler.js` for structured error handling
+- [ ] T118 [P] Implement batch session status checking in `src/services/stripe/processor.js` to reduce Stripe API calls
+- [ ] T119 Improve structured logging in `src/services/stripe/processor.js` (use debug level for verbose logs, info for important events)
+- [ ] T120 Improve structured logging in `src/routes/pipedriveWebhook.js` (use debug level for verbose logs, info for important events)
+- [ ] T121 [P] Add metrics/monitoring hooks for payment session creation in `src/services/stripe/processor.js`
+- [ ] T122 [P] Add metrics/monitoring hooks for webhook processing in `src/routes/pipedriveWebhook.js`
+
+**Checkpoint**: Code review fixes complete - code is now more maintainable and ready for testing
+
+**⚠️ IMPORTANT**: Do NOT proceed to Phase 1 (Setup) until Phase 0 is complete. The refactored code will be used by test infrastructure.
+
+---
+
 ## Phase 2: Foundational (Blocking Prerequisites)
 
 **Purpose**: Core test infrastructure that MUST be complete before ANY user story can be implemented
+
+**Prerequisites**: Phase 0 (Code Review Fixes) and Phase 1 (Setup) must be complete
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
@@ -48,9 +103,13 @@
 
 ## Phase 3: User Story 1 - End-to-end тест создания первого платежа (deposit) (Priority: P1) 🎯 MVP
 
+**Prerequisites**: Phase 0 (Code Review Fixes), Phase 1 (Setup), and Phase 2 (Foundational) must be complete
+
 **Goal**: Система автоматически проверяет полный флоу создания первого платежа для графика 50/50: от получения webhook от Pipedrive до отправки уведомления клиенту через SendPulse.
 
 **Independent Test**: Система создает тестовую сделку в Pipedrive, устанавливает invoice_type = 75, получает webhook, проверяет создание Checkout Session, сохранение в БД и отправку уведомления. Результаты записываются в логи.
+
+**Note**: This is the first test implementation. It uses the refactored code from Phase 0 (PaymentScheduleService, PaymentSessionCreator, etc.)
 
 ### Implementation for User Story 1
 
@@ -251,11 +310,13 @@
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies - can start immediately
+- **Code Review Fixes (Phase 0)**: No dependencies - can start immediately, **RECOMMENDED to complete before tests**
+- **Setup (Phase 1)**: No dependencies - can start immediately (can run in parallel with Phase 0)
 - **Foundational (Phase 2)**: Depends on Setup completion - BLOCKS all user stories
 - **User Stories (Phase 3-8)**: All depend on Foundational phase completion
   - User stories can then proceed in parallel (if staffed)
   - Or sequentially in priority order (P1 → P2)
+  - **Note**: Phase 0 fixes improve code quality and make testing easier
 - **SendPulse Sync (Phase 9)**: Can be done in parallel with user stories (different files)
 - **Polish (Phase 10)**: Depends on all desired user stories being complete
 - **Code Cleanup (Phase 11)**: Depends on all implementation phases being complete - must run before final deployment
@@ -307,43 +368,69 @@ Task: "Implement testDepositPaymentCreation() method in src/services/stripe/test
 
 ## Implementation Strategy
 
-### MVP First (User Story 1 Only)
+### MVP First (Code Review Fixes + User Story 1)
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (CRITICAL - blocks all stories)
-3. Complete Phase 3: User Story 1 (Deposit Payment Creation)
-4. **STOP and VALIDATE**: Test User Story 1 independently via CLI script
+**Execution Order** (MANDATORY):
+1. **Complete Phase 0: Code Review Fixes** (MANDATORY - improves code quality)
+   - Critical: PaymentScheduleService, PaymentStateAnalyzer, PaymentSessionCreator
+   - Critical: Webhook validation and deduplication
+   - **STOP and VALIDATE**: Verify refactored code works correctly
+2. **Complete Phase 1: Setup** (MANDATORY - infrastructure)
+   - Create test directories
+   - Configure environment variables
+3. **Complete Phase 2: Foundational** (MANDATORY - blocks all stories)
+   - Create test runner service
+   - Set up cron job
+   - **STOP and VALIDATE**: Test infrastructure is ready
+4. **Complete Phase 3: User Story 1** (MVP - first test)
+   - Implement deposit payment creation test
+   - **STOP and VALIDATE**: Test User Story 1 independently via CLI script
 5. Deploy/demo if ready
 
 ### Incremental Delivery
 
-1. Complete Setup + Foundational → Foundation ready
-2. Add User Story 1 → Test independently → Deploy/Demo (MVP!)
-3. Add User Story 2 → Test independently → Deploy/Demo
-4. Add User Story 3 → Test independently → Deploy/Demo
-5. Add User Story 4 → Test independently → Deploy/Demo
-6. Add User Stories 5-6 (P2) → Test independently → Deploy/Demo
-7. Add SendPulse sync → Test independently → Deploy/Demo
-8. Add Polish improvements → Test → **Code Cleanup (Phase 11)** → Final validation → Deploy
+**Execution Order** (SEQUENTIAL - each phase must complete before next):
 
-**⚠️ IMPORTANT**: Phase 11 (Code Cleanup) is mandatory before final deployment to ensure codebase cleanliness.
+1. **Phase 0: Code Review Fixes** → Code quality improved → **VALIDATE** refactored code works
+2. **Phase 1: Setup** → Test infrastructure structure ready → **VALIDATE** directories created
+3. **Phase 2: Foundational** → Test infrastructure complete → **VALIDATE** test runner works
+4. **Phase 3: User Story 1** → First test working → **VALIDATE** test passes → Deploy/Demo (MVP!)
+5. **Phase 4: User Story 2** → Second test working → **VALIDATE** test passes → Deploy/Demo
+6. **Phase 5: User Story 3** → Third test working → **VALIDATE** test passes → Deploy/Demo
+7. **Phase 6: User Story 4** → Fourth test working → **VALIDATE** test passes → Deploy/Demo
+8. **Phase 7-8: User Stories 5-6** → P2 tests working → **VALIDATE** tests pass → Deploy/Demo
+9. **Phase 9: SendPulse Sync** → Additional feature → **VALIDATE** works → Deploy/Demo
+10. **Phase 10: Polish** → Improvements → **VALIDATE** all tests pass
+11. **Phase 11: Code Cleanup** → Remove unused code → **VALIDATE** no legacy code → Final deployment
+
+**⚠️ CRITICAL RULES**: 
+- **Phase 0 MUST be completed FIRST** - no test implementation until code is refactored
+- **Phases 1-2 MUST be completed** before any test user stories
+- **Each phase must be validated** before proceeding to next
+- **Phase 11 is MANDATORY** before final deployment to ensure codebase cleanliness
 
 ### Parallel Team Strategy
 
 With multiple developers:
 
-1. Team completes Setup + Foundational together
-2. Once Foundational is done:
+1. **Team completes Phase 0 together** (Code Review Fixes)
+   - Developer A: PaymentScheduleService, PaymentStateAnalyzer
+   - Developer B: PaymentSessionCreator, DealAmountCalculator
+   - Developer C: PipedriveWebhookParser, PipedriveWebhookHandler
+   - Developer D: WebhookDeduplicationService, WebhookHistoryService
+2. **Team completes Phase 1-2 together** (Setup + Foundational)
+3. **Once Foundational is done** (tests can start):
    - Developer A: User Story 1 (Deposit)
    - Developer B: User Story 2 (Rest)
    - Developer C: User Story 3 (Single)
    - Developer D: User Story 4 (Payment Processing)
-3. Then:
+4. **Then**:
    - Developer A: User Story 5 (Expired Sessions)
    - Developer B: User Story 6 (Refunds)
    - Developer C: SendPulse Sync
    - Developer D: Polish tasks
-4. Stories complete and integrate independently
+5. **Final**: All team members work on Phase 11 (Code Cleanup)
+6. Stories complete and integrate independently
 
 ---
 
@@ -368,7 +455,8 @@ With multiple developers:
 
 ## Task Summary
 
-- **Total Tasks**: 90
+- **Total Tasks**: 122
+- **Phase 0 (Code Review Fixes)**: 32 tasks ⚠️ **CRITICAL refactoring before tests**
 - **Phase 1 (Setup)**: 3 tasks
 - **Phase 2 (Foundational)**: 10 tasks
 - **Phase 3 (US1 - Deposit)**: 7 tasks
@@ -381,7 +469,16 @@ With multiple developers:
 - **Phase 10 (Polish)**: 9 tasks
 - **Phase 11 (Code Cleanup & Legacy Removal)**: 24 tasks ⚠️ **CRITICAL for code quality**
 
-**MVP Scope**: Phases 1-3 (Setup + Foundational + User Story 1) = 20 tasks
+**Recommended Order**:
+1. **Phase 0** (Code Review Fixes) - Fix critical issues first
+2. **Phase 1-2** (Setup + Foundational) - Build test infrastructure
+3. **Phase 3** (US1 - MVP) - First test scenario
+4. **Phases 4-8** (US2-6) - Complete test coverage
+5. **Phase 9** (SendPulse Sync) - Additional feature
+6. **Phase 10** (Polish) - Improvements
+7. **Phase 11** (Code Cleanup) - Final cleanup before deployment
 
-**Code Quality Requirement**: Phase 11 must be completed before final deployment to ensure no legacy code remains.
+**MVP Scope**: Phase 0 (critical fixes) + Phases 1-3 (Setup + Foundational + User Story 1) = 52 tasks
+
+**Code Quality Requirement**: Phase 0 and Phase 11 must be completed before final deployment to ensure code quality and no legacy code remains.
 
