@@ -49,13 +49,46 @@ class DealDiagnosticsService {
       // 7. Получаем информацию о SendPulse уведомлениях
       const notifications = await this.getNotifications(dealIdStr);
       
-      // 8. Определяем первичный график платежей
+      // 8. Получаем задачи из Pipedrive
+      const tasks = await this.getDealTasks(dealId);
+      
+      // 9. Получаем cron задачи (вторые платежи, напоминания)
+      let cronTasks = null;
+      try {
+        const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
+        const schedulerService = new SecondPaymentSchedulerService();
+        
+        // Проверяем, есть ли эта сделка в будущих задачах (создание второго платежа)
+        const upcomingTasks = await schedulerService.findAllUpcomingTasks();
+        const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === parseInt(dealId));
+        
+        // Проверяем, есть ли эта сделка в задачах-напоминаниях
+        const reminderTasks = await schedulerService.findReminderTasks();
+        const dealReminderTask = reminderTasks.find(t => t.dealId === parseInt(dealId));
+        
+        cronTasks = {
+          hasUpcomingSecondPayment: !!dealUpcomingTask,
+          upcomingSecondPaymentDate: dealUpcomingTask?.secondPaymentDate ? 
+            new Date(dealUpcomingTask.secondPaymentDate).toISOString().split('T')[0] : null,
+          isSecondPaymentDateReached: dealUpcomingTask?.isDateReached || false,
+          daysUntilSecondPayment: dealUpcomingTask ? 
+            Math.ceil((new Date(dealUpcomingTask.secondPaymentDate) - new Date()) / (1000 * 60 * 60 * 24)) : null,
+          hasReminderTask: !!dealReminderTask,
+          reminderTaskType: dealReminderTask?.type || null,
+          reminderTaskDaysUntil: dealReminderTask?.daysUntilSecondPayment || null
+        };
+      } catch (error) {
+        this.logger.warn('Error fetching cron tasks for deal', { dealId, error: error.message });
+        cronTasks = null;
+      }
+      
+      // 10. Определяем первичный график платежей
       const initialPaymentSchedule = this.determineInitialPaymentSchedule(payments);
       
-      // 9. Определяем текущий график платежей
+      // 11. Определяем текущий график платежей
       const currentPaymentSchedule = this.determinePaymentSchedule(dealInfo);
       
-      // 10. Анализируем проблемы
+      // 12. Анализируем проблемы
       const issues = this.analyzeIssues({
         dealInfo,
         payments,
@@ -68,7 +101,7 @@ class DealDiagnosticsService {
         currentPaymentSchedule
       });
       
-      // 11. Рассчитываем сводку
+      // 13. Рассчитываем сводку
       const summary = this.calculateSummary({
         dealInfo,
         payments,
@@ -79,6 +112,17 @@ class DealDiagnosticsService {
         currentPaymentSchedule
       });
       
+      // Определяем доступные действия для этой сделки
+      const availableActions = this.determineAvailableActions({
+        dealInfo,
+        payments,
+        proformas,
+        notifications,
+        issues,
+        tasks,
+        cronTasks
+      });
+
       return {
         success: true,
         dealId: parseInt(dealId),
@@ -91,6 +135,9 @@ class DealDiagnosticsService {
         automations,
         notifications,
         issues,
+        tasks, // Задачи из Pipedrive
+        cronTasks, // Задачи из cron (вторые платежи, напоминания)
+        availableActions, // Доступные ручные действия
         paymentSchedules: {
           initial: initialPaymentSchedule,
           current: currentPaymentSchedule
@@ -654,18 +701,59 @@ class DealDiagnosticsService {
     // Проверяем, изменился ли график
     if (initialPaymentSchedule?.schedule && currentPaymentSchedule.schedule && 
         initialPaymentSchedule.schedule !== currentPaymentSchedule.schedule) {
-      issues.push({
-        severity: 'info',
-        category: 'schedule',
-        code: 'PAYMENT_SCHEDULE_CHANGED',
-        message: `График платежей изменился: первичный был ${initialPaymentSchedule.schedule}, сейчас ${currentPaymentSchedule.schedule}`,
-        details: {
-          initialSchedule: initialPaymentSchedule.schedule,
-          currentSchedule: currentPaymentSchedule.schedule,
-          firstPaymentDate: initialPaymentSchedule.firstPaymentDate,
-          note: 'Первичный график используется для определения необходимости второго платежа'
+      const firstPayment = payments.stripe.find(p => 
+        (p.paymentType === 'deposit' || p.paymentType === 'first') &&
+        p.paymentStatus === 'paid'
+      );
+      const hasSecondPayment = payments.stripe.some(p => 
+        (p.paymentType === 'rest' || p.paymentType === 'second' || p.paymentType === 'final')
+      );
+      
+      // Если график был 50/50, первый платеж оплачен, но второго платежа нет - это проблема
+      if (initialPaymentSchedule.schedule === '50/50' && firstPayment && !hasSecondPayment) {
+        const firstPaymentDate = initialPaymentSchedule.firstPaymentDate 
+          ? new Date(initialPaymentSchedule.firstPaymentDate).toISOString().split('T')[0]
+          : null;
+        const expectedCloseDate = dealInfo.expectedCloseDate || dealInfo.closeDate;
+        let daysUntilCamp = null;
+        if (expectedCloseDate) {
+          const today = new Date();
+          const closeDate = new Date(expectedCloseDate);
+          daysUntilCamp = Math.ceil((closeDate - today) / (1000 * 60 * 60 * 24));
         }
-      });
+        
+        issues.push({
+          severity: 'warning',
+          category: 'schedule',
+          code: 'MISSING_SECOND_PAYMENT_SCHEDULE_CHANGED',
+          message: `Второй платеж не был создан: график изменился с 50/50 на 100% (до лагеря < 30 дней)`,
+          details: {
+            initialSchedule: initialPaymentSchedule.schedule,
+            currentSchedule: currentPaymentSchedule.schedule,
+            firstPaymentDate: firstPaymentDate,
+            firstPaymentAmount: firstPayment?.amount,
+            firstPaymentCurrency: firstPayment?.currency,
+            expectedSecondPaymentAmount: dealInfo.value ? Number(dealInfo.value) / 2 : null,
+            expectedSecondPaymentCurrency: dealInfo.currency,
+            daysUntilCamp: daysUntilCamp,
+            expectedCloseDate: expectedCloseDate,
+            note: 'Первый платеж был создан с графиком 50/50, но сейчас до лагеря осталось меньше 30 дней, поэтому система определяет график как 100% и не создает второй платеж автоматически. Требуется ручное создание второго платежа.'
+          }
+        });
+      } else {
+        issues.push({
+          severity: 'info',
+          category: 'schedule',
+          code: 'PAYMENT_SCHEDULE_CHANGED',
+          message: `График платежей изменился: первичный был ${initialPaymentSchedule.schedule}, сейчас ${currentPaymentSchedule.schedule}`,
+          details: {
+            initialSchedule: initialPaymentSchedule.schedule,
+            currentSchedule: currentPaymentSchedule.schedule,
+            firstPaymentDate: initialPaymentSchedule.firstPaymentDate,
+            note: 'Первичный график используется для определения необходимости второго платежа'
+          }
+        });
+      }
     }
     
     // Проверка 3: Несоответствие валют
@@ -915,6 +1003,427 @@ class DealDiagnosticsService {
     }
     
     return issues;
+  }
+
+  /**
+   * Получить задачи (activities) для сделки
+   */
+  async getDealTasks(dealId) {
+    try {
+      const activitiesResult = await this.pipedriveClient.getDealActivities(dealId, 'task');
+      const activities = activitiesResult.activities || [];
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const tasks = activities.map(activity => {
+        const dueDate = activity.due_date ? new Date(activity.due_date) : null;
+        const isPast = dueDate && dueDate < today;
+        const isUpcoming = dueDate && dueDate >= today;
+        const isDone = activity.done === true || activity.done === 1;
+        
+        return {
+          id: activity.id,
+          subject: activity.subject,
+          note: activity.note || activity.public_description || '',
+          dueDate: activity.due_date,
+          dueTime: activity.due_time,
+          done: isDone,
+          isPast: isPast && !isDone,
+          isUpcoming: isUpcoming && !isDone,
+          type: activity.type,
+          assignedToUserId: activity.assigned_to_user_id,
+          ownerName: activity.owner_name,
+          addTime: activity.add_time,
+          updateTime: activity.update_time,
+          markedAsDoneTime: activity.marked_as_done_time
+        };
+      });
+      
+      return {
+        total: tasks.length,
+        done: tasks.filter(t => t.done).length,
+        upcoming: tasks.filter(t => t.isUpcoming).length,
+        past: tasks.filter(t => t.isPast).length,
+        tasks: tasks.sort((a, b) => {
+          // Сначала будущие, потом прошедшие
+          if (a.isUpcoming && !b.isUpcoming) return -1;
+          if (!a.isUpcoming && b.isUpcoming) return 1;
+          // Сортировка по дате
+          const dateA = a.dueDate ? new Date(a.dueDate) : new Date(0);
+          const dateB = b.dueDate ? new Date(b.dueDate) : new Date(0);
+          return dateA - dateB;
+        })
+      };
+    } catch (error) {
+      this.logger.warn('Error fetching deal tasks', { dealId, error: error.message });
+      return {
+        total: 0,
+        done: 0,
+        upcoming: 0,
+        past: 0,
+        tasks: []
+      };
+    }
+  }
+
+  /**
+   * Системная диагностика всех сделок в статусах First Payment и Second Payment
+   * Объединяет логику всех чек-скриптов
+   */
+  async getSystemDiagnostics(options = {}) {
+    const {
+      stageIds = [18, 32], // First Payment и Second Payment по умолчанию
+      includeTasks = true,
+      includeStuckPayments = true,
+      includeMissingSecondPayments = true,
+      includeReminders = true
+    } = options;
+
+    try {
+      this.logger.info('Starting system diagnostics', { stageIds, options });
+      
+      const results = {
+        generatedAt: new Date().toISOString(),
+        stageIds,
+        totalDeals: 0,
+        deals: [],
+        summary: {
+          firstPayment: { total: 0, stuck: 0, withIssues: 0 },
+          secondPayment: { total: 0, stuck: 0, withIssues: 0 },
+          totalStuck: 0,
+          totalWithIssues: 0,
+          totalWithTasks: 0,
+          totalWithUpcomingTasks: 0,
+          totalWithPastTasks: 0
+        }
+      };
+
+      // Получаем все сделки в указанных статусах
+      const allDeals = [];
+      for (const stageId of stageIds) {
+        const dealsResult = await this.pipedriveClient.getDeals({
+          stage_id: stageId,
+          status: 'all_not_deleted',
+          limit: 500,
+          start: 0
+        });
+        if (dealsResult.success && dealsResult.deals) {
+          allDeals.push(...dealsResult.deals);
+        }
+      }
+
+      results.totalDeals = allDeals.length;
+      this.logger.info('Found deals for diagnostics', { count: allDeals.length });
+
+      // Обрабатываем каждую сделку
+      for (const deal of allDeals) {
+        const dealId = String(deal.id);
+        const isFirstPayment = deal.stage_id === 18;
+        const isSecondPayment = deal.stage_id === 32;
+
+        try {
+          // Получаем полную диагностику для сделки
+          const dealDiagnostics = await this.getDealDiagnostics(dealId);
+          
+          // Получаем задачи из Pipedrive, если нужно
+          let tasks = null;
+          if (includeTasks) {
+            tasks = await this.getDealTasks(dealId);
+            if (tasks.total > 0) {
+              results.summary.totalWithTasks++;
+              if (tasks.upcoming > 0) results.summary.totalWithUpcomingTasks++;
+              if (tasks.past > 0) results.summary.totalWithPastTasks++;
+            }
+          }
+
+          // Получаем cron задачи (вторые платежи, напоминания), если нужно
+          let cronTasks = null;
+          if (includeReminders) {
+            try {
+              const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
+              const schedulerService = new SecondPaymentSchedulerService();
+              
+              // Проверяем, есть ли эта сделка в будущих задачах (создание второго платежа)
+              const upcomingTasks = await schedulerService.findAllUpcomingTasks();
+              const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === parseInt(dealId));
+              
+              // Проверяем, есть ли эта сделка в задачах-напоминаниях
+              const reminderTasks = await schedulerService.findReminderTasks();
+              const dealReminderTask = reminderTasks.find(t => t.dealId === parseInt(dealId));
+              
+              cronTasks = {
+                hasUpcomingSecondPayment: !!dealUpcomingTask,
+                upcomingSecondPaymentDate: dealUpcomingTask?.secondPaymentDate ? 
+                  new Date(dealUpcomingTask.secondPaymentDate).toISOString().split('T')[0] : null,
+                isSecondPaymentDateReached: dealUpcomingTask?.isDateReached || false,
+                hasReminderTask: !!dealReminderTask,
+                reminderTaskType: dealReminderTask?.type || null,
+                reminderTaskDaysUntil: dealReminderTask?.daysUntilSecondPayment || null
+              };
+            } catch (error) {
+              this.logger.warn('Error fetching cron tasks', { dealId, error: error.message });
+              cronTasks = null;
+            }
+          }
+
+          // Проверяем на застрявшие платежи
+          const stuckIssues = [];
+          if (includeStuckPayments) {
+            const hasStripePayments = dealDiagnostics.payments.stripe.length > 0;
+            const hasProformas = dealDiagnostics.proformas.length > 0;
+            const hasCashPayments = dealDiagnostics.cashPayments.length > 0;
+            const hasAnyPayments = hasStripePayments || hasProformas || hasCashPayments;
+
+            // Проверяем дату закрытия
+            const closeDate = dealDiagnostics.dealInfo.expectedCloseDate || dealDiagnostics.dealInfo.closeDate;
+            let daysUntilClose = null;
+            let isCloseDateRelevant = false;
+
+            if (closeDate) {
+              const expectedCloseDate = new Date(closeDate);
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              expectedCloseDate.setHours(0, 0, 0, 0);
+              daysUntilClose = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+              isCloseDateRelevant = true;
+            }
+
+            // Проверяем истекшие сессии (проверка будет выполнена через StripeProcessorService если нужно)
+            const unpaidStripe = dealDiagnostics.payments.stripe.filter(p => p.paymentStatus === 'unpaid');
+            const expiredSessions = [];
+            // Проверка истекших сессий будет выполнена через отдельный метод или пропущена для производительности
+            // Можно добавить позже через StripeProcessorService
+
+            // Определяем, застряла ли сделка
+            let isStuck = false;
+            if (!hasAnyPayments) {
+              if (isSecondPayment) {
+                // Second Payment: проблема только если дата закрытия уже прошла или близко (в пределах 60 дней)
+                if (!isCloseDateRelevant || (daysUntilClose !== null && daysUntilClose <= 60)) {
+                  const hasPaidFirstPayment = dealDiagnostics.payments.stripe.some(p => 
+                    (p.paymentType === 'deposit' || p.paymentType === 'first') && p.paymentStatus === 'paid'
+                  );
+                  if (!hasPaidFirstPayment) {
+                    isStuck = true;
+                    stuckIssues.push('Нет платежей и первый платеж не оплачен');
+                  }
+                }
+              } else {
+                // First Payment: проблема только если дата закрытия близко (меньше 30 дней) или уже прошла
+                if (!isCloseDateRelevant || (daysUntilClose !== null && daysUntilClose <= 30)) {
+                  isStuck = true;
+                  stuckIssues.push('Нет платежей');
+                }
+              }
+            }
+
+            if (expiredSessions.length > 0) {
+              isStuck = true;
+              stuckIssues.push(`Истекшие сессии: ${expiredSessions.length}`);
+            }
+
+            // Проверяем отсутствующие вторые платежи
+            if (includeMissingSecondPayments && isSecondPayment) {
+              const initialSchedule = dealDiagnostics.paymentSchedules.initial?.schedule;
+              const hasPaidFirstPayment = dealDiagnostics.payments.stripe.some(p => 
+                (p.paymentType === 'deposit' || p.paymentType === 'first') && p.paymentStatus === 'paid'
+              );
+              const hasSecondPayment = dealDiagnostics.payments.stripe.some(p => 
+                (p.paymentType === 'rest' || p.paymentType === 'second' || p.paymentType === 'final')
+              );
+
+              if (initialSchedule === '50/50' && hasPaidFirstPayment && !hasSecondPayment) {
+                isStuck = true;
+                stuckIssues.push('Отсутствует второй платеж (график был 50/50)');
+              }
+            }
+          }
+
+          // Определяем доступные действия
+          const availableActions = this.determineAvailableActions({
+            dealInfo: {
+              ...dealDiagnostics.dealInfo,
+              dealId: parseInt(dealId)
+            },
+            payments: dealDiagnostics.payments,
+            proformas: dealDiagnostics.proformas,
+            notifications: dealDiagnostics.notifications,
+            issues: dealDiagnostics.issues,
+            tasks: tasks,
+            cronTasks: cronTasks
+          });
+
+          // Собираем информацию о сделке
+          const dealInfo = {
+            dealId: parseInt(dealId),
+            title: dealDiagnostics.dealInfo.title,
+            stageId: dealDiagnostics.dealInfo.stageId,
+            stageName: dealDiagnostics.dealInfo.stageName,
+            value: dealDiagnostics.dealInfo.value,
+            currency: dealDiagnostics.dealInfo.currency,
+            expectedCloseDate: dealDiagnostics.dealInfo.expectedCloseDate,
+            daysUntilClose: closeDate ? daysUntilClose : null,
+            person: dealDiagnostics.dealInfo.person,
+            summary: dealDiagnostics.summary,
+            issues: dealDiagnostics.issues,
+            stuckIssues: stuckIssues,
+            isStuck: stuckIssues.length > 0,
+            tasks: tasks, // Задачи из Pipedrive
+            cronTasks: cronTasks, // Задачи из cron (вторые платежи, напоминания)
+            availableActions: availableActions, // Доступные ручные действия
+            paymentSchedules: dealDiagnostics.paymentSchedules,
+            payments: {
+              stripe: dealDiagnostics.payments.stripe.length,
+              proforma: dealDiagnostics.payments.proforma.length,
+              cash: dealDiagnostics.cashPayments.length
+            }
+          };
+
+          // Обновляем сводку
+          if (isFirstPayment) {
+            results.summary.firstPayment.total++;
+            if (dealInfo.isStuck) results.summary.firstPayment.stuck++;
+            if (dealInfo.issues.length > 0) results.summary.firstPayment.withIssues++;
+          } else if (isSecondPayment) {
+            results.summary.secondPayment.total++;
+            if (dealInfo.isStuck) results.summary.secondPayment.stuck++;
+            if (dealInfo.issues.length > 0) results.summary.secondPayment.withIssues++;
+          }
+
+          if (dealInfo.isStuck) results.summary.totalStuck++;
+          if (dealInfo.issues.length > 0) results.summary.totalWithIssues++;
+
+          results.deals.push(dealInfo);
+
+        } catch (error) {
+          this.logger.error('Error processing deal in system diagnostics', {
+            dealId,
+            error: error.message,
+            stack: error.stack
+          });
+          // Добавляем сделку с ошибкой
+          results.deals.push({
+            dealId: parseInt(dealId),
+            title: deal.title || 'N/A',
+            stageId: deal.stage_id,
+            error: error.message,
+            isStuck: false
+          });
+        }
+      }
+
+      // Сортируем сделки: сначала застрявшие, потом с проблемами
+      results.deals.sort((a, b) => {
+        if (a.isStuck && !b.isStuck) return -1;
+        if (!a.isStuck && b.isStuck) return 1;
+        if (a.issues && b.issues) {
+          if (a.issues.length > b.issues.length) return -1;
+          if (a.issues.length < b.issues.length) return 1;
+        }
+        return 0;
+      });
+
+      return {
+        success: true,
+        ...results
+      };
+
+    } catch (error) {
+      this.logger.error('Error in system diagnostics', {
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Определить доступные ручные действия для сделки
+   */
+  determineAvailableActions({ dealInfo, payments, proformas, notifications, issues, tasks, cronTasks }) {
+    const actions = [];
+
+    // Проверяем, можно ли создать Stripe сессию
+    const hasStripePayments = payments.stripe.length > 0;
+    const hasProformas = proformas.length > 0;
+    const hasAnyPayments = hasStripePayments || hasProformas;
+    const invoiceType = dealInfo.invoiceType;
+    const isStripeInvoiceType = invoiceType === '75' || invoiceType === 'Stripe';
+
+    // Действие: Создать Stripe сессию
+    if (isStripeInvoiceType || !hasAnyPayments) {
+      const unpaidStripe = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
+      const hasUnpaidSessions = unpaidStripe.length > 0;
+      
+      // Можно создать, если нет платежей или есть неоплаченные сессии
+      if (!hasAnyPayments || hasUnpaidSessions) {
+        actions.push({
+          id: 'create-stripe-session',
+          name: 'Создать Stripe сессию',
+          description: 'Создать новую Stripe Checkout Session для оплаты',
+          endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/create-stripe-session`,
+          method: 'POST',
+          available: true,
+          reason: !hasAnyPayments ? 'Нет платежей' : 'Есть неоплаченные сессии'
+        });
+      }
+    }
+
+    // Действие: Отправить SendPulse уведомление
+    const hasSendPulseId = dealInfo.person?.sendpulseId || 
+      (dealInfo.person && dealInfo.person['ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c']);
+    const hasActiveSessions = payments.stripe.some(p => 
+      p.paymentStatus === 'unpaid' && p.sessionId
+    );
+
+    if (hasSendPulseId && hasActiveSessions) {
+      actions.push({
+        id: 'send-payment-notification',
+        name: 'Отправить SendPulse уведомление',
+        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
+        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
+        method: 'POST',
+        available: true,
+        reason: 'Есть активные сессии и SendPulse ID'
+      });
+    } else if (!hasSendPulseId) {
+      actions.push({
+        id: 'send-payment-notification',
+        name: 'Отправить SendPulse уведомление',
+        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
+        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
+        method: 'POST',
+        available: false,
+        reason: 'SendPulse ID не найден у персоны'
+      });
+    } else if (!hasActiveSessions) {
+      actions.push({
+        id: 'send-payment-notification',
+        name: 'Отправить SendPulse уведомление',
+        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
+        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
+        method: 'POST',
+        available: false,
+        reason: 'Нет активных сессий для уведомления'
+      });
+    }
+
+    // Действие: Пересоздать истекшую сессию
+    const unpaidStripe = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
+    if (unpaidStripe.length > 0) {
+      actions.push({
+        id: 'recreate-expired-session',
+        name: 'Пересоздать истекшую сессию',
+        description: 'Создать новую сессию вместо истекшей',
+        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/recreate-expired-session`,
+        method: 'POST',
+        available: true,
+        reason: `Найдено ${unpaidStripe.length} неоплаченных сессий`
+      });
+    }
+
+    return actions;
   }
 
   /**

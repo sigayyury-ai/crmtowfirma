@@ -1051,6 +1051,591 @@ router.get('/pipedrive/deals/:id/diagnostics', async (req, res) => {
 });
 
 /**
+ * GET /api/pipedrive/deals/system-diagnostics
+ * Системная диагностика всех сделок в статусах First Payment и Second Payment
+ * Объединяет логику всех чек-скриптов
+ * 
+ * Query параметры:
+ *   - stageIds: массив ID статусов через запятую (по умолчанию "18,32" - First Payment и Second Payment)
+ *   - includeTasks: включить задачи из Pipedrive (по умолчанию true)
+ *   - includeStuckPayments: включить проверку застрявших платежей (по умолчанию true)
+ *   - includeMissingSecondPayments: включить проверку отсутствующих вторых платежей (по умолчанию true)
+ *   - includeReminders: включить проверку cron задач (напоминания, вторые платежи) (по умолчанию true)
+ */
+router.get('/pipedrive/deals/system-diagnostics', async (req, res) => {
+  try {
+    const DealDiagnosticsService = require('../services/dealDiagnosticsService');
+    const diagnosticsService = new DealDiagnosticsService();
+
+    // Парсим параметры запроса
+    const stageIds = req.query.stageIds 
+      ? req.query.stageIds.split(',').map(id => parseInt(id.trim())).filter(id => !isNaN(id))
+      : [18, 32]; // First Payment и Second Payment по умолчанию
+
+    const options = {
+      stageIds,
+      includeTasks: req.query.includeTasks !== 'false',
+      includeStuckPayments: req.query.includeStuckPayments !== 'false',
+      includeMissingSecondPayments: req.query.includeMissingSecondPayments !== 'false',
+      includeReminders: req.query.includeReminders !== 'false'
+    };
+
+    const diagnostics = await diagnosticsService.getSystemDiagnostics(options);
+
+    res.json(diagnostics);
+  } catch (error) {
+    logger.error('Error getting system diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/create-stripe-session
+ * Создать Stripe Checkout Session для сделки вручную
+ * 
+ * Body параметры:
+ *   - paymentType: тип платежа ('deposit', 'rest', 'single') - опционально, определяется автоматически
+ *   - paymentSchedule: график платежей ('50/50', '100%') - опционально, определяется автоматически
+ *   - customAmount: кастомная сумма - опционально
+ *   - sendNotification: отправить SendPulse уведомление после создания (по умолчанию true)
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/create-stripe-session', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const StripeProcessorService = require('../services/stripe/processor');
+    const stripeProcessor = new StripeProcessorService();
+
+    // Получаем данные сделки
+    const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
+    if (!dealResult.success || !dealResult.deal) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found'
+      });
+    }
+
+    const deal = dealResult.deal;
+    const { paymentType, paymentSchedule, customAmount, sendNotification = true } = req.body;
+
+    // Определяем параметры для создания сессии
+    const sessionContext = {
+      trigger: 'manual_diagnostics',
+      runId: `diagnostics_${Date.now()}`,
+      paymentType: paymentType || null, // Будет определен автоматически если не указан
+      paymentSchedule: paymentSchedule || null, // Будет определен автоматически если не указан
+      customAmount: customAmount || null,
+      skipNotification: !sendNotification,
+      setInvoiceTypeDone: false // Не меняем invoice_type при ручном создании
+    };
+
+    // Создаем сессию
+    const sessionResult = await stripeProcessor.createCheckoutSessionForDeal(deal, sessionContext);
+
+    if (!sessionResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: sessionResult.error || 'Failed to create Stripe session'
+      });
+    }
+
+    // Отправляем уведомление, если нужно
+    let notificationResult = null;
+    if (sendNotification) {
+      try {
+        // Получаем существующие платежи для уведомления
+        const StripeRepository = require('../services/stripe/repository');
+        const repository = new StripeRepository();
+        const existingPayments = await repository.listPayments({
+          dealId: String(dealId),
+          limit: 10
+        });
+
+        // Формируем список сессий для уведомления
+        const sessions = [];
+        for (const p of existingPayments) {
+          if (!p.session_id) continue;
+          
+          let sessionUrl = p.checkout_url || null;
+          
+          // Если URL не в DB, проверяем raw_payload
+          if (!sessionUrl && p.raw_payload && p.raw_payload.url) {
+            sessionUrl = p.raw_payload.url;
+          }
+          
+          // Если URL все еще не найден, получаем из Stripe API
+          if (!sessionUrl) {
+            try {
+              const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+              if (session && session.url) {
+                sessionUrl = session.url;
+                // Сохраняем URL в DB для будущего использования
+                try {
+                  await repository.savePayment({
+                    session_id: p.session_id,
+                    checkout_url: sessionUrl
+                  });
+                } catch (saveError) {
+                  logger.warn('Failed to save checkout_url to DB', {
+                    dealId,
+                    sessionId: p.session_id,
+                    error: saveError.message
+                  });
+                }
+              }
+            } catch (error) {
+              logger.warn('Failed to retrieve session URL from Stripe', {
+                dealId,
+                sessionId: p.session_id,
+                error: error.message
+              });
+            }
+          }
+          
+          if (sessionUrl) {
+            sessions.push({
+              id: p.session_id,
+              url: sessionUrl,
+              type: p.payment_type,
+              amount: p.original_amount
+            });
+          }
+        }
+
+        // Добавляем новую созданную сессию
+        sessions.push({
+          id: sessionResult.sessionId,
+          url: sessionResult.sessionUrl,
+          type: sessionContext.paymentType || 'payment',
+          amount: sessionResult.amount
+        });
+
+        // Определяем график платежей для уведомления
+        const effectivePaymentSchedule = paymentSchedule || 
+          (deal.expected_close_date ? '50/50' : '100%');
+
+        // Отправляем уведомление
+        notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+          paymentSchedule: effectivePaymentSchedule,
+          sessions: sessions,
+          currency: sessionResult.currency,
+          totalAmount: parseFloat(deal.value) || 0
+        });
+      } catch (notifyError) {
+        logger.warn('Failed to send notification after creating session', {
+          dealId,
+          error: notifyError.message
+        });
+        // Не возвращаем ошибку, так как сессия уже создана
+      }
+    }
+
+    res.json({
+      success: true,
+      session: {
+        id: sessionResult.sessionId,
+        url: sessionResult.sessionUrl,
+        amount: sessionResult.amount,
+        currency: sessionResult.currency
+      },
+      notification: notificationResult ? {
+        sent: notificationResult.success,
+        error: notificationResult.error || null
+      } : null
+    });
+  } catch (error) {
+    logger.error('Error creating Stripe session via diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/send-payment-notification
+ * Отправить SendPulse уведомление о платеже вручную
+ * 
+ * Body параметры:
+ *   - sessionIds: массив session_id для включения в уведомление (опционально, если не указан - используются все активные сессии)
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/send-payment-notification', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const StripeProcessorService = require('../services/stripe/processor');
+    const StripeRepository = require('../services/stripe/repository');
+    const stripeProcessor = new StripeProcessorService();
+    const repository = new StripeRepository();
+
+    // Получаем данные сделки
+    const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
+    if (!dealResult.success || !dealResult.deal) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found'
+      });
+    }
+
+    const deal = dealResult.deal;
+    const { sessionIds } = req.body;
+
+    // Получаем платежи для уведомления
+    let existingPayments = await repository.listPayments({
+      dealId: String(dealId),
+      limit: 10
+    });
+
+    // Фильтруем по sessionIds, если указаны
+    if (sessionIds && Array.isArray(sessionIds) && sessionIds.length > 0) {
+      existingPayments = existingPayments.filter(p => 
+        p.session_id && sessionIds.includes(p.session_id)
+      );
+    }
+
+    // Формируем список сессий для уведомления
+    const sessions = [];
+    for (const p of existingPayments) {
+      if (!p.session_id) continue;
+      
+      let sessionUrl = p.checkout_url || null;
+      
+      // Если URL не в DB, проверяем raw_payload
+      if (!sessionUrl && p.raw_payload && p.raw_payload.url) {
+        sessionUrl = p.raw_payload.url;
+      }
+      
+      // Если URL все еще не найден, получаем из Stripe API
+      if (!sessionUrl) {
+        try {
+          const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+          if (session && session.url) {
+            sessionUrl = session.url;
+            // Сохраняем URL в DB для будущего использования
+            try {
+              await repository.savePayment({
+                session_id: p.session_id,
+                checkout_url: sessionUrl
+              });
+            } catch (saveError) {
+              logger.warn('Failed to save checkout_url to DB', {
+                dealId,
+                sessionId: p.session_id,
+                error: saveError.message
+              });
+            }
+          }
+        } catch (error) {
+          logger.warn('Failed to retrieve session URL from Stripe', {
+            dealId,
+            sessionId: p.session_id,
+            error: error.message
+          });
+        }
+      }
+      
+      if (sessionUrl) {
+        sessions.push({
+          id: p.session_id,
+          url: sessionUrl,
+          type: p.payment_type,
+          amount: p.original_amount
+        });
+      }
+    }
+
+    if (sessions.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active payment sessions found for notification'
+      });
+    }
+
+    // Определяем график платежей
+    const closeDate = deal.expected_close_date || deal.close_date;
+    let paymentSchedule = '100%';
+    if (closeDate) {
+      try {
+        const expectedCloseDate = new Date(closeDate);
+        const today = new Date();
+        const daysDiff = Math.ceil((expectedCloseDate - today) / (1000 * 60 * 60 * 24));
+        if (daysDiff >= 30) {
+          paymentSchedule = '50/50';
+        }
+      } catch (error) {
+        // Используем значение по умолчанию
+      }
+    }
+
+    // Отправляем уведомление
+    const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+      paymentSchedule,
+      sessions: sessions,
+      currency: deal.currency || 'PLN',
+      totalAmount: parseFloat(deal.value) || 0
+    });
+
+    if (notificationResult.success) {
+      res.json({
+        success: true,
+        message: 'Notification sent successfully',
+        sessionsCount: sessions.length
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: notificationResult.error || 'Failed to send notification'
+      });
+    }
+  } catch (error) {
+    logger.error('Error sending payment notification via diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/recreate-expired-session
+ * Пересоздать истекшую Stripe сессию
+ * 
+ * Body параметры:
+ *   - sessionId: ID истекшей сессии (опционально, если не указан - пересоздается последняя истекшая)
+ *   - sendNotification: отправить SendPulse уведомление после создания (по умолчанию true)
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/recreate-expired-session', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const StripeProcessorService = require('../services/stripe/processor');
+    const StripeRepository = require('../services/stripe/repository');
+    const stripeProcessor = new StripeProcessorService();
+    const repository = new StripeRepository();
+
+    // Получаем данные сделки
+    const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
+    if (!dealResult.success || !dealResult.deal) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found'
+      });
+    }
+
+    const deal = dealResult.deal;
+    const { sessionId, sendNotification = true } = req.body;
+
+    // Получаем истекшие сессии
+    let expiredPayments = await repository.listPayments({
+      dealId: String(dealId),
+      limit: 10
+    });
+
+    // Фильтруем неоплаченные платежи
+    expiredPayments = expiredPayments.filter(p => 
+      p.payment_status !== 'paid' && p.session_id
+    );
+
+    // Если указан sessionId, ищем конкретную сессию
+    if (sessionId) {
+      expiredPayments = expiredPayments.filter(p => p.session_id === sessionId);
+    }
+
+    if (expiredPayments.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No expired sessions found'
+      });
+    }
+
+    // Берем последнюю истекшую сессию
+    const expiredPayment = expiredPayments.sort((a, b) => {
+      const dateA = a.created_at ? new Date(a.created_at) : new Date(0);
+      const dateB = b.created_at ? new Date(b.created_at) : new Date(0);
+      return dateB - dateA; // Новые сначала
+    })[0];
+
+    // Проверяем, что сессия действительно истекла
+    let isExpired = false;
+    try {
+      const session = await stripeProcessor.stripe.checkout.sessions.retrieve(expiredPayment.session_id);
+      isExpired = session.status === 'expired' || session.status === 'canceled';
+    } catch (error) {
+      // Если не удалось получить сессию, считаем что она истекла
+      isExpired = true;
+    }
+
+    if (!isExpired) {
+      return res.status(400).json({
+        success: false,
+        error: 'Session is not expired',
+        sessionId: expiredPayment.session_id,
+        sessionStatus: 'active'
+      });
+    }
+
+    // Определяем параметры для пересоздания
+    const paymentType = expiredPayment.payment_type || 'deposit';
+    const paymentSchedule = expiredPayment.payment_schedule || '50/50';
+    
+    // Для rest платежей может потребоваться кастомная сумма
+    let customAmount = null;
+    if (paymentType === 'rest') {
+      const dealValue = parseFloat(deal.value) || 0;
+      const depositPayments = await repository.listPayments({
+        dealId: String(dealId),
+        limit: 10
+      });
+      const paidDepositAmount = depositPayments
+        .filter(p => (p.payment_type === 'deposit' || p.payment_type === 'first') && p.payment_status === 'paid')
+        .reduce((sum, p) => sum + parseFloat(p.original_amount || 0), 0);
+      customAmount = Math.max(dealValue - paidDepositAmount, 0);
+    }
+
+    const sessionContext = {
+      trigger: 'manual_recreate_expired',
+      runId: `recreate_${Date.now()}`,
+      paymentType,
+      paymentSchedule,
+      customAmount,
+      skipNotification: !sendNotification,
+      setInvoiceTypeDone: false
+    };
+
+    // Создаем новую сессию
+    const sessionResult = await stripeProcessor.createCheckoutSessionForDeal(deal, sessionContext);
+
+    if (!sessionResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: sessionResult.error || 'Failed to recreate Stripe session'
+      });
+    }
+
+    // Отправляем уведомление, если нужно
+    let notificationResult = null;
+    if (sendNotification) {
+      try {
+        // Получаем все активные сессии для уведомления
+        const allPayments = await repository.listPayments({
+          dealId: String(dealId),
+          limit: 10
+        });
+
+        const sessions = [];
+        for (const p of allPayments) {
+          if (!p.session_id) continue;
+          
+          let sessionUrl = p.checkout_url || null;
+          if (!sessionUrl && p.raw_payload && p.raw_payload.url) {
+            sessionUrl = p.raw_payload.url;
+          }
+          if (!sessionUrl) {
+            try {
+              const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+              if (session && session.url) {
+                sessionUrl = session.url;
+                try {
+                  await repository.savePayment({
+                    session_id: p.session_id,
+                    checkout_url: sessionUrl
+                  });
+                } catch (saveError) {
+                  // Игнорируем ошибки сохранения
+                }
+              }
+            } catch (error) {
+              // Игнорируем ошибки получения сессии
+            }
+          }
+          
+          if (sessionUrl) {
+            sessions.push({
+              id: p.session_id,
+              url: sessionUrl,
+              type: p.payment_type,
+              amount: p.original_amount
+            });
+          }
+        }
+
+        // Добавляем новую созданную сессию
+        sessions.push({
+          id: sessionResult.sessionId,
+          url: sessionResult.sessionUrl,
+          type: paymentType,
+          amount: sessionResult.amount
+        });
+
+        notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+          paymentSchedule,
+          sessions: sessions,
+          currency: sessionResult.currency,
+          totalAmount: parseFloat(deal.value) || 0
+        });
+      } catch (notifyError) {
+        logger.warn('Failed to send notification after recreating session', {
+          dealId,
+          error: notifyError.message
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      oldSession: {
+        id: expiredPayment.session_id,
+        status: 'expired'
+      },
+      newSession: {
+        id: sessionResult.sessionId,
+        url: sessionResult.sessionUrl,
+        amount: sessionResult.amount,
+        currency: sessionResult.currency
+      },
+      notification: notificationResult ? {
+        sent: notificationResult.success,
+        error: notificationResult.error || null
+      } : null
+    });
+  } catch (error) {
+    logger.error('Error recreating expired session via diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pipedrive/organizations/:id
  * Получить организацию по ID
  */
