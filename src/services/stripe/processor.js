@@ -2590,25 +2590,37 @@ class StripeProcessorService {
             
             // Create deposit if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer + DistributedLock)
             if (paymentState.needsDeposit) {
-              const depositResult = await this.lockService.withLock(
-                deal.id,
-                async () => {
-                  return await this.createCheckoutSessionForDeal(deal, {
-                    trigger,
-                    runId,
-                    paymentType: 'deposit',
-                    paymentSchedule: '50/50',
-                    paymentIndex: 1,
-                    skipNotification: true // Skip notification, will send after both sessions created
-                  });
-                },
-                {
-                  lockType: 'payment_creation',
-                  timeout: 30000, // 30 seconds
-                  maxRetries: 2,
-                  retryDelay: 500
-                }
-              );
+              let depositResult;
+              try {
+                depositResult = await this.lockService.withLock(
+                  deal.id,
+                  async () => {
+                    return await this.createCheckoutSessionForDeal(deal, {
+                      trigger,
+                      runId,
+                      paymentType: 'deposit',
+                      paymentSchedule: '50/50',
+                      paymentIndex: 1,
+                      skipNotification: true // Skip notification, will send after both sessions created
+                    });
+                  },
+                  {
+                    lockType: 'payment_creation',
+                    timeout: 30000, // 30 seconds
+                    maxRetries: 2,
+                    retryDelay: 500
+                  }
+                );
+              } catch (lockError) {
+                this.logger.error('Failed to acquire lock for deposit creation', {
+                  dealId: deal.id,
+                  error: lockError.message
+                });
+                depositResult = {
+                  success: false,
+                  error: `Lock acquisition failed: ${lockError.message}`
+                };
+              }
               
               if (depositResult.success) {
                 summary.sessionsCreated++;
@@ -2643,25 +2655,37 @@ class StripeProcessorService {
 
             // Create rest if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer + DistributedLock)
             if (paymentState.needsRest) {
-              const restResult = await this.lockService.withLock(
-                deal.id,
-                async () => {
-                  return await this.createCheckoutSessionForDeal(deal, {
-                    trigger,
-                    runId,
-                    paymentType: 'rest',
-                    paymentSchedule: '50/50',
-                    paymentIndex: 2,
-                    skipNotification: true // Skip notification, will send after both sessions created
-                  });
-                },
-                {
-                  lockType: 'payment_creation',
-                  timeout: 30000,
-                  maxRetries: 2,
-                  retryDelay: 500
-                }
-              );
+              let restResult;
+              try {
+                restResult = await this.lockService.withLock(
+                  deal.id,
+                  async () => {
+                    return await this.createCheckoutSessionForDeal(deal, {
+                      trigger,
+                      runId,
+                      paymentType: 'rest',
+                      paymentSchedule: '50/50',
+                      paymentIndex: 2,
+                      skipNotification: true // Skip notification, will send after both sessions created
+                    });
+                  },
+                  {
+                    lockType: 'payment_creation',
+                    timeout: 30000,
+                    maxRetries: 2,
+                    retryDelay: 500
+                  }
+                );
+              } catch (lockError) {
+                this.logger.error('Failed to acquire lock for rest creation', {
+                  dealId: deal.id,
+                  error: lockError.message
+                });
+                restResult = {
+                  success: false,
+                  error: `Lock acquisition failed: ${lockError.message}`
+                };
+              }
               
               if (restResult.success) {
                 summary.sessionsCreated++;
@@ -2723,9 +2747,12 @@ class StripeProcessorService {
                 deal.currency || 'PLN'
               );
               
+              // Рассчитываем сумму deposit платежей
+              const depositAmount = depositPayments.reduce((sum, p) => 
+                sum + parseFloat(p.original_amount || p.amount_pln || 0), 0);
+              
               this.logger.info('Creating rest payment for remainder after deposit', {
                 dealId: deal.id,
-                dealValue,
                 depositAmount,
                 remainderAmount,
                 note: 'Graph changed from 50/50 to 100%, deposit exists but not paid'
@@ -2756,23 +2783,35 @@ class StripeProcessorService {
               }
             } else {
               // Нет deposit платежа - создаем single на полную сумму (Phase 0: Code Review Fixes - with DistributedLock)
-              const result = await this.lockService.withLock(
-                deal.id,
-                async () => {
-                  return await this.createCheckoutSessionForDeal(deal, {
-                    trigger,
-                    runId,
-                    paymentType: 'single',
-                    paymentSchedule: '100%'
-                  });
-                },
-                {
-                  lockType: 'payment_creation',
-                  timeout: 30000,
-                  maxRetries: 2,
-                  retryDelay: 500
-                }
-              );
+              let result;
+              try {
+                result = await this.lockService.withLock(
+                  deal.id,
+                  async () => {
+                    return await this.createCheckoutSessionForDeal(deal, {
+                      trigger,
+                      runId,
+                      paymentType: 'single',
+                      paymentSchedule: '100%'
+                    });
+                  },
+                  {
+                    lockType: 'payment_creation',
+                    timeout: 30000,
+                    maxRetries: 2,
+                    retryDelay: 500
+                  }
+                );
+              } catch (lockError) {
+                this.logger.error('Failed to acquire lock for single payment creation', {
+                  dealId: deal.id,
+                  error: lockError.message
+                });
+                result = {
+                  success: false,
+                  error: `Lock acquisition failed: ${lockError.message}`
+                };
+              }
               
               if (result.success) {
                 summary.sessionsCreated++;
