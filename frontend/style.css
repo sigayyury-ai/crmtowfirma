@@ -3854,6 +3854,119 @@ body.modal-open {
     font-size: 1.5rem;
 }
 
+/* Actions List */
+.actions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.action-item {
+    display: flex;
+    gap: 15px;
+    padding: 18px;
+    border-radius: 10px;
+    border-left: 4px solid;
+    background: #f8fafc;
+    transition: all 0.2s ease;
+}
+
+.action-item:hover {
+    transform: translateX(5px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.action-item.action-available {
+    background: #f0fdf4;
+    border-left-color: #10b981;
+}
+
+.action-item.action-unavailable {
+    background: #f1f5f9;
+    border-left-color: #94a3b8;
+    opacity: 0.7;
+}
+
+.action-icon {
+    font-size: 1.5rem;
+    flex-shrink: 0;
+}
+
+.action-content {
+    flex: 1;
+}
+
+.action-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.action-header strong {
+    font-size: 1rem;
+    color: #1e293b;
+    flex: 1;
+}
+
+.action-badge {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.action-badge.available {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.action-badge.unavailable {
+    background: #e2e8f0;
+    color: #64748b;
+}
+
+.action-description {
+    font-size: 0.9rem;
+    color: #475569;
+    margin-bottom: 8px;
+}
+
+.action-reason {
+    font-size: 0.85rem;
+    color: #64748b;
+    font-style: italic;
+    margin-top: 4px;
+}
+
+.action-controls {
+    margin-top: 12px;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 0.875rem;
+}
+
+.task-source-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 6px;
+    background: #e0f2fe;
+    color: #0369a1;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.task-past {
+    background: #fef3c7;
+}
+
+.task-upcoming {
+    background: #f0fdf4;
+}
+
 /* Error Box */
 .diagnostics-error-box {
     display: flex;

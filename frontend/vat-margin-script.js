@@ -3255,7 +3255,7 @@ function renderDiagnostics(data) {
     return;
   }
   
-  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues, paymentSchedules } = data;
+  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues, paymentSchedules, availableActions, tasks, cronTasks } = data;
   
   let html = '<div class="diagnostics-container">';
   
@@ -3762,9 +3762,146 @@ function renderDiagnostics(data) {
     html += `</tbody></table></div></div></div>`;
   }
   
+  // 9. ДОСТУПНЫЕ ДЕЙСТВИЯ (Flow Step 9)
+  if (availableActions && availableActions.length > 0) {
+    html += `<div class="diagnostics-flow-section" data-flow-step="9">
+      <div class="flow-section-header">
+        <div class="flow-step-number">9</div>
+        <h3>⚡ Ручные действия</h3>
+        <div class="issues-count"><span class="count-badge">${availableActions.length}</span></div>
+      </div>
+      <div class="diagnostics-card">
+        <div class="actions-list">`;
+    
+    availableActions.forEach(action => {
+      const actionClass = action.available ? 'action-available' : 'action-unavailable';
+      html += `<div class="action-item ${actionClass}">
+        <div class="action-icon">${action.available ? '✅' : '❌'}</div>
+        <div class="action-content">
+          <div class="action-header">
+            <strong>${escapeHtml(action.name)}</strong>
+            ${action.available 
+              ? '<span class="action-badge available">Доступно</span>' 
+              : '<span class="action-badge unavailable">Недоступно</span>'}
+          </div>
+          <div class="action-description">${escapeHtml(action.description || '')}</div>
+          ${action.reason ? `<div class="action-reason">${escapeHtml(action.reason)}</div>` : ''}
+          ${action.available ? `
+            <div class="action-controls" style="margin-top: 12px;">
+              <button class="btn btn-primary btn-sm action-execute-btn" 
+                      data-action-id="${action.id}" 
+                      data-endpoint="${action.endpoint}"
+                      data-method="${action.method || 'POST'}">
+                Выполнить
+              </button>
+            </div>
+          ` : ''}
+        </div>
+      </div>`;
+    });
+    
+    html += `</div></div></div>`;
+  }
+  
+  // 10. ЗАДАЧИ (Flow Step 10)
+  if (tasks || cronTasks) {
+    const allTasks = [];
+    if (tasks) {
+      if (tasks.upcoming && tasks.upcoming.length > 0) {
+        allTasks.push(...tasks.upcoming.map(t => ({ ...t, source: 'pipedrive', type: 'upcoming' })));
+      }
+      if (tasks.past && tasks.past.length > 0) {
+        allTasks.push(...tasks.past.map(t => ({ ...t, source: 'pipedrive', type: 'past' })));
+      }
+    }
+    if (cronTasks && cronTasks.length > 0) {
+      allTasks.push(...cronTasks.map(t => ({ ...t, source: 'cron' })));
+    }
+    
+    if (allTasks.length > 0) {
+      html += `<div class="diagnostics-flow-section" data-flow-step="10">
+        <div class="flow-section-header">
+          <div class="flow-step-number">10</div>
+          <h3>📋 Задачи</h3>
+          <div class="issues-count"><span class="count-badge">${allTasks.length}</span></div>
+        </div>
+        <div class="diagnostics-card">
+          <div class="table-wrapper">
+            <table class="diagnostics-table modern-table">
+              <thead>
+                <tr>
+                  <th>Источник</th>
+                  <th>Тип</th>
+                  <th>Описание</th>
+                  <th>Дата</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody>`;
+      
+      allTasks.forEach(task => {
+        const isPast = task.type === 'past' || (task.dueDate && new Date(task.dueDate) < new Date());
+        html += `<tr class="${isPast ? 'task-past' : 'task-upcoming'}">
+          <td><span class="task-source-badge">${task.source === 'pipedrive' ? 'Pipedrive' : 'Cron'}</span></td>
+          <td>${escapeHtml(task.type || task.taskType || 'N/A')}</td>
+          <td>${escapeHtml(task.subject || task.description || task.taskDescription || 'N/A')}</td>
+          <td>${task.dueDate || task.secondPaymentDate 
+            ? new Date(task.dueDate || task.secondPaymentDate).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' })
+            : 'N/A'}</td>
+          <td><span class="status-badge ${isPast ? 'warning' : 'info'}">${isPast ? 'Прошедшая' : 'Будущая'}</span></td>
+        </tr>`;
+      });
+      
+      html += `</tbody></table></div></div></div>`;
+    }
+  }
+  
   html += '</div>';
   
   contentEl.innerHTML = html;
+  
+  // Привязываем обработчики для кнопок действий
+  if (availableActions && availableActions.length > 0) {
+    document.querySelectorAll('.action-execute-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const actionId = e.target.dataset.actionId;
+        const endpoint = e.target.dataset.endpoint;
+        const method = e.target.dataset.method || 'POST';
+        
+        if (!confirm(`Выполнить действие "${e.target.closest('.action-item').querySelector('strong').textContent}"?`)) {
+          return;
+        }
+        
+        e.target.disabled = true;
+        e.target.textContent = 'Выполняется...';
+        
+        try {
+          const response = await fetch(endpoint, {
+            method: method,
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: method === 'POST' ? JSON.stringify({}) : undefined
+          });
+          
+          const result = await response.json();
+          
+          if (result.success) {
+            alert(`✅ Действие выполнено успешно!\n\n${JSON.stringify(result, null, 2)}`);
+            // Перезагружаем диагностику
+            loadDealDiagnostics();
+          } else {
+            alert(`❌ Ошибка выполнения действия:\n\n${result.error || result.message || 'Неизвестная ошибка'}`);
+          }
+        } catch (error) {
+          alert(`❌ Ошибка выполнения действия:\n\n${error.message}`);
+        } finally {
+          e.target.disabled = false;
+          e.target.textContent = 'Выполнить';
+        }
+      });
+    });
+  }
 }
 
 function formatIssueDetails(details) {
