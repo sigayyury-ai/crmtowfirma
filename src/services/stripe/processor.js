@@ -2539,83 +2539,47 @@ class StripeProcessorService {
             daysDiff: schedule.daysDiff
           });
 
-          // Check if sessions already exist for this deal
-          let hasDeposit = false;
-          let hasRest = false;
-          let hasSinglePayment = false;
+          // Analyze payment state using PaymentStateAnalyzer (Phase 0: Code Review Fixes)
+          const stateAnalyzer = new PaymentStateAnalyzer({
+            repository: this.repository,
+            stripe: this.stripe,
+            logger: this.logger
+          });
           
-          if (existingPayments && existingPayments.length > 0) {
-            // For 50/50 schedule, check if both deposit and rest exist
-            if (use50_50Schedule) {
-              hasDeposit = existingPayments.some(p => 
-                p.payment_type === 'deposit' || p.payment_type === 'first'
-              );
-              hasRest = existingPayments.some(p => 
-                p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final'
-              );
-              
-              // If both sessions exist, skip creation
-              if (hasDeposit && hasRest) {
-                this.logger.info('Deal already has both deposit and rest Checkout Sessions, skipping creation', {
-                  dealId: deal.id,
-                  existingCount: existingPayments.length
-                });
-                summary.skipped++;
-                continue;
-              }
-              
-              // If only one exists, we'll create the missing one below
-              this.logger.info('Deal has partial 50/50 sessions, will create missing ones', {
+          const paymentState = await stateAnalyzer.analyzePaymentState(deal.id, schedule);
+          
+          this.logger.debug('Payment state analysis', {
+            dealId: deal.id,
+            schedule: paymentState.schedule,
+            needsDeposit: paymentState.needsDeposit,
+            needsRest: paymentState.needsRest,
+            needsSingle: paymentState.needsSingle,
+            depositPaid: paymentState.deposit.paid,
+            restPaid: paymentState.rest.paid,
+            singlePaid: paymentState.single.paid
+          });
+          
+          // Skip if all required payments exist and are paid
+          if (use50_50Schedule) {
+            if (!paymentState.needsDeposit && !paymentState.needsRest) {
+              this.logger.info('Deal already has both deposit and rest Checkout Sessions, skipping creation', {
                 dealId: deal.id,
-                hasDeposit,
-                hasRest,
-                existingCount: existingPayments.length
+                existingCount: paymentState.summary.totalPayments
               });
-            } else {
-              // For 100% schedule, check if any session exists (single payment)
-              hasSinglePayment = existingPayments.some(p => 
-                p.payment_type === 'single' || p.payment_type === 'payment' || !p.payment_type
-              );
-              
-              // ВАЖНО: Проверяем, есть ли deposit платеж (оплаченный ИЛИ неоплаченный)
-              // Это нужно для случая, когда график изменился с 50/50 на 100%
-              const depositPayments = existingPayments.filter(p => 
-                p.payment_type === 'deposit' || p.payment_type === 'first'
-              );
-              
-              const paidDepositPayments = depositPayments.filter(p => 
-                p.payment_status === 'paid'
-              );
-              
-              const restPayments = existingPayments.filter(p => 
-                (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
-                p.payment_status === 'paid'
-              );
-              
-              // Если есть deposit (оплаченный или нет), но нет rest - нужно создать rest с остатком
-              if (depositPayments.length > 0 && restPayments.length === 0 && !hasSinglePayment) {
-                // Продолжим создание rest платежа ниже
-                const depositAmount = depositPayments.reduce((sum, p) => 
-                  sum + parseFloat(p.original_amount || p.amount_pln || 0), 0);
-                this.logger.info('Deal has deposit payment (paid or unpaid) but no rest payment, will create rest with remainder', {
-                  dealId: deal.id,
-                  depositCount: depositPayments.length,
-                  paidDepositCount: paidDepositPayments.length,
-                  depositAmount,
-                  note: 'Graph changed from 50/50 to 100%, need to create rest payment for remainder'
-                });
-              } else if (hasSinglePayment || (paidDepositPayments.length > 0 && restPayments.length > 0)) {
-                // Если уже есть single платеж или оба платежа оплачены - пропускаем
-                this.logger.info('Deal already has Checkout Session or is fully paid, skipping creation', {
-                  dealId: deal.id,
-                  existingCount: existingPayments.length,
-                  hasSinglePayment,
-                  depositPaid: paidDepositPayments.length > 0,
-                  restPaid: restPayments.length > 0
-                });
-                summary.skipped++;
-                continue;
-              }
+              summary.skipped++;
+              continue;
+            }
+          } else {
+            if (!paymentState.needsSingle && !paymentState.needsRest) {
+              this.logger.info('Deal already has Checkout Session or is fully paid, skipping creation', {
+                dealId: deal.id,
+                existingCount: paymentState.summary.totalPayments,
+                singlePaid: paymentState.single.paid,
+                depositPaid: paymentState.deposit.paid,
+                restPaid: paymentState.rest.paid
+              });
+              summary.skipped++;
+              continue;
             }
           }
 
@@ -2623,8 +2587,8 @@ class StripeProcessorService {
             
             const sessionsToNotify = [];
             
-            // Create deposit if it doesn't exist
-            if (!hasDeposit) {
+            // Create deposit if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer)
+            if (paymentState.needsDeposit) {
               const depositResult = await this.createCheckoutSessionForDeal(deal, {
                 trigger,
                 runId,
@@ -2654,22 +2618,19 @@ class StripeProcessorService {
                 });
               }
             } else {
-              // Find existing deposit session for notification
-              const existingDeposit = existingPayments.find(p => 
-                p.payment_type === 'deposit' || p.payment_type === 'first'
-              );
-              if (existingDeposit) {
+              // Find existing deposit session for notification (Phase 0: Code Review Fixes)
+              if (paymentState.deposit.payment) {
                 sessionsToNotify.push({
-                  id: existingDeposit.session_id,
-                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${existingDeposit.session_id}`,
+                  id: paymentState.deposit.payment.session_id,
+                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${paymentState.deposit.payment.session_id}`,
                   type: 'deposit',
-                  amount: existingDeposit.original_amount
+                  amount: paymentState.deposit.payment.original_amount
                 });
               }
             }
 
-            // Create rest if it doesn't exist
-            if (!hasRest) {
+            // Create rest if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer)
+            if (paymentState.needsRest) {
               const restResult = await this.createCheckoutSessionForDeal(deal, {
                 trigger,
                 runId,
@@ -2705,16 +2666,13 @@ class StripeProcessorService {
                 });
               }
             } else {
-              // Find existing rest session for notification
-              const existingRest = existingPayments.find(p => 
-                p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final'
-              );
-              if (existingRest) {
+              // Find existing rest session for notification (Phase 0: Code Review Fixes)
+              if (paymentState.rest.payment) {
                 sessionsToNotify.push({
-                  id: existingRest.session_id,
-                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${existingRest.session_id}`,
+                  id: paymentState.rest.payment.session_id,
+                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${paymentState.rest.payment.session_id}`,
                   type: 'rest',
-                  amount: existingRest.original_amount
+                  amount: paymentState.rest.payment.original_amount
                 });
               }
             }
@@ -2722,19 +2680,25 @@ class StripeProcessorService {
             // Уведомления теперь отправляются только после создания ВСЕХ сессий
             // (в pipedriveWebhook.js после цикла создания сессий)
           } else {
-            // Create payment for 100% schedule
-            // ВАЖНО: Проверяем, есть ли deposit платеж (оплаченный или нет)
-            // Если есть - создаем rest с остатком, иначе создаем single на полную сумму
-            const depositPayments = existingPayments.filter(p => 
-              p.payment_type === 'deposit' || p.payment_type === 'first'
-            );
-            
-            if (depositPayments.length > 0) {
+            // Create payment for 100% schedule (Phase 0: Code Review Fixes)
+            // Используем PaymentStateAnalyzer для определения нужных платежей
+            if (paymentState.needsRest) {
               // Есть deposit платеж - создаем rest с остатком
-              const dealValue = parseFloat(deal.value) || 0;
-              const depositAmount = depositPayments.reduce((sum, p) => 
-                sum + parseFloat(p.original_amount || p.amount_pln || 0), 0);
-              const remainderAmount = dealValue - depositAmount;
+              // Получаем продукты для расчета остатка
+              const dealProductsResult = await this.pipedriveClient.getDealProducts(deal.id);
+              const products = dealProductsResult.success ? dealProductsResult.products : [];
+              
+              // Получаем все deposit платежи для расчета остатка
+              const depositPayments = await stateAnalyzer.getDepositPayments(deal.id);
+              
+              // Рассчитываем остаток используя DealAmountCalculator
+              const remainderAmount = DealAmountCalculator.calculateRemainderAfterDeposit(
+                deal.id,
+                deal,
+                products,
+                depositPayments,
+                deal.currency || 'PLN'
+              );
               
               this.logger.info('Creating rest payment for remainder after deposit', {
                 dealId: deal.id,
