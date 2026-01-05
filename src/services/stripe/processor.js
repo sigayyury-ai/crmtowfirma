@@ -20,6 +20,7 @@ const { extractCashFields } = require('../cash/cashFieldParser');
 const PaymentScheduleService = require('./paymentScheduleService');
 const PaymentStateAnalyzer = require('./paymentStateAnalyzer');
 const DealAmountCalculator = require('./dealAmountCalculator');
+const DistributedLockService = require('./distributedLockService');
 
 class StripeProcessorService {
   constructor(options = {}) {
@@ -2587,16 +2588,27 @@ class StripeProcessorService {
             
             const sessionsToNotify = [];
             
-            // Create deposit if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer)
+            // Create deposit if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer + DistributedLock)
             if (paymentState.needsDeposit) {
-              const depositResult = await this.createCheckoutSessionForDeal(deal, {
-                trigger,
-                runId,
-                paymentType: 'deposit',
-                paymentSchedule: '50/50',
-                paymentIndex: 1,
-                skipNotification: true // Skip notification, will send after both sessions created
-              });
+              const depositResult = await this.lockService.withLock(
+                deal.id,
+                async () => {
+                  return await this.createCheckoutSessionForDeal(deal, {
+                    trigger,
+                    runId,
+                    paymentType: 'deposit',
+                    paymentSchedule: '50/50',
+                    paymentIndex: 1,
+                    skipNotification: true // Skip notification, will send after both sessions created
+                  });
+                },
+                {
+                  lockType: 'payment_creation',
+                  timeout: 30000, // 30 seconds
+                  maxRetries: 2,
+                  retryDelay: 500
+                }
+              );
               
               if (depositResult.success) {
                 summary.sessionsCreated++;
@@ -2629,16 +2641,27 @@ class StripeProcessorService {
               }
             }
 
-            // Create rest if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer)
+            // Create rest if needed (Phase 0: Code Review Fixes - using PaymentStateAnalyzer + DistributedLock)
             if (paymentState.needsRest) {
-              const restResult = await this.createCheckoutSessionForDeal(deal, {
-                trigger,
-                runId,
-                paymentType: 'rest',
-                paymentSchedule: '50/50',
-                paymentIndex: 2,
-                skipNotification: true // Skip notification, will send after both sessions created
-              });
+              const restResult = await this.lockService.withLock(
+                deal.id,
+                async () => {
+                  return await this.createCheckoutSessionForDeal(deal, {
+                    trigger,
+                    runId,
+                    paymentType: 'rest',
+                    paymentSchedule: '50/50',
+                    paymentIndex: 2,
+                    skipNotification: true // Skip notification, will send after both sessions created
+                  });
+                },
+                {
+                  lockType: 'payment_creation',
+                  timeout: 30000,
+                  maxRetries: 2,
+                  retryDelay: 500
+                }
+              );
               
               if (restResult.success) {
                 summary.sessionsCreated++;
@@ -2732,13 +2755,24 @@ class StripeProcessorService {
                 });
               }
             } else {
-              // Нет deposit платежа - создаем single на полную сумму
-              const result = await this.createCheckoutSessionForDeal(deal, {
-                trigger,
-                runId,
-                paymentType: 'single',
-                paymentSchedule: '100%'
-              });
+              // Нет deposit платежа - создаем single на полную сумму (Phase 0: Code Review Fixes - with DistributedLock)
+              const result = await this.lockService.withLock(
+                deal.id,
+                async () => {
+                  return await this.createCheckoutSessionForDeal(deal, {
+                    trigger,
+                    runId,
+                    paymentType: 'single',
+                    paymentSchedule: '100%'
+                  });
+                },
+                {
+                  lockType: 'payment_creation',
+                  timeout: 30000,
+                  maxRetries: 2,
+                  retryDelay: 500
+                }
+              );
               
               if (result.success) {
                 summary.sessionsCreated++;
