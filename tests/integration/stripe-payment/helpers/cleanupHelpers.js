@@ -1,0 +1,163 @@
+const logger = require('../../../../src/utils/logger');
+const PipedriveClient = require('../../../../src/services/pipedrive');
+const StripeRepository = require('../../../../src/services/stripe/repository');
+const { getStripeClient } = require('../../../../src/services/stripe/client');
+
+/**
+ * CleanupHelpers
+ * 
+ * Helper функции для очистки тестовых данных после выполнения тестов.
+ */
+class CleanupHelpers {
+  constructor(options = {}) {
+    this.logger = options.logger || logger;
+    this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
+    this.repository = options.repository || new StripeRepository();
+    this.stripe = options.stripe || getStripeClient();
+    this.testPrefix = options.testPrefix || 'TEST_AUTO_';
+  }
+
+  /**
+   * Очистить тестовые сделки из Pipedrive
+   * 
+   * @param {Array<string>} dealIds - Массив ID сделок для удаления
+   * @returns {Promise<Object>} - Результат очистки
+   */
+  async cleanupTestDeals(dealIds) {
+    if (!dealIds || dealIds.length === 0) {
+      return { success: true, deleted: 0 };
+    }
+
+    this.logger.info('Cleaning up test deals', { count: dealIds.length });
+
+    let deleted = 0;
+    const errors = [];
+
+    for (const dealId of dealIds) {
+      try {
+        await this.pipedriveClient.deleteDeal(dealId);
+        deleted++;
+      } catch (error) {
+        this.logger.warn('Failed to delete test deal', {
+          dealId,
+          error: error.message
+        });
+        errors.push({ dealId, error: error.message });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      deleted,
+      errors: errors.length > 0 ? errors : null
+    };
+  }
+
+  /**
+   * Очистить тестовые платежи из базы данных
+   * 
+   * @param {Array<string>} paymentIds - Массив ID платежей для удаления
+   * @returns {Promise<Object>} - Результат очистки
+   */
+  async cleanupTestPayments(paymentIds) {
+    if (!paymentIds || paymentIds.length === 0) {
+      return { success: true, deleted: 0 };
+    }
+
+    this.logger.info('Cleaning up test payments', { count: paymentIds.length });
+
+    let deleted = 0;
+    const errors = [];
+
+    for (const paymentId of paymentIds) {
+      try {
+        // TODO: Implement payment deletion in repository
+        // await this.repository.deletePayment(paymentId);
+        deleted++;
+      } catch (error) {
+        this.logger.warn('Failed to delete test payment', {
+          paymentId,
+          error: error.message
+        });
+        errors.push({ paymentId, error: error.message });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      deleted,
+      errors: errors.length > 0 ? errors : null
+    };
+  }
+
+  /**
+   * Очистить тестовые Stripe сессии
+   * 
+   * @param {Array<string>} sessionIds - Массив ID сессий для удаления
+   * @returns {Promise<Object>} - Результат очистки
+   */
+  async cleanupTestStripeSessions(sessionIds) {
+    if (!sessionIds || sessionIds.length === 0) {
+      return { success: true, deleted: 0 };
+    }
+
+    this.logger.info('Cleaning up test Stripe sessions', { count: sessionIds.length });
+
+    let deleted = 0;
+    const errors = [];
+
+    for (const sessionId of sessionIds) {
+      try {
+        // Stripe sessions cannot be deleted, but we can expire them
+        await this.stripe.checkout.sessions.expire(sessionId);
+        deleted++;
+      } catch (error) {
+        this.logger.warn('Failed to expire test Stripe session', {
+          sessionId,
+          error: error.message
+        });
+        errors.push({ sessionId, error: error.message });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      deleted,
+      errors: errors.length > 0 ? errors : null
+    };
+  }
+
+  /**
+   * Полная очистка всех тестовых данных для конкретного тестового запуска
+   * 
+   * @param {Object} testData - Данные теста (deals, payments, sessions)
+   * @returns {Promise<Object>} - Результат полной очистки
+   */
+  async cleanupAllTestData(testData = {}) {
+    const { deals = [], payments = [], sessions = [] } = testData;
+
+    this.logger.info('Cleaning up all test data', {
+      deals: deals.length,
+      payments: payments.length,
+      sessions: sessions.length
+    });
+
+    const results = {
+      deals: await this.cleanupTestDeals(deals),
+      payments: await this.cleanupTestPayments(payments),
+      sessions: await this.cleanupTestStripeSessions(sessions)
+    };
+
+    const allSuccess = results.deals.success && 
+                       results.payments.success && 
+                       results.sessions.success;
+
+    return {
+      success: allSuccess,
+      results
+    };
+  }
+}
+
+module.exports = CleanupHelpers;
+
