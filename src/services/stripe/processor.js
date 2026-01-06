@@ -4695,6 +4695,24 @@ class StripeProcessorService {
           sendpulseId,
           refundsCount: refundedPayments.length
         });
+        
+        // Phase 9: Update SendPulse contact custom field with deal_id (Phase 0: Code Review Fixes)
+        try {
+          await this.sendpulseClient.updateContactCustomField(sendpulseId, {
+            deal_id: String(dealId)
+          });
+          this.logger.debug('SendPulse contact deal_id updated', {
+            dealId,
+            sendpulseId
+          });
+        } catch (error) {
+          this.logger.warn('Failed to update SendPulse contact deal_id', {
+            dealId,
+            sendpulseId,
+            error: error.message
+          });
+          // Не прерываем выполнение, если обновление deal_id не удалось
+        }
       } else {
         this.logger.warn('Failed to send refund notification via SendPulse', {
           dealId,
@@ -5263,6 +5281,24 @@ class StripeProcessorService {
           sessionsCount: sessions.length,
           messageId: result.messageId
         });
+        
+        // Phase 9: Update SendPulse contact custom field with deal_id (Phase 0: Code Review Fixes)
+        try {
+          await this.sendpulseClient.updateContactCustomField(sendpulseId, {
+            deal_id: String(dealId)
+          });
+          this.logger.debug('SendPulse contact deal_id updated', {
+            dealId,
+            sendpulseId
+          });
+        } catch (error) {
+          this.logger.warn('Failed to update SendPulse contact deal_id', {
+            dealId,
+            sendpulseId,
+            error: error.message
+          });
+          // Не прерываем выполнение, если обновление deal_id не удалось
+        }
       } else {
         this.logger.warn('Failed to send SendPulse payment notification', {
           dealId,

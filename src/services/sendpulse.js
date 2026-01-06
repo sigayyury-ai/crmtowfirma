@@ -274,6 +274,73 @@ class SendPulseClient {
   }
 
   /**
+   * Обновить кастомное поле контакта в SendPulse
+   * @param {string} contactId - ID контакта в SendPulse
+   * @param {Object} customFields - Объект с кастомными полями { field_name: value }
+   * @returns {Promise<Object>} - Результат обновления
+   */
+  async updateContactCustomField(contactId, customFields) {
+    try {
+      if (!contactId) {
+        throw new Error('contactId is required');
+      }
+
+      if (!customFields || typeof customFields !== 'object' || Object.keys(customFields).length === 0) {
+        throw new Error('customFields must be a non-empty object');
+      }
+
+      logger.info('Updating SendPulse contact custom fields', {
+        contactId,
+        customFields
+      });
+
+      const accessToken = await this.getAccessToken();
+
+      // SendPulse API для обновления контакта: PUT /contacts/{contact_id}
+      // Или PATCH /contacts/{contact_id} для частичного обновления
+      const url = `${this.baseURL}/contacts/${contactId}`;
+
+      const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      };
+
+      // Формат payload для обновления кастомных полей
+      // SendPulse использует структуру custom_fields или variables
+      const payload = {
+        custom_fields: customFields
+      };
+
+      const response = await this.client.patch(url, payload, { headers });
+
+      if (response.status === 200 || response.status === 204) {
+        logger.info('SendPulse contact custom fields updated successfully', {
+          contactId,
+          customFields
+        });
+        return {
+          success: true,
+          contactId
+        };
+      } else {
+        throw new Error(`Failed to update contact: unexpected status ${response.status}`);
+      }
+    } catch (error) {
+      logger.error('Error updating SendPulse contact custom fields', {
+        contactId,
+        customFields,
+        error: error.message,
+        status: error.response?.status,
+        data: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.response?.data?.message || error.message
+      };
+    }
+  }
+
+  /**
    * Тест подключения к SendPulse API
    * @returns {Promise<Object>} - Результат теста
    */

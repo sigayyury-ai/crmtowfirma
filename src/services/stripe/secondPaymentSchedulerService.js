@@ -823,6 +823,26 @@ class SecondPaymentSchedulerService {
 
       // Отправляем через SendPulse
       const result = await this.stripeProcessor.sendpulseClient.sendTelegramMessage(sendpulseId, message);
+      
+      // Phase 9: Update SendPulse contact custom field with deal_id (Phase 0: Code Review Fixes)
+      if (result.success) {
+        try {
+          await this.stripeProcessor.sendpulseClient.updateContactCustomField(sendpulseId, {
+            deal_id: String(task.deal.id)
+          });
+          this.logger.debug('SendPulse contact deal_id updated', {
+            dealId: task.deal.id,
+            sendpulseId
+          });
+        } catch (error) {
+          this.logger.warn('Failed to update SendPulse contact deal_id', {
+            dealId: task.deal.id,
+            sendpulseId,
+            error: error.message
+          });
+          // Не прерываем выполнение, если обновление deal_id не удалось
+        }
+      }
 
       if (result.success) {
         this.logger.info('Stripe second payment reminder sent successfully', {
