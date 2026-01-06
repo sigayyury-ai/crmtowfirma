@@ -2565,16 +2565,13 @@ ${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
       } else {
         logger.warn(`⚠️  PipedriveClient недоступен для проверки изменения продукта | Deal: ${dealId}`);
       }
-      } catch (error) {
-        logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
-          dealId,
-          error: error.message,
-          stack: error.stack
-        });
-        // Не прерываем обработку webhook из-за ошибки проверки продукта
-      }
-    } else {
-      logger.debug(`⏭️  Пропуск проверки изменения продукта | Deal: ${dealId} | Reason: нет previousDeal и не workflow automation`);
+    } catch (error) {
+      logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
+        dealId,
+        error: error.message,
+        stack: error.stack
+      });
+      // Не прерываем обработку webhook из-за ошибки проверки продукта
     }
 
     // Если ни один триггер не сработал, возвращаем успех
