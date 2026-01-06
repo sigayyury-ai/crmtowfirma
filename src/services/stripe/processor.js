@@ -2729,8 +2729,13 @@ class StripeProcessorService {
           } else {
             // Create payment for 100% schedule (Phase 0: Code Review Fixes)
             // Используем PaymentStateAnalyzer для определения нужных платежей
-            if (paymentState.needsRest) {
-              // Есть deposit платеж - создаем rest с остатком
+            // ВАЖНО: Для графика 100% needsRest всегда false, поэтому проверяем наличие deposit отдельно
+            const hasPaidDeposit = paymentState.deposit.exists && paymentState.deposit.paid;
+            const hasRest = paymentState.rest.exists;
+            
+            if (hasPaidDeposit && !hasRest) {
+              // Есть оплаченный deposit платеж, но нет rest - создаем rest с остатком
+              // Это происходит, когда график изменился с 50/50 на 100%
               // Получаем продукты для расчета остатка
               const dealProductsResult = await this.pipedriveClient.getDealProducts(deal.id);
               const products = dealProductsResult.success ? dealProductsResult.products : [];
@@ -2755,7 +2760,7 @@ class StripeProcessorService {
                 dealId: deal.id,
                 depositAmount,
                 remainderAmount,
-                note: 'Graph changed from 50/50 to 100%, deposit exists but not paid'
+                note: 'Graph changed from 50/50 to 100%, deposit is paid, creating rest for remainder'
               });
               
               const result = await this.createCheckoutSessionForDeal(deal, {
