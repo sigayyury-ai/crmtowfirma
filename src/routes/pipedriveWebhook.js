@@ -2575,6 +2575,9 @@ ${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
           stack: error.stack
         });
         // Не прерываем обработку webhook из-за ошибки проверки продукта
+      }
+    } else {
+      logger.debug(`⏭️  Пропуск проверки изменения продукта | Deal: ${dealId} | Reason: нет previousDeal и не workflow automation`);
     }
 
     // Если ни один триггер не сработал, возвращаем успех
