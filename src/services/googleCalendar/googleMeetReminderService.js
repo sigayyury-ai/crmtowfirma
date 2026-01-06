@@ -25,6 +25,12 @@ class GoogleMeetReminderService {
     // Cache for sent reminders to prevent duplicates
     this.sentCache = new Set();
     
+    // Cache for person search results to avoid repeated API calls
+    this.personSearchCache = new Map();
+    
+    // Delay between person searches to avoid rate limiting (ms)
+    this.personSearchDelay = 200; // 200ms = ~5 requests per second (well below Pipedrive limit)
+    
     // SendPulse ID field key in Pipedrive
     this.SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
     
@@ -88,21 +94,45 @@ class GoogleMeetReminderService {
   }
   
   /**
-   * Find person in Pipedrive by email
+   * Find person in Pipedrive by email (with caching and rate limiting protection)
    * @param {string} email - Email address
    * @returns {Promise<Object|null>} - Person object or null
    */
   async findPersonByEmail(email) {
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    // Check cache first
+    if (this.personSearchCache.has(normalizedEmail)) {
+      const cached = this.personSearchCache.get(normalizedEmail);
+      // Cache valid for 1 hour
+      if (Date.now() - cached.timestamp < 3600000) {
+        this.logger.debug('Person found in cache', { email: normalizedEmail });
+        return cached.person;
+      } else {
+        // Cache expired, remove it
+        this.personSearchCache.delete(normalizedEmail);
+      }
+    }
+    
     try {
-      this.logger.debug('Searching for person in Pipedrive', { email });
+      this.logger.debug('Searching for person in Pipedrive', { email: normalizedEmail });
+      
+      // Add delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, this.personSearchDelay));
       
       // Optimized: Try to get person with SendPulse ID in one request
       // First, search for person by email (exact match, limit 1)
-      const searchResult = await this.pipedriveClient.searchPersons(email, {
+      const searchResult = await this.pipedriveClient.searchPersons(normalizedEmail, {
         exactMatch: true,
         limit: 1,
         fields: 'name,email'
       });
+      
+      // If rate limited, return null and let retry mechanism handle it
+      if (searchResult.rateLimited) {
+        this.logger.warn('Rate limited while searching for person, will retry later', { email: normalizedEmail });
+        return null;
+      }
       
       if (searchResult.success && searchResult.persons?.length > 0) {
         const personId = searchResult.persons[0].id;
@@ -117,18 +147,31 @@ class GoogleMeetReminderService {
           const person = personResult.person;
           this.logger.info('Person found in Pipedrive', {
             personId: person.id,
-            email,
+            email: normalizedEmail,
             hasSendpulseId: !!person[this.SENDPULSE_ID_FIELD_KEY]
           });
+          
+          // Cache the result
+          this.personSearchCache.set(normalizedEmail, {
+            person,
+            timestamp: Date.now()
+          });
+          
           return person;
         }
       }
       
-      this.logger.warn('Person not found in Pipedrive', { email });
+      // Cache negative result (person not found) to avoid repeated searches
+      this.personSearchCache.set(normalizedEmail, {
+        person: null,
+        timestamp: Date.now()
+      });
+      
+      this.logger.warn('Person not found in Pipedrive', { email: normalizedEmail });
       return null;
     } catch (error) {
       this.logger.error('Error finding person in Pipedrive', {
-        email,
+        email: normalizedEmail,
         error: error.message
       });
       return null;

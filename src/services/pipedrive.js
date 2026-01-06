@@ -365,7 +365,12 @@ class PipedriveClient {
         fields: options.fields || 'name,email'
       };
 
-      const response = await this.client.get('/persons/search', { params });
+      const response = await retryWithBackoff(
+        () => this.client.get('/persons/search', { params }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
+      
       const items = response.data?.data?.items || [];
       const persons = items
         .map((entry) => entry?.item)
@@ -382,17 +387,19 @@ class PipedriveClient {
         persons
       };
     } catch (error) {
+      const isRateLimited = error.response?.status === 429;
       logger.error('Error searching persons in Pipedrive:', {
         term,
         error: error.message,
-        details: error.response?.data || null
+        details: error.response?.data || null,
+        rateLimited: isRateLimited
       });
       return {
         success: false,
         error: error.message,
         details: error.response?.data || null,
         persons: [],
-        rateLimited: error.response?.status === 429
+        rateLimited: isRateLimited
       };
     }
   }
