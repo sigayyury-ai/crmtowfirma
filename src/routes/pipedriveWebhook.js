@@ -1861,12 +1861,16 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     }
 
     // ========== Обработка 4: Изменение продукта в сделке ==========
-    // Проверяем изменение продукта независимо от invoice_type
-    // Это работает для всех webhook событий (workflow automation и стандартные)
-    try {
-      const pipedriveClient = resolvePipedriveClient();
-      if (pipedriveClient && dealId) {
-        logger.debug(`🔍 Проверка изменения продукта | Deal: ${dealId}`);
+    // Проверяем изменение продукта только если есть previousDeal (реальное изменение)
+    // Или если это workflow automation с изменением стадии
+    // Это оптимизирует производительность - не проверяем продукт при каждой смене статуса
+    const shouldCheckProductChange = previousDeal !== null || isWorkflowAutomation;
+    
+    if (shouldCheckProductChange) {
+      try {
+        const pipedriveClient = resolvePipedriveClient();
+        if (pipedriveClient && dealId) {
+          logger.debug(`🔍 Проверка изменения продукта | Deal: ${dealId} | Reason: ${previousDeal ? 'previousDeal exists' : 'workflow automation'}`);
         
         // Получаем текущие продукты сделки
         const currentProductsResult = await pipedriveClient.getDealProducts(dealId);
@@ -2564,13 +2568,13 @@ ${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
       } else {
         logger.warn(`⚠️  PipedriveClient недоступен для проверки изменения продукта | Deal: ${dealId}`);
       }
-    } catch (error) {
-      logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
-        dealId,
-        error: error.message,
-        stack: error.stack
-      });
-      // Не прерываем обработку webhook из-за ошибки проверки продукта
+      } catch (error) {
+        logger.error(`❌ Ошибка проверки изменения продукта | Deal: ${dealId} | Ошибка: ${error.message}`, {
+          dealId,
+          error: error.message,
+          stack: error.stack
+        });
+        // Не прерываем обработку webhook из-за ошибки проверки продукта
     }
 
     // Если ни один триггер не сработал, возвращаем успех
