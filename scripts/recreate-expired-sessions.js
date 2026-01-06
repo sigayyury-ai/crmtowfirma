@@ -380,6 +380,22 @@ async function recreateExpiredSessions() {
 
               const notifyResult = await sendpulseClient.sendTelegramMessage(sendpulseId, message);
               
+              // Phase 9: Update SendPulse contact custom field with deal_id
+              if (notifyResult.success) {
+                try {
+                  await sendpulseClient.updateContactCustomField(sendpulseId, {
+                    deal_id: String(deal.id)
+                  });
+                  logger.debug('SendPulse contact deal_id updated', { dealId: deal.id, sendpulseId });
+                } catch (error) {
+                  logger.warn('Failed to update SendPulse contact deal_id', {
+                    dealId: deal.id,
+                    sendpulseId,
+                    error: error.message
+                  });
+                }
+              }
+              
               if (notifyResult.success) {
                 console.log(`   📨 Уведомление отправлено в Telegram`);
               } else {

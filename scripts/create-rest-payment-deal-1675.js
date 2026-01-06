@@ -138,6 +138,20 @@ async function createRestPayment() {
           
           if (notificationResult.success) {
             console.log(`   📧 Уведомление отправлено в Telegram`);
+            
+            // Phase 9: Update SendPulse contact custom field with deal_id
+            try {
+              await sendpulseClient.updateContactCustomField(sendpulseId, {
+                deal_id: String(dealId)
+              });
+              logger.debug('SendPulse contact deal_id updated', { dealId, sendpulseId });
+            } catch (error) {
+              logger.warn('Failed to update SendPulse contact deal_id', {
+                dealId,
+                sendpulseId,
+                error: error.message
+              });
+            }
           } else {
             console.log(`   ⚠️  Не удалось отправить уведомление: ${notificationResult.error}`);
           }
