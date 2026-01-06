@@ -49,6 +49,19 @@ class DepositPaymentTest {
     const assertions = [];
 
     try {
+      // Check if we have real Pipedrive access
+      // Note: createCheckoutSessionForDeal requires real Pipedrive API access
+      // as it fetches deal data internally
+      if (process.env.TEST_USE_REAL_PIPEDRIVE !== 'true') {
+        this.logger.info('Skipping test - TEST_USE_REAL_PIPEDRIVE not set to true');
+        return {
+          name: testName,
+          status: 'skipped',
+          message: 'TEST_USE_REAL_PIPEDRIVE environment variable not set. Set TEST_USE_REAL_PIPEDRIVE=true to run this test with real Pipedrive API.',
+          duration: '0s'
+        };
+      }
+
       // Step 1: Create test deal with 50/50 schedule
       // expected_close_date should be >= 30 days from now
       const expectedCloseDate = new Date();
@@ -65,28 +78,21 @@ class DepositPaymentTest {
 
       this.logger.info('Creating test deal in Pipedrive', { deal: testDeal.title });
 
-      // Create deal in Pipedrive (or use mock if in test mode)
-      let dealId;
-      if (process.env.TEST_USE_REAL_PIPEDRIVE === 'true') {
-        const dealResult = await this.pipedriveClient.createDeal({
-          title: testDeal.title,
-          value: testDeal.value,
-          currency: testDeal.currency,
-          expected_close_date: testDeal.expected_close_date
-        });
+      // Create deal in Pipedrive
+      const dealResult = await this.pipedriveClient.createDeal({
+        title: testDeal.title,
+        value: testDeal.value,
+        currency: testDeal.currency,
+        expected_close_date: testDeal.expected_close_date
+      });
 
-        if (!dealResult.success) {
-          throw new Error(`Failed to create test deal: ${dealResult.error}`);
-        }
-
-        dealId = dealResult.deal.id;
-        testData.deals.push(dealId);
-        this.logger.info('Test deal created', { dealId });
-      } else {
-        // Use mock deal ID for testing
-        dealId = `test_deal_${Date.now()}`;
-        this.logger.info('Using mock deal ID (TEST_USE_REAL_PIPEDRIVE not set)', { dealId });
+      if (!dealResult.success) {
+        throw new Error(`Failed to create test deal: ${dealResult.error}`);
       }
+
+      const dealId = dealResult.deal.id;
+      testData.deals.push(dealId);
+      this.logger.info('Test deal created', { dealId });
 
       // Step 2: Verify payment schedule is 50/50
       const schedule = PaymentScheduleService.determineSchedule(testDeal.expected_close_date);
@@ -103,34 +109,19 @@ class DepositPaymentTest {
 
       // Step 3: Simulate webhook trigger by calling createCheckoutSessionForDeal
       // This simulates what happens when invoice_type is set to "Stripe" (75)
+      // Note: createCheckoutSessionForDeal will fetch deal data internally
       this.logger.info('Simulating webhook trigger - creating deposit payment session', { dealId });
 
-      // Get full deal data (or use test deal)
-      let dealWithData;
-      if (process.env.TEST_USE_REAL_PIPEDRIVE === 'true') {
-        const dealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
-        if (!dealResult.success) {
-          throw new Error(`Failed to get deal data: ${dealResult.error}`);
+      const sessionResult = await this.stripeProcessor.createCheckoutSessionForDeal(
+        { id: dealId }, // Minimal deal object - full data will be fetched internally
+        {
+          trigger: 'test_auto',
+          runId: `test_${testName}_${Date.now()}`,
+          paymentType: 'deposit',
+          paymentSchedule: '50/50',
+          paymentIndex: 1
         }
-        dealWithData = dealResult.deal;
-      } else {
-        // Use test deal data
-        dealWithData = {
-          id: dealId,
-          title: testDeal.title,
-          value: testDeal.value,
-          currency: testDeal.currency,
-          expected_close_date: testDeal.expected_close_date
-        };
-      }
-
-      const sessionResult = await this.stripeProcessor.createCheckoutSessionForDeal(dealWithData, {
-        trigger: 'test_auto',
-        runId: `test_${testName}_${Date.now()}`,
-        paymentType: 'deposit',
-        paymentSchedule: '50/50',
-        paymentIndex: 1
-      });
+      );
 
       // Step 4: Verify session creation
       assertions.push({
