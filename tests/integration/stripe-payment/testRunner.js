@@ -76,14 +76,63 @@ class StripePaymentTestRunner {
       for (const scenario of testScenarios) {
         try {
           this.logger.info(`Running test scenario: ${scenario.name}`);
-          // TODO: Implement actual test execution
-          // For now, mark as skipped
-          results.tests.push({
-            name: scenario.name,
-            status: 'skipped',
-            message: 'Test scenario not yet implemented'
+          
+          // Dynamically require test scenario
+          let TestClass;
+          try {
+            TestClass = require(scenario.file);
+          } catch (requireError) {
+            this.logger.warn(`Test scenario file not found: ${scenario.file}`, {
+              error: requireError.message
+            });
+            results.tests.push({
+              name: scenario.name,
+              status: 'skipped',
+              message: `Test file not found: ${scenario.file}`
+            });
+            results.summary.skipped++;
+            results.summary.total++;
+            continue;
+          }
+
+          // Initialize test with dependencies
+          const TestDataFactory = require('./helpers/testDataFactory');
+          const CleanupHelpers = require('./helpers/cleanupHelpers');
+          
+          const testDataFactory = new TestDataFactory({
+            testPrefix: this.testPrefix
           });
-          results.summary.skipped++;
+          const cleanupHelpers = new CleanupHelpers({
+            testPrefix: this.testPrefix
+          });
+
+          const testInstance = new TestClass({
+            testRunner: this,
+            testDataFactory,
+            cleanupHelpers,
+            stripeProcessor: this.stripeProcessor,
+            pipedriveClient: this.pipedriveClient,
+            repository: this.repository
+          });
+
+          // Run the test
+          const testResult = await testInstance.run();
+          
+          results.tests.push(testResult);
+          
+          if (testResult.status === 'passed') {
+            results.summary.passed++;
+          } else if (testResult.status === 'failed') {
+            results.summary.failed++;
+            if (testResult.error) {
+              results.errors.push({
+                test: scenario.name,
+                error: testResult.error
+              });
+            }
+          } else {
+            results.summary.skipped++;
+          }
         } catch (error) {
           this.logger.error(`Test scenario ${scenario.name} failed`, {
             error: error.message,
