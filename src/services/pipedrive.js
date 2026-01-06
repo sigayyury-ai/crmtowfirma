@@ -1162,6 +1162,46 @@ class PipedriveClient {
     * @param {Object} data - Поля для обновления
     * @returns {Promise<Object>} - Результат обновления
     */
+  /**
+   * Удалить сделку
+   * @param {number} dealId - ID сделки
+   * @returns {Promise<Object>} - Результат удаления
+   */
+  async deleteDeal(dealId) {
+    if (!dealId) {
+      throw new Error('dealId is required to delete deal');
+    }
+
+    try {
+      const response = await this.client.delete(`/deals/${dealId}`, {
+        params: { api_token: this.apiToken }
+      });
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          message: 'Deal deleted successfully'
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Failed to delete deal'
+      };
+    } catch (error) {
+      logger.error('Error deleting deal', {
+        dealId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        details: error.response?.data || null
+      };
+    }
+  }
+
   async updateDeal(dealId, data = {}) {
     try {
       const response = await retryWithBackoff(

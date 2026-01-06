@@ -159,10 +159,10 @@ class StripeRepository {
         return null;
       }
       
-      // Handle missing columns (invoice_number, receipt_number, payment_schedule) - retry without them
+      // Handle missing columns (invoice_number, receipt_number, payment_schedule, checkout_url) - retry without them
       const errorCode = error.code || '';
       const errorMessage = error.message || '';
-      const missingColumns = ['invoice_number', 'receipt_number', 'payment_schedule'];
+      const missingColumns = ['invoice_number', 'receipt_number', 'payment_schedule', 'checkout_url'];
       const hasMissingColumn = missingColumns.some(col => errorMessage.includes(col));
       
       if (errorCode === 'PGRST204' && hasMissingColumn) {
@@ -176,6 +176,11 @@ class StripeRepository {
         missingColumns.forEach(col => {
           delete paymentWithoutOptionalFields[col];
         });
+
+        // Also handle checkout_url specifically
+        if (errorMessage.includes('checkout_url')) {
+          delete paymentWithoutOptionalFields.checkout_url;
+        }
         
         const { error: retryError } = await this.supabase
           .from('stripe_payments')

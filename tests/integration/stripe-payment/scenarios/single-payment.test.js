@@ -76,11 +76,25 @@ class SinglePaymentTest {
 
       this.logger.info('Creating test deal in Pipedrive', { deal: testDeal.title });
 
+      // First, create a person with email
+      const personResult = await this.testDataFactory.createTestPerson({
+        email: testDeal.person.email[0].value,
+        name: testDeal.person.name
+      });
+
+      if (!personResult.success) {
+        throw new Error(`Failed to create test person: ${personResult.error}`);
+      }
+
+      const personId = personResult.personId;
+
+      // Create deal with person_id
       const dealResult = await this.pipedriveClient.createDeal({
         title: testDeal.title,
         value: testDeal.value,
         currency: testDeal.currency,
-        expected_close_date: testDeal.expected_close_date
+        expected_close_date: testDeal.expected_close_date,
+        person_id: personId
       });
 
       if (!dealResult.success) {
@@ -89,7 +103,17 @@ class SinglePaymentTest {
 
       const dealId = dealResult.deal.id;
       testData.deals.push(dealId);
-      this.logger.info('Test deal created', { dealId });
+      this.logger.info('Test deal created', { dealId, personId });
+
+      // Step 1.5: Add product to deal (required for session creation)
+      const addProductResult = await this.testDataFactory.addProductToTestDeal(dealId, {
+        price: parseFloat(testDeal.value),
+        currency: testDeal.currency
+      });
+
+      if (!addProductResult.success) {
+        throw new Error(`Failed to add product to test deal: ${addProductResult.error}`);
+      }
 
       // Step 2: Verify payment schedule is 100%
       const schedule = PaymentScheduleService.determineSchedule(testDeal.expected_close_date);

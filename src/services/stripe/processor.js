@@ -2923,6 +2923,9 @@ class StripeProcessorService {
       
       const person = fullDealResult.person;
       const organization = fullDealResult.organization;
+      
+      // Extract cash fields from deal (if any)
+      const cashFields = extractCashFields(fullDeal);
 
       // 2. Get deal products
       apiCallCount++;
@@ -2999,7 +3002,6 @@ class StripeProcessorService {
         this.logger.error('❌ Итоговая цена продукта невалидна', {
           dealId,
           productPrice,
-          basePrice,
           customAmount,
           paymentSchedule,
           paymentType
@@ -3009,13 +3011,18 @@ class StripeProcessorService {
           error: 'Product price is zero or invalid',
           details: {
             productPrice,
-            basePrice,
             customAmount,
             paymentSchedule,
             paymentType
           }
         };
       }
+      
+      // Calculate sumPrice (total deal amount with discounts) for return value
+      // This is used to match the total amount shown in notifications
+      const sumPrice = DealAmountCalculator.getDealAmount(fullDeal, dealProductsResult.products, {
+        includeDiscounts: true
+      });
 
       // 4. Get CRM context for B2B/VAT logic
       const crmContext = await this.getCrmContext(dealId);

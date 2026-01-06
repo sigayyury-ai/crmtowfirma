@@ -19,6 +19,10 @@ const {
 
 const SUPPORTED_STAGE_IDS = new Set([STAGE_IDS.FIRST_PAYMENT, STAGE_IDS.SECOND_PAYMENT, STAGE_IDS.CAMP_WAITER]);
 
+// Глобальный кеш для отслеживания последних уведомлений (работает между экземплярами сервиса)
+// Ключ: dealId, значение: timestamp последнего уведомления
+const paymentNotificationCache = new Map();
+
 class CrmStatusAutomationService {
   constructor(options = {}) {
     this.supabase = options.supabase || supabase;
@@ -412,8 +416,8 @@ class CrmStatusAutomationService {
   /**
    * Отправить уведомление о получении платежа через SendPulse
    * @param {string} dealId - ID сделки
-   * @param {Object} snapshot - Снимок данных сделки
-   * @param {Object} evaluation - Результат оценки статуса платежа
+   * @param {Object} snapshot - Снимок данных сделки (опционально, будет получен автоматически)
+   * @param {Object} evaluation - Результат оценки статуса платежа (опционально)
    * @returns {Promise<Object>} - Результат отправки
    */
   async sendPaymentReceivedNotification(dealId, snapshot, evaluation) {
@@ -422,6 +426,22 @@ class CrmStatusAutomationService {
     }
 
     try {
+      // Проверяем, не отправляли ли мы уведомление недавно (в течение последнего часа)
+      // Это предотвращает дублирование уведомлений при повторной обработке платежей
+      // Используем глобальный кеш, чтобы защита работала между экземплярами сервиса (webhook, cron, etc.)
+      const lastNotificationTime = paymentNotificationCache.get(dealId);
+      const now = Date.now();
+      const oneHour = 60 * 60 * 1000; // 1 час в миллисекундах
+
+      if (lastNotificationTime && (now - lastNotificationTime) < oneHour) {
+        this.logger.debug('Payment notification skipped: already sent recently', {
+          dealId,
+          lastSent: new Date(lastNotificationTime).toISOString(),
+          timeSinceLastSent: Math.round((now - lastNotificationTime) / 1000 / 60) + ' minutes'
+        });
+        return { success: false, error: 'Notification already sent recently', skipped: true };
+      }
+
       // Получаем данные сделки и персоны
       const dealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       if (!dealResult || !dealResult.person) {
@@ -438,9 +458,14 @@ class CrmStatusAutomationService {
         return { success: false, error: 'SendPulse ID not found' };
       }
 
+      // Если snapshot не передан, получаем его автоматически
+      if (!snapshot || !snapshot.totals) {
+        snapshot = await this.buildDealSnapshot(dealId, deal);
+      }
+
     // Формируем информацию о платеже
-    const paidAmount = snapshot.totals.totalPaidPln || 0;
-    const expectedAmount = snapshot.totals.expectedAmountPln || 0;
+    const paidAmount = snapshot?.totals?.totalPaidPln || 0;
+    const expectedAmount = snapshot?.totals?.expectedAmountPln || 0;
     const paidPercent = expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0;
     
     const message = '✅ Твой платеж получен, спасибо!';
@@ -449,6 +474,19 @@ class CrmStatusAutomationService {
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
+        // Сохраняем время последнего уведомления в глобальном кеше для предотвращения дублирования
+        paymentNotificationCache.set(dealId, now);
+        
+        // Очищаем старые записи из кеша (старше 24 часов), чтобы не накапливать память
+        if (paymentNotificationCache.size > 1000) {
+          const oneDay = 24 * 60 * 60 * 1000;
+          for (const [cachedDealId, cachedTime] of paymentNotificationCache.entries()) {
+            if (now - cachedTime > oneDay) {
+              paymentNotificationCache.delete(cachedDealId);
+            }
+          }
+        }
+        
         this.logger.info('Payment received notification sent via SendPulse', {
           dealId,
           sendpulseId,
