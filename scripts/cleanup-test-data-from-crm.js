@@ -7,6 +7,7 @@
  * - Сделки с названием, начинающимся с "TEST_AUTO_"
  * - Продукты с названием, начинающимся с "TEST_AUTO_"
  * - Контакты с именем, начинающимся с "TEST_AUTO_"
+ * - Задачи (tasks), связанные с тестовыми сделками или имеющие в subject/note "TEST_AUTO_"
  * 
  * ВАЖНО: Этот скрипт удаляет только тестовые данные, помеченные префиксом TEST_AUTO_
  * 
@@ -235,6 +236,90 @@ async function deleteTestPersons(pipedriveClient, persons) {
   return { deleted, failed, errors };
 }
 
+async function findTestTasks(pipedriveClient, testDealIds) {
+  logger.info('Searching for test tasks...');
+  
+  const testTasks = [];
+  const testDealIdsSet = new Set(testDealIds.map(id => String(id)));
+  
+  // Get all tasks and filter by:
+  // 1. Tasks linked to test deals
+  // 2. Tasks with TEST_AUTO_ in subject or note
+  let start = 0;
+  const limit = 100;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const result = await pipedriveClient.getActivities({
+        start,
+        limit,
+        type: 'task'
+      });
+
+      if (result.success && result.activities) {
+        const filtered = result.activities.filter(task => {
+          // Check if task is linked to a test deal
+          const dealId = task.deal_id ? String(task.deal_id) : null;
+          if (dealId && testDealIdsSet.has(dealId)) {
+            return true;
+          }
+          
+          // Check if task subject or note contains TEST_AUTO_
+          const subject = task.subject || '';
+          const note = task.note || task.public_description || '';
+          if (subject.includes(TEST_PREFIX) || note.includes(TEST_PREFIX)) {
+            return true;
+          }
+          
+          return false;
+        });
+        
+        testTasks.push(...filtered);
+        
+        hasMore = result.activities.length === limit;
+        start += limit;
+      } else {
+        hasMore = false;
+      }
+    } catch (error) {
+      logger.error('Error searching for test tasks', { error: error.message });
+      hasMore = false;
+    }
+  }
+
+  logger.info(`Found ${testTasks.length} test tasks`);
+  return testTasks;
+}
+
+async function deleteTestTasks(pipedriveClient, tasks) {
+  logger.info(`Deleting ${tasks.length} test tasks...`);
+  
+  let deleted = 0;
+  let failed = 0;
+  const errors = [];
+
+  for (const task of tasks) {
+    try {
+      const result = await pipedriveClient.deleteActivity(task.id);
+      if (result.success) {
+        deleted++;
+        logger.info(`Deleted test task: ${task.subject || 'No subject'} (ID: ${task.id})`);
+      } else {
+        failed++;
+        errors.push({ id: task.id, subject: task.subject, error: result.error });
+        logger.warn(`Failed to delete task ${task.id}: ${result.error}`);
+      }
+    } catch (error) {
+      failed++;
+      errors.push({ id: task.id, subject: task.subject, error: error.message });
+      logger.error(`Error deleting task ${task.id}`, { error: error.message });
+    }
+  }
+
+  return { deleted, failed, errors };
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const confirm = args.includes('--confirm');
@@ -260,18 +345,27 @@ async function main() {
       findTestPersons(pipedriveClient)
     ]);
 
+    // Find test tasks (after we have test deal IDs)
+    const testDealIds = testDeals.map(d => d.id);
+    const testTasks = await findTestTasks(pipedriveClient, testDealIds);
+
     console.log('\n📊 Test Data Summary:');
     console.log(`   Deals: ${testDeals.length}`);
     console.log(`   Products: ${testProducts.length}`);
     console.log(`   Persons: ${testPersons.length}`);
-    console.log(`   Total: ${testDeals.length + testProducts.length + testPersons.length}\n`);
+    console.log(`   Tasks: ${testTasks.length}`);
+    console.log(`   Total: ${testDeals.length + testProducts.length + testPersons.length + testTasks.length}\n`);
 
-    if (testDeals.length === 0 && testProducts.length === 0 && testPersons.length === 0) {
+    if (testDeals.length === 0 && testProducts.length === 0 && testPersons.length === 0 && testTasks.length === 0) {
       logger.info('✅ No test data found. Nothing to clean up.');
       return;
     }
 
     // Delete all test data
+    // Delete tasks first (before deals, as tasks are linked to deals)
+    const tasksResult = await deleteTestTasks(pipedriveClient, testTasks);
+    
+    // Then delete deals, products, and persons
     const [dealsResult, productsResult, personsResult] = await Promise.all([
       deleteTestDeals(pipedriveClient, testDeals),
       deleteTestProducts(pipedriveClient, testProducts),
@@ -280,17 +374,22 @@ async function main() {
 
     // Summary
     console.log('\n📊 Cleanup Summary:');
+    console.log(`   Tasks: ${tasksResult.deleted} deleted, ${tasksResult.failed} failed`);
     console.log(`   Deals: ${dealsResult.deleted} deleted, ${dealsResult.failed} failed`);
     console.log(`   Products: ${productsResult.deleted} deleted, ${productsResult.failed} failed`);
     console.log(`   Persons: ${personsResult.deleted} deleted, ${personsResult.failed} failed`);
     
-    const totalDeleted = dealsResult.deleted + productsResult.deleted + personsResult.deleted;
-    const totalFailed = dealsResult.failed + productsResult.failed + personsResult.failed;
+    const totalDeleted = tasksResult.deleted + dealsResult.deleted + productsResult.deleted + personsResult.deleted;
+    const totalFailed = tasksResult.failed + dealsResult.failed + productsResult.failed + personsResult.failed;
 
     console.log(`\n   Total: ${totalDeleted} deleted, ${totalFailed} failed\n`);
 
     if (totalFailed > 0) {
       console.log('⚠️  Some items failed to delete. Check logs for details.');
+      if (tasksResult.errors.length > 0) {
+        console.log('\n   Failed Tasks:');
+        tasksResult.errors.forEach(e => console.log(`     - ${e.subject || 'No subject'} (ID: ${e.id}): ${e.error}`));
+      }
       if (dealsResult.errors.length > 0) {
         console.log('\n   Failed Deals:');
         dealsResult.errors.forEach(e => console.log(`     - ${e.title} (ID: ${e.id}): ${e.error}`));

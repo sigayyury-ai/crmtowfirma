@@ -1683,6 +1683,111 @@ class PipedriveClient {
         };
       }
 
+      return {
+        success: false,
+        error: response.data?.error || 'Unknown error'
+      };
+    } catch (error) {
+      logger.error('Failed to update activity', {
+        activityId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Delete an activity (task, call, etc.)
+   * @param {number} activityId - Activity ID
+   * @returns {Promise<Object>} - Result of deletion
+   */
+  async deleteActivity(activityId) {
+    try {
+      const response = await retryWithBackoff(
+        () => this.client.delete(`/activities/${activityId}`, {
+          params: { api_token: this.apiToken }
+        }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
+
+      if (response.data?.success) {
+        return {
+          success: true,
+          message: 'Activity deleted successfully'
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Unknown error'
+      };
+    } catch (error) {
+      logger.error('Failed to delete activity', {
+        activityId,
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get all activities (tasks, calls, etc.) - not filtered by deal
+   * @param {Object} options - Filter options (type, start, limit, etc.)
+   * @returns {Promise<Object>} - Activities data
+   */
+  async getActivities(options = {}) {
+    try {
+      const params = {
+        api_token: this.apiToken,
+        limit: options.limit || 100,
+        start: options.start || 0
+      };
+
+      if (options.type) {
+        params.type = options.type;
+      }
+
+      const response = await retryWithBackoff(
+        () => this.client.get('/activities', { params }),
+        this.maxRetries,
+        this.retryBaseDelay
+      );
+
+      if (response.data?.success !== false) {
+        return {
+          success: true,
+          activities: response.data.data || [],
+          pagination: response.data.additional_data?.pagination
+        };
+      }
+
+      return {
+        success: false,
+        error: response.data?.error || 'Unknown error',
+        activities: []
+      };
+    } catch (error) {
+      logger.error('Failed to get activities', {
+        error: error.message,
+        response: error.response?.data
+      });
+      return {
+        success: false,
+        error: error.message,
+        activities: []
+      };
+    }
+  }
+
       throw new Error('Failed to update activity');
     } catch (error) {
       logger.error('Error updating activity:', {
