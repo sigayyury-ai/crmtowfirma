@@ -10,6 +10,7 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:supabase": "node tests/scripts/testSupabaseConnection.js",
+    "test:stripe-payment": "node scripts/runStripePaymentTests.js",
     "migrate:proformas": "node scripts/migrateProformasToSupabase.js",
     "serve:vat": "npx http-server frontend/vat-margin -p 4173",
     "run:stripe-processor": "node scripts/runStripeProcessor.js",
