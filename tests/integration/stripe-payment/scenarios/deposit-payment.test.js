@@ -169,36 +169,12 @@ class DepositPaymentTest {
         testData.sessions.push(sessionResult.sessionId);
       }
 
-      // Step 5: Verify payment record in database
-      const payments = await this.repository.listPayments({
-        dealId: String(dealId),
-        paymentType: 'deposit'
+      // Step 5: Note - Payment record is saved to database only after persistSession is called
+      // This happens when webhook checkout.session.completed is processed
+      // Payment record verification is done in payment-processing test scenario
+      this.logger.info('Session created - payment record will be saved after webhook processing', {
+        sessionId: sessionResult.sessionId
       });
-
-      const depositPayment = payments.find(p => p.session_id === sessionResult.sessionId);
-
-      assertions.push({
-        name: 'Payment record saved to database',
-        passed: !!depositPayment,
-        expected: 'payment record exists',
-        actual: depositPayment ? 'exists' : 'missing'
-      });
-
-      if (depositPayment) {
-        testData.payments.push(depositPayment.id);
-        assertions.push({
-          name: 'Payment type is deposit',
-          passed: depositPayment.payment_type === 'deposit',
-          expected: 'deposit',
-          actual: depositPayment.payment_type
-        });
-        assertions.push({
-          name: 'Payment schedule is 50/50',
-          passed: depositPayment.payment_schedule === '50/50',
-          expected: '50/50',
-          actual: depositPayment.payment_schedule
-        });
-      }
 
       // Step 6: Verify notification was sent (if SendPulse is configured)
       // This is checked via logs - actual SendPulse API call verification would require mocking
@@ -237,8 +213,7 @@ class DepositPaymentTest {
         assertions,
         testData: {
           dealId,
-          sessionId: sessionResult.sessionId,
-          paymentId: depositPayment?.id
+          sessionId: sessionResult.sessionId
         }
       };
     } catch (error) {

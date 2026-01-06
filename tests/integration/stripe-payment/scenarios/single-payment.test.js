@@ -164,36 +164,12 @@ class SinglePaymentTest {
         testData.sessions.push(sessionResult.sessionId);
       }
 
-      // Step 5: Verify payment record in database
-      const payments = await this.repository.listPayments({
-        dealId: String(dealId),
-        paymentType: 'single'
+      // Step 5: Note - Payment record is saved to database only after persistSession is called
+      // This happens when webhook checkout.session.completed is processed
+      // Payment record verification is done in payment-processing test scenario
+      this.logger.info('Session created - payment record will be saved after webhook processing', {
+        sessionId: sessionResult.sessionId
       });
-
-      const singlePayment = payments.find(p => p.session_id === sessionResult.sessionId);
-
-      assertions.push({
-        name: 'Payment record saved to database',
-        passed: !!singlePayment,
-        expected: 'payment record exists',
-        actual: singlePayment ? 'exists' : 'missing'
-      });
-
-      if (singlePayment) {
-        testData.payments.push(singlePayment.id);
-        assertions.push({
-          name: 'Payment type is single',
-          passed: singlePayment.payment_type === 'single',
-          expected: 'single',
-          actual: singlePayment.payment_type
-        });
-        assertions.push({
-          name: 'Payment schedule is 100%',
-          passed: singlePayment.payment_schedule === '100%',
-          expected: '100%',
-          actual: singlePayment.payment_schedule
-        });
-      }
 
       // Step 6: Verify SendPulse configuration
       if (this.stripeProcessor.sendpulseClient) {
@@ -229,8 +205,7 @@ class SinglePaymentTest {
         assertions,
         testData: {
           dealId,
-          sessionId: sessionResult.sessionId,
-          paymentId: singlePayment?.id
+          sessionId: sessionResult.sessionId
         }
       };
     } catch (error) {

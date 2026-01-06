@@ -206,36 +206,12 @@ class RestPaymentTest {
         testData.sessions.push(restResult.sessionId);
       }
 
-      // Step 7: Verify payment record in database
-      const restPayments = await this.repository.listPayments({
-        dealId: String(dealId),
-        paymentType: 'rest'
+      // Step 7: Note - Payment record is saved to database only after persistSession is called
+      // This happens when webhook checkout.session.completed is processed
+      // Payment record verification is done in payment-processing test scenario
+      this.logger.info('Rest session created - payment record will be saved after webhook processing', {
+        sessionId: restResult.sessionId
       });
-
-      const restPayment = restPayments.find(p => p.session_id === restResult.sessionId);
-
-      assertions.push({
-        name: 'Rest payment record saved to database',
-        passed: !!restPayment,
-        expected: 'payment record exists',
-        actual: restPayment ? 'exists' : 'missing'
-      });
-
-      if (restPayment) {
-        testData.payments.push(restPayment.id);
-        assertions.push({
-          name: 'Payment type is rest',
-          passed: restPayment.payment_type === 'rest',
-          expected: 'rest',
-          actual: restPayment.payment_type
-        });
-        assertions.push({
-          name: 'Payment schedule is 50/50',
-          passed: restPayment.payment_schedule === '50/50',
-          expected: '50/50',
-          actual: restPayment.payment_schedule
-        });
-      }
 
       // Step 8: Verify SendPulse configuration
       if (this.stripeProcessor.sendpulseClient) {
@@ -272,8 +248,7 @@ class RestPaymentTest {
         testData: {
           dealId,
           depositSessionId: depositResult.sessionId,
-          restSessionId: restResult.sessionId,
-          restPaymentId: restPayment?.id
+          restSessionId: restResult.sessionId
         }
       };
     } catch (error) {
