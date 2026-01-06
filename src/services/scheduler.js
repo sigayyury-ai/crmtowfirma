@@ -7,6 +7,7 @@ const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentRem
 const StripeEventAggregationService = require('./stripe/eventAggregationService');
 const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderService');
 const MqlSyncService = require('./analytics/mqlSyncService');
+const StripePaymentTestRunner = require('../../tests/integration/stripe-payment/testRunner');
 const logger = require('../utils/logger');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
@@ -19,6 +20,7 @@ const STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION = '10 * * * *'; // каждый 
 const GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION = '0 8 * * *'; // Ежедневно в 8:00 утра для сканирования календаря
 const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Каждые 5 минут для обработки напоминаний
 const MQL_SYNC_CRON_EXPRESSION = '0 10 * * 1'; // Еженедельно в понедельник в 10:00 утра для обновления MQL аналитики
+const STRIPE_PAYMENT_TESTS_CRON_EXPRESSION = '0 3 * * *'; // Ежедневно в 3:00 ночи для запуска автотестов Stripe платежей
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -59,6 +61,7 @@ class SchedulerService {
     this.googleMeetCalendarScanCronJob = null;
     this.googleMeetReminderProcessCronJob = null;
     this.mqlSyncCronJob = null;
+    this.stripePaymentTestsCronJob = null;
     this.retryTimeout = null;
     
     // Инициализируем MQL Sync Service
@@ -71,6 +74,18 @@ class SchedulerService {
         stack: error.stack 
       });
       this.mqlSyncService = null;
+    }
+    
+    // Инициализируем Stripe Payment Test Runner
+    try {
+      this.stripePaymentTestRunner = options.stripePaymentTestRunner || new StripePaymentTestRunner();
+      logger.info('Stripe Payment Test Runner initialized successfully');
+    } catch (error) {
+      logger.warn('Stripe Payment Test Runner not available', { 
+        error: error.message,
+        stack: error.stack 
+      });
+      this.stripePaymentTestRunner = null;
     }
     this.retryScheduled = false;
     this.nextRetryAt = null;
@@ -297,6 +312,45 @@ class SchedulerService {
       logger.warn('MQL Sync Service not available, skipping cron job setup');
     }
 
+    // Cron для автотестов Stripe платежей (ежедневно в 3:00 ночи)
+    if (this.stripePaymentTestRunner) {
+      logger.info('Configuring daily cron job for Stripe payment auto-tests', {
+        cronExpression: STRIPE_PAYMENT_TESTS_CRON_EXPRESSION,
+        timezone: this.timezone
+      });
+      this.stripePaymentTestsCronJob = cron.schedule(
+        STRIPE_PAYMENT_TESTS_CRON_EXPRESSION,
+        () => {
+          this.runStripePaymentTestsCycle({ trigger: 'cron_stripe_payment_tests' }).catch((error) => {
+            logger.error('Unexpected error in Stripe payment tests cycle:', error);
+          });
+        },
+        {
+          scheduled: true,
+          timezone: this.timezone
+        }
+      );
+      let nextRunTests = 'N/A';
+      if (this.stripePaymentTestsCronJob && typeof this.stripePaymentTestsCronJob.nextDates === 'function') {
+        try {
+          const nextDate = this.stripePaymentTestsCronJob.nextDates();
+          if (nextDate) {
+            const nextRunDate = Array.isArray(nextDate) ? nextDate[0].toDate() : nextDate.toDate();
+            nextRunTests = nextRunDate.toISOString();
+          }
+        } catch (error) {
+          logger.debug('Unable to compute next tests run:', error.message);
+        }
+      }
+      logger.info('Stripe payment tests cron job registered successfully', {
+        cronExpression: STRIPE_PAYMENT_TESTS_CRON_EXPRESSION,
+        timezone: this.timezone,
+        nextRun: nextRunTests
+      });
+    } else {
+      logger.warn('Stripe Payment Test Runner not available, skipping cron job setup');
+    }
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
@@ -328,6 +382,10 @@ class SchedulerService {
     if (this.mqlSyncCronJob) {
       this.mqlSyncCronJob.stop();
       this.mqlSyncCronJob = null;
+    }
+    if (this.stripePaymentTestsCronJob) {
+      this.stripePaymentTestsCronJob.stop();
+      this.stripePaymentTestsCronJob = null;
     }
 
     if (this.retryTimeout) {
@@ -967,6 +1025,44 @@ class SchedulerService {
    * @param {Object} options - Options with trigger
    * @returns {Promise<Object>} - Result of sync
    */
+  async runStripePaymentTestsCycle({ trigger = 'manual' }) {
+    const runId = randomUUID();
+    logger.info('Stripe payment auto-tests cycle started', { trigger, runId });
+
+    try {
+      if (!this.stripePaymentTestRunner) {
+        throw new Error('Stripe Payment Test Runner not available');
+      }
+
+      const testResults = await this.stripePaymentTestRunner.runTestSuite({
+        cleanupAfterRun: true
+      });
+
+      logger.info('Stripe payment auto-tests cycle completed', {
+        trigger,
+        runId,
+        summary: testResults.summary,
+        duration: testResults.duration
+      });
+
+      return {
+        success: testResults.summary.failed === 0,
+        testResults
+      };
+    } catch (error) {
+      logger.error('Stripe payment auto-tests cycle failed', {
+        trigger,
+        runId,
+        error: error.message,
+        stack: error.stack
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   async runMqlSyncCycle({ trigger = 'manual' }) {
     if (!this.mqlSyncService) {
       logger.warn('MQL Sync Service not available, skipping MQL sync');
