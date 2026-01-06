@@ -2914,15 +2914,38 @@ class StripeProcessorService {
       }
       
       // Определяем график платежей, если не передан в context (Phase 0: Code Review Fixes)
-      // ВАЖНО: Приоритет отдаем expected_close_date из API (fullDeal), так как это основное поле
+      // КРИТИЧНО: Схема фиксируется при первом платеже и НЕ МЕНЯЕТСЯ, даже если expected_close_date изменился
       if (!paymentSchedule) {
-        const schedule = PaymentScheduleService.determineScheduleFromDeal(fullDeal);
-        paymentSchedule = schedule.schedule;
-        this.logger.info('Auto-determined payment schedule', {
+        // Сначала проверяем исходную схему из первого оплаченного платежа
+        const SecondPaymentSchedulerService = require('./secondPaymentSchedulerService');
+        const schedulerService = new SecondPaymentSchedulerService();
+        const initialSchedule = await schedulerService.getInitialPaymentSchedule(dealId);
+        
+        if (initialSchedule.schedule === '50/50') {
+          // Используем исходную схему 50/50 из первого платежа
+          paymentSchedule = '50/50';
+          this.logger.info('Using initial payment schedule from first payment (fixed, does not change)', {
+            dealId,
+            initialSchedule: initialSchedule.schedule,
+            firstPaymentDate: initialSchedule.firstPaymentDate?.toISOString(),
+            note: 'Schedule is fixed at first payment and does not change even if expected_close_date changes'
+          });
+        } else {
+          // Если исходной схемы нет, определяем на основе текущего expected_close_date
+          const schedule = PaymentScheduleService.determineScheduleFromDeal(fullDeal);
+          paymentSchedule = schedule.schedule;
+          this.logger.info('Auto-determined payment schedule (no initial schedule found)', {
+            dealId,
+            schedule: paymentSchedule,
+            daysDiff: schedule.daysDiff,
+            secondPaymentDate: schedule.secondPaymentDate
+          });
+        }
+      } else {
+        // Если схема явно передана в context - используем её (для ручных действий)
+        this.logger.info('Using payment schedule from context', {
           dealId,
-          schedule: paymentSchedule,
-          daysDiff: schedule.daysDiff,
-          secondPaymentDate: schedule.secondPaymentDate
+          paymentSchedule
         });
       }
       

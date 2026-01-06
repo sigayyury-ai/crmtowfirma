@@ -164,24 +164,100 @@ class SinglePaymentTest {
         testData.sessions.push(sessionResult.sessionId);
       }
 
-      // Step 5: Note - Payment record is saved to database only after persistSession is called
-      // This happens when webhook checkout.session.completed is processed
-      // Payment record verification is done in payment-processing test scenario
-      this.logger.info('Session created - payment record will be saved after webhook processing', {
+      // Step 5: Simulate payment completion via webhook (for 100% payment flow)
+      this.logger.info('Simulating payment completion via webhook for 100% payment', {
+        dealId,
         sessionId: sessionResult.sessionId
       });
 
-      // Step 6: Verify SendPulse configuration
-      if (this.stripeProcessor.sendpulseClient) {
+      const { getStripeClient } = require('../../../../src/services/stripe/client');
+      const stripe = getStripeClient();
+      const session = await stripe.checkout.sessions.retrieve(sessionResult.sessionId);
+
+      const completedSession = {
+        ...session,
+        payment_status: 'paid',
+        status: 'complete',
+        metadata: {
+          ...session.metadata,
+          deal_id: String(dealId)
+        }
+      };
+
+      // Process the completed payment
+      await this.stripeProcessor.repository.updatePaymentStatus(sessionResult.sessionId, 'paid');
+      await this.stripeProcessor.persistSession(completedSession);
+
+      // Give time for async operations (CRM status update, notifications)
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Step 6: Verify payment status in database
+      const payments = await this.repository.listPayments({
+        dealId: String(dealId)
+      });
+
+      const payment = payments.find(p => p.session_id === sessionResult.sessionId);
+
+      assertions.push({
+        name: 'Payment record exists after webhook processing',
+        passed: !!payment,
+        expected: 'payment record exists',
+        actual: payment ? 'exists' : 'missing'
+      });
+
+      if (payment) {
+        testData.payments.push(payment.id);
         assertions.push({
-          name: 'SendPulse client is configured',
-          passed: true,
-          expected: 'configured',
-          actual: 'configured'
+          name: 'Payment status is paid after webhook',
+          passed: payment.payment_status === 'paid',
+          expected: 'paid',
+          actual: payment.payment_status
+        });
+      }
+
+      // Step 7: Verify CRM status update (should be Camp Waiter / Fully Paid for 100% payment)
+      this.logger.info('Verifying CRM status update after 100% payment', { dealId });
+      const dealAfterPayment = await this.pipedriveClient.getDeal(dealId);
+      if (dealAfterPayment.success && dealAfterPayment.deal) {
+        const currentStageId = dealAfterPayment.deal.stage_id;
+        const CAMP_WAITER_STAGE_ID = 27; // Stage 27 = Camp Waiter / Fully Paid
+        
+        assertions.push({
+          name: 'CRM stage updated to Camp Waiter (Fully Paid) after 100% payment',
+          passed: currentStageId === CAMP_WAITER_STAGE_ID,
+          expected: CAMP_WAITER_STAGE_ID,
+          actual: currentStageId,
+          details: {
+            stageId: currentStageId,
+            status: dealAfterPayment.deal.status,
+            expectedStage: 'Camp Waiter (27)',
+            actualStage: currentStageId === CAMP_WAITER_STAGE_ID ? 'Camp Waiter (27)' : `Other (${currentStageId})`
+          }
         });
       } else {
         assertions.push({
-          name: 'SendPulse client is configured',
+          name: 'CRM stage updated to Camp Waiter (Fully Paid) after 100% payment',
+          passed: false,
+          expected: 'Stage 27 (Camp Waiter)',
+          actual: 'deal not found'
+        });
+      }
+
+      // Step 8: Verify SendPulse notification was sent
+      // Note: We can't directly verify if SendPulse message was sent without mocking,
+      // but we can verify that sendPaymentNotificationForDeal is called during persistSession
+      // For now, we verify SendPulse client is configured
+      if (this.stripeProcessor.sendpulseClient) {
+        assertions.push({
+          name: 'SendPulse client is configured (notification should be sent)',
+          passed: true,
+          expected: 'configured',
+          actual: 'configured',
+          note: 'Notification is sent via sendPaymentNotificationForDeal in pipedriveWebhook.js after session creation, and persistSession triggers CRM status automation'
+        });
+      } else {
+        assertions.push({
+          name: 'SendPulse client is configured (notification should be sent)',
           passed: false,
           expected: 'configured',
           actual: 'not configured (skipping notification test)'

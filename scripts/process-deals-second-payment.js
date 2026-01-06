@@ -18,13 +18,27 @@ const SecondPaymentSchedulerService = require('../src/services/stripe/secondPaym
 const StripeProcessorService = require('../src/services/stripe/processor');
 const readline = require('readline');
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+let rl = null;
+
+function createReadline() {
+  if (!rl || rl.closed) {
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+  }
+  return rl;
+}
 
 function question(query) {
-  return new Promise(resolve => rl.question(query, resolve));
+  const interface = createReadline();
+  return new Promise(resolve => interface.question(query, resolve));
+}
+
+function closeReadline() {
+  if (rl && !rl.closed) {
+    rl.close();
+  }
 }
 
 async function getDealsNeedingSecondPayment() {
@@ -224,7 +238,7 @@ async function main() {
   } catch (error) {
     console.error('\n❌ Ошибка:', error.message);
     console.error(error.stack);
-    rl.close();
+    closeReadline();
     process.exit(1);
   }
 }

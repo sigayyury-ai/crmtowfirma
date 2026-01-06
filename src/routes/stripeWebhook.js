@@ -34,6 +34,21 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   let event;
 
   try {
+    // ВАЖНО: req.body должен быть Buffer для правильной верификации подписи
+    // express.raw() уже преобразует body в Buffer
+    // Проверяем, что body действительно Buffer
+    if (!Buffer.isBuffer(req.body)) {
+      logger.error('Stripe webhook body is not a Buffer', {
+        bodyType: typeof req.body,
+        bodyConstructor: req.body?.constructor?.name,
+        hint: 'express.raw() middleware may not be working correctly. Check middleware order in src/index.js'
+      });
+      return res.status(400).json({ 
+        error: 'Invalid request body format',
+        hint: 'Request body must be raw Buffer for signature verification'
+      });
+    }
+
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
     // Логируем детали для отладки проблем с верификацией
@@ -43,7 +58,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       hasSignature: !!sig,
       signatureLength: sig?.length || 0,
       bodyLength: req.body?.length || 0,
-      hint: 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard'
+      bodyType: req.body?.constructor?.name || typeof req.body,
+      hint: 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode)'
     });
     // Возвращаем 401 для неавторизованных запросов (неправильная подпись)
     return res.status(401).json({ error: `Webhook signature verification failed: ${err.message}` });

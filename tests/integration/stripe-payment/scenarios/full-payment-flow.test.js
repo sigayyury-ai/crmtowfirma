@@ -259,16 +259,19 @@ class FullPaymentFlowTest {
       if (dealAfterFirstPayment.success && dealAfterFirstPayment.deal) {
         const currentStageId = dealAfterFirstPayment.deal.stage_id;
         const currentStatus = dealAfterFirstPayment.deal.status;
+        const SECOND_PAYMENT_STAGE_ID = 32; // Stage 32 = Second Payment (waiting for second payment)
 
         assertions.push({
-          name: 'Deal status/stage updated after first payment',
-          passed: true, // Статус может быть разным в зависимости от настроек CRM
-          expected: 'status/stage updated',
-          actual: `stage_id: ${currentStageId}, status: ${currentStatus}`,
+          name: 'CRM stage updated to Second Payment after first payment (50/50 schedule)',
+          passed: currentStageId === SECOND_PAYMENT_STAGE_ID,
+          expected: SECOND_PAYMENT_STAGE_ID,
+          actual: currentStageId,
           details: {
             stageId: currentStageId,
             status: currentStatus,
-            note: 'CRM status automation is handled by triggerCrmStatusAutomation'
+            expectedStage: 'Second Payment (32)',
+            actualStage: currentStageId === SECOND_PAYMENT_STAGE_ID ? 'Second Payment (32)' : `Other (${currentStageId})`,
+            note: 'CRM status automation is handled by triggerCrmStatusAutomation in persistSession'
           }
         });
       }
@@ -489,17 +492,27 @@ class FullPaymentFlowTest {
       if (dealAfterSecondPayment.success && dealAfterSecondPayment.deal) {
         const finalStageId = dealAfterSecondPayment.deal.stage_id;
         const finalStatus = dealAfterSecondPayment.deal.status;
+        const CAMP_WAITER_STAGE_ID = 27; // Stage 27 = Camp Waiter / Fully Paid
 
         assertions.push({
-          name: 'Deal status/stage updated after second payment',
-          passed: true, // Статус может быть разным в зависимости от настроек CRM
-          expected: 'status/stage updated',
-          actual: `stage_id: ${finalStageId}, status: ${finalStatus}`,
+          name: 'CRM stage updated to Camp Waiter (Fully Paid) after second payment',
+          passed: finalStageId === CAMP_WAITER_STAGE_ID,
+          expected: CAMP_WAITER_STAGE_ID,
+          actual: finalStageId,
           details: {
             stageId: finalStageId,
             status: finalStatus,
-            note: 'CRM status automation is handled by triggerCrmStatusAutomation'
+            expectedStage: 'Camp Waiter (27)',
+            actualStage: finalStageId === CAMP_WAITER_STAGE_ID ? 'Camp Waiter (27)' : `Other (${finalStageId})`,
+            note: 'CRM status automation is handled by triggerCrmStatusAutomation in persistSession'
           }
+        });
+      } else {
+        assertions.push({
+          name: 'CRM stage updated to Camp Waiter (Fully Paid) after second payment',
+          passed: false,
+          expected: 'Stage 27 (Camp Waiter)',
+          actual: 'deal not found'
         });
       }
 

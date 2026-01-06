@@ -1107,8 +1107,40 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           });
           
           // Определяем график платежей используя PaymentScheduleService (Phase 0: Code Review Fixes)
-          const schedule = PaymentScheduleService.determineSchedule(closeDate, new Date(), { dealId });
-          const paymentSchedule = schedule.schedule;
+          // КРИТИЧНО: Схема фиксируется при первом платеже и НЕ МЕНЯЕТСЯ
+          // Сначала проверяем исходную схему из первого оплаченного платежа
+          let paymentSchedule = null;
+          let schedule = null;
+          
+          try {
+            const SecondPaymentSchedulerService = require('../services/stripe/secondPaymentSchedulerService');
+            const schedulerService = new SecondPaymentSchedulerService();
+            const initialSchedule = await schedulerService.getInitialPaymentSchedule(dealId);
+            
+            if (initialSchedule.schedule === '50/50') {
+              // Используем исходную схему 50/50 из первого платежа
+              paymentSchedule = '50/50';
+              schedule = {
+                schedule: '50/50',
+                daysDiff: null, // Не пересчитываем
+                secondPaymentDate: closeDate ? (() => {
+                  const expectedCloseDate = new Date(closeDate);
+                  const secondPaymentDate = new Date(expectedCloseDate);
+                  secondPaymentDate.setMonth(secondPaymentDate.getMonth() - 1);
+                  return secondPaymentDate;
+                })() : null
+              };
+              logger.info(`📅 Используем исходную схему 50/50 из первого платежа | Deal: ${dealId} | Схема фиксирована и не меняется`);
+            } else {
+              // Если исходной схемы нет, определяем на основе текущего expected_close_date
+              schedule = PaymentScheduleService.determineSchedule(closeDate, new Date(), { dealId });
+              paymentSchedule = schedule.schedule;
+            }
+          } catch (error) {
+            logger.warn(`Ошибка при получении исходной схемы, используем текущую | Deal: ${dealId} | Ошибка: ${error.message}`);
+            schedule = PaymentScheduleService.determineSchedule(closeDate, new Date(), { dealId });
+            paymentSchedule = schedule.schedule;
+          }
           
           logger.info(`📅 Расчет количества платежей | Deal: ${dealId} | График: ${paymentSchedule} | Дней до закрытия: ${schedule.daysDiff || 'N/A'}`);
           

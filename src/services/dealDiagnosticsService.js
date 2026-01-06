@@ -1351,21 +1351,51 @@ class DealDiagnosticsService {
     const invoiceType = dealInfo.invoiceType;
     const isStripeInvoiceType = invoiceType === '75' || invoiceType === 'Stripe';
 
+    // КРИТИЧНО: Проверяем, нужен ли второй платеж по исходной схеме 50/50
+    // Используем исходную схему из первого платежа, а не текущую
+    const initialSchedule = this.determineInitialPaymentSchedule(payments);
+    const hasPaidDeposit = payments.stripe.some(p => 
+      (p.paymentType === 'deposit' || p.paymentType === 'first') && 
+      p.paymentStatus === 'paid'
+    );
+    const hasSecondPayment = payments.stripe.some(p => 
+      (p.paymentType === 'rest' || p.paymentType === 'second' || p.paymentType === 'final')
+    );
+    const needsSecondPayment = initialSchedule.schedule === '50/50' && 
+                               hasPaidDeposit && 
+                               !hasSecondPayment;
+
     // Действие: Создать Stripe сессию
     if (isStripeInvoiceType || !hasAnyPayments) {
       const unpaidStripe = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
       const hasUnpaidSessions = unpaidStripe.length > 0;
       
-      // Можно создать, если нет платежей или есть неоплаченные сессии
-      if (!hasAnyPayments || hasUnpaidSessions) {
+      // Можно создать, если:
+      // 1. Нет платежей
+      // 2. Есть неоплаченные сессии
+      // 3. Нужен второй платеж по исходной схеме 50/50 (даже если текущая схема 100%)
+      if (!hasAnyPayments || hasUnpaidSessions || needsSecondPayment) {
+        let reason = !hasAnyPayments ? 'Нет платежей' : 
+                     hasUnpaidSessions ? 'Есть неоплаченные сессии' : 
+                     'Нужен второй платеж по исходной схеме 50/50';
+        
         actions.push({
           id: 'create-stripe-session',
-          name: 'Создать Stripe сессию',
-          description: 'Создать новую Stripe Checkout Session для оплаты',
+          name: needsSecondPayment ? 'Создать второй платеж (rest, 50%)' : 'Создать Stripe сессию',
+          description: needsSecondPayment 
+            ? 'Создать второй платеж по исходной схеме 50/50 (клиент уже оплатил deposit)'
+            : 'Создать новую Stripe Checkout Session для оплаты',
           endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/create-stripe-session`,
           method: 'POST',
           available: true,
-          reason: !hasAnyPayments ? 'Нет платежей' : 'Есть неоплаченные сессии'
+          reason: reason,
+          metadata: needsSecondPayment ? {
+            paymentType: 'rest',
+            paymentSchedule: '50/50',
+            paymentIndex: 2,
+            initialSchedule: initialSchedule.schedule,
+            note: 'Используется исходная схема 50/50 из первого платежа, даже если текущая схема 100%'
+          } : null
         });
       }
     }

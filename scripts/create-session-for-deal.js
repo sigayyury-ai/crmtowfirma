@@ -65,7 +65,13 @@ async function createSessionForDeal(dealId) {
       (p.payment_type === 'single' || (!p.payment_type && p.payment_status === 'paid'))
     );
 
-    // Определяем ТЕКУЩИЙ график платежей
+    // ВАЖНО: Используем исходную схему из первого оплаченного платежа, а не пересчитываем
+    // Это исправляет проблему, когда expected_close_date изменился, но клиент уже оплатил deposit по схеме 50/50
+    const SecondPaymentSchedulerService = require('../src/services/stripe/secondPaymentSchedulerService');
+    const schedulerService = new SecondPaymentSchedulerService();
+    const initialSchedule = await schedulerService.getInitialPaymentSchedule(dealId);
+    
+    // Определяем ТЕКУЩИЙ график платежей (для справки)
     let currentPaymentSchedule = '100%';
     let secondPaymentDate = null;
     const closeDate = deal.expected_close_date || deal.close_date;
@@ -82,7 +88,20 @@ async function createSessionForDeal(dealId) {
       }
     }
 
-    console.log(`   Текущий график платежей: ${currentPaymentSchedule}`);
+    // ВАЖНО: Если есть исходная схема из первого платежа - используем её
+    // Это гарантирует, что если клиент оплатил deposit по схеме 50/50, то второй платеж будет по той же схеме
+    let effectivePaymentSchedule = currentPaymentSchedule;
+    if (initialSchedule.schedule === '50/50') {
+      effectivePaymentSchedule = '50/50';
+      console.log(`   📊 Исходная схема из первого платежа: ${initialSchedule.schedule}`);
+      console.log(`   📊 Текущая схема (по expected_close_date): ${currentPaymentSchedule}`);
+      console.log(`   ✅ Используем исходную схему: ${effectivePaymentSchedule} (клиент уже оплатил deposit по этой схеме)`);
+    } else {
+      console.log(`   📊 Текущий график платежей: ${currentPaymentSchedule}`);
+      if (initialSchedule.schedule) {
+        console.log(`   📊 Исходная схема из первого платежа: ${initialSchedule.schedule}`);
+      }
+    }
     if (depositPayments.length > 0) {
       console.log(`   ⚠️  Найден оплаченный депозит (${depositPayments.length} шт.)`);
     }
@@ -95,12 +114,12 @@ async function createSessionForDeal(dealId) {
 
     // Определяем, что нужно создать
     let paymentType = null;
-    let paymentSchedule = currentPaymentSchedule;
+    let paymentSchedule = effectivePaymentSchedule; // Используем эффективную схему (исходную, если есть)
     let customAmount = null;
     let paymentIndex = null;
 
-    // Если график 50/50
-    if (currentPaymentSchedule === '50/50') {
+    // Если график 50/50 (используем эффективную схему)
+    if (effectivePaymentSchedule === '50/50') {
       if (depositPayments.length === 0) {
         paymentType = 'deposit';
         paymentIndex = 1;
