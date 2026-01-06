@@ -640,8 +640,26 @@ class SecondPaymentSchedulerService {
           } else {
             // Если нет в raw_payload, получаем из Stripe API
             try {
-              const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
-              sessionUrl = stripeSession.url || null;
+              // Проверяем режим Stripe перед запросом
+              const { getStripeMode } = require('../stripe/client');
+              const stripeMode = getStripeMode();
+              const sessionId = restPayment.session_id;
+              const isTestSession = sessionId.startsWith('cs_test_');
+              const isLiveSession = sessionId.startsWith('cs_live_');
+              
+              // Если режим не совпадает с сессией - пропускаем
+              if ((stripeMode === 'live' && isTestSession) || (stripeMode === 'test' && isLiveSession)) {
+                this.logger.debug('Skipping session URL retrieval - session from different Stripe mode', {
+                  dealId: deal.id,
+                  sessionId,
+                  stripeMode,
+                  sessionType: isTestSession ? 'test' : 'live'
+                });
+                sessionUrl = null;
+              } else {
+                const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
+                sessionUrl = stripeSession.url || null;
+              }
             } catch (error) {
               this.logger.warn('Failed to retrieve session URL from Stripe', {
                 dealId: deal.id,
@@ -925,6 +943,24 @@ class SecondPaymentSchedulerService {
             
             for (const activePayment of activePayments) {
               try {
+                // Проверяем режим Stripe перед запросом
+                const { getStripeMode } = require('../stripe/client');
+                const stripeMode = getStripeMode();
+                const sessionId = activePayment.session_id;
+                const isTestSession = sessionId.startsWith('cs_test_');
+                const isLiveSession = sessionId.startsWith('cs_live_');
+                
+                // Если режим не совпадает с сессией - пропускаем
+                if ((stripeMode === 'live' && isTestSession) || (stripeMode === 'test' && isLiveSession)) {
+                  this.logger.debug('Skipping session status check - session from different Stripe mode', {
+                    dealId,
+                    sessionId,
+                    stripeMode,
+                    sessionType: isTestSession ? 'test' : 'live'
+                  });
+                  continue;
+                }
+                
                 const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activePayment.session_id);
                 // Если сессия активна (open) или оплачена (complete) - это реальная активная сессия
                 if (stripeSession.status === 'open' || stripeSession.payment_status === 'paid') {

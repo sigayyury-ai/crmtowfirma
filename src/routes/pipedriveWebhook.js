@@ -1164,6 +1164,37 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           const checkSessionStatus = async (payment) => {
             if (!payment || !payment.session_id) return { exists: false, paid: false, active: false };
             
+            // Проверяем режим Stripe и соответствие сессии режиму
+            const { getStripeMode } = require('../services/stripe/client');
+            const stripeMode = getStripeMode();
+            const sessionId = payment.session_id;
+            const isTestSession = sessionId.startsWith('cs_test_');
+            const isLiveSession = sessionId.startsWith('cs_live_');
+            
+            // Если режим live, а сессия test - пропускаем проверку (сессия недействительна)
+            if (stripeMode === 'live' && isTestSession) {
+              logger.debug(`⚠️  Пропуск проверки test сессии в live режиме | Deal: ${dealId} | Session ID: ${sessionId}`, {
+                dealId,
+                sessionId,
+                stripeMode,
+                sessionType: 'test',
+                reason: 'Session from different Stripe mode'
+              });
+              return { exists: false, paid: false, active: false, invalidMode: true, error: 'Session from test mode, current mode is live' };
+            }
+            
+            // Если режим test, а сессия live - пропускаем проверку (сессия недействительна)
+            if (stripeMode === 'test' && isLiveSession) {
+              logger.debug(`⚠️  Пропуск проверки live сессии в test режиме | Deal: ${dealId} | Session ID: ${sessionId}`, {
+                dealId,
+                sessionId,
+                stripeMode,
+                sessionType: 'live',
+                reason: 'Session from different Stripe mode'
+              });
+              return { exists: false, paid: false, active: false, invalidMode: true, error: 'Session from live mode, current mode is test' };
+            }
+            
             try {
               // Получаем актуальный статус сессии из Stripe
               const session = await stripeProcessor.stripe.checkout.sessions.retrieve(payment.session_id);
