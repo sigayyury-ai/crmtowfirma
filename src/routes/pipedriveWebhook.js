@@ -2548,12 +2548,12 @@ ${bankAccount?.number ? `Счет: ${bankAccount.number}` : ''}
           } else if (!previousProductNormalized && currentProductNormalized) {
             // Проформы еще нет, но продукт есть - сохраняем в кэш для следующего раза
             productChangeCache.set(dealId, {
-              productId: currentProductId,
+              productId: currentProductIdInDb,
               productName: currentProductName,
               normalizedName: currentProductNormalized,
               timestamp: Date.now()
             });
-            logger.debug(`💾 Продукт сохранен в кэш (проформы еще нет) | Deal: ${dealId} | Product: ${currentProductName || currentProductId} | Normalized: "${currentProductNormalized}"`);
+            logger.debug(`💾 Продукт сохранен в кэш (проформы еще нет) | Deal: ${dealId} | Product: ${currentProductName || currentProductIdInDb} | Normalized: "${currentProductNormalized}"`);
           } else if (!productChanged && previousProductNormalized && currentProductNormalized) {
             // Продукт не изменился - логируем для отладки
             logger.debug(`✅ Продукт не изменился | Deal: ${dealId} | Normalized: "${currentProductNormalized}"`);
