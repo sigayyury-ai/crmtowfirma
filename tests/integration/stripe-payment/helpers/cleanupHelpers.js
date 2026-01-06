@@ -128,9 +128,69 @@ class CleanupHelpers {
   }
 
   /**
+   * Очистить тестовые задачи из Pipedrive
+   * 
+   * @param {Array<string>} dealIds - Массив ID сделок, для которых нужно удалить задачи
+   * @returns {Promise<Object>} - Результат очистки
+   */
+  async cleanupTestTasks(dealIds) {
+    if (!dealIds || dealIds.length === 0) {
+      return { success: true, deleted: 0 };
+    }
+
+    this.logger.info('Cleaning up test tasks', { dealCount: dealIds.length });
+
+    let deleted = 0;
+    const errors = [];
+
+    // Get all tasks for test deals
+    for (const dealId of dealIds) {
+      try {
+        const activitiesResult = await this.pipedriveClient.getDealActivities(dealId, 'task');
+        if (activitiesResult.success && activitiesResult.activities) {
+          for (const task of activitiesResult.activities) {
+            try {
+              // Check if task subject or note contains test prefix
+              const subject = task.subject || '';
+              const note = task.note || task.public_description || '';
+              if (subject.includes(this.testPrefix) || note.includes(this.testPrefix)) {
+                const deleteResult = await this.pipedriveClient.deleteActivity(task.id);
+                if (deleteResult.success) {
+                  deleted++;
+                } else {
+                  errors.push({ taskId: task.id, dealId, error: deleteResult.error });
+                }
+              }
+            } catch (error) {
+              this.logger.warn('Failed to delete test task', {
+                taskId: task.id,
+                dealId,
+                error: error.message
+              });
+              errors.push({ taskId: task.id, dealId, error: error.message });
+            }
+          }
+        }
+      } catch (error) {
+        this.logger.warn('Failed to get tasks for deal', {
+          dealId,
+          error: error.message
+        });
+        errors.push({ dealId, error: error.message });
+      }
+    }
+
+    return {
+      success: errors.length === 0,
+      deleted,
+      errors: errors.length > 0 ? errors : null
+    };
+  }
+
+  /**
    * Полная очистка всех тестовых данных для конкретного тестового запуска
    * 
-   * @param {Object} testData - Данные теста (deals, payments, sessions)
+   * @param {Object} testData - Данные теста (deals, payments, sessions, tasks)
    * @returns {Promise<Object>} - Результат полной очистки
    */
   async cleanupAllTestData(testData = {}) {
@@ -142,13 +202,18 @@ class CleanupHelpers {
       sessions: sessions.length
     });
 
+    // Delete tasks first (before deals, as tasks are linked to deals)
+    const tasksResult = await this.cleanupTestTasks(deals);
+
     const results = {
+      tasks: tasksResult,
       deals: await this.cleanupTestDeals(deals),
       payments: await this.cleanupTestPayments(payments),
       sessions: await this.cleanupTestStripeSessions(sessions)
     };
 
-    const allSuccess = results.deals.success && 
+    const allSuccess = results.tasks.success &&
+                       results.deals.success && 
                        results.payments.success && 
                        results.sessions.success;
 
