@@ -1861,16 +1861,13 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     }
 
     // ========== Обработка 4: Изменение продукта в сделке ==========
-    // Проверяем изменение продукта только если есть previousDeal (реальное изменение)
-    // Или если это workflow automation с изменением стадии
-    // Это оптимизирует производительность - не проверяем продукт при каждой смене статуса
-    const shouldCheckProductChange = previousDeal !== null || isWorkflowAutomation;
-    
-    if (shouldCheckProductChange) {
-      try {
-        const pipedriveClient = resolvePipedriveClient();
-        if (pipedriveClient && dealId) {
-          logger.debug(`🔍 Проверка изменения продукта | Deal: ${dealId} | Reason: ${previousDeal ? 'previousDeal exists' : 'workflow automation'}`);
+    // Проверяем изменение продукта для всех webhook событий
+    // Это необходимо, чтобы отслеживать изменения продукта и сохранять в кэш, когда проформы еще нет
+    // Ошибка была исправлена: использовалась неопределенная переменная currentProductId вместо currentProductIdInDb
+    try {
+      const pipedriveClient = resolvePipedriveClient();
+      if (pipedriveClient && dealId) {
+        logger.debug(`🔍 Проверка изменения продукта | Deal: ${dealId}`);
         
         // Получаем текущие продукты сделки
         const currentProductsResult = await pipedriveClient.getDealProducts(dealId);
