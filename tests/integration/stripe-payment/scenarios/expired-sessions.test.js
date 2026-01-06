@@ -212,8 +212,7 @@ class ExpiredSessionsTest {
         assertions,
         testData: {
           dealId,
-          sessionId,
-          paymentId: payment?.id
+          sessionId
         }
       };
     } catch (error) {

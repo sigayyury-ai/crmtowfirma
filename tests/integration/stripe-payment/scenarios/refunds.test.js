@@ -145,8 +145,8 @@ class RefundsTest {
       this.logger.info('Payment session created', { sessionId });
 
       // Step 3: Verify refund notification method exists
-      // In real scenario, refunds are processed via sendRefundNotification
-      const hasRefundMethod = typeof this.stripeProcessor.sendRefundNotification === 'function';
+      // In real scenario, refunds are processed via sendRefundNotificationForDeal
+      const hasRefundMethod = typeof this.stripeProcessor.sendRefundNotificationForDeal === 'function';
 
       assertions.push({
         name: 'Refund notification method exists',
