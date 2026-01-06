@@ -1788,21 +1788,6 @@ class PipedriveClient {
     }
   }
 
-      throw new Error('Failed to update activity');
-    } catch (error) {
-      logger.error('Error updating activity:', {
-        activityId,
-        error: error.message,
-        details: error.response?.data || null
-      });
-      return {
-        success: false,
-        error: error.message,
-        details: error.response?.data || null
-      };
-    }
-  }
-
   async deleteNote(noteId) {
     if (!noteId) {
       throw new Error('noteId is required to delete note');
