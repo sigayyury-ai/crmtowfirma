@@ -63,14 +63,15 @@ class StripePaymentTestRunner {
 
     try {
       // Test scenarios (will be implemented in separate files)
-      const testScenarios = [
-        { name: 'deposit-payment', file: './scenarios/deposit-payment.test.js' },
-        { name: 'rest-payment', file: './scenarios/rest-payment.test.js' },
-        { name: 'single-payment', file: './scenarios/single-payment.test.js' },
-        { name: 'payment-processing', file: './scenarios/payment-processing.test.js' },
-        { name: 'expired-sessions', file: './scenarios/expired-sessions.test.js' },
-        { name: 'refunds', file: './scenarios/refunds.test.js' }
-      ];
+            const testScenarios = [
+              { name: 'deposit-payment', file: './scenarios/deposit-payment.test.js' },
+              { name: 'rest-payment', file: './scenarios/rest-payment.test.js' },
+              { name: 'single-payment', file: './scenarios/single-payment.test.js' },
+              { name: 'payment-processing', file: './scenarios/payment-processing.test.js' },
+              { name: 'expired-sessions', file: './scenarios/expired-sessions.test.js' },
+              { name: 'refunds', file: './scenarios/refunds.test.js' },
+              { name: 'full-payment-flow', file: './scenarios/full-payment-flow.test.js' }
+            ];
 
       // Run each test scenario
       for (const scenario of testScenarios) {
