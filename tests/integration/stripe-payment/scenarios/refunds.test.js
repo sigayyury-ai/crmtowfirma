@@ -172,23 +172,12 @@ class RefundsTest {
         });
       }
 
-      // Step 5: Verify payment record exists (for refund tracking)
-      const payments = await this.repository.listPayments({
-        dealId: String(dealId)
+      // Step 5: Note - Payment record is saved to database only after persistSession is called
+      // This happens when webhook checkout.session.completed is processed
+      // For refunds, payment record verification is done in payment-processing test scenario
+      this.logger.info('Session created - payment record will be saved after webhook processing', {
+        sessionId
       });
-
-      const payment = payments.find(p => p.session_id === sessionId);
-
-      assertions.push({
-        name: 'Payment record exists for refund tracking',
-        passed: !!payment,
-        expected: 'payment record exists',
-        actual: payment ? 'exists' : 'missing'
-      });
-
-      if (payment) {
-        testData.payments.push(payment.id);
-      }
 
       // Note: Actual refund creation and processing requires:
       // - Completed payment (real payment in Stripe)
@@ -214,8 +203,7 @@ class RefundsTest {
         assertions,
         testData: {
           dealId,
-          sessionId,
-          paymentId: payment?.id
+          sessionId
         },
         note: 'Full refund test requires completed payment - testing infrastructure only'
       };
