@@ -281,8 +281,8 @@ class PaymentSessionCreator {
       try {
         const products = await this.stripe.products.list({ limit: 100 });
         const matchingProduct = products.data.find(p => 
-          p.metadata?.crm_product_id === String(crmProductId) &&
-          p.metadata?.mode === this.mode
+          p.metadata?.crm_product_id === String(crmProductId)
+          // Убрали проверку mode, так как работаем только в live режиме
         );
         if (matchingProduct) {
           stripeProductId = matchingProduct.id;
@@ -318,8 +318,8 @@ class PaymentSessionCreator {
         metadata: {
           crm_product_id: crmProductId ? String(crmProductId) : null,
           deal_id: String(dealId),
-          created_by: 'payment_session_creator',
-          mode: this.mode
+          created_by: 'payment_session_creator'
+          // Убрали mode из metadata, так как работаем только в live режиме
         }
       });
       stripeProductId = stripeProduct.id;

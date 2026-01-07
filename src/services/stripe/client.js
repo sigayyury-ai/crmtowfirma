@@ -21,11 +21,8 @@ function resolveStripeApiKey(options = {}) {
     return options.apiKey;
   }
 
-  const mode = getStripeMode();
-
-  // Всегда используем STRIPE_EVENTS_API_KEY (live ключ)
-  // Test режим не используется
-  if (options.type === 'events' || mode === 'live') {
+  // Для events используем STRIPE_EVENTS_API_KEY (отдельный кабинет COMOON Events)
+  if (options.type === 'events') {
     const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
     if (!eventsKey) {
       throw new Error('STRIPE_EVENTS_API_KEY is not set. Add it to .env');
@@ -39,7 +36,7 @@ function resolveStripeApiKey(options = {}) {
     return eventsKey;
   }
 
-  // Fallback на STRIPE_API_KEY если STRIPE_EVENTS_API_KEY не задан
+  // Для обычных платежей используем STRIPE_API_KEY (основной кабинет)
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
