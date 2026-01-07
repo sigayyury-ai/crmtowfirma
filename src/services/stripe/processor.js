@@ -4794,14 +4794,25 @@ class StripeProcessorService {
         totalAmount += amount;
         totalAmountPln += amountPln;
 
-        // Get refund receipt URL if available (for completed refunds)
-        let refundUrl = null;
-        if (refund.receipt_url) {
-          refundUrl = refund.receipt_url;
-        } else {
-          // Build Stripe Dashboard link for refund tracking
-          refundUrl = `https://dashboard.stripe.com/refunds/${refund.id}`;
+        // Get refund receipt URL for customer (public link, not dashboard)
+        // receipt_url is the customer-facing link to track their refund
+        let refundUrl = refund.receipt_url || null;
+        
+        // If receipt_url is not available, try to retrieve it from Stripe
+        if (!refundUrl && refund.id) {
+          try {
+            const retrievedRefund = await this.stripe.refunds.retrieve(refund.id);
+            refundUrl = retrievedRefund.receipt_url || null;
+          } catch (error) {
+            this.logger.warn('Failed to retrieve refund receipt URL from Stripe', {
+              refundId: refund.id,
+              error: error.message
+            });
+          }
         }
+        
+        // Only add link if we have a customer-facing receipt URL
+        // Don't use dashboard links for customers
 
         if (refundedPayments.length > 1) {
           message += `${index + 1}. Возврат: ${formatAmount(amount)} ${currency}`;
@@ -4811,12 +4822,15 @@ class StripeProcessorService {
           message += `\n`;
         }
 
-        refundLinks.push({
-          amount,
-          currency,
-          url: refundUrl,
-          refundId: refund.id
-        });
+        // Only add link if we have a customer-facing receipt URL
+        if (refundUrl) {
+          refundLinks.push({
+            amount,
+            currency,
+            url: refundUrl,
+            refundId: refund.id
+          });
+        }
       });
 
       if (refundedPayments.length === 1) {
@@ -4837,11 +4851,12 @@ class StripeProcessorService {
       message += `*Сроки возврата:*\n`;
       message += `Средства поступят на ваш счет в течение *5-10 рабочих дней* (в зависимости от банка).\n\n`;
 
-      // Add tracking links
-      if (refundLinks.length > 0) {
+      // Add tracking links (only if we have customer-facing receipt URLs)
+      const validRefundLinks = refundLinks.filter(link => link.url);
+      if (validRefundLinks.length > 0) {
         message += `*Отслеживание возврата:*\n`;
-        refundLinks.forEach((link, index) => {
-          if (refundLinks.length > 1) {
+        validRefundLinks.forEach((link, index) => {
+          if (validRefundLinks.length > 1) {
             message += `${index + 1}. `;
           }
           message += `[Ссылка на возврат](${link.url})\n`;
