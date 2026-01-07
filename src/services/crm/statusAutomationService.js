@@ -332,17 +332,35 @@ class CrmStatusAutomationService {
   }
 
   async syncDealStage(dealId, options = {}) {
+    this.logger.info('syncDealStage called', {
+      dealId,
+      options,
+      timestamp: new Date().toISOString()
+    });
+    
     const normalizedDealId = String(dealId).trim();
     if (!normalizedDealId) {
       throw new Error('dealId is required to sync CRM status');
     }
 
+    this.logger.info('Loading deal from Pipedrive', { dealId: normalizedDealId });
     const dealResult = await this.pipedriveClient.getDeal(normalizedDealId);
     if (!dealResult.success || !dealResult.deal) {
       throw new Error(`Failed to load Pipedrive deal #${normalizedDealId}`);
     }
 
+    this.logger.info('Building deal snapshot', { dealId: normalizedDealId });
     const snapshot = await this.buildDealSnapshot(normalizedDealId, dealResult.deal);
+    this.logger.info('Deal snapshot built', {
+      dealId: normalizedDealId,
+      snapshot: {
+        totalPaidPln: snapshot.totals.totalPaidPln,
+        expectedAmountPln: snapshot.totals.expectedAmountPln,
+        scheduleType: snapshot.scheduleType,
+        paymentsCount: snapshot.paymentsCount,
+        proformasCount: snapshot.proformas.length
+      }
+    });
     
     // Проверяем, есть ли платежи (Stripe или проформы)
     // Для Stripe-платежей может не быть проформ, но платежи есть
