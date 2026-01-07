@@ -206,7 +206,10 @@ class CrmStatusAutomationService {
     }
 
     const proformas = await this.loadProformas(dealId);
-    if (proformas.length === 0) {
+    const stripePayments = await this.loadStripePayments(dealId);
+    
+    // Если нет проформ, но есть Stripe платежи, все равно обрабатываем
+    if (proformas.length === 0 && stripePayments.length === 0) {
       return {
         dealId,
         proformas: [],
@@ -226,8 +229,6 @@ class CrmStatusAutomationService {
         scheduleType: SCHEDULE_PROFILES['100%'].key
       };
     }
-
-    const stripePayments = await this.loadStripePayments(dealId);
     const proformaTotals = this.sumProformaTotals(proformas);
     const dealCurrency = deal?.currency || null;
     const stripeTotals = await this.sumStripeTotals(stripePayments, dealCurrency);
@@ -350,18 +351,22 @@ class CrmStatusAutomationService {
     }
     
     // Если есть Stripe платежи, но нет проформ, используем сумму сделки как expectedAmount
-    if (snapshot.proformas.length === 0 && hasPayments && !hasExpectedAmount) {
+    if (snapshot.proformas.length === 0 && hasPayments && snapshot.totals.expectedAmountPln <= 0) {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
         // Конвертируем в PLN если нужно
-        const expectedAmountPln = dealCurrency === 'PLN' ? dealValue : await convertToPln(dealValue, dealCurrency);
+        const expectedAmountPln = dealCurrency === 'PLN' 
+          ? dealValue 
+          : await convertToPln(dealValue, dealCurrency);
         snapshot.totals.expectedAmountPln = expectedAmountPln;
         this.logger.info('Using deal value as expected amount for Stripe-only payment', {
           dealId: normalizedDealId,
           dealValue,
           dealCurrency,
-          expectedAmountPln
+          expectedAmountPln,
+          stripePaymentsCount: snapshot.paymentsCount.stripe,
+          totalPaidPln: snapshot.totals.totalPaidPln
         });
       }
     }
