@@ -1241,8 +1241,9 @@ class StripeProcessorService {
       }
     }
 
-    // Only update deal stage if this is a new payment (not a re-processing) and not refunded
-    if (dealId && isNewPayment && !isRefunded) {
+    // Update deal stage if payment is paid and not refunded
+    // Check isNewPayment to avoid duplicate updates, but also check if stage needs update for existing payments
+    if (dealId && session.payment_status === 'paid' && !isRefunded) {
       const paymentType = session.metadata?.payment_type || 'payment';
       const isFinal = session.metadata?.is_final === 'true' || paymentType === 'final';
       // 'single' payment type means it's the only payment (should go to Camp Waiter)
