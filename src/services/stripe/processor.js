@@ -5638,6 +5638,124 @@ class StripeProcessorService {
   }
 
   /**
+   * Отправка уведомления об успешной оплате клиенту
+   * @param {number} dealId - Deal ID
+   * @param {Object} session - Stripe Checkout Session object
+   * @returns {Promise<Object>} - Result of sending notification
+   */
+  async sendPaymentSuccessNotificationForDeal(dealId, session) {
+    if (!this.sendpulseClient) {
+      this.logger.warn('SendPulse client not initialized, skipping payment success notification', { dealId });
+      return { success: false, error: 'SendPulse client not initialized' };
+    }
+
+    try {
+      // Get deal with person data
+      const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
+      
+      if (!fullDealResult.success || !fullDealResult.person) {
+        this.logger.warn('Failed to get deal/person data for payment success notification', { dealId });
+        return { success: false, error: 'Failed to get deal/person data' };
+      }
+
+      const person = fullDealResult.person;
+      const sendpulseId = this.getSendpulseId(person);
+
+      if (!sendpulseId) {
+        this.logger.info('SendPulse ID not found for person, skipping payment success notification', {
+          dealId,
+          personId: person.id
+        });
+        return { success: false, error: 'SendPulse ID not found' };
+      }
+
+      const currency = normaliseCurrency(session.currency || 'PLN');
+      const amount = fromMinorUnit(session.amount_total || 0, currency);
+      const formatAmount = (amt) => parseFloat(amt).toFixed(2);
+
+      // Build success notification message
+      let message = `✅ *Оплата успешно получена*\n\n`;
+      message += `Спасибо за оплату!\n\n`;
+      message += `Сумма: ${formatAmount(amount)} ${currency.toUpperCase()}\n`;
+      message += `Дата оплаты: ${new Date().toLocaleDateString('ru-RU', { 
+        day: '2-digit', 
+        month: '2-digit', 
+        year: 'numeric',
+        timeZone: 'Europe/Warsaw'
+      })}\n\n`;
+
+      // Add invoice/receipt link if available
+      if (session.invoice) {
+        try {
+          const invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice.id;
+          const invoice = await this.stripe.invoices.retrieve(invoiceId);
+          if (invoice.hosted_invoice_url) {
+            message += `[Ссылка на счет](${invoice.hosted_invoice_url})\n\n`;
+          }
+        } catch (error) {
+          this.logger.warn('Failed to retrieve invoice URL for success notification', {
+            dealId,
+            invoiceId: session.invoice,
+            error: error.message
+          });
+        }
+      }
+
+      // Add payment schedule info if applicable
+      const paymentSchedule = session.metadata?.payment_schedule || '100%';
+      const paymentType = session.metadata?.payment_type || 'single';
+      
+      if (paymentSchedule === '50/50' && paymentType === 'deposit') {
+        message += `Это первый платеж из двух (50/50). Второй платеж будет отправлен позже.\n\n`;
+      } else if (paymentSchedule === '50/50' && (paymentType === 'rest' || paymentType === 'second')) {
+        message += `Оплата завершена! Все платежи по сделке получены.\n\n`;
+      } else {
+        message += `Оплата завершена!\n\n`;
+      }
+
+      message += `Если у вас есть вопросы, пожалуйста, свяжитесь с нами.`;
+
+      // Send message via SendPulse
+      const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
+
+      if (result.success) {
+        this.logger.info('Payment success notification sent successfully', {
+          dealId,
+          sendpulseId,
+          sessionId: session.id,
+          amount,
+          currency,
+          messageId: result.messageId
+        });
+        return {
+          success: true,
+          messageId: result.messageId
+        };
+      } else {
+        this.logger.error('Failed to send payment success notification', {
+          dealId,
+          sendpulseId,
+          error: result.error
+        });
+        return {
+          success: false,
+          error: result.error
+        };
+      }
+    } catch (error) {
+      this.logger.error('Error sending payment success notification', {
+        dealId,
+        sessionId: session.id,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Очищает старые записи из кэша уведомлений (старше TTL)
    * Вызывается автоматически после каждой успешной отправки
    */
