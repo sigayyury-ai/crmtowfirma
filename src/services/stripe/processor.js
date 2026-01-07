@@ -2400,7 +2400,7 @@ class StripeProcessorService {
       const sessionLink = `${dashboardBase}/checkout_sessions/${sessionId}`;
 
       const today = new Date().toISOString().slice(0, 10);
-      await this.pipedriveClient.createTask({
+      const taskResult = await this.pipedriveClient.createTask({
         deal_id: dealId,
         subject: this.WEBHOOK_TASK_SUBJECT,
         due_date: today,
@@ -2417,9 +2417,9 @@ class StripeProcessorService {
       });
       
       this.addressTaskCache.add(cacheKey);
-      // Проверяем, является ли ошибка связанной с недоступностью сделки
-      const isInsufficientVisibility = taskResult.details?.error === 'Insufficient visibility to the associated deal' ||
-                                       taskResult.isInsufficientVisibility;
+      
+      // Проверяем результат создания задачи
+      const isInsufficientVisibility = taskResult.isInsufficientVisibility;
       
       if (taskResult.success) {
         this.logger.info('Created CRM task for webhook failure', { dealId, sessionId });
