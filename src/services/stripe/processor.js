@@ -236,11 +236,11 @@ class StripeProcessorService {
             };
 
             // Если сделка в статусе "Second Payment", но оба платежа оплачены - исправляем
-            if (currentStageId === STAGES.SECOND_PAYMENT_ID) {
+            if (currentStageId === STAGES.SECOND_PAYMENT) {
               this.logger.info('Found deal with both payments paid but wrong status', {
                 dealId,
                 currentStage: currentStageId,
-                expectedStage: STAGES.CAMP_WAITER_ID,
+                expectedStage: STAGES.CAMP_WAITER,
                 depositSessionId: depositPayment.session_id,
                 restSessionId: restPayment.session_id
               });
@@ -261,7 +261,7 @@ class StripeProcessorService {
               this.logger.info('Deal status fixed', {
                 dealId,
                 from: currentStageId,
-                to: STAGES.CAMP_WAITER_ID
+                to: STAGES.CAMP_WAITER
               });
             }
           }
@@ -1299,10 +1299,10 @@ class StripeProcessorService {
       
       // For single payment type, always move to Camp Waiter (it's the only payment)
       if (paymentType === 'single' && session.payment_status === 'paid') {
-        this.logger.info(`✅ [Deal #${dealId}] Single payment paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+        this.logger.info(`✅ [Deal #${dealId}] Single payment paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER})`, {
           paymentType,
           sessionId: session.id,
-          stageId: STAGES.CAMP_WAITER_ID
+          stageId: STAGES.CAMP_WAITER
         });
         
         await this.triggerCrmStatusAutomation(dealId, {
@@ -1362,11 +1362,11 @@ class StripeProcessorService {
           const depositSessionId = depositPayment?.session_id || (isFirst ? session.id : null);
           const restSessionId = restPayment?.session_id || (isRest ? session.id : null);
           
-          this.logger.info(`✅ [Deal #${dealId}] Both payments confirmed paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+          this.logger.info(`✅ [Deal #${dealId}] Both payments confirmed paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER})`, {
             depositPaymentId: depositSessionId,
             restPaymentId: restSessionId,
             currentPaymentType: paymentType,
-            stageId: STAGES.CAMP_WAITER_ID,
+            stageId: STAGES.CAMP_WAITER,
             hasDeposit,
             hasRest
           });
@@ -1443,7 +1443,7 @@ class StripeProcessorService {
 
       // Если сделка уже в стадии "First payment" и приходит оплата → Camp Waiter (один платеж)
       // Проверяем по ID: 18 (основной пайплайн) или 37 (другой пайплайн)
-      const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT_ID, 37];
+      const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT, 37];
       if (FIRST_PAYMENT_STAGE_IDS.includes(currentDealStageId)) {
         await this.triggerCrmStatusAutomation(dealId, {
           reason: 'stripe:first-stage-paid'
@@ -1462,7 +1462,7 @@ class StripeProcessorService {
         });
       } else if (isFinal || isRest) {
         // Second payment (rest) or final payment - check if both payments are paid before moving to Camp Waiter
-        this.logger.info(`🔍 [Deal #${dealId}] Checking if both payments are paid before moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})...`, {
+        this.logger.info(`🔍 [Deal #${dealId}] Checking if both payments are paid before moving to Camp Waiter (stage ${STAGES.CAMP_WAITER})...`, {
           paymentType,
           sessionId: session.id,
           isRest,
@@ -1515,10 +1515,10 @@ class StripeProcessorService {
         
         // Only move to Camp Waiter if both payments are paid
         if (hasDeposit && hasRest) {
-          this.logger.info(`✅ [Deal #${dealId}] Both payments paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+          this.logger.info(`✅ [Deal #${dealId}] Both payments paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER})`, {
             depositPaymentId: depositPayment.session_id,
             restPaymentId: restPayment?.session_id || session.id,
-            stageId: STAGES.CAMP_WAITER_ID
+            stageId: STAGES.CAMP_WAITER
           });
           await this.triggerCrmStatusAutomation(dealId, {
             reason: 'stripe:final-payment'
@@ -1571,7 +1571,7 @@ class StripeProcessorService {
           // If rest payment is received but deposit is missing, stay in Second Payment stage
           // If both are missing (shouldn't happen), also stay in Second Payment
           if (!hasDeposit) {
-            this.logger.info(`⏸️  [Deal #${dealId}] Waiting for deposit payment - staying in Second Payment stage (${STAGES.SECOND_PAYMENT_ID})`);
+            this.logger.info(`⏸️  [Deal #${dealId}] Waiting for deposit payment - staying in Second Payment stage (${STAGES.SECOND_PAYMENT})`);
             await this.triggerCrmStatusAutomation(dealId, {
               reason: 'stripe:rest-awaits-deposit'
             });
@@ -1627,7 +1627,7 @@ class StripeProcessorService {
         const dealResult = await this.pipedriveClient.getDeal(dealId);
         if (dealResult.success && dealResult.deal) {
           const currentStageId = dealResult.deal.stage_id;
-          const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT_ID, 37];
+          const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT, 37];
           
           this.logger.info('Deal stage check for existing paid payment', {
             dealId,
@@ -1636,8 +1636,8 @@ class StripeProcessorService {
             paymentSchedule,
             isFirstPaymentStage: FIRST_PAYMENT_STAGE_IDS.includes(currentStageId),
             isSinglePayment: paymentType === 'single',
-            isNotCampWaiter: currentStageId !== STAGES.CAMP_WAITER_ID,
-            campWaiterStageId: STAGES.CAMP_WAITER_ID
+            isNotCampWaiter: currentStageId !== STAGES.CAMP_WAITER,
+            campWaiterStageId: STAGES.CAMP_WAITER
           });
           
           // If deal is still in First Payment stage, update it
@@ -1651,13 +1651,13 @@ class StripeProcessorService {
             await this.triggerCrmStatusAutomation(dealId, {
               reason: 'stripe:existing-payment-stage-correction'
             });
-          } else if (paymentType === 'single' && currentStageId !== STAGES.CAMP_WAITER_ID) {
+          } else if (paymentType === 'single' && currentStageId !== STAGES.CAMP_WAITER) {
             // For 'single' payment type, ensure it goes to Camp Waiter
             // This should happen for ALL single payments, regardless of current stage
             this.logger.info('Correcting deal stage for single payment', {
               dealId,
               currentStage: currentStageId,
-              expectedStage: STAGES.CAMP_WAITER_ID,
+              expectedStage: STAGES.CAMP_WAITER,
               paymentSchedule,
               reason: 'Single payment should always go to Camp Waiter stage'
             });
@@ -1672,7 +1672,7 @@ class StripeProcessorService {
               currentStageId,
               paymentType,
               paymentSchedule,
-              reason: paymentType === 'single' && currentStageId === STAGES.CAMP_WAITER_ID
+              reason: paymentType === 'single' && currentStageId === STAGES.CAMP_WAITER
                 ? 'Already in Camp Waiter stage'
                 : paymentType !== 'single'
                 ? 'Not a single payment type'
