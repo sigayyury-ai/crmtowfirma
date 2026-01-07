@@ -189,12 +189,18 @@ async function main() {
     console.log('   - КРИТИЧНО: Настрой STRIPE_WEBHOOK_SECRET в Render Dashboard');
   }
   
+  const productionUrl = 'https://invoices.comoon.io/api/webhooks/stripe';
   const matchingEndpoint = endpoints?.data?.find(e => e.url === productionUrl);
   if (!matchingEndpoint) {
     console.log('   - ⚠️  КРИТИЧНО: Webhook endpoint для production НЕ НАЙДЕН в Stripe!');
     console.log('   - Нужно создать endpoint в Stripe Dashboard → Developers → Webhooks');
     console.log('   - URL: https://invoices.comoon.io/api/webhooks/stripe');
     console.log('   - События: checkout.session.completed, checkout.session.async_payment_succeeded, etc.');
+    console.log('   - Или запустите: node scripts/create-stripe-webhook-endpoint.js');
+  } else {
+    console.log('   - ✅ Endpoint найден в Stripe');
+    console.log(`   - ID: ${matchingEndpoint.id}`);
+    console.log(`   - Status: ${matchingEndpoint.status}`);
   }
   
   console.log();
