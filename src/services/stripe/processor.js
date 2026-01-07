@@ -94,11 +94,27 @@ class StripeProcessorService {
     try {
       await this.crmStatusAutomationService.syncDealStage(dealId, context);
     } catch (error) {
-      this.logger.warn('CRM status automation failed after Stripe processor event', {
-        dealId,
-        context,
-        error: error.message
-      });
+      // Проверяем, является ли ошибка связанной с недоступностью сделки
+      const isDealNotFound = error.message?.includes('Failed to load Pipedrive deal') || 
+                            error.message?.includes('deal not found') ||
+                            error.message?.includes('Insufficient visibility');
+      
+      if (isDealNotFound) {
+        // Недоступные/удаленные сделки - это не критичные ошибки
+        this.logger.debug('CRM status automation skipped - deal not accessible', {
+          context,
+          dealId,
+          reason: 'Deal may be deleted, closed, or in different organization',
+          note: 'This is expected for deleted/closed deals'
+        });
+      } else {
+        // Другие ошибки логируем как предупреждения
+        this.logger.warn('CRM status automation failed after Stripe processor event', {
+          context,
+          dealId,
+          error: error.message
+        });
+      }
     }
   }
 
@@ -2401,7 +2417,28 @@ class StripeProcessorService {
       });
       
       this.addressTaskCache.add(cacheKey);
-      this.logger.info('Created CRM task for webhook failure', { dealId, sessionId });
+      // Проверяем, является ли ошибка связанной с недоступностью сделки
+      const isInsufficientVisibility = taskResult.details?.error === 'Insufficient visibility to the associated deal' ||
+                                       taskResult.isInsufficientVisibility;
+      
+      if (taskResult.success) {
+        this.logger.info('Created CRM task for webhook failure', { dealId, sessionId });
+      } else if (isInsufficientVisibility) {
+        // Недоступные сделки - это не критичные ошибки
+        this.logger.debug('Cannot create webhook failure task - deal not accessible (403)', {
+          dealId,
+          sessionId,
+          reason: 'Deal may be deleted, closed, or in different organization',
+          note: 'This is expected for deleted/closed deals'
+        });
+      } else {
+        this.logger.warn('Failed to create CRM task for webhook failure', {
+          dealId,
+          sessionId,
+          error: taskResult.error,
+          details: taskResult.details
+        });
+      }
     } catch (error) {
       this.logger.error('Failed to create CRM task for webhook failure', {
         dealId,

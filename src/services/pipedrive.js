@@ -1316,16 +1316,36 @@ class PipedriveClient {
 
       throw new Error('Failed to create task');
     } catch (error) {
-      logger.error('Error creating task in Pipedrive:', {
-        dealId: taskData.deal_id,
-        subject: taskData.subject,
-        error: error.message,
-        details: error.response?.data || null
-      });
+      const statusCode = error.response?.status;
+      const errorData = error.response?.data;
+      const is403 = statusCode === 403;
+      const isInsufficientVisibility = errorData?.error === 'Insufficient visibility to the associated deal';
+      
+      // 403 ошибки (недоступная сделка) - это не критичные ошибки, логируем как предупреждение
+      if (is403 && isInsufficientVisibility) {
+        logger.warn('Cannot create task in Pipedrive - deal not accessible (403)', {
+          dealId: taskData.deal_id,
+          subject: taskData.subject,
+          reason: 'Deal may be deleted, closed, or in different organization',
+          hint: 'This is not critical - task creation is skipped for inaccessible deals'
+        });
+      } else {
+        // Другие ошибки логируем как ошибки
+        logger.error('Error creating task in Pipedrive:', {
+          dealId: taskData.deal_id,
+          subject: taskData.subject,
+          error: error.message,
+          statusCode,
+          details: errorData || null
+        });
+      }
+      
       return {
         success: false,
         error: error.message,
-        details: error.response?.data || null
+        details: errorData || null,
+        statusCode,
+        isInsufficientVisibility: is403 && isInsufficientVisibility
       };
     }
   }
