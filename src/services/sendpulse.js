@@ -51,12 +51,25 @@ class SendPulseClient {
         return response;
       },
       (error) => {
-        logger.error('SendPulse API Response Error:', {
-          status: error.response?.status,
-          url: error.config?.url,
-          message: error.message,
-          data: error.response?.data
-        });
+        const status = error.response?.status;
+        const url = error.config?.url || '';
+        
+        // 404 ошибки не критичны для SendPulse (контакт может не существовать)
+        // Логируем их как warning, а не error
+        if (status === 404 && url.includes('/contacts/')) {
+          logger.debug('SendPulse contact not found (404) - will be handled by caller', {
+            status,
+            url,
+            message: error.message
+          });
+        } else {
+          logger.error('SendPulse API Response Error:', {
+            status,
+            url,
+            message: error.message,
+            data: error.response?.data
+          });
+        }
         return Promise.reject(error);
       }
     );
