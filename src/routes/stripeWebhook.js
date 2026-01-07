@@ -131,6 +131,7 @@ function getRawBody(req, res, next) {
  * Отслеживает invoice_type = Stripe и обновляет статус в Pipedrive
  */
 router.post('/webhooks/stripe', getRawBody, async (req, res) => {
+  // Объявляем переменные в начале функции для избежания ReferenceError
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   
@@ -138,6 +139,9 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
   // Endpoint URL: https://invoices.comoon.io/api/webhooks/stripe
   const expectedEndpointId = 'we_1SXMcUBXP7ZF0H8RKWUimiqC';
   const expectedEndpointUrl = 'https://invoices.comoon.io/api/webhooks/stripe';
+  
+  // Обработка ошибок на верхнем уровне для предотвращения 502
+  try {
   
   // Детальное логирование для отладки
   logger.debug('Stripe webhook received', {
@@ -822,10 +826,33 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
     res.status(200).json({ received: true });
   } catch (error) {
     logger.error('❌ Ошибка обработки Stripe webhook', { 
-      eventType: event.type, 
-      error: error.message 
+      eventType: event?.type || 'unknown', 
+      eventId: event?.id || 'unknown',
+      error: error.message,
+      stack: error.stack
     });
-    res.status(500).json({ error: 'Webhook processing failed' });
+    
+    // Убеждаемся, что ответ еще не был отправлен
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Webhook processing failed' });
+    }
+  }
+  } catch (outerError) {
+    // Обработка ошибок на верхнем уровне (например, при верификации подписи)
+    logger.error('❌ Критическая ошибка в Stripe webhook handler', {
+      error: outerError.message,
+      stack: outerError.stack,
+      hasSignature: !!sig,
+      hasWebhookSecret: !!webhookSecret
+    });
+    
+    // Убеждаемся, что ответ еще не был отправлен
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Internal server error',
+        hint: 'Check server logs for details'
+      });
+    }
   }
 });
 
