@@ -4785,7 +4785,9 @@ class StripeProcessorService {
       let totalAmountPln = 0;
       const refundLinks = [];
 
-      refundedPayments.forEach((item, index) => {
+      // Используем for...of вместо forEach для поддержки async/await
+      for (let index = 0; index < refundedPayments.length; index++) {
+        const item = refundedPayments[index];
         const { payment, refund } = item;
         const currency = normaliseCurrency(payment.currency || 'PLN');
         const amount = payment.original_amount || 0;
@@ -4831,7 +4833,7 @@ class StripeProcessorService {
             refundId: refund.id
           });
         }
-      });
+      }
 
       if (refundedPayments.length === 1) {
         message += `*Сумма возврата:* ${formatAmount(totalAmount)} ${refundedPayments[0]?.payment?.currency || 'PLN'}`;
@@ -5301,8 +5303,17 @@ class StripeProcessorService {
       // Сценарий 1: 100% Stripe (только Stripe, без кеша)
       if (paymentSchedule === '100%' && sessions.length >= 1 && cashRemainder === 0) {
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${singleSession.url})\n`;
-        message += `Ссылка действует 24 часа\n\n`;
+        if (singleSession.url) {
+          message += `[Ссылка на оплату](${singleSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+        } else {
+          this.logger.warn('Payment notification: session URL is missing', {
+            dealId,
+            sessionId: singleSession.session_id,
+            hasCheckoutUrl: !!singleSession.checkout_url
+          });
+          message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+        }
         
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;

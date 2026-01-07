@@ -134,8 +134,25 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               session_id: p.session_id,
               amount: p.original_amount,
               currency: p.currency,
-              checkout_url: p.checkout_url
+              url: p.checkout_url || null, // Используем url для совместимости с sendPaymentNotificationForDeal
+              checkout_url: p.checkout_url || null
             }));
+            
+            // Добавляем текущую сессию, если её еще нет в списке (может быть еще не сохранена в БД)
+            const currentSessionInList = sessions.find(s => s.session_id === session.id);
+            if (!currentSessionInList && session.url) {
+              sessions.push({
+                session_id: session.id,
+                amount: fromMinorUnit(session.amount_total || 0, session.currency),
+                currency: session.currency,
+                url: session.url, // Используем URL из webhook события
+                checkout_url: session.url
+              });
+            } else if (currentSessionInList && !currentSessionInList.url && session.url) {
+              // Если сессия есть в списке, но нет URL, добавляем из webhook события
+              currentSessionInList.url = session.url;
+              currentSessionInList.checkout_url = session.url;
+            }
             
             await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
               paymentSchedule: paymentScheduleFromMetadata,
