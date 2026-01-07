@@ -360,22 +360,22 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               });
             } else {
               const session = await stripe.checkout.sessions.retrieve(sessionId);
-            const dealId = session.metadata?.deal_id;
-            
-            if (dealId) {
-              logger.info(`✅ Обработка успешного платежа | Deal: ${dealId} | Charge: ${charge.id} | Amount: ${charge.amount / 100} ${charge.currency.toUpperCase()}`);
+              const dealId = session.metadata?.deal_id;
               
-              // Обновляем статус платежа в базе данных
-              await stripeProcessor.repository.updatePaymentStatus(sessionId, 'paid');
-              
-              // Обрабатываем платеж через processor (если еще не обработан)
-              await stripeProcessor.persistSession(session);
-              
+              if (dealId) {
+                logger.info(`✅ Обработка успешного платежа | Deal: ${dealId} | Charge: ${charge.id} | Amount: ${charge.amount / 100} ${charge.currency.toUpperCase()}`);
+                
+                // Обновляем статус платежа в базе данных
+                await stripeProcessor.repository.updatePaymentStatus(sessionId, 'paid');
+                
+                // Обрабатываем платеж через processor (если еще не обработан)
+                await stripeProcessor.persistSession(session);
+                
                 logger.info(`✅ Успешный платеж обработан | Deal: ${dealId} | Charge: ${charge.id}`);
-              }
               }
             }
           }
+        } catch (error) {
         } catch (error) {
           logger.error(`❌ Ошибка обработки успешного платежа | Charge: ${charge.id}`, { error: error.message });
         }
