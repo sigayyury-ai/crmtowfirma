@@ -132,31 +132,52 @@ async function fetchLogs(serviceId, lines = 200) {
   const match = envContent.match(/^RENDER_API_KEY\s*=\s*(.+)$/m);
   const token = match ? match[1].trim().replace(/^["']|["']$/g, '') : RENDER_API_KEY;
   
-  // render-cli может использовать RENDER_TOKEN или RENDER_API_KEY
-  // Передаем оба для совместимости
-  const env = {
-    ...process.env,
-    RENDER_TOKEN: token,
-    RENDER_API_KEY: token // Некоторые версии render-cli используют RENDER_API_KEY
-  };
+  // render-cli использует RENDER_TOKEN для авторизации
+  // Важно: создаем новый объект env, чтобы не модифицировать process.env
+  const env = Object.assign({}, process.env, {
+    RENDER_TOKEN: token
+  });
+  
+  // Удаляем RENDER_API_KEY из env, если он там есть, чтобы избежать конфликтов
+  // render-cli использует только RENDER_TOKEN
+  delete env.RENDER_API_KEY;
 
   // Логируем для отладки (только первые несколько символов токена)
-  const tokenPreview = token ? `${token.substring(0, 10)}...` : 'не найден';
-  console.log(`🔑 Используется токен: ${tokenPreview}`);
+  // В production можно убрать эту строку для безопасности
+  if (process.env.NODE_ENV !== 'production') {
+    const tokenPreview = token ? `${token.substring(0, 10)}...` : 'не найден';
+    console.log(`🔑 Используется токен: ${tokenPreview}`);
+  }
 
   try {
+    // Убеждаемся, что токен действительно передан
+    if (!env.RENDER_TOKEN || env.RENDER_TOKEN.length < 10) {
+      throw new Error('RENDER_TOKEN не найден или слишком короткий. Проверьте .env файл.');
+    }
+    
     const result = execSync(
       `"${cliPath}" logs --resources ${serviceId} --limit ${lines} --output text`,
       { 
         encoding: 'utf8',
         maxBuffer: 10 * 1024 * 1024, // 10MB
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: env
+        env: env,
+        shell: false // Не используем shell для безопасности
       }
     );
     return result;
   } catch (error) {
-    const errorOutput = error.stderr ? error.stderr.toString() : error.stdout ? error.stdout.toString() : error.message;
+    // Получаем полный вывод ошибки
+    let errorOutput = '';
+    if (error.stderr) {
+      errorOutput += error.stderr.toString();
+    }
+    if (error.stdout) {
+      errorOutput += error.stdout.toString();
+    }
+    if (!errorOutput) {
+      errorOutput = error.message;
+    }
     
     // Проверяем специфичные ошибки авторизации
     if (errorOutput.includes('unauthorized') || errorOutput.includes('401') || errorOutput.includes('authentication')) {
