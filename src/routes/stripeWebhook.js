@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const StripeProcessorService = require('../services/stripe/processor');
-const { getStripeClient } = require('../services/stripe/client');
+const { getStripeClient, canRetrieveSession } = require('../services/stripe/client');
 const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
 const { ensureCashStatus } = require('../services/cash/cashStatusSync');
 
@@ -184,8 +184,15 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       const sessionId = paymentIntent.metadata?.session_id;
       
       if (sessionId) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(sessionId);
+        // Проверяем что можем получить сессию в текущем режиме
+        if (!canRetrieveSession(sessionId)) {
+          logger.debug('Skipping payment_intent.succeeded - session from different Stripe mode', {
+            sessionId,
+            eventId: event.id
+          });
+        } else {
+          try {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
           const dealId = session.metadata?.deal_id;
           
           if (dealId) {
@@ -205,6 +212,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
         } catch (sessionError) {
           logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
         }
+        }
       } else {
         logger.warn(`⚠️  Session ID не найден в Payment Intent | PaymentIntent: ${paymentIntent.id}`);
       }
@@ -216,8 +224,15 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       const sessionId = paymentIntent.metadata?.session_id;
       
       if (sessionId) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(sessionId);
+        // Проверяем что можем получить сессию в текущем режиме
+        if (!canRetrieveSession(sessionId)) {
+          logger.debug('Skipping payment_intent.payment_failed - session from different Stripe mode', {
+            sessionId,
+            eventId: event.id
+          });
+        } else {
+          try {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
           const dealId = session.metadata?.deal_id;
           
           if (dealId) {
@@ -232,6 +247,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           }
         } catch (sessionError) {
           logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
+        }
         }
       } else {
         logger.warn(`⚠️  Session ID не найден в Payment Intent | PaymentIntent: ${paymentIntent.id}`);
@@ -262,6 +278,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               
               logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
             }
+            }
           }
         } catch (error) {
           logger.error(`❌ Ошибка обработки возврата | Charge: ${charge.id}`, { error: error.message });
@@ -281,11 +298,18 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           const sessionId = paymentIntent.metadata?.session_id;
           
           if (sessionId) {
-            const session = await stripe.checkout.sessions.retrieve(sessionId);
-            const dealId = session.metadata?.deal_id;
-            
-            if (dealId) {
-              logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
+            // Проверяем что можем получить сессию в текущем режиме
+            if (!canRetrieveSession(sessionId)) {
+              logger.debug('Skipping charge.updated - session from different Stripe mode', {
+                sessionId,
+                chargeId: charge.id
+              });
+            } else {
+              const session = await stripe.checkout.sessions.retrieve(sessionId);
+              const dealId = session.metadata?.deal_id;
+              
+              if (dealId) {
+                logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
               
               // Обновляем статус платежа в базе данных на основе статуса charge
               const paymentStatus = charge.status === 'succeeded' ? 'paid' : 
@@ -300,7 +324,9 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
                 await stripeProcessor.persistSession(session);
               }
               
-              logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
+                logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
+              }
+              }
             }
           }
         } catch (error) {
@@ -320,7 +346,14 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           const sessionId = paymentIntent.metadata?.session_id;
           
           if (sessionId) {
-            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            // Проверяем что можем получить сессию в текущем режиме
+            if (!canRetrieveSession(sessionId)) {
+              logger.debug('Skipping charge.succeeded - session from different Stripe mode', {
+                sessionId,
+                chargeId: charge.id
+              });
+            } else {
+              const session = await stripe.checkout.sessions.retrieve(sessionId);
             const dealId = session.metadata?.deal_id;
             
             if (dealId) {
@@ -332,7 +365,9 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               // Обрабатываем платеж через processor (если еще не обработан)
               await stripeProcessor.persistSession(session);
               
-              logger.info(`✅ Успешный платеж обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+                logger.info(`✅ Успешный платеж обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+              }
+              }
             }
           }
         } catch (error) {
@@ -347,24 +382,32 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       const sessionId = paymentIntent.metadata?.session_id;
       
       if (sessionId) {
-        try {
-          const session = await stripe.checkout.sessions.retrieve(sessionId);
-          const dealId = session.metadata?.deal_id;
-          
-          if (dealId) {
-            logger.info(`🆕 Создан новый платеж | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id} | Amount: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
+        // Проверяем что можем получить сессию в текущем режиме
+        if (!canRetrieveSession(sessionId)) {
+          logger.debug('Skipping payment_intent.created - session from different Stripe mode', {
+            sessionId,
+            paymentIntentId: paymentIntent.id
+          });
+        } else {
+          try {
+            const session = await stripe.checkout.sessions.retrieve(sessionId);
+            const dealId = session.metadata?.deal_id;
             
-            // Логируем создание платежа (статус еще не обновляем, так как платеж еще не завершен)
-            logger.debug(`📋 Payment Intent создан для Deal #${dealId}`, {
-              paymentIntentId: paymentIntent.id,
-              sessionId,
-              amount: paymentIntent.amount,
-              currency: paymentIntent.currency,
-              status: paymentIntent.status
-            });
+            if (dealId) {
+              logger.info(`🆕 Создан новый платеж | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id} | Amount: ${paymentIntent.amount / 100} ${paymentIntent.currency.toUpperCase()}`);
+              
+              // Логируем создание платежа (статус еще не обновляем, так как платеж еще не завершен)
+              logger.debug(`📋 Payment Intent создан для Deal #${dealId}`, {
+                paymentIntentId: paymentIntent.id,
+                sessionId,
+                amount: paymentIntent.amount,
+                currency: paymentIntent.currency,
+                status: paymentIntent.status
+              });
+            }
+          } catch (error) {
+            logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
           }
-        } catch (error) {
-          logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
         }
       }
     }

@@ -108,6 +108,34 @@ function createStripeClient(options = {}) {
   return stripe;
 }
 
+/**
+ * Проверяет можно ли получить сессию в текущем режиме Stripe
+ * @param {string} sessionId - ID сессии (cs_test_... или cs_live_...)
+ * @returns {boolean} - true если можно получить, false если режим не совпадает
+ */
+function canRetrieveSession(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') {
+    return false;
+  }
+  
+  const mode = getStripeMode();
+  const isTestSession = sessionId.startsWith('cs_test_');
+  const isLiveSession = sessionId.startsWith('cs_live_');
+  
+  // В live mode работаем только с live сессиями
+  if (mode === 'live') {
+    return isLiveSession;
+  }
+  
+  // В test mode работаем только с test сессиями
+  if (mode === 'test') {
+    return isTestSession;
+  }
+  
+  // Если режим не определен, разрешаем все (fallback)
+  return true;
+}
+
 function getStripeClient(options = {}) {
   const mode = getStripeMode();
   const apiKey = resolveStripeApiKey(options);
@@ -119,6 +147,9 @@ function getStripeClient(options = {}) {
 }
 
 module.exports = {
-  getStripeClient
+  getStripeClient,
+  getStripeMode,
+  resolveStripeApiKey,
+  canRetrieveSession
 };
 
