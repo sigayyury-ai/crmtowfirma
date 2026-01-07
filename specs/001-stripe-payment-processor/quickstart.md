@@ -1,7 +1,7 @@
 # Quickstart — Stripe Payment Processor
 
 1. **Setup environment**
-   - Copy `.env` → `.env.local`, добавить `STRIPE_API_KEY` (начинаем с test secret `sk_test_*`), `STRIPE_EVENTS_CACHE_TTL_MS`, `PIPEDRIVE_API_TOKEN`.
+   - Copy `.env` → `.env.local`, добавить `STRIPE_API_KEY` (live secret `sk_live_*`), `STRIPE_EVENTS_CACHE_TTL_MS`, `PIPEDRIVE_API_TOKEN`.
    - Убедиться, что Supabase credentials уже настроены (используются ProForm процессором).
 
 2. **Install & start**

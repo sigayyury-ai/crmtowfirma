@@ -14,16 +14,9 @@
 
 ### Измените в файле `.env`:
 
-**Было:**
-```bash
-STRIPE_API_KEY=sk_test_ваш_тестовый_ключ
-STRIPE_MODE=test
-```
-
-**Стало:**
+**Настройка:**
 ```bash
 STRIPE_API_KEY=sk_live_ваш_live_секретный_ключ
-STRIPE_MODE=live
 ```
 
 ### Важно:

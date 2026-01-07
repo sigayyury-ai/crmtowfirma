@@ -28,11 +28,6 @@ function resolveStripeApiKey(options = {}) {
       throw new Error('STRIPE_EVENTS_API_KEY is not set. Add it to .env');
     }
     
-    const isTestKey = eventsKey.startsWith('sk_test');
-    if (isTestKey) {
-      logger.warn('STRIPE_EVENTS_API_KEY looks like test key but should be live key');
-    }
-    
     return eventsKey;
   }
 
@@ -40,11 +35,6 @@ function resolveStripeApiKey(options = {}) {
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
-  }
-
-  const isTestKey = apiKey.startsWith('sk_test');
-  if (isTestKey) {
-    logger.warn('STRIPE_API_KEY looks like test key but should be live key');
   }
 
   return apiKey;
