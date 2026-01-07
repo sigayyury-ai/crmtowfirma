@@ -49,6 +49,16 @@ function resolveStripeApiKey(options = {}) {
     });
   }
   
+  // ВАЖНО: Events кабинет имеет ключ, заканчивающийся на ...7UtM
+  // Если STRIPE_API_KEY заканчивается на 7UtM, это означает, что используется Events кабинет вместо основного!
+  if (apiKey.endsWith('7UtM')) {
+    logger.error('❌ КРИТИЧЕСКАЯ ОШИБКА: STRIPE_API_KEY указывает на Events кабинет!', {
+      apiKeySuffix: '...7UtM',
+      hint: 'Ключ, заканчивающийся на 7UtM, принадлежит Events кабинету. STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета!',
+      action: 'Исправьте STRIPE_API_KEY в Render Dashboard. Используйте ключ ОСНОВНОГО кабинета, НЕ Events кабинета!'
+    });
+  }
+  
   // Логируем, какой ключ используется (только префикс для безопасности)
   logger.info('Using Stripe API key for payments', {
     apiKeyPrefix: apiKey.substring(0, 20) + '...',
