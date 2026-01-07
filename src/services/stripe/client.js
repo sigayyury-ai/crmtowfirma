@@ -6,7 +6,8 @@ const { name: pkgName, version: pkgVersion } = require('../../../package.json');
 const stripeInstances = new Map();
 
 function getStripeMode() {
-  return (process.env.STRIPE_MODE || 'live').toLowerCase();
+  // Всегда live режим, test режим не используется
+  return 'live';
 }
 
 function resolveNumber(value, fallback) {
@@ -22,31 +23,31 @@ function resolveStripeApiKey(options = {}) {
 
   const mode = getStripeMode();
 
-  // В режиме live используем STRIPE_EVENTS_API_KEY (live ключ)
-  // В режиме test используем STRIPE_API_KEY (test ключ)
-  if (mode === 'live' || options.type === 'events') {
+  // Всегда используем STRIPE_EVENTS_API_KEY (live ключ)
+  // Test режим не используется
+  if (options.type === 'events' || mode === 'live') {
     const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
     if (!eventsKey) {
       throw new Error('STRIPE_EVENTS_API_KEY is not set. Add it to .env');
     }
     
     const isTestKey = eventsKey.startsWith('sk_test');
-    if (mode === 'live' && isTestKey) {
-      logger.warn('STRIPE_EVENTS_API_KEY looks like test key but STRIPE_MODE=live');
+    if (isTestKey) {
+      logger.warn('STRIPE_EVENTS_API_KEY looks like test key but should be live key');
     }
     
     return eventsKey;
   }
 
+  // Fallback на STRIPE_API_KEY если STRIPE_EVENTS_API_KEY не задан
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
   }
 
-  const isLiveKey = apiKey.startsWith('sk_live');
-
-  if (mode === 'test' && isLiveKey) {
-    logger.warn('Stripe client configured in test mode but provided key looks like live');
+  const isTestKey = apiKey.startsWith('sk_test');
+  if (isTestKey) {
+    logger.warn('STRIPE_API_KEY looks like test key but should be live key');
   }
 
   return apiKey;
@@ -68,7 +69,7 @@ function attachLoggingHooks(stripe) {
         path,
         durationMs: Date.now() - startedAt,
         requestId: response?._requestId,
-        livemode: getStripeMode() !== 'test'
+        livemode: true
       });
       return response;
     } catch (error) {
@@ -76,7 +77,7 @@ function attachLoggingHooks(stripe) {
         method,
         path,
         durationMs: Date.now() - startedAt,
-        livemode: getStripeMode() !== 'test'
+        livemode: true
       });
       throw error;
     }
@@ -109,30 +110,30 @@ function createStripeClient(options = {}) {
 }
 
 /**
- * Проверяет можно ли получить сессию в текущем режиме Stripe
+ * Проверяет можно ли получить сессию (только live сессии)
  * @param {string} sessionId - ID сессии (cs_test_... или cs_live_...)
- * @returns {boolean} - true если можно получить, false если режим не совпадает
+ * @returns {boolean} - true если это live сессия, false если test сессия
  */
 function canRetrieveSession(sessionId) {
   if (!sessionId || typeof sessionId !== 'string') {
     return false;
   }
   
-  const mode = getStripeMode();
-  const isTestSession = sessionId.startsWith('cs_test_');
+  // Работаем только с live сессиями, test сессии игнорируем
   const isLiveSession = sessionId.startsWith('cs_live_');
+  const isTestSession = sessionId.startsWith('cs_test_');
   
-  // В live mode работаем только с live сессиями
-  if (mode === 'live') {
-    return isLiveSession;
+  // Если это test сессия - пропускаем
+  if (isTestSession) {
+    return false;
   }
   
-  // В test mode работаем только с test сессиями
-  if (mode === 'test') {
-    return isTestSession;
+  // Если это live сессия - разрешаем
+  if (isLiveSession) {
+    return true;
   }
   
-  // Если режим не определен, разрешаем все (fallback)
+  // Если формат неизвестен - разрешаем (fallback для старых сессий)
   return true;
 }
 

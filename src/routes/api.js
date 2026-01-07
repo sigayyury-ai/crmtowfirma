@@ -1182,20 +1182,21 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/create-stripe-session', as
                 logger.debug('Skipping session retrieve - different Stripe mode', { sessionId: p.session_id });
               } else {
                 const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
-              if (session && session.url) {
-                sessionUrl = session.url;
-                // Сохраняем URL в DB для будущего использования
-                try {
-                  await repository.savePayment({
-                    session_id: p.session_id,
-                    checkout_url: sessionUrl
-                  });
-                } catch (saveError) {
-                  logger.warn('Failed to save checkout_url to DB', {
-                    dealId,
-                    sessionId: p.session_id,
-                    error: saveError.message
-                  });
+                if (session && session.url) {
+                  sessionUrl = session.url;
+                  // Сохраняем URL в DB для будущего использования
+                  try {
+                    await repository.savePayment({
+                      session_id: p.session_id,
+                      checkout_url: sessionUrl
+                    });
+                  } catch (saveError) {
+                    logger.warn('Failed to save checkout_url to DB', {
+                      dealId,
+                      sessionId: p.session_id,
+                      error: saveError.message
+                    });
+                  }
                 }
               }
             } catch (error) {
