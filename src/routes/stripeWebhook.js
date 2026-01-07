@@ -123,7 +123,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               limit: 10
             });
             
-            const paymentSchedule = stripeProcessor.determinePaymentSchedule(dealId, existingPayments);
+            // Используем график платежей из метаданных сессии или определяем по существующим платежам
+            const paymentScheduleFromMetadata = session.metadata?.payment_schedule || '100%';
             const sessions = existingPayments.filter(p => p.session_id).map(p => ({
               session_id: p.session_id,
               amount: p.original_amount,
@@ -132,7 +133,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             }));
             
             await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-              paymentSchedule: paymentSchedule.type,
+              paymentSchedule: paymentScheduleFromMetadata,
               sessions: sessions,
               currency: session.currency,
               totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
