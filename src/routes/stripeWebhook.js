@@ -317,25 +317,25 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               
               if (dealId) {
                 logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
-              
-              // Обновляем статус платежа в базе данных на основе статуса charge
-              const paymentStatus = charge.status === 'succeeded' ? 'paid' : 
-                                   charge.status === 'pending' ? 'pending' : 
-                                   charge.status === 'failed' ? 'unpaid' : 'unpaid';
-              
-              await stripeProcessor.repository.updatePaymentStatus(sessionId, paymentStatus);
-              
-              // Если платеж успешен, обрабатываем через persistSession для отправки email и добавления VAT breakdown
-              if (charge.status === 'succeeded' && session.payment_status === 'paid') {
-                logger.info(`📧 Обработка успешного платежа через persistSession для отправки email/VAT | Deal: ${dealId} | Charge: ${charge.id}`);
-                await stripeProcessor.persistSession(session);
-              }
-              
+                
+                // Обновляем статус платежа в базе данных на основе статуса charge
+                const paymentStatus = charge.status === 'succeeded' ? 'paid' : 
+                                     charge.status === 'pending' ? 'pending' : 
+                                     charge.status === 'failed' ? 'unpaid' : 'unpaid';
+                
+                await stripeProcessor.repository.updatePaymentStatus(sessionId, paymentStatus);
+                
+                // Если платеж успешен, обрабатываем через persistSession для отправки email и добавления VAT breakdown
+                if (charge.status === 'succeeded' && session.payment_status === 'paid') {
+                  logger.info(`📧 Обработка успешного платежа через persistSession для отправки email/VAT | Deal: ${dealId} | Charge: ${charge.id}`);
+                  await stripeProcessor.persistSession(session);
+                }
+                
                 logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
-              }
               }
             }
           }
+        } catch (error) {
         } catch (error) {
           logger.error(`❌ Ошибка обработки обновления платежа | Charge: ${charge.id}`, { error: error.message });
         }
