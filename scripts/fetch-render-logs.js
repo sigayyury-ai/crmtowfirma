@@ -67,12 +67,23 @@ if (!options.serviceId) {
 function findRenderCli() {
   const paths = [
     '/opt/homebrew/bin/render',
+    '/opt/homebrew/bin/render-cli',
     '/usr/local/bin/render',
+    '/usr/local/bin/render-cli',
     `${os.homedir()}/.local/bin/render`,
+    `${os.homedir()}/.local/bin/render-cli`,
     `${os.homedir()}/Library/Python/3.9/bin/render`,
+    `${os.homedir()}/Library/Python/3.9/bin/render-cli`,
     `${os.homedir()}/Library/Python/3.10/bin/render`,
+    `${os.homedir()}/Library/Python/3.10/bin/render-cli`,
     `${os.homedir()}/Library/Python/3.11/bin/render`,
-    `${os.homedir()}/Library/Python/3.12/bin/render`
+    `${os.homedir()}/Library/Python/3.11/bin/render-cli`,
+    `${os.homedir()}/Library/Python/3.12/bin/render`,
+    `${os.homedir()}/Library/Python/3.12/bin/render-cli`,
+    `${os.homedir()}/Library/Python/3.13/bin/render`,
+    `${os.homedir()}/Library/Python/3.13/bin/render-cli`,
+    `${os.homedir()}/Library/Python/3.14/bin/render`,
+    `${os.homedir()}/Library/Python/3.14/bin/render-cli`
   ];
 
   for (const cliPath of paths) {
@@ -84,15 +95,23 @@ function findRenderCli() {
     }
   }
   
-  // Последняя попытка - через which
-  try {
-    const whichResult = execSync('which render 2>&1', { stdio: 'pipe', timeout: 5000 });
-    const foundPath = whichResult.toString().trim();
-    if (foundPath && !foundPath.includes('node_modules')) {
-      return foundPath;
+  // Последняя попытка - через which (пробуем оба варианта)
+  for (const cmd of ['render', 'render-cli']) {
+    try {
+      const whichResult = execSync(`which ${cmd} 2>&1`, { stdio: 'pipe', timeout: 5000 });
+      const foundPath = whichResult.toString().trim();
+      if (foundPath && !foundPath.includes('node_modules') && foundPath.length > 0) {
+        // Проверяем, что это действительно работает
+        try {
+          execSync(`"${foundPath}" --version 2>&1`, { stdio: 'pipe', timeout: 5000 });
+          return foundPath;
+        } catch (e) {
+          // Продолжаем поиск
+        }
+      }
+    } catch (e) {
+      // which не нашел, пробуем следующий вариант
     }
-  } catch (e) {
-    // which не нашел
   }
   
   return null;
