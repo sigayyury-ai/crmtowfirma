@@ -146,9 +146,32 @@ class CrmStatusAutomationService {
   }
 
   async sumStripeTotals(payments = [], dealCurrency = null) {
+    this.logger.info('sumStripeTotals: filtering payments', {
+      paymentsCount: payments.length,
+      payments: payments.map(p => ({
+        id: p.id,
+        status: p.status,
+        payment_status: p.payment_status,
+        amount: p.original_amount || p.amount,
+        currency: p.currency,
+        deal_id: p.deal_id
+      }))
+    });
+    
     const processed = payments.filter(
       (row) => row && row.status === 'processed' && (!row.payment_status || row.payment_status === 'paid')
     );
+    
+    this.logger.info('sumStripeTotals: filtered payments', {
+      processedCount: processed.length,
+      processed: processed.map(p => ({
+        id: p.id,
+        status: p.status,
+        payment_status: p.payment_status,
+        amount: p.original_amount || p.amount,
+        currency: p.currency
+      }))
+    });
 
     // Проверяем, есть ли платежи с разными валютами
     const hasCurrencyMismatch = dealCurrency && processed.some(
