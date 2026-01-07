@@ -447,6 +447,7 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
     if (event.type === 'payment_intent.succeeded') {
       const paymentIntent = event.data.object;
       const sessionId = paymentIntent.metadata?.session_id;
+      const dealId = paymentIntent.metadata?.deal_id;
       
       if (sessionId) {
         // Проверяем что можем получить сессию в текущем режиме
@@ -458,28 +459,70 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
         } else {
           try {
             const session = await stripe.checkout.sessions.retrieve(sessionId);
-          const dealId = session.metadata?.deal_id;
-          
-          if (dealId) {
-            logger.info(`✅ Платеж успешен | Deal: ${dealId} | Session: ${sessionId}`);
+            const sessionDealId = session.metadata?.deal_id;
             
-            // Обновляем статус платежа в базе данных
-            await stripeProcessor.repository.updatePaymentStatus(sessionId, session.payment_status || 'paid');
-            
-            // Обрабатываем платеж через processor (автоматически обновляет стадии)
-            await stripeProcessor.persistSession(session);
-            await syncCashExpectationFromStripeSession(session);
-            
-            logger.info(`✅ Payment Intent обработан | Deal: ${dealId} | Session: ${sessionId}`);
-          } else {
-            logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
+            if (sessionDealId) {
+              logger.info(`✅ Платеж успешен | Deal: ${sessionDealId} | Session: ${sessionId}`);
+              
+              // Обновляем статус платежа в базе данных
+              await stripeProcessor.repository.updatePaymentStatus(sessionId, session.payment_status || 'paid');
+              
+              // Обрабатываем платеж через processor (автоматически обновляет стадии)
+              await stripeProcessor.persistSession(session);
+              await syncCashExpectationFromStripeSession(session);
+              
+              logger.info(`✅ Payment Intent обработан | Deal: ${sessionDealId} | Session: ${sessionId}`);
+            } else {
+              logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
+            }
+          } catch (sessionError) {
+            logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
           }
-        } catch (sessionError) {
-          logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
         }
+      } else if (dealId) {
+        // Если нет session_id, но есть deal_id в metadata, пытаемся найти session через Payment Intent
+        logger.info(`🔍 Payment Intent без session_id, но с deal_id | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id}`);
+        
+        try {
+          // Пытаемся найти payment в базе по Payment Intent ID
+          const existingPayment = await stripeProcessor.repository.findPaymentByPaymentIntent(paymentIntent.id);
+          
+          if (existingPayment && existingPayment.session_id) {
+            // Нашли session_id в базе, обрабатываем через session
+            const sessionIdFromDb = existingPayment.session_id;
+            logger.info(`✅ Найден session_id в базе | Deal: ${dealId} | Session: ${sessionIdFromDb}`);
+            
+            if (canRetrieveSession(sessionIdFromDb)) {
+              try {
+                const session = await stripe.checkout.sessions.retrieve(sessionIdFromDb);
+                await stripeProcessor.repository.updatePaymentStatus(sessionIdFromDb, 'paid');
+                await stripeProcessor.persistSession(session);
+                await syncCashExpectationFromStripeSession(session);
+                logger.info(`✅ Payment Intent обработан через найденный session | Deal: ${dealId} | Session: ${sessionIdFromDb}`);
+              } catch (sessionError) {
+                logger.error(`❌ Ошибка обработки найденного session | Session: ${sessionIdFromDb}`, { error: sessionError.message });
+              }
+            }
+          } else {
+            // Session не найден, но есть deal_id - обновляем статус напрямую через CRM
+            logger.info(`⚠️  Session не найден, обновляем статус через CRM | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id}`);
+            
+            // Обновляем статус в CRM через statusAutomationService
+            const { syncDealStage } = require('../services/crm/statusAutomationService');
+            await syncDealStage(dealId, stripeProcessor.pipedriveClient);
+            
+            logger.info(`✅ Статус CRM обновлен для Payment Intent | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id}`);
+          }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки Payment Intent без session_id | Deal: ${dealId} | PaymentIntent: ${paymentIntent.id}`, {
+            error: error.message,
+            stack: error.stack
+          });
         }
       } else {
-        logger.warn(`⚠️  Session ID не найден в Payment Intent | PaymentIntent: ${paymentIntent.id}`);
+        logger.warn(`⚠️  Session ID и Deal ID не найдены в Payment Intent | PaymentIntent: ${paymentIntent.id}`, {
+          metadata: paymentIntent.metadata
+        });
       }
     }
 
