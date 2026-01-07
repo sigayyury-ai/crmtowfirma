@@ -4766,9 +4766,20 @@ class StripeProcessorService {
           refundMonth
         });
       } else {
-        this.logger.warn('Failed to create tax correction task', {
-          dealId,
-          error: taskResult.error
+        // Проверяем, является ли ошибка связанной с недоступностью сделки
+        const isInsufficientVisibility = taskResult.isInsufficientVisibility;
+        
+        if (isInsufficientVisibility) {
+          // Недоступные сделки - это не критичные ошибки
+          this.logger.debug('Cannot create tax correction task - deal not accessible (403)', {
+            dealId,
+            reason: 'Deal may be deleted, closed, or in different organization',
+            note: 'This is expected for deleted/closed deals'
+          });
+        } else {
+          this.logger.warn('Failed to create tax correction task', {
+            dealId,
+            error: taskResult.error
         });
       }
     } catch (error) {

@@ -78,11 +78,15 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
     event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
   } catch (err) {
     // Логируем детали для отладки проблем с верификацией
+    // Проверяем длину подписи - если она необычно длинная (148 символов), это может быть другой endpoint
+    const signatureLength = sig?.length || 0;
+    const isUnusualSignatureLength = signatureLength > 100; // Обычно подпись ~80 символов
+    
     logger.warn('Stripe webhook signature verification failed', { 
       error: err.message,
       errorType: err.type,
       hasSignature: !!sig,
-      signatureLength: sig?.length || 0,
+      signatureLength,
       signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
       bodyLength: req.body?.length || 0,
       bodyType: req.body?.constructor?.name || typeof req.body,
@@ -90,7 +94,10 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       userAgent: req.headers['user-agent'],
       webhookSecretLength: webhookSecret?.length || 0,
       webhookSecretPreview: webhookSecret ? `${webhookSecret.substring(0, 20)}...` : 'N/A',
-      hint: 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode). Some events may fail if sent from different Stripe accounts or test mode.'
+      isUnusualSignatureLength,
+      hint: isUnusualSignatureLength 
+        ? 'Signature length is unusual - may be from different Stripe account or endpoint. Check if webhook is configured for correct Stripe account.'
+        : 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode). Some events may fail if sent from different Stripe accounts or test mode.'
     });
     // Возвращаем 401 для неавторизованных запросов (неправильная подпись)
     return res.status(401).json({ error: `Webhook signature verification failed: ${err.message}` });
