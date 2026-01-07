@@ -397,7 +397,31 @@ class CrmStatusAutomationService {
     }
 
     const currentStageId = dealResult.deal.stage_id;
+    
+    this.logger.info('CRM status automation: evaluating stage update', {
+      dealId: normalizedDealId,
+      currentStageId,
+      targetStageId: evaluation.targetStageId,
+      scheduleType: evaluation.scheduleType,
+      paidRatio: evaluation.paidRatio,
+      paidPercent: Math.round(evaluation.paidRatio * 100),
+      expectedAmountPln: snapshot.totals.expectedAmountPln,
+      totalPaidPln: snapshot.totals.totalPaidPln,
+      stripePaymentsCount: snapshot.paymentsCount.stripe,
+      proformasCount: snapshot.proformas.length,
+      options
+    });
+    
     const updateDecision = this.shouldUpdateStage(currentStageId, evaluation.targetStageId, {
+      force: options.force === true
+    });
+
+    this.logger.info('CRM status automation: update decision', {
+      dealId: normalizedDealId,
+      canUpdate: updateDecision.canUpdate,
+      reason: updateDecision.reason,
+      currentStageId,
+      targetStageId: evaluation.targetStageId,
       force: options.force === true
     });
 
