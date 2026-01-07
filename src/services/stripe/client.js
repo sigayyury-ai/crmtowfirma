@@ -32,9 +32,18 @@ function resolveStripeApiKey(options = {}) {
   }
 
   // Для обычных платежей используем STRIPE_API_KEY (основной кабинет)
+  // ВАЖНО: НЕ используем STRIPE_EVENTS_API_KEY для создания платежей!
   const apiKey = process.env.STRIPE_API_KEY;
   if (!apiKey) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
+  }
+  
+  // Проверяем, что не перепутали ключи (Events ключ не должен быть в STRIPE_API_KEY)
+  const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
+  if (eventsKey && apiKey === eventsKey) {
+    logger.warn('⚠️  STRIPE_API_KEY и STRIPE_EVENTS_API_KEY одинаковые! Это ошибка конфигурации.', {
+      hint: 'STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета, а STRIPE_EVENTS_API_KEY - ключом Events кабинета'
+    });
   }
 
   return apiKey;

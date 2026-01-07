@@ -31,8 +31,19 @@ class StripeProcessorService {
       options.crmStatusAutomationService || new StripeStatusAutomationService();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     // Force recreate Stripe client (always live mode)
-    this.stripe = options.stripe || getStripeClient();
+    // ВАЖНО: Используем основной кабинет (STRIPE_API_KEY), НЕ Events кабинет
+    this.stripe = options.stripe || getStripeClient(); // Без type: 'events' - использует основной кабинет
     this.eventStorageService = new StripeEventStorageService({ stripe: this.stripe });
+    
+    // Логируем, какой API ключ используется (только префикс для безопасности)
+    const apiKey = process.env.STRIPE_API_KEY;
+    if (apiKey) {
+      this.logger.info('StripeProcessorService initialized', {
+        apiKeyPrefix: apiKey.substring(0, 20) + '...',
+        keyType: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
+        note: 'Using PRIMARY Stripe account (STRIPE_API_KEY), NOT Events account'
+      });
+    }
     this.mode = 'live'; // Всегда live режим
     this.maxSessions = parseInt(process.env.STRIPE_PROCESSOR_MAX_SESSIONS || '500', 10);
     this.crmCache = new Map();
@@ -2095,11 +2106,24 @@ class StripeProcessorService {
           createParams.metadata.company_tax_id = taxId;
         }
 
+        // ВАЖНО: Проверяем, что используем правильный Stripe клиент (основной кабинет, НЕ Events)
+        const apiKeyPrefix = process.env.STRIPE_API_KEY ? process.env.STRIPE_API_KEY.substring(0, 20) + '...' : 'N/A';
+        this.logger.debug('Creating Stripe Customer', {
+          dealId,
+          email,
+          apiKeyPrefix,
+          accountType: 'PRIMARY',
+          note: 'Using PRIMARY Stripe account (STRIPE_API_KEY), NOT Events account'
+        });
+        
         customer = await this.stripe.customers.create(createParams);
         this.logger.info('Created new Stripe Customer', {
           customerId: customer.id,
           email,
-          dealId
+          dealId,
+          apiKeyPrefix,
+          accountType: 'PRIMARY',
+          note: 'Customer created in PRIMARY Stripe account (STRIPE_API_KEY)'
         });
 
         // Add tax ID separately if provided (for Polish companies)
@@ -3443,6 +3467,15 @@ class StripeProcessorService {
         delete sessionParams.payment_currency_types;
         this.logger.warn('Removed unsupported payment_currency_types parameter', { dealId });
       }
+      
+      // ВАЖНО: Проверяем, что используем правильный Stripe клиент (основной кабинет)
+      const apiKeyPrefix = process.env.STRIPE_API_KEY ? process.env.STRIPE_API_KEY.substring(0, 20) + '...' : 'N/A';
+      this.logger.debug('Creating Checkout Session', {
+        dealId,
+        apiKeyPrefix,
+        accountType: 'PRIMARY',
+        note: 'Using PRIMARY Stripe account (STRIPE_API_KEY) for checkout session creation'
+      });
       
       const session = await this.stripe.checkout.sessions.create(sessionParams);
       
