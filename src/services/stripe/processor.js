@@ -1288,6 +1288,34 @@ class StripeProcessorService {
       const isFirst = paymentType === 'deposit' || paymentType === 'first' || paymentType === 'single';
       const isRest = paymentType === 'rest' || paymentType === 'second';
       
+      // For single payment type, always move to Camp Waiter (it's the only payment)
+      if (paymentType === 'single' && session.payment_status === 'paid') {
+        this.logger.info(`✅ [Deal #${dealId}] Single payment paid - moving to Camp Waiter (stage ${STAGES.CAMP_WAITER_ID})`, {
+          paymentType,
+          sessionId: session.id,
+          stageId: STAGES.CAMP_WAITER_ID
+        });
+        
+        await this.triggerCrmStatusAutomation(dealId, {
+          reason: 'stripe:single-payment-paid',
+          paymentType: 'single'
+        });
+        
+        await this.closeAddressTasks(dealId);
+        
+        // Add note to deal about payment
+        await this.addPaymentNoteToDeal(dealId, {
+          paymentType: 'payment',
+          amount: paymentRecord.original_amount,
+          currency: paymentRecord.currency,
+          amountPln: paymentRecord.amount_pln,
+          sessionId: session.id
+        });
+        
+        // Exit early - stage updated to Camp Waiter
+        return;
+      }
+      
       // First, check if both payments are already paid (for any payment type)
       // This handles the case where both payments are paid but stage wasn't updated
       try {
@@ -1577,7 +1605,7 @@ class StripeProcessorService {
       const paymentType = session.metadata?.payment_type || 'payment';
       const paymentSchedule = session.metadata?.payment_schedule || '100%';
       
-      this.logger.info('Checking if deal stage needs correction for existing paid payment', {
+      this.logger.info('✅ Entering block for existing paid payment - checking if deal stage needs correction', {
         dealId,
         paymentType,
         paymentSchedule,
