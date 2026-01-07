@@ -258,7 +258,20 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
   }
 
   try {
-    logger.info(`📥 Stripe webhook получен | Тип: ${event.type}`);
+    // Логируем структуру event объекта для диагностики
+    logger.info(`📥 Stripe webhook получен | Тип: ${event.type}`, {
+      eventId: event.id,
+      eventType: event.type,
+      apiVersion: event.api_version,
+      livemode: event.livemode,
+      created: event.created,
+      pendingWebhooks: event.pending_webhooks,
+      requestId: event.request?.id,
+      requestIdempotencyKey: event.request?.idempotency_key,
+      dataObjectType: event.data?.object?.object,
+      dataObjectId: event.data?.object?.id,
+      note: 'Endpoint ID (we_...) is NOT included in webhook event object. It can only be verified by matching the signing secret.'
+    });
 
     // Обрабатываем события Checkout Session (создание сессии)
     if (event.type === 'checkout.session.completed') {
