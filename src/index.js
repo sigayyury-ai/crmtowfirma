@@ -18,6 +18,49 @@ logger.info('🚀 Starting application...', {
   hasWfirmaSecretKey: !!process.env.WFIRMA_SECRET_KEY
 });
 
+// ВАЖНО: Проверка Stripe ключей при старте приложения
+const stripeApiKey = process.env.STRIPE_API_KEY;
+const stripeEventsKey = process.env.STRIPE_EVENTS_API_KEY;
+
+if (stripeApiKey) {
+  const primarySuffix = stripeApiKey.substring(stripeApiKey.length - 4);
+  const eventsSuffix = stripeEventsKey ? stripeEventsKey.substring(stripeEventsKey.length - 4) : 'N/A';
+  const isPrimaryCorrect = primarySuffix === '5Cr5';
+  const isEventsCorrect = !stripeEventsKey || eventsSuffix === '7UtM';
+  const areDifferent = stripeApiKey !== stripeEventsKey;
+  
+  logger.info('🔍 Stripe API Keys Configuration Check', {
+    primaryKeyPrefix: stripeApiKey.substring(0, 20) + '...',
+    primaryKeySuffix: primarySuffix,
+    primaryExpectedSuffix: '5Cr5',
+    primaryIsCorrect: isPrimaryCorrect,
+    eventsKeyPrefix: stripeEventsKey ? stripeEventsKey.substring(0, 20) + '...' : 'N/A',
+    eventsKeySuffix: eventsSuffix,
+    eventsExpectedSuffix: '7UtM',
+    eventsIsCorrect: isEventsCorrect,
+    areKeysDifferent: areDifferent,
+    status: !isPrimaryCorrect 
+      ? primarySuffix === '7UtM'
+        ? '❌ ERROR: PRIMARY key is from Events cabinet!'
+        : '⚠️  WARNING: PRIMARY key has unexpected suffix'
+      : !areDifferent
+      ? '❌ ERROR: Both keys are the same!'
+      : '✅ Keys are correctly configured',
+    note: 'PRIMARY key (STRIPE_API_KEY) should end with 5Cr5, Events key (STRIPE_EVENTS_API_KEY) should end with 7UtM'
+  });
+  
+  if (!isPrimaryCorrect || !areDifferent) {
+    logger.error('❌ КРИТИЧЕСКАЯ ОШИБКА в конфигурации Stripe ключей!', {
+      action: 'Проверьте настройки в Render Dashboard',
+      primaryKeySuffix,
+      eventsKeySuffix,
+      hint: 'STRIPE_API_KEY должен заканчиваться на 5Cr5 (основной кабинет), STRIPE_EVENTS_API_KEY должен заканчиваться на 7UtM (Events кабинет)'
+    });
+  }
+} else {
+  logger.warn('⚠️  STRIPE_API_KEY не установлен!');
+}
+
 // Импортируем роуты и сервисы
 const apiRoutes = require('./routes/api');
 const authRoutes = require('./routes/auth');

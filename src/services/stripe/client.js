@@ -50,12 +50,23 @@ function resolveStripeApiKey(options = {}) {
   }
   
   // ВАЖНО: Events кабинет имеет ключ, заканчивающийся на ...7UtM
+  // Основной кабинет имеет ключ, заканчивающийся на ...5Cr5
   // Если STRIPE_API_KEY заканчивается на 7UtM, это означает, что используется Events кабинет вместо основного!
   if (apiKey.endsWith('7UtM')) {
     logger.error('❌ КРИТИЧЕСКАЯ ОШИБКА: STRIPE_API_KEY указывает на Events кабинет!', {
       apiKeySuffix: '...7UtM',
-      hint: 'Ключ, заканчивающийся на 7UtM, принадлежит Events кабинету. STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета!',
-      action: 'Исправьте STRIPE_API_KEY в Render Dashboard. Используйте ключ ОСНОВНОГО кабинета, НЕ Events кабинета!'
+      expectedSuffix: '...5Cr5',
+      hint: 'Ключ, заканчивающийся на 7UtM, принадлежит Events кабинету. STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета (заканчивается на 5Cr5)!',
+      action: 'Исправьте STRIPE_API_KEY в Render Dashboard. Используйте ключ ОСНОВНОГО кабинета (заканчивается на 5Cr5), НЕ Events кабинета (7UtM)!'
+    });
+  }
+  
+  // Проверяем, что используется правильный ключ основного кабинета
+  if (!apiKey.endsWith('5Cr5') && !apiKey.endsWith('7UtM')) {
+    logger.warn('⚠️  STRIPE_API_KEY имеет неожиданный суффикс', {
+      apiKeySuffix: apiKey.substring(apiKey.length - 4),
+      expectedSuffix: '5Cr5',
+      hint: 'Ожидается, что ключ основного кабинета заканчивается на 5Cr5. Если это не так, проверьте настройки в Render Dashboard.'
     });
   }
   
@@ -126,6 +137,24 @@ function attachLoggingHooks(stripe) {
 
 function createStripeClient(options = {}) {
   const apiKey = resolveStripeApiKey(options);
+  const accountType = options.type === 'events' ? 'EVENTS' : 'PRIMARY';
+  const apiKeySuffix = apiKey.substring(apiKey.length - 4);
+  
+  // Детальное логирование для диагностики
+  logger.info(`Creating Stripe client for ${accountType} account`, {
+    accountType,
+    apiKeyPrefix: apiKey.substring(0, 20) + '...',
+    apiKeySuffix,
+    expectedSuffix: accountType === 'EVENTS' ? '7UtM' : '5Cr5',
+    isCorrectSuffix: accountType === 'EVENTS' 
+      ? apiKeySuffix === '7UtM' 
+      : apiKeySuffix === '5Cr5',
+    envVar: accountType === 'EVENTS' ? 'STRIPE_EVENTS_API_KEY' : 'STRIPE_API_KEY',
+    note: accountType === 'PRIMARY' 
+      ? 'This client is used for creating payments, customers, and checkout sessions'
+      : 'This client is used ONLY for event reports, NOT for payments'
+  });
+  
   const stripe = new Stripe(apiKey, {
     apiVersion: process.env.STRIPE_API_VERSION || '2024-04-10',
     timeout: resolveNumber(process.env.STRIPE_TIMEOUT_MS, 30000), // Увеличено до 30 секунд
@@ -142,6 +171,8 @@ function createStripeClient(options = {}) {
   logger.info('Stripe client initialised', {
     mode,
     apiVersion: stripe.getApiField('version'),
+    accountType,
+    apiKeySuffix,
     keyType: options.type || 'default'
   });
   return stripe;

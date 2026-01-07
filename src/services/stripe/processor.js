@@ -35,14 +35,41 @@ class StripeProcessorService {
     this.stripe = options.stripe || getStripeClient(); // Без type: 'events' - использует основной кабинет
     this.eventStorageService = new StripeEventStorageService({ stripe: this.stripe });
     
-    // Логируем, какой API ключ используется (только префикс для безопасности)
+    // Детальное логирование для диагностики - какой ключ используется
     const apiKey = process.env.STRIPE_API_KEY;
+    const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
+    const apiKeySuffix = apiKey ? apiKey.substring(apiKey.length - 4) : 'N/A';
+    const eventsKeySuffix = eventsKey ? eventsKey.substring(eventsKey.length - 4) : 'N/A';
+    
     if (apiKey) {
       this.logger.info('StripeProcessorService initialized', {
         apiKeyPrefix: apiKey.substring(0, 20) + '...',
+        apiKeySuffix,
+        expectedSuffix: '5Cr5',
+        isCorrectKey: apiKeySuffix === '5Cr5',
         keyType: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
-        note: 'Using PRIMARY Stripe account (STRIPE_API_KEY), NOT Events account'
+        envVar: 'STRIPE_API_KEY',
+        note: 'Using PRIMARY Stripe account (STRIPE_API_KEY), NOT Events account',
+        warning: apiKeySuffix === '7UtM' 
+          ? '❌ ERROR: Using Events cabinet key! Should be 5Cr5 for PRIMARY account!'
+          : apiKeySuffix !== '5Cr5'
+          ? '⚠️  WARNING: Unexpected key suffix. Expected 5Cr5 for PRIMARY account.'
+          : '✅ Correct key for PRIMARY account'
       });
+      
+      // Проверяем, что Events ключ отличается
+      if (eventsKey) {
+        this.logger.info('Stripe keys comparison', {
+          primaryKeySuffix: apiKeySuffix,
+          eventsKeySuffix,
+          areDifferent: apiKey !== eventsKey,
+          warning: apiKey === eventsKey 
+            ? '❌ ERROR: Both keys are the same!'
+            : apiKeySuffix === '7UtM'
+            ? '❌ ERROR: PRIMARY key is from Events cabinet!'
+            : '✅ Keys are correctly configured'
+        });
+      }
     }
     this.mode = 'live'; // Всегда live режим
     this.maxSessions = parseInt(process.env.STRIPE_PROCESSOR_MAX_SESSIONS || '500', 10);
@@ -3469,11 +3496,24 @@ class StripeProcessorService {
       }
       
       // ВАЖНО: Проверяем, что используем правильный Stripe клиент (основной кабинет)
-      const apiKeyPrefix = process.env.STRIPE_API_KEY ? process.env.STRIPE_API_KEY.substring(0, 20) + '...' : 'N/A';
-      this.logger.debug('Creating Checkout Session', {
+      const apiKey = process.env.STRIPE_API_KEY;
+      const apiKeyPrefix = apiKey ? apiKey.substring(0, 20) + '...' : 'N/A';
+      const apiKeySuffix = apiKey ? apiKey.substring(apiKey.length - 4) : 'N/A';
+      const isCorrectKey = apiKeySuffix === '5Cr5';
+      
+      this.logger.info('🔍 Creating Checkout Session - Key Verification', {
         dealId,
         apiKeyPrefix,
+        apiKeySuffix,
+        expectedSuffix: '5Cr5',
+        isCorrectKey,
         accountType: 'PRIMARY',
+        envVar: 'STRIPE_API_KEY',
+        warning: !isCorrectKey 
+          ? apiKeySuffix === '7UtM'
+            ? '❌ ERROR: Using Events cabinet key! Should be 5Cr5!'
+            : '⚠️  WARNING: Unexpected key suffix. Expected 5Cr5.'
+          : '✅ Correct key for PRIMARY account',
         note: 'Using PRIMARY Stripe account (STRIPE_API_KEY) for checkout session creation'
       });
       
