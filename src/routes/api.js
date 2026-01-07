@@ -670,6 +670,65 @@ router.get('/stripe-health', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/stripe/events-cabinet/monitor
+ * Ручной запуск мониторинга сессий в Events кабинете
+ * Проверяет сессии с deal_id в Events кабинете и обрабатывает оплаченные
+ * 
+ * Query параметры:
+ *   - hoursBack: сколько часов назад проверять (по умолчанию 24)
+ *   - limit: максимальное количество сессий для проверки (по умолчанию 100)
+ */
+router.post('/stripe/events-cabinet/monitor', requireStripeAccess, async (req, res) => {
+  try {
+    const hoursBack = parseInt(req.query.hoursBack || '24', 10);
+    const limit = parseInt(req.query.limit || '100', 10);
+
+    if (isNaN(hoursBack) || hoursBack < 1 || hoursBack > 168) {
+      return res.status(400).json({
+        success: false,
+        error: 'hoursBack must be between 1 and 168 (7 days)'
+      });
+    }
+
+    if (isNaN(limit) || limit < 1 || limit > 500) {
+      return res.status(400).json({
+        success: false,
+        error: 'limit must be between 1 and 500'
+      });
+    }
+
+    const EventsCabinetMonitorService = require('../services/stripe/eventsCabinetMonitorService');
+    const monitorService = new EventsCabinetMonitorService();
+
+    logger.info('Manual Events Cabinet monitor triggered', {
+      hoursBack,
+      limit,
+      triggeredBy: req.user?.email || 'unknown'
+    });
+
+    const result = await monitorService.checkAndProcessEventsCabinetSessions({
+      trigger: 'manual_api',
+      limit,
+      hoursBack
+    });
+
+    res.json({
+      success: result.success !== false,
+      ...result
+    });
+  } catch (error) {
+    logger.error('Events Cabinet monitor failed via API', {
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 router.use('/stripe', requireStripeAccess, stripeRouter);
 router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
 router.use('/analytics', analyticsRouter);

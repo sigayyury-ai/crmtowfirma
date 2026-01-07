@@ -5,6 +5,7 @@ const StripeProcessorService = require('./stripe/processor');
 const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
 const ProformaSecondPaymentReminderService = require('./proformaSecondPaymentReminderService');
 const StripeEventAggregationService = require('./stripe/eventAggregationService');
+const EventsCabinetMonitorService = require('./stripe/eventsCabinetMonitorService');
 const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderService');
 const MqlSyncService = require('./analytics/mqlSyncService');
 const StripePaymentTestRunner = require('../../tests/integration/stripe-payment/testRunner');
@@ -23,6 +24,7 @@ const GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION = '0 8 * * *'; // Ежеднев
 const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Каждые 5 минут для обработки напоминаний
 const MQL_SYNC_CRON_EXPRESSION = '0 10 * * 1'; // Еженедельно в понедельник в 10:00 утра для обновления MQL аналитики
 const STRIPE_PAYMENT_TESTS_CRON_EXPRESSION = '0 3 * * *'; // Ежедневно в 3:00 ночи для запуска автотестов Stripe платежей
+const EVENTS_CABINET_MONITOR_CRON_EXPRESSION = '*/30 * * * *'; // Каждые 30 минут для проверки сессий в Events кабинете
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -34,6 +36,8 @@ class SchedulerService {
     this.proformaReminderService = options.proformaReminderService || new ProformaSecondPaymentReminderService();
     this.stripeEventAggregationService =
       options.stripeEventAggregationService || new StripeEventAggregationService();
+    this.eventsCabinetMonitorService =
+      options.eventsCabinetMonitorService || new EventsCabinetMonitorService();
     
     // Initialize Google Meet Reminder Service (may fail if credentials not configured)
     try {
@@ -64,6 +68,7 @@ class SchedulerService {
     this.googleMeetReminderProcessCronJob = null;
     this.mqlSyncCronJob = null;
     this.stripePaymentTestsCronJob = null;
+    this.eventsCabinetMonitorCronJob = null;
     this.retryTimeout = null;
     
     // Инициализируем MQL Sync Service
@@ -353,6 +358,29 @@ class SchedulerService {
       logger.warn('Stripe Payment Test Runner not available, skipping cron job setup');
     }
 
+    // Cron для мониторинга сессий в Events кабинете (каждые 30 минут)
+    logger.info('Configuring cron job for Events Cabinet sessions monitoring', {
+      cronExpression: EVENTS_CABINET_MONITOR_CRON_EXPRESSION,
+      timezone: this.timezone,
+      note: 'Monitors sessions with deal_id in Events cabinet that may not be processed by webhooks'
+    });
+    this.eventsCabinetMonitorCronJob = cron.schedule(
+      EVENTS_CABINET_MONITOR_CRON_EXPRESSION,
+      () => {
+        this.runEventsCabinetMonitor({ trigger: 'cron_events_cabinet_monitor' }).catch((error) => {
+          logger.error('Unexpected error in Events Cabinet monitor:', error);
+        });
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
+    logger.info('Events Cabinet monitor cron job registered successfully', {
+      cronExpression: EVENTS_CABINET_MONITOR_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
@@ -361,6 +389,12 @@ class SchedulerService {
       this.runStripeEventAggregation({ trigger: 'startup' }).catch((error) => {
         logger.error('Startup Stripe events aggregation failed:', error);
       });
+      // Запускаем проверку Events кабинета с небольшой задержкой, чтобы не перегружать при старте
+      setTimeout(() => {
+        this.runEventsCabinetMonitor({ trigger: 'startup' }).catch((error) => {
+          logger.error('Startup Events Cabinet monitor failed:', error);
+        });
+      }, 10000); // 10 секунд задержка
     });
   }
 
@@ -388,6 +422,10 @@ class SchedulerService {
     if (this.stripePaymentTestsCronJob) {
       this.stripePaymentTestsCronJob.stop();
       this.stripePaymentTestsCronJob = null;
+    }
+    if (this.eventsCabinetMonitorCronJob) {
+      this.eventsCabinetMonitorCronJob.stop();
+      this.eventsCabinetMonitorCronJob = null;
     }
 
     if (this.retryTimeout) {
@@ -468,6 +506,37 @@ class SchedulerService {
         trigger,
         error: error.message
       });
+    }
+  }
+
+  async runEventsCabinetMonitor({ trigger = 'manual' } = {}) {
+    if (!this.eventsCabinetMonitorService) {
+      logger.warn('Events Cabinet Monitor service not configured; skipping');
+      return;
+    }
+    try {
+      logger.info('Events Cabinet monitor started', { trigger });
+      const result = await this.eventsCabinetMonitorService.checkAndProcessEventsCabinetSessions({
+        trigger,
+        limit: 100,
+        hoursBack: 24 // Проверяем последние 24 часа
+      });
+      logger.info('Events Cabinet monitor finished', {
+        trigger,
+        processed: result.processed || 0,
+        skipped: result.skipped || 0,
+        errors: result.errors || 0
+      });
+      return result;
+    } catch (error) {
+      logger.error('Events Cabinet monitor failed', {
+        trigger,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
     }
   }
 
