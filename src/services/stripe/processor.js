@@ -13,7 +13,7 @@ const { STAGE_IDS: STAGES } = require('../crm/statusCalculator');
 const StripeStatusAutomationService = require('../crm/stripeStatusAutomationService');
 const PipedriveClient = require('../pipedrive');
 const { getRate } = require('./exchangeRateService');
-const { getStripeClient } = require('./client');
+const { getStripeClient, canRetrieveSession } = require('./client');
 const SendPulseClient = require('../sendpulse');
 const { extractCashFields } = require('../cash/cashFieldParser');
 // Phase 0: Code Review Fixes - New unified services
@@ -3857,6 +3857,15 @@ class StripeProcessorService {
         // Get Checkout Session from Stripe to get payment_intent
         let session;
         try {
+          // Проверяем что можем получить сессию в текущем режиме
+          if (!canRetrieveSession(payment.session_id)) {
+            this.logger.debug('Skipping session retrieve - session from different Stripe mode', {
+              dealId,
+              sessionId: payment.session_id
+            });
+            continue;
+          }
+          
           session = await this.stripe.checkout.sessions.retrieve(payment.session_id, {
             expand: ['payment_intent']
           });

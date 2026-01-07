@@ -1177,7 +1177,11 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/create-stripe-session', as
           // Если URL все еще не найден, получаем из Stripe API
           if (!sessionUrl) {
             try {
-              const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+              const { canRetrieveSession } = require('../services/stripe/client');
+              if (!canRetrieveSession(p.session_id)) {
+                logger.debug('Skipping session retrieve - different Stripe mode', { sessionId: p.session_id });
+              } else {
+                const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
               if (session && session.url) {
                 sessionUrl = session.url;
                 // Сохраняем URL в DB для будущего использования
@@ -1485,8 +1489,14 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/recreate-expired-session',
     // Проверяем, что сессия действительно истекла
     let isExpired = false;
     try {
-      const session = await stripeProcessor.stripe.checkout.sessions.retrieve(expiredPayment.session_id);
-      isExpired = session.status === 'expired' || session.status === 'canceled';
+      const { canRetrieveSession } = require('../services/stripe/client');
+      if (!canRetrieveSession(expiredPayment.session_id)) {
+        // Если режим не совпадает, считаем что сессия недействительна
+        isExpired = true;
+      } else {
+        const session = await stripeProcessor.stripe.checkout.sessions.retrieve(expiredPayment.session_id);
+        isExpired = session.status === 'expired' || session.status === 'canceled';
+      }
     } catch (error) {
       // Если не удалось получить сессию, считаем что она истекла
       isExpired = true;

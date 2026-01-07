@@ -1165,34 +1165,17 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             if (!payment || !payment.session_id) return { exists: false, paid: false, active: false };
             
             // Проверяем режим Stripe и соответствие сессии режиму
-            const { getStripeMode } = require('../services/stripe/client');
-            const stripeMode = getStripeMode();
+            const { canRetrieveSession } = require('../services/stripe/client');
             const sessionId = payment.session_id;
-            const isTestSession = sessionId.startsWith('cs_test_');
-            const isLiveSession = sessionId.startsWith('cs_live_');
             
-            // Если режим live, а сессия test - пропускаем проверку (сессия недействительна)
-            if (stripeMode === 'live' && isTestSession) {
-              logger.debug(`⚠️  Пропуск проверки test сессии в live режиме | Deal: ${dealId} | Session ID: ${sessionId}`, {
+            // Если режим не совпадает - пропускаем проверку
+            if (!canRetrieveSession(sessionId)) {
+              logger.debug(`⚠️  Пропуск проверки сессии - режим не совпадает | Deal: ${dealId} | Session ID: ${sessionId}`, {
                 dealId,
                 sessionId,
-                stripeMode,
-                sessionType: 'test',
                 reason: 'Session from different Stripe mode'
               });
-              return { exists: false, paid: false, active: false, invalidMode: true, error: 'Session from test mode, current mode is live' };
-            }
-            
-            // Если режим test, а сессия live - пропускаем проверку (сессия недействительна)
-            if (stripeMode === 'test' && isLiveSession) {
-              logger.debug(`⚠️  Пропуск проверки live сессии в test режиме | Deal: ${dealId} | Session ID: ${sessionId}`, {
-                dealId,
-                sessionId,
-                stripeMode,
-                sessionType: 'live',
-                reason: 'Session from different Stripe mode'
-              });
-              return { exists: false, paid: false, active: false, invalidMode: true, error: 'Session from live mode, current mode is test' };
+              return { exists: false, paid: false, active: false, invalidMode: true, error: 'Session from different Stripe mode' };
             }
             
             try {
@@ -1378,7 +1361,11 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               // Если URL все еще нет, получаем из Stripe API
               if (!sessionUrl) {
                 try {
-                  const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+                  const { canRetrieveSession } = require('../services/stripe/client');
+                  if (!canRetrieveSession(p.session_id)) {
+                    logger.debug(`⚠️  Пропуск получения URL сессии - режим не совпадает | Deal: ${dealId} | Session ID: ${p.session_id}`);
+                  } else {
+                    const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
                   if (session && session.url) {
                     sessionUrl = session.url;
                     // Сохраняем URL в БД для будущих использований
@@ -1393,6 +1380,7 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                         error: saveError.message
                       });
                     }
+                  }
                   }
                 } catch (error) {
                   logger.warn(`⚠️  Не удалось получить URL сессии из Stripe | Deal: ${dealId} | Session ID: ${p.session_id} | Ошибка: ${error.message}`);
