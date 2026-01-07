@@ -170,7 +170,10 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             }
             
             // Проверяем статус оплаты (может быть 'paid' или 'unpaid' в зависимости от типа платежа)
+            // Для checkout.session.completed обычно платеж уже оплачен
             const isPaid = session.payment_status === 'paid' || session.status === 'complete';
+            
+            logger.info(`🔍 Проверка статуса оплаты для уведомления | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status} | Status: ${session.status} | Is Paid: ${isPaid}`);
             
             // Отправляем уведомление об успешной оплате (если платеж оплачен)
             if (isPaid) {
@@ -183,9 +186,21 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
                 });
               }
             } else {
-              // Если платеж еще не оплачен, отправляем уведомление о выставлении счета
-              // Но для checkout.session.completed обычно платеж уже оплачен, так что это редко
-              logger.info(`ℹ️  Платеж еще не оплачен, пропускаем уведомление | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status}`);
+              // Если платеж еще не оплачен (редко для checkout.session.completed)
+              // Отправляем уведомление о выставлении счета только если URL доступен
+              if (sessions.length > 0 && sessions[0].url) {
+                await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+                  paymentSchedule: paymentScheduleFromMetadata,
+                  sessions: sessions,
+                  currency: session.currency,
+                  totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
+                  forceSend: false
+                });
+                
+                logger.info(`📧 Уведомление о выставлении счета отправлено | Deal: ${dealId} | Session: ${session.id}`);
+              } else {
+                logger.warn(`⚠️  Пропускаем уведомление - нет URL сессии | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status}`);
+              }
             }
           } catch (notificationError) {
             // Логируем ошибку, но не прерываем обработку платежа
