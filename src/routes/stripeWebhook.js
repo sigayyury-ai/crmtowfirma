@@ -105,7 +105,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       const dealId = session.metadata?.deal_id;
 
       if (dealId) {
-        logger.info(`💳 Обработка Checkout Session | Deal: ${dealId} | Session: ${session.id}`);
+        logger.info(`💳 Обработка Checkout Session | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status} | Status: ${session.status}`);
         
         try {
           // Обновляем статус платежа в базе данных
