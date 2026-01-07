@@ -230,7 +230,10 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       webhookSecret.startsWith('whsec_live_')
     );
     
-    logger.warn('Stripe webhook signature verification failed', { 
+    logger.warn('Stripe webhook signature verification failed', {
+      eventId: null, // Event не был создан из-за ошибки верификации
+      requestId: req.headers['x-request-id'] || 'unknown',
+      clientIP: req.ip || req.headers['x-forwarded-for'] || 'unknown', 
       error: err.message,
       errorType: err.type,
       hasSignature: !!sig,
@@ -274,6 +277,9 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       requestIdempotencyKey: event.request?.idempotency_key,
       dataObjectType: event.data?.object?.object,
       dataObjectId: event.data?.object?.id,
+      signatureVerified: true,
+      expectedEndpointId,
+      expectedEndpointUrl,
       note: 'Endpoint ID (we_...) is NOT included in webhook event object. It can only be verified by matching the signing secret.'
     });
 
