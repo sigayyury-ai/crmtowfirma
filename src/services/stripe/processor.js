@@ -4143,8 +4143,10 @@ class StripeProcessorService {
     } catch (error) {
       this.logger.warn('Failed to list Stripe sessions for cancellation', {
         dealId,
-        error: error.message
+        error: error.message,
+        note: 'Will continue with sessions found in database. Active sessions in Stripe may need to be cancelled manually.'
       });
+      // Продолжаем с сессиями из БД даже при ошибке подключения к Stripe
     }
 
     // 3. Отменяем все найденные сессии
