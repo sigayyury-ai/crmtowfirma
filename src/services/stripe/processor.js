@@ -120,17 +120,36 @@ class StripeProcessorService {
   }
 
   async triggerCrmStatusAutomation(dealId, context = {}) {
+    this.logger.info('Triggering CRM status automation', {
+      dealId,
+      context,
+      hasService: !!this.crmStatusAutomationService
+    });
+    
     if (!dealId || !this.crmStatusAutomationService) {
+      this.logger.warn('CRM status automation skipped - missing dealId or service', {
+        dealId,
+        hasService: !!this.crmStatusAutomationService
+      });
       return;
     }
     if (
       typeof this.crmStatusAutomationService.isEnabled === 'function' &&
       !this.crmStatusAutomationService.isEnabled()
     ) {
+      this.logger.info('CRM status automation skipped - service disabled', { dealId });
       return;
     }
     try {
+      this.logger.info('Calling syncDealStage for CRM status update', {
+        dealId,
+        context
+      });
       await this.crmStatusAutomationService.syncDealStage(dealId, context);
+      this.logger.info('CRM status automation completed successfully', {
+        dealId,
+        context
+      });
     } catch (error) {
       // Проверяем, является ли ошибка связанной с недоступностью сделки
       const isDealNotFound = error.message?.includes('Failed to load Pipedrive deal') || 
