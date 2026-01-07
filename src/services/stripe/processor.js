@@ -4780,7 +4780,8 @@ class StripeProcessorService {
           this.logger.warn('Failed to create tax correction task', {
             dealId,
             error: taskResult.error
-        });
+          });
+        }
       }
     } catch (error) {
       this.logger.error('Error checking/creating tax correction task', {
