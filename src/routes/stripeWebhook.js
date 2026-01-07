@@ -5,6 +5,7 @@ const StripeProcessorService = require('../services/stripe/processor');
 const { getStripeClient, canRetrieveSession } = require('../services/stripe/client');
 const CashPaymentsRepository = require('../services/cash/cashPaymentsRepository');
 const { ensureCashStatus } = require('../services/cash/cashStatusSync');
+const { fromMinorUnit } = require('../utils/currency');
 
 const stripeProcessor = new StripeProcessorService();
 const stripe = getStripeClient();
@@ -111,8 +112,40 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           // - Второй платеж (rest) → Camp Waiter (ID: 27)
           // - Единый платеж (single) → Camp Waiter (ID: 27)
           await stripeProcessor.persistSession(session);
+          
+          // Синхронизируем ожидания наличных платежей
           await syncCashExpectationFromStripeSession(session);
-          await syncCashExpectationFromStripeSession(session);
+          
+          // Отправляем уведомление клиенту через SendPulse
+          try {
+            const existingPayments = await stripeProcessor.repository.listPayments({
+              dealId: String(dealId),
+              limit: 10
+            });
+            
+            const paymentSchedule = stripeProcessor.determinePaymentSchedule(dealId, existingPayments);
+            const sessions = existingPayments.filter(p => p.session_id).map(p => ({
+              session_id: p.session_id,
+              amount: p.original_amount,
+              currency: p.currency,
+              checkout_url: p.checkout_url
+            }));
+            
+            await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+              paymentSchedule: paymentSchedule.type,
+              sessions: sessions,
+              currency: session.currency,
+              totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
+              forceSend: false
+            });
+            
+            logger.info(`📧 Уведомление о платеже отправлено | Deal: ${dealId} | Session: ${session.id}`);
+          } catch (notificationError) {
+            // Логируем ошибку, но не прерываем обработку платежа
+            logger.warn(`⚠️  Ошибка отправки уведомления о платеже | Deal: ${dealId} | Session: ${session.id}`, { 
+              error: notificationError.message 
+            });
+          }
           
           logger.info(`✅ Checkout Session обработан | Deal: ${dealId} | Session: ${session.id}`);
         } catch (error) {
