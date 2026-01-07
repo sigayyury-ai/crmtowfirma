@@ -33,6 +33,17 @@ router.get('/webhooks/stripe', (req, res) => {
 router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  
+  // Детальное логирование для отладки
+  logger.debug('Stripe webhook received', {
+    hasSignature: !!sig,
+    signatureLength: sig?.length || 0,
+    signaturePreview: sig ? `${sig.substring(0, 20)}...` : 'N/A',
+    bodyLength: req.body?.length || 0,
+    bodyType: req.body?.constructor?.name || typeof req.body,
+    contentType: req.headers['content-type'],
+    userAgent: req.headers['user-agent']
+  });
 
   if (!webhookSecret) {
     logger.warn('Stripe webhook secret not configured', {
