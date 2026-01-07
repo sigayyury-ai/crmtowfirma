@@ -132,14 +132,12 @@ function getRawBody(req, res, next) {
  */
 router.post('/webhooks/stripe', getRawBody, async (req, res) => {
   const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   
-  // Поддержка нескольких webhook secrets (для разных endpoint'ов: события и кемпы)
-  // Формат: STRIPE_WEBHOOK_SECRET=whsec_... или STRIPE_WEBHOOK_SECRET=whsec_...|whsec_... (через |)
-  const webhookSecretsRaw = process.env.STRIPE_WEBHOOK_SECRET || '';
-  const webhookSecrets = webhookSecretsRaw.split('|').map(s => s.trim()).filter(s => s.length > 0);
-  
-  // Ожидаемый endpoint ID (для диагностики)
-  const expectedEndpointId = process.env.STRIPE_WEBHOOK_ENDPOINT_ID || 'we_1SXMcUBXP7ZF0H8RKWUimiqC';
+  // Ожидаемый webhook endpoint ID: we_1SXMcUBXP7ZF0H8RKWUimiqC
+  // Endpoint URL: https://invoices.comoon.io/api/webhooks/stripe
+  const expectedEndpointId = 'we_1SXMcUBXP7ZF0H8RKWUimiqC';
+  const expectedEndpointUrl = 'https://invoices.comoon.io/api/webhooks/stripe';
   
   // Детальное логирование для отладки
   logger.debug('Stripe webhook received', {
@@ -150,20 +148,23 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
     bodyType: req.rawBody?.constructor?.name || typeof req.rawBody,
     contentType: req.headers['content-type'],
     userAgent: req.headers['user-agent'],
-    webhookSecretsCount: webhookSecrets.length,
-    expectedEndpointId
+    expectedEndpointId,
+    expectedEndpointUrl
   });
 
-  if (webhookSecrets.length === 0) {
+  if (!webhookSecret) {
     logger.warn('Stripe webhook secret not configured', {
       hint: 'Add STRIPE_WEBHOOK_SECRET environment variable in Render Dashboard',
       documentation: 'See docs/render-stripe-webhook-secret.md for instructions',
-      expectedEndpointId
+      expectedEndpointId,
+      expectedEndpointUrl,
+      note: `This endpoint expects webhook from endpoint ID: ${expectedEndpointId}`
     });
     return res.status(400).json({ 
       error: 'Webhook secret not configured',
       hint: 'STRIPE_WEBHOOK_SECRET environment variable is missing. Add it in Render Dashboard → Environment → Environment Variables',
-      expectedEndpointId
+      expectedEndpointId,
+      expectedEndpointUrl
     });
   }
 
@@ -191,37 +192,11 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       bodyPreview: bodyPreview.substring(0, 50) + '...',
       bodyStartsWith: bodyPreview.startsWith('{') ? 'JSON object' : 'Not JSON object',
       signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
-      verifiedSecret: verifiedSecret || 'N/A',
-      expectedEndpointId
+      expectedEndpointId,
+      expectedEndpointUrl
     });
 
-    // Пробуем верифицировать с каждым из доступных secrets
-    // Это позволяет использовать один endpoint для нескольких webhook'ов (события и кемпы)
-    let event = null;
-    let verifiedSecret = null;
-    let lastError = null;
-    
-    for (const secret of webhookSecrets) {
-      try {
-        event = stripe.webhooks.constructEvent(req.rawBody, sig, secret);
-        verifiedSecret = secret.substring(0, 15) + '...';
-        logger.debug('Stripe webhook signature verified successfully', {
-          secretPrefix: secret.substring(0, 15) + '...',
-          secretIndex: webhookSecrets.indexOf(secret) + 1,
-          totalSecrets: webhookSecrets.length
-        });
-        break;
-      } catch (err) {
-        lastError = err;
-        // Пробуем следующий secret
-        continue;
-      }
-    }
-    
-    if (!event) {
-      // Ни один secret не подошел
-      throw lastError || new Error('No matching webhook secret found');
-    }
+    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
   } catch (err) {
     // Логируем детали для отладки проблем с верификацией
     // Проверяем длину подписи - если она необычно длинная (148 символов), это может быть другой endpoint
@@ -262,18 +237,21 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       bodyType: req.rawBody?.constructor?.name || typeof req.rawBody,
       contentType: req.headers['content-type'],
       userAgent: req.headers['user-agent'],
-      webhookSecretsCount: webhookSecrets.length,
-      webhookSecretPrefixes: webhookSecrets.map(s => s.substring(0, 15) + '...'),
-      isWebhookSecretValid: webhookSecrets.some(s => 
-        s.startsWith('whsec_') || s.startsWith('whsec_test_') || s.startsWith('whsec_live_')
+      webhookSecretLength: webhookSecret?.length || 0,
+      webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 15) : 'N/A',
+      isWebhookSecretValid: webhookSecret && (
+        webhookSecret.startsWith('whsec_') || 
+        webhookSecret.startsWith('whsec_test_') || 
+        webhookSecret.startsWith('whsec_live_')
       ),
       expectedEndpointId,
+      expectedEndpointUrl,
       isUnusualSignatureLength,
-      hint: !webhookSecrets.some(s => s.startsWith('whsec_') || s.startsWith('whsec_test_') || s.startsWith('whsec_live_'))
-        ? 'STRIPE_WEBHOOK_SECRET format is invalid. It should start with whsec_, whsec_test_, or whsec_live_. Check Stripe Dashboard → Developers → Webhooks → Signing secret. You can specify multiple secrets separated by | (pipe).'
+      hint: !webhookSecret || !(webhookSecret.startsWith('whsec_') || webhookSecret.startsWith('whsec_test_') || webhookSecret.startsWith('whsec_live_'))
+        ? 'STRIPE_WEBHOOK_SECRET format is invalid. It should start with whsec_, whsec_test_, or whsec_live_. Check Stripe Dashboard → Developers → Webhooks → Signing secret.'
         : isUnusualSignatureLength 
         ? 'Signature length is unusual - may be from different Stripe account or endpoint. Check if webhook is configured for correct Stripe account.'
-        : `Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode). Expected endpoint ID: ${expectedEndpointId}. Verify: 1) You are in Live mode in Stripe Dashboard, 2) The endpoint URL matches exactly, 3) The signing secret is from the correct endpoint. If you have multiple endpoints (events and camps), specify all secrets separated by | (pipe): STRIPE_WEBHOOK_SECRET=whsec_...|whsec_...`
+        : `Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard. Expected endpoint ID: ${expectedEndpointId}, URL: ${expectedEndpointUrl}. Verify: 1) You are in Live mode in Stripe Dashboard, 2) The endpoint URL matches exactly (${expectedEndpointUrl}), 3) The signing secret is from endpoint ID ${expectedEndpointId}`
     });
     // Возвращаем 401 для неавторизованных запросов (неправильная подпись)
     return res.status(401).json({ error: `Webhook signature verification failed: ${err.message}` });
