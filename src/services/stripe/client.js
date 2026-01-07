@@ -90,8 +90,8 @@ function createStripeClient(options = {}) {
   const apiKey = resolveStripeApiKey(options);
   const stripe = new Stripe(apiKey, {
     apiVersion: process.env.STRIPE_API_VERSION || '2024-04-10',
-    timeout: resolveNumber(process.env.STRIPE_TIMEOUT_MS, 12000),
-    maxNetworkRetries: resolveNumber(process.env.STRIPE_MAX_NETWORK_RETRIES, 1),
+    timeout: resolveNumber(process.env.STRIPE_TIMEOUT_MS, 30000), // Увеличено до 30 секунд
+    maxNetworkRetries: resolveNumber(process.env.STRIPE_MAX_NETWORK_RETRIES, 3), // Увеличено до 3 попыток
     appInfo: {
       name: pkgName || 'pipedrive-wfirma-integration',
       version: pkgVersion || '0.0.0',
