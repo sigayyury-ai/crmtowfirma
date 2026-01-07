@@ -259,37 +259,139 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       const charge = event.data.object;
       const paymentIntentId = charge.payment_intent;
       
-      if (paymentIntentId) {
-        try {
-          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-          const sessionId = paymentIntent.metadata?.session_id;
-          
-          if (sessionId) {
-            // Проверяем что можем получить сессию в текущем режиме
-            if (!canRetrieveSession(sessionId)) {
-              logger.debug('Skipping charge.refunded - session from different Stripe mode', {
-                sessionId,
-                chargeId: charge.id
-              });
-            } else {
-              const session = await stripe.checkout.sessions.retrieve(sessionId);
-              const dealId = session.metadata?.deal_id;
-              
-              if (dealId) {
-                logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
-                
-                // Пересчитываем стадию сделки через новый сервис автоматизации
-                await stripeProcessor.triggerCrmStatusAutomation(dealId, {
-                  reason: 'stripe:webhook-refund'
-                });
-                
-                logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+      logger.info(`💰 Обработка возврата платежа | Charge: ${charge.id} | PaymentIntent: ${paymentIntentId || 'N/A'}`);
+      
+      let dealId = null;
+      
+      // Пробуем найти deal_id из разных источников
+      try {
+        // 1. Из charge metadata
+        if (charge.metadata?.deal_id) {
+          dealId = charge.metadata.deal_id;
+          logger.debug('Deal ID найден в charge metadata', { dealId, chargeId: charge.id });
+        }
+        
+        // 2. Из payment в БД по payment_intent
+        if (!dealId && paymentIntentId) {
+          try {
+            const payment = await stripeProcessor.repository.findPaymentByPaymentIntent(paymentIntentId);
+            if (payment && payment.deal_id) {
+              dealId = payment.deal_id;
+              logger.debug('Deal ID найден в БД по payment_intent', { dealId, paymentIntentId });
+            }
+          } catch (dbError) {
+            logger.debug('Не удалось найти payment в БД', { paymentIntentId, error: dbError.message });
+          }
+        }
+        
+        // 3. Из paymentIntent metadata (если доступен)
+        if (!dealId && paymentIntentId) {
+          try {
+            const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+            if (paymentIntent.metadata?.deal_id) {
+              dealId = paymentIntent.metadata.deal_id;
+              logger.debug('Deal ID найден в paymentIntent metadata', { dealId, paymentIntentId });
+            }
+            
+            // 4. Из session через paymentIntent (если session_id есть)
+            if (!dealId && paymentIntent.metadata?.session_id) {
+              const sessionId = paymentIntent.metadata.session_id;
+              if (canRetrieveSession(sessionId)) {
+                try {
+                  const session = await stripe.checkout.sessions.retrieve(sessionId);
+                  if (session.metadata?.deal_id) {
+                    dealId = session.metadata.deal_id;
+                    logger.debug('Deal ID найден в session metadata', { dealId, sessionId });
+                  }
+                } catch (sessionError) {
+                  logger.debug('Не удалось получить session', { sessionId, error: sessionError.message });
+                }
               }
             }
+          } catch (piError) {
+            logger.debug('Не удалось получить paymentIntent', { paymentIntentId, error: piError.message });
           }
-        } catch (error) {
-          logger.error(`❌ Ошибка обработки возврата | Charge: ${charge.id}`, { error: error.message });
         }
+        
+        // 5. Из refund объекта (если есть в event.data.object.refunds)
+        if (!dealId && charge.refunds && charge.refunds.data && charge.refunds.data.length > 0) {
+          const refund = charge.refunds.data[0];
+          if (refund.metadata?.deal_id) {
+            dealId = refund.metadata.deal_id;
+            logger.debug('Deal ID найден в refund metadata', { dealId, refundId: refund.id });
+          }
+        }
+        
+        // Если deal_id найден - обрабатываем возврат
+        if (dealId) {
+          logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
+          
+          // Получаем refund объект из Stripe для полной обработки
+          let refund = null;
+          try {
+            // Пробуем получить refund из charge.refunds или из Stripe API
+            if (charge.refunds && charge.refunds.data && charge.refunds.data.length > 0) {
+              refund = charge.refunds.data[0];
+            } else {
+              // Получаем последний refund для этого charge
+              const refunds = await stripe.refunds.list({
+                charge: charge.id,
+                limit: 1
+              });
+              if (refunds.data && refunds.data.length > 0) {
+                refund = refunds.data[0];
+              }
+            }
+            
+            // Если refund найден, обрабатываем через persistRefund для полной обработки
+            if (refund) {
+              // Убеждаемся что deal_id есть в refund metadata
+              if (!refund.metadata || !refund.metadata.deal_id) {
+                try {
+                  await stripe.refunds.update(refund.id, {
+                    metadata: {
+                      ...(refund.metadata || {}),
+                      deal_id: String(dealId)
+                    }
+                  });
+                  logger.debug('Обновлен deal_id в refund metadata', { refundId: refund.id, dealId });
+                } catch (updateError) {
+                  logger.warn('Не удалось обновить refund metadata', { refundId: refund.id, error: updateError.message });
+                }
+              }
+              
+              // Обрабатываем возврат через persistRefund (сохраняет в БД, обновляет планы платежей)
+              await stripeProcessor.persistRefund(refund);
+              logger.debug('Refund обработан через persistRefund', { refundId: refund.id, dealId });
+            }
+          } catch (refundError) {
+            logger.warn('Не удалось получить/обработать refund объект', { 
+              chargeId: charge.id, 
+              error: refundError.message 
+            });
+          }
+          
+          // Пересчитываем стадию сделки через новый сервис автоматизации
+          await stripeProcessor.triggerCrmStatusAutomation(dealId, {
+            reason: 'stripe:webhook-refund'
+          });
+          
+          logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+        } else {
+          logger.warn(`⚠️  Deal ID не найден для возврата | Charge: ${charge.id} | PaymentIntent: ${paymentIntentId || 'N/A'}`);
+          logger.debug('Попробуйте найти deal_id вручную и обновить metadata в Stripe', {
+            chargeId: charge.id,
+            paymentIntentId,
+            chargeMetadata: charge.metadata
+          });
+        }
+      } catch (error) {
+        logger.error(`❌ Ошибка обработки возврата | Charge: ${charge.id}`, { 
+          error: error.message,
+          stack: error.stack,
+          chargeId: charge.id,
+          paymentIntentId
+        });
       }
     }
 
