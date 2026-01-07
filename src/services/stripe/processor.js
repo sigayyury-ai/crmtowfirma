@@ -1281,6 +1281,15 @@ class StripeProcessorService {
 
     // Update deal stage if payment is paid and not refunded
     // Check isNewPayment to avoid duplicate updates, but also check if stage needs update for existing payments
+    this.logger.info('Checking conditions for deal stage update', {
+      dealId,
+      paymentStatus: session.payment_status,
+      isRefunded,
+      willUpdateStage: dealId && session.payment_status === 'paid' && !isRefunded,
+      paymentType: session.metadata?.payment_type || 'payment',
+      paymentSchedule: session.metadata?.payment_schedule || '100%'
+    });
+    
     if (dealId && session.payment_status === 'paid' && !isRefunded) {
       const paymentType = session.metadata?.payment_type || 'payment';
       const isFinal = session.metadata?.is_final === 'true' || paymentType === 'final';
