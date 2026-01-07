@@ -5336,8 +5336,17 @@ class StripeProcessorService {
         // Если это второй платеж (rest), не упоминаем про "вторую ссылку"
         if (firstSession.type === 'rest' || hasPaidDeposit) {
           message = `Привет! Тебе выставлен счет на оплату остатка через Stripe.\n\n`;
-          message += `[Ссылка на оплату](${firstSession.url})\n`;
-          message += `Ссылка действует 24 часа\n\n`;
+          if (firstSession.url) {
+            message += `[Ссылка на оплату](${firstSession.url})\n`;
+            message += `Ссылка действует 24 часа\n\n`;
+          } else {
+            this.logger.warn('Payment notification: session URL is missing', {
+              dealId,
+              sessionId: firstSession.session_id,
+              hasCheckoutUrl: !!firstSession.checkout_url
+            });
+            message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+          }
           
           message += `График: 50/50 (остаток)\n`;
           message += `\n`;
@@ -5358,8 +5367,17 @@ class StripeProcessorService {
         } else {
           // Это первый платеж (deposit)
           message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-          message += `[Ссылка на оплату](${firstSession.url})\n`;
-          message += `Ссылка действует 24 часа\n\n`;
+          if (firstSession.url) {
+            message += `[Ссылка на оплату](${firstSession.url})\n`;
+            message += `Ссылка действует 24 часа\n\n`;
+          } else {
+            this.logger.warn('Payment notification: session URL is missing', {
+              dealId,
+              sessionId: firstSession.session_id,
+              hasCheckoutUrl: !!firstSession.checkout_url
+            });
+            message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+          }
           
           message += `График: 50/50 (первый платеж)\n`;
           if (secondPaymentDate) {
@@ -5390,8 +5408,16 @@ class StripeProcessorService {
         
         if (depositSession) {
           message += `1. Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}\n`;
-          message += `[Оплатить предоплату](${depositSession.url})\n`;
-          message += `Ссылка действует 24 часа\n\n`;
+          if (depositSession.url) {
+            message += `[Оплатить предоплату](${depositSession.url})\n`;
+            message += `Ссылка действует 24 часа\n\n`;
+          } else {
+            this.logger.warn('Payment notification: deposit session URL is missing', {
+              dealId,
+              sessionId: depositSession.session_id
+            });
+            message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+          }
         }
 
         if (restSession) {
@@ -5419,8 +5445,17 @@ class StripeProcessorService {
       // Сценарий 3: 100% с кешем (Stripe + наличные)
       else if (paymentSchedule === '100%' && sessions.length >= 1 && cashRemainder > 0) {
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${singleSession.url})\n`;
-        message += `Ссылка действует 24 часа\n\n`;
+        if (singleSession.url) {
+          message += `[Ссылка на оплату](${singleSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+        } else {
+          this.logger.warn('Payment notification: session URL is missing', {
+            dealId,
+            sessionId: singleSession.session_id,
+            hasCheckoutUrl: !!singleSession.checkout_url
+          });
+          message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+        }
         
         if (discountAmount > 0) {
           const discountInfoToUse = productDiscountInfo || discountInfo;
@@ -5442,8 +5477,17 @@ class StripeProcessorService {
       else if (paymentSchedule === '50/50' && sessions.length === 1 && cashRemainder > 0) {
         const firstSession = sessions[0];
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${firstSession.url})\n`;
-        message += `Ссылка действует 24 часа\n\n`;
+        if (firstSession.url) {
+          message += `[Ссылка на оплату](${firstSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+        } else {
+          this.logger.warn('Payment notification: session URL is missing', {
+            dealId,
+            sessionId: firstSession.session_id,
+            hasCheckoutUrl: !!firstSession.checkout_url
+          });
+          message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+        }
         
         message += `График: 50/50 (первый платеж)\n`;
         if (secondPaymentDate) {
@@ -5474,8 +5518,16 @@ class StripeProcessorService {
         
         if (depositSession) {
           message += `1. Предоплата 50%: ${formatAmount(depositSession.amount)} ${currency}\n`;
-          message += `[Оплатить предоплату](${depositSession.url})\n`;
-          message += `Ссылка действует 24 часа\n\n`;
+          if (depositSession.url) {
+            message += `[Оплатить предоплату](${depositSession.url})\n`;
+            message += `Ссылка действует 24 часа\n\n`;
+          } else {
+            this.logger.warn('Payment notification: deposit session URL is missing', {
+              dealId,
+              sessionId: depositSession.session_id
+            });
+            message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+          }
         }
 
         if (restSession) {
