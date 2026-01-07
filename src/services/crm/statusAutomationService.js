@@ -229,7 +229,16 @@ class CrmStatusAutomationService {
         scheduleType: SCHEDULE_PROFILES['100%'].key
       };
     }
-    const proformaTotals = this.sumProformaTotals(proformas);
+    
+    // Если есть проформы, суммируем их, иначе используем пустые значения
+    const proformaTotals = proformas.length > 0 
+      ? this.sumProformaTotals(proformas)
+      : {
+          expectedAmountPln: 0,
+          bankPaidPln: 0,
+          cashPaidPln: 0,
+          bankPaymentsCount: 0
+        };
     const dealCurrency = deal?.currency || null;
     const stripeTotals = await this.sumStripeTotals(stripePayments, dealCurrency);
 
