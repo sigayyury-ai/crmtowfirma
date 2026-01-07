@@ -336,7 +336,6 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             }
           }
         } catch (error) {
-        } catch (error) {
           logger.error(`❌ Ошибка обработки обновления платежа | Charge: ${charge.id}`, { error: error.message });
         }
       }
