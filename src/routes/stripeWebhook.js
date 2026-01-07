@@ -265,19 +265,26 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
           const sessionId = paymentIntent.metadata?.session_id;
           
           if (sessionId) {
-            const session = await stripe.checkout.sessions.retrieve(sessionId);
-            const dealId = session.metadata?.deal_id;
-            
-            if (dealId) {
-              logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
-              
-              // Пересчитываем стадию сделки через новый сервис автоматизации
-              await stripeProcessor.triggerCrmStatusAutomation(dealId, {
-                reason: 'stripe:webhook-refund'
+            // Проверяем что можем получить сессию в текущем режиме
+            if (!canRetrieveSession(sessionId)) {
+              logger.debug('Skipping charge.refunded - session from different Stripe mode', {
+                sessionId,
+                chargeId: charge.id
               });
+            } else {
+              const session = await stripe.checkout.sessions.retrieve(sessionId);
+              const dealId = session.metadata?.deal_id;
               
-              logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
-            }
+              if (dealId) {
+                logger.info(`💰 Обработка возврата платежа | Deal: ${dealId} | Charge: ${charge.id}`);
+                
+                // Пересчитываем стадию сделки через новый сервис автоматизации
+                await stripeProcessor.triggerCrmStatusAutomation(dealId, {
+                  reason: 'stripe:webhook-refund'
+                });
+                
+                logger.info(`✅ Возврат обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+              }
             }
           }
         } catch (error) {
