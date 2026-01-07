@@ -280,8 +280,6 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       signatureVerified: true,
       expectedEndpointId,
       expectedEndpointUrl,
-      verifiedAccount: verifiedAccount || 'primary',
-      webhookSecretsCount: webhookSecrets.length,
       note: 'Endpoint ID (we_...) is NOT included in webhook event object. It can only be verified by matching the signing secret.'
     });
 
