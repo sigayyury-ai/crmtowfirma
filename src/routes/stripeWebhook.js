@@ -12,6 +12,20 @@ const cashPaymentsRepository = new CashPaymentsRepository();
 const { createCashReminder } = require('../services/cash/cashReminderService');
 
 /**
+ * GET /api/webhooks/stripe
+ * Проверка доступности webhook endpoint
+ */
+router.get('/webhooks/stripe', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Stripe webhook endpoint is available',
+    method: 'POST',
+    url: '/api/webhooks/stripe',
+    note: 'Stripe sends POST requests to this endpoint. Use POST method to receive webhook events.'
+  });
+});
+
+/**
  * POST /api/webhooks/stripe
  * Обработка webhook событий от Stripe
  * Отслеживает invoice_type = Stripe и обновляет статус в Pipedrive
