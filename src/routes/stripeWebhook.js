@@ -27,11 +27,58 @@ router.get('/webhooks/stripe', (req, res) => {
 });
 
 /**
+ * Middleware для получения raw body для Stripe webhook
+ * Получает тело запроса напрямую из stream, минуя все парсеры
+ * ВАЖНО: Этот middleware должен быть применен ДО express.json() или express.raw()
+ */
+function getRawBody(req, res, next) {
+  // Если body уже был прочитан (например, express.raw() уже сработал), используем его
+  if (Buffer.isBuffer(req.body)) {
+    req.rawBody = req.body;
+    return next();
+  }
+  
+  // Если body уже был прочитан как объект (express.json()), это ошибка
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    logger.error('Stripe webhook body was already parsed as JSON. This should not happen.', {
+      hint: 'Ensure webhook routes are registered BEFORE express.json() in src/index.js'
+    });
+    return res.status(400).json({ 
+      error: 'Request body was already parsed',
+      hint: 'Webhook routes must be registered before express.json() middleware'
+    });
+  }
+  
+  // Читаем body напрямую из stream
+  const chunks = [];
+  let hasError = false;
+  
+  req.on('data', (chunk) => {
+    chunks.push(chunk);
+  });
+  
+  req.on('end', () => {
+    if (!hasError) {
+      req.rawBody = Buffer.concat(chunks);
+      next();
+    }
+  });
+  
+  req.on('error', (err) => {
+    hasError = true;
+    logger.error('Error reading raw body for Stripe webhook', { error: err.message });
+    if (!res.headersSent) {
+      res.status(400).json({ error: 'Failed to read request body' });
+    }
+  });
+}
+
+/**
  * POST /api/webhooks/stripe
  * Обработка webhook событий от Stripe
  * Отслеживает invoice_type = Stripe и обновляет статус в Pipedrive
  */
-router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/webhooks/stripe', getRawBody, async (req, res) => {
   const sig = req.headers['stripe-signature'];
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   
@@ -40,8 +87,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
     hasSignature: !!sig,
     signatureLength: sig?.length || 0,
     signaturePreview: sig ? `${sig.substring(0, 20)}...` : 'N/A',
-    bodyLength: req.body?.length || 0,
-    bodyType: req.body?.constructor?.name || typeof req.body,
+    bodyLength: req.rawBody?.length || 0,
+    bodyType: req.rawBody?.constructor?.name || typeof req.rawBody,
     contentType: req.headers['content-type'],
     userAgent: req.headers['user-agent']
   });
@@ -60,14 +107,13 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
   let event;
 
   try {
-    // ВАЖНО: req.body должен быть Buffer для правильной верификации подписи
-    // express.raw() уже преобразует body в Buffer
-    // Проверяем, что body действительно Buffer
-    if (!Buffer.isBuffer(req.body)) {
-      logger.error('Stripe webhook body is not a Buffer', {
-        bodyType: typeof req.body,
-        bodyConstructor: req.body?.constructor?.name,
-        hint: 'express.raw() middleware may not be working correctly. Check middleware order in src/index.js'
+    // ВАЖНО: используем rawBody, полученный напрямую из stream
+    // Это гарантирует, что тело запроса не было изменено middleware или прокси
+    if (!req.rawBody || !Buffer.isBuffer(req.rawBody)) {
+      logger.error('Stripe webhook rawBody is not a Buffer', {
+        bodyType: typeof req.rawBody,
+        bodyConstructor: req.rawBody?.constructor?.name,
+        hint: 'getRawBody middleware may not be working correctly'
       });
       return res.status(400).json({ 
         error: 'Invalid request body format',
@@ -75,7 +121,7 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       });
     }
 
-    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
   } catch (err) {
     // Логируем детали для отладки проблем с верификацией
     // Проверяем длину подписи - если она необычно длинная (148 символов), это может быть другой endpoint
@@ -88,8 +134,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
       hasSignature: !!sig,
       signatureLength,
       signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
-      bodyLength: req.body?.length || 0,
-      bodyType: req.body?.constructor?.name || typeof req.body,
+      bodyLength: req.rawBody?.length || 0,
+      bodyType: req.rawBody?.constructor?.name || typeof req.rawBody,
       contentType: req.headers['content-type'],
       userAgent: req.headers['user-agent'],
       webhookSecretLength: webhookSecret?.length || 0,
