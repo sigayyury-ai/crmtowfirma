@@ -5730,16 +5730,8 @@ class StripeProcessorService {
       const amount = fromMinorUnit(session.amount_total || 0, currency);
       const formatAmount = (amt) => parseFloat(amt).toFixed(2);
 
-      // Build success notification message
-      let message = `✅ *Оплата успешно получена*\n\n`;
-      message += `Спасибо за оплату!\n\n`;
-      message += `Сумма: ${formatAmount(amount)} ${currency.toUpperCase()}\n`;
-      message += `Дата оплаты: ${new Date().toLocaleDateString('ru-RU', { 
-        day: '2-digit', 
-        month: '2-digit', 
-        year: 'numeric',
-        timeZone: 'Europe/Warsaw'
-      })}\n\n`;
+      // Build success notification message - только заголовок и ссылка на счет
+      let message = `✅ Оплата успешно получена\n\n`;
 
       // Add invoice/receipt link if available
       if (session.invoice) {
@@ -5747,7 +5739,7 @@ class StripeProcessorService {
           const invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice.id;
           const invoice = await this.stripe.invoices.retrieve(invoiceId);
           if (invoice.hosted_invoice_url) {
-            message += `[Ссылка на счет](${invoice.hosted_invoice_url})\n\n`;
+            message += `[Ссылка на счет](${invoice.hosted_invoice_url})`;
           }
         } catch (error) {
           this.logger.warn('Failed to retrieve invoice URL for success notification', {
@@ -5757,20 +5749,6 @@ class StripeProcessorService {
           });
         }
       }
-
-      // Add payment schedule info if applicable
-      const paymentSchedule = session.metadata?.payment_schedule || '100%';
-      const paymentType = session.metadata?.payment_type || 'single';
-      
-      if (paymentSchedule === '50/50' && paymentType === 'deposit') {
-        message += `Это первый платеж из двух (50/50). Второй платеж будет отправлен позже.\n\n`;
-      } else if (paymentSchedule === '50/50' && (paymentType === 'rest' || paymentType === 'second')) {
-        message += `Оплата завершена! Все платежи по сделке получены.\n\n`;
-      } else {
-        message += `Оплата завершена!\n\n`;
-      }
-
-      message += `Если у вас есть вопросы, пожалуйста, свяжитесь с нами.`;
 
       // Send message via SendPulse
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
