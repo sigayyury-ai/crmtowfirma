@@ -113,21 +113,37 @@ async function fetchLogs(serviceId, lines = 200) {
   const match = envContent.match(/^RENDER_API_KEY\s*=\s*(.+)$/m);
   const token = match ? match[1].trim().replace(/^["']|["']$/g, '') : RENDER_API_KEY;
   
-  // Используем execSync для правильной передачи переменной окружения
-  const command = `RENDER_TOKEN="${token}" "${cliPath}" logs --resources ${serviceId} --limit ${lines} --output text`;
+  // Используем execSync с правильной передачей переменной окружения через env
+  // Это более надежный способ, чем через строку команды
+  const env = {
+    ...process.env,
+    RENDER_TOKEN: token
+  };
 
   try {
-    const result = execSync(command, { 
-      encoding: 'utf8',
-      maxBuffer: 10 * 1024 * 1024, // 10MB
-      stdio: ['ignore', 'pipe', 'pipe']
-    });
+    const result = execSync(
+      `"${cliPath}" logs --resources ${serviceId} --limit ${lines} --output text`,
+      { 
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: env
+      }
+    );
     return result;
   } catch (error) {
-    if (error.stderr) {
-      throw new Error(error.stderr.toString());
+    const errorOutput = error.stderr ? error.stderr.toString() : error.stdout ? error.stdout.toString() : error.message;
+    
+    // Проверяем специфичные ошибки авторизации
+    if (errorOutput.includes('unauthorized') || errorOutput.includes('401') || errorOutput.includes('authentication')) {
+      throw new Error(`Ошибка авторизации Render API. Проверьте RENDER_API_KEY в .env файле. Ошибка: ${errorOutput}`);
     }
-    throw error;
+    
+    if (errorOutput.includes('not found') || errorOutput.includes('404')) {
+      throw new Error(`Сервис не найден. Проверьте RENDER_SERVICE_ID. Ошибка: ${errorOutput}`);
+    }
+    
+    throw new Error(errorOutput || error.message);
   }
 }
 
@@ -144,8 +160,23 @@ async function streamLogs(serviceId) {
     process.exit(1);
   }
 
-  // Убираем кавычки и пробелы из токена
-  const token = String(RENDER_API_KEY).trim().replace(/^["']|["']$/g, '');
+  // Читаем токен напрямую из .env файла для надежности
+  const envPath = path.resolve(__dirname, '../.env');
+  let token = String(RENDER_API_KEY).trim().replace(/^["']|["']$/g, '');
+  
+  // Если токен не найден в переменной окружения, читаем из .env
+  if (!token && fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    const match = envContent.match(/^RENDER_API_KEY\s*=\s*(.+)$/m);
+    if (match) {
+      token = match[1].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+  
+  if (!token) {
+    throw new Error('RENDER_API_KEY не найден. Установите его в .env файле.');
+  }
+  
   const env = { 
     ...process.env, 
     RENDER_TOKEN: token

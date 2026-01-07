@@ -1,0 +1,44 @@
+# Workspace Rules
+
+## API Documentation
+
+**ВАЖНО**: Перед работой с API эндпоинтами или при поиске доступных маршрутов, всегда сначала читай документацию `docs/api-reference.md`. Этот документ содержит полный справочник всех API эндпоинтов в системе.
+
+Если нужно найти конкретный эндпоинт или понять, какие параметры он принимает, обращайся к `docs/api-reference.md` вместо поиска по коду.
+
+При добавлении новых API эндпоинтов обязательно обновляй `docs/api-reference.md`.
+
+## Подключение к логам Render
+
+**ВАЖНО**: Для диагностики проблем на продакшене всегда используй скрипт `scripts/fetch-render-logs.js` для подключения к логам Render.
+
+### Быстрое подключение:
+
+```bash
+# Получить последние логи
+node scripts/fetch-render-logs.js
+
+# Стримить логи в реальном времени
+node scripts/fetch-render-logs.js --tail
+
+# Получить больше строк
+node scripts/fetch-render-logs.js --lines=500
+
+# Поиск по сделке
+node scripts/fetch-render-logs.js --lines=1000 | grep "2039"
+```
+
+### Требования:
+
+1. **RENDER_API_KEY** должен быть установлен в `.env` файле
+2. **RENDER_SERVICE_ID** должен быть установлен в `.env` файле или передан через `--service-id=ID`
+3. **render-cli** должен быть установлен: `pip3 install render-cli`
+
+### Если скрипт не работает:
+
+1. Проверь наличие `RENDER_API_KEY` и `RENDER_SERVICE_ID` в `.env`
+2. Проверь установку render-cli: `render-cli --version`
+3. Проверь авторизацию: скрипт автоматически читает токен из `.env` и передает через `RENDER_TOKEN`
+
+**Полная документация**: `docs/render-logs-setup.md`
+

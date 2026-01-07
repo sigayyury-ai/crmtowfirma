@@ -11,6 +11,7 @@
 - **[Как работают задачи Cron](docs/how-cron-tasks-work.md)** - Подробное объяснение процесса поиска, обработки и отображения задач
 - **[Управление задачами Cron](docs/cron-tasks-management-guide.md)** - Руководство по работе с задачами: удаление, просроченные задачи, уведомления
 - **[Настройка получения логов с Render](docs/render-logs-setup.md)** - Инструкция по получению логов с продакшен сервера на Render
+- **[Подключение к логам Render через CLI](docs/render-logs-setup.md#использование-скрипта)** - Быстрое подключение к логам для диагностики проблем
 
 ## Основные функции
 
@@ -88,7 +89,13 @@ STRIPE_API_KEY=sk_live_your_stripe_live_key
 # будут подключаться к основному продуктового аккаунту.
 STRIPE_EVENTS_API_KEY=sk_live_your_events_key
 STRIPE_EVENTS_CACHE_TTL_MS=600000
+
+# Render API Configuration (для получения логов)
+RENDER_API_KEY=rnd_your_render_api_key
+RENDER_SERVICE_ID=srv_your_service_id
 ```
+
+**Подключение к логам Render**: Используй `node scripts/fetch-render-logs.js` для быстрого доступа к логам продакшена. См. [документацию](docs/render-logs-setup.md).
 
 ### Быстрый старт Stripe-процессора
 
