@@ -333,13 +333,37 @@ class CrmStatusAutomationService {
     }
 
     const snapshot = await this.buildDealSnapshot(normalizedDealId, dealResult.deal);
-    if (snapshot.proformas.length === 0 || snapshot.totals.expectedAmountPln <= 0) {
+    
+    // Проверяем, есть ли платежи (Stripe или проформы)
+    // Для Stripe-платежей может не быть проформ, но платежи есть
+    const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0;
+    const hasExpectedAmount = snapshot.totals.expectedAmountPln > 0;
+    
+    // Если нет проформ И нет Stripe платежей, не обновляем статус
+    if (snapshot.proformas.length === 0 && !hasPayments && !hasExpectedAmount) {
       return {
         updated: false,
-        reason: 'Нет активных проформ или сумма проформ = 0',
+        reason: 'Нет активных проформ и нет платежей',
         dealId: normalizedDealId,
         snapshot
       };
+    }
+    
+    // Если есть Stripe платежи, но нет проформ, используем сумму сделки как expectedAmount
+    if (snapshot.proformas.length === 0 && hasPayments && !hasExpectedAmount) {
+      const dealValue = parseFloat(dealResult.deal.value || 0);
+      const dealCurrency = dealResult.deal.currency || 'PLN';
+      if (dealValue > 0) {
+        // Конвертируем в PLN если нужно
+        const expectedAmountPln = dealCurrency === 'PLN' ? dealValue : await convertToPln(dealValue, dealCurrency);
+        snapshot.totals.expectedAmountPln = expectedAmountPln;
+        this.logger.info('Using deal value as expected amount for Stripe-only payment', {
+          dealId: normalizedDealId,
+          dealValue,
+          dealCurrency,
+          expectedAmountPln
+        });
+      }
     }
 
     let evaluation;
