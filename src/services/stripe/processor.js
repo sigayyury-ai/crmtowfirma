@@ -1565,27 +1565,12 @@ class StripeProcessorService {
             await this.triggerCrmStatusAutomation(dealId, {
               reason: 'stripe:single-payment-correction'
             });
-                } catch (noteError) {
-                  // Note might already exist, that's OK
-                  this.logger.debug('Note may already exist or failed to create', {
-                    dealId,
-                    error: noteError.message
-                  });
-                }
-              }
-            }
           }
-        } catch (error) {
-          this.logger.warn('Failed to correct deal stage for single payment', {
-            dealId,
-            error: error.message
-          });
         }
-      } else {
-        // Skip stage update for other payment types to avoid chaos
-        this.logger.debug('Skipping stage update for already processed payment', {
+      } catch (error) {
+        this.logger.warn('Failed to correct deal stage for existing payment', {
           dealId,
-          sessionId: session.id
+          error: error.message
         });
       }
     }
