@@ -95,7 +95,24 @@ RENDER_API_KEY=rnd_your_render_api_key
 RENDER_SERVICE_ID=srv_your_service_id
 ```
 
-**Подключение к логам Render**: Используй `node scripts/fetch-render-logs.js` для быстрого доступа к логам продакшена. См. [документацию](docs/render-logs-setup.md).
+**Подключение к логам Render**: Используй быстрые команды для доступа к логам продакшена:
+
+```bash
+# Последние 200 строк
+npm run logs:render
+
+# Стримить в реальном времени
+npm run logs:render:tail
+
+# Больше строк (500 или 1000)
+npm run logs:render:500
+npm run logs:render:1000
+
+# Сохранить в файл
+npm run logs:render:save
+```
+
+См. [полную документацию](docs/render-logs-setup.md).
 
 ### Быстрый старт Stripe-процессора
 
