@@ -3893,8 +3893,10 @@ class StripeProcessorService {
           this.logger.warn('Failed to retrieve Checkout Session', {
             dealId,
             sessionId: payment.session_id,
-            error: error.message
+            error: error.message,
+            note: 'Payment will be removed from database, but refund in Stripe may need to be created manually if payment was paid'
           });
+          // Продолжаем удаление из БД даже при ошибке подключения к Stripe
           continue;
         }
 
