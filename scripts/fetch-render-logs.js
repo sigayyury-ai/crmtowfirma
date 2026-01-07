@@ -113,12 +113,17 @@ async function fetchLogs(serviceId, lines = 200) {
   const match = envContent.match(/^RENDER_API_KEY\s*=\s*(.+)$/m);
   const token = match ? match[1].trim().replace(/^["']|["']$/g, '') : RENDER_API_KEY;
   
-  // Используем execSync с правильной передачей переменной окружения через env
-  // Это более надежный способ, чем через строку команды
+  // render-cli может использовать RENDER_TOKEN или RENDER_API_KEY
+  // Передаем оба для совместимости
   const env = {
     ...process.env,
-    RENDER_TOKEN: token
+    RENDER_TOKEN: token,
+    RENDER_API_KEY: token // Некоторые версии render-cli используют RENDER_API_KEY
   };
+
+  // Логируем для отладки (только первые несколько символов токена)
+  const tokenPreview = token ? `${token.substring(0, 10)}...` : 'не найден';
+  console.log(`🔑 Используется токен: ${tokenPreview}`);
 
   try {
     const result = execSync(
