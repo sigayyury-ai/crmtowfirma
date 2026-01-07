@@ -140,22 +140,40 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
             
             // Добавляем текущую сессию, если её еще нет в списке (может быть еще не сохранена в БД)
             const currentSessionInList = sessions.find(s => s.session_id === session.id);
-            if (!currentSessionInList && session.url) {
+            
+            // Получаем URL сессии (может быть null для завершенных сессий, нужно получить из Stripe)
+            let sessionUrl = session.url;
+            if (!sessionUrl && session.id) {
+              try {
+                const retrievedSession = await stripe.checkout.sessions.retrieve(session.id);
+                sessionUrl = retrievedSession.url || null;
+              } catch (error) {
+                logger.warn('Failed to retrieve session URL from Stripe', {
+                  sessionId: session.id,
+                  error: error.message
+                });
+              }
+            }
+            
+            if (!currentSessionInList) {
               sessions.push({
                 session_id: session.id,
                 amount: fromMinorUnit(session.amount_total || 0, session.currency),
                 currency: session.currency,
-                url: session.url, // Используем URL из webhook события
-                checkout_url: session.url
+                url: sessionUrl, // Используем URL из webhook события или полученный из Stripe
+                checkout_url: sessionUrl
               });
-            } else if (currentSessionInList && !currentSessionInList.url && session.url) {
-              // Если сессия есть в списке, но нет URL, добавляем из webhook события
-              currentSessionInList.url = session.url;
-              currentSessionInList.checkout_url = session.url;
+            } else if (!currentSessionInList.url && sessionUrl) {
+              // Если сессия есть в списке, но нет URL, добавляем из webhook события или Stripe
+              currentSessionInList.url = sessionUrl;
+              currentSessionInList.checkout_url = sessionUrl;
             }
             
+            // Проверяем статус оплаты (может быть 'paid' или 'unpaid' в зависимости от типа платежа)
+            const isPaid = session.payment_status === 'paid' || session.status === 'complete';
+            
             // Отправляем уведомление об успешной оплате (если платеж оплачен)
-            if (session.payment_status === 'paid') {
+            if (isPaid) {
               try {
                 await stripeProcessor.sendPaymentSuccessNotificationForDeal(dealId, session);
                 logger.info(`✅ Уведомление об успешной оплате отправлено | Deal: ${dealId} | Session: ${session.id}`);
@@ -166,15 +184,8 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               }
             } else {
               // Если платеж еще не оплачен, отправляем уведомление о выставлении счета
-              await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-                paymentSchedule: paymentScheduleFromMetadata,
-                sessions: sessions,
-                currency: session.currency,
-                totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
-                forceSend: false
-              });
-              
-              logger.info(`📧 Уведомление о выставлении счета отправлено | Deal: ${dealId} | Session: ${session.id}`);
+              // Но для checkout.session.completed обычно платеж уже оплачен, так что это редко
+              logger.info(`ℹ️  Платеж еще не оплачен, пропускаем уведомление | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status}`);
             }
           } catch (notificationError) {
             // Логируем ошибку, но не прерываем обработку платежа
