@@ -101,9 +101,8 @@ tail -f logs/combined.log | grep -i stripe
 ### 🔄 Откат при проблемах:
 Если что-то пошло не так, вернитесь к тестовым ключам:
 ```bash
-STRIPE_API_KEY=sk_test_ваш_тестовый_ключ
-STRIPE_MODE=test
-STRIPE_WEBHOOK_SECRET=whsec_test_старый_секрет
+STRIPE_API_KEY=sk_live_ваш_live_ключ
+STRIPE_WEBHOOK_SECRET=whsec_ваш_секрет
 ```
 
 ## 📞 Поддержка
