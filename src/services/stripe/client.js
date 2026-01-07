@@ -20,11 +20,21 @@ function resolveStripeApiKey(options = {}) {
     return options.apiKey;
   }
 
-  if (options.type === 'events') {
+  const mode = getStripeMode();
+
+  // В режиме live используем STRIPE_EVENTS_API_KEY (live ключ)
+  // В режиме test используем STRIPE_API_KEY (test ключ)
+  if (mode === 'live' || options.type === 'events') {
     const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
     if (!eventsKey) {
       throw new Error('STRIPE_EVENTS_API_KEY is not set. Add it to .env');
     }
+    
+    const isTestKey = eventsKey.startsWith('sk_test');
+    if (mode === 'live' && isTestKey) {
+      logger.warn('STRIPE_EVENTS_API_KEY looks like test key but STRIPE_MODE=live');
+    }
+    
     return eventsKey;
   }
 
@@ -33,16 +43,10 @@ function resolveStripeApiKey(options = {}) {
     throw new Error('STRIPE_API_KEY is not set. Add it to .env');
   }
 
-  const mode = getStripeMode();
   const isLiveKey = apiKey.startsWith('sk_live');
-  const isTestKey = apiKey.startsWith('sk_test');
 
   if (mode === 'test' && isLiveKey) {
     logger.warn('Stripe client configured in test mode but provided key looks like live');
-  }
-
-  if (mode !== 'test' && isTestKey) {
-    logger.warn('Stripe client configured in live mode but provided key looks like test');
   }
 
   return apiKey;

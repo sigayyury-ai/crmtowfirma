@@ -3,8 +3,8 @@
 /**
  * Создание Stripe Checkout Session для конкретной сделки
  * 
- * ВАЖНО: Этот скрипт использует API эндпоинт вместо прямого вызова сервисов
- * API: POST /api/pipedrive/deals/:id/diagnostics/actions/create-stripe-session
+ * Использует ту же логику, что и API эндпоинт:
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/create-stripe-session
  * 
  * Использование:
  *   node scripts/create-session-for-deal.js <dealId> [paymentType] [paymentSchedule] [customAmount]
@@ -17,77 +17,214 @@
 
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
 
-const axios = require('axios');
+const StripeProcessorService = require('../src/services/stripe/processor');
+const PaymentScheduleService = require('../src/services/stripe/paymentScheduleService');
+const SecondPaymentSchedulerService = require('../src/services/stripe/secondPaymentSchedulerService');
+const StripeRepository = require('../src/services/stripe/repository');
 const logger = require('../src/utils/logger');
-
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
-const API_ENDPOINT = '/api/pipedrive/deals';
 
 async function createSessionForDeal(dealId, options = {}) {
   const { paymentType, paymentSchedule, customAmount, sendNotification = true } = options;
 
   try {
-    console.log(`🔍 Создание сессии для Deal #${dealId} через API...\n`);
+    const processor = new StripeProcessorService();
+    const repository = new StripeRepository();
+    const schedulerService = new SecondPaymentSchedulerService();
 
-    const url = `${API_BASE_URL}${API_ENDPOINT}/${dealId}/diagnostics/actions/create-stripe-session`;
-    
-    const requestBody = {};
-    if (paymentType) requestBody.paymentType = paymentType;
-    if (paymentSchedule) requestBody.paymentSchedule = paymentSchedule;
-    if (customAmount !== undefined) requestBody.customAmount = customAmount;
-    requestBody.sendNotification = sendNotification;
+    console.log(`🔍 Создание сессии для Deal #${dealId}...\n`);
 
-    console.log(`   📡 Отправка запроса к API: ${url}`);
-    if (Object.keys(requestBody).length > 0) {
-      console.log(`   📋 Параметры:`, requestBody);
+    // Получаем данные сделки
+    const dealResult = await processor.pipedriveClient.getDealWithRelatedData(dealId);
+    if (!dealResult.success || !dealResult.deal) {
+      throw new Error(`Deal not found: ${dealResult?.error || 'unknown'}`);
     }
 
-    const response = await axios.post(url, requestBody, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 30000
+    const deal = dealResult.deal;
+    const person = dealResult.person;
+    const customerEmail = person?.email?.[0]?.value || person?.email || 'N/A';
+
+    console.log(`   Название: ${deal.title}`);
+    console.log(`   Email: ${customerEmail}`);
+    console.log(`   Сумма: ${deal.value} ${deal.currency || 'PLN'}`);
+    console.log(`   Expected Close Date: ${deal.expected_close_date || 'не указана'}`);
+
+    // ВАЖНО: Определяем схему на основе expected_close_date
+    const scheduleResult = PaymentScheduleService.determineScheduleFromDeal(deal);
+    const currentSchedule = scheduleResult.schedule;
+    const secondPaymentDate = scheduleResult.secondPaymentDate;
+
+    console.log(`   📊 Схема платежей (по expected_close_date): ${currentSchedule}`);
+    if (secondPaymentDate) {
+      console.log(`   📅 Дата второго платежа: ${secondPaymentDate.toISOString().split('T')[0]}`);
+    }
+
+    // Получаем исходную схему из первого платежа (если есть)
+    const initialSchedule = await schedulerService.getInitialPaymentSchedule(dealId);
+    
+    // Используем исходную схему, если она была 50/50 (клиент уже оплатил deposit)
+    let effectivePaymentSchedule = currentSchedule;
+    if (initialSchedule.schedule === '50/50') {
+      effectivePaymentSchedule = '50/50';
+      console.log(`   📊 Исходная схема из первого платежа: ${initialSchedule.schedule}`);
+      console.log(`   ✅ Используем исходную схему: ${effectivePaymentSchedule} (клиент уже оплатил deposit по этой схеме)`);
+    } else {
+      console.log(`   📊 Используем схему по expected_close_date: ${effectivePaymentSchedule}`);
+    }
+
+    // Получаем существующие платежи
+    const allPayments = await repository.listPayments({
+      dealId: String(dealId),
+      limit: 100
     });
 
-    if (response.data && response.data.success) {
-      const { session, notification } = response.data;
-      
-      console.log(`\n✅ Stripe Checkout Session created successfully!`);
-      console.log(`📋 Session ID: ${session.id}`);
-      console.log(`🔗 Payment URL: ${session.url}`);
-      console.log(`💰 Amount: ${session.amount} ${session.currency}`);
-      
-      if (notification) {
-        if (notification.sent) {
-          console.log(`📨 Уведомление отправлено`);
-        } else if (notification.error) {
-          console.log(`⚠️  Уведомление не отправлено: ${notification.error}`);
+    const depositPayments = allPayments.filter(p => 
+      (p.payment_type === 'deposit' || p.payment_type === 'first') &&
+      p.payment_status === 'paid'
+    );
+
+    const restPayments = allPayments.filter(p => 
+      (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+      p.payment_status === 'paid'
+    );
+
+    const singlePayments = allPayments.filter(p => 
+      p.payment_type === 'single' && p.payment_status === 'paid'
+    );
+
+    if (depositPayments.length > 0) {
+      console.log(`   ⚠️  Найден оплаченный депозит (${depositPayments.length} шт.)`);
+    }
+    if (restPayments.length > 0) {
+      console.log(`   ⚠️  Найден оплаченный остаток (${restPayments.length} шт.)`);
+    }
+    if (singlePayments.length > 0) {
+      console.log(`   ⚠️  Найден единый платеж (${singlePayments.length} шт.)`);
+    }
+
+    // Определяем параметры для создания сессии
+    const sessionContext = {
+      trigger: 'manual_scheduled',
+      runId: `scheduled_${Date.now()}`,
+      paymentType: paymentType || null, // Будет определен автоматически если не указан
+      paymentSchedule: paymentSchedule || effectivePaymentSchedule, // Используем эффективную схему
+      customAmount: customAmount || null,
+      skipNotification: !sendNotification,
+      setInvoiceTypeDone: true
+    };
+
+    // Если paymentType не указан, определяем автоматически
+    if (!sessionContext.paymentType) {
+      if (effectivePaymentSchedule === '50/50') {
+        if (depositPayments.length === 0) {
+          sessionContext.paymentType = 'deposit';
+          sessionContext.paymentIndex = 1;
+          console.log(`   ✅ Создаем первый платеж (deposit, 50%)`);
+        } else if (restPayments.length === 0) {
+          sessionContext.paymentType = 'rest';
+          sessionContext.paymentIndex = 2;
+          console.log(`   ✅ Создаем второй платеж (rest, 50%)`);
+        } else {
+          throw new Error('Оба платежа уже оплачены');
+        }
+      } else {
+        if (depositPayments.length > 0 && restPayments.length === 0) {
+          sessionContext.paymentType = 'rest';
+          sessionContext.paymentSchedule = '100%';
+          const dealValue = parseFloat(deal.value) || 0;
+          const paidAmount = depositPayments.reduce((sum, p) => sum + parseFloat(p.original_amount || 0), 0);
+          sessionContext.customAmount = dealValue - paidAmount;
+          console.log(`   ✅ Создаем остаток (rest) после депозита: ${sessionContext.customAmount.toFixed(2)} ${deal.currency || 'PLN'}`);
+        } else if (singlePayments.length > 0 || (depositPayments.length > 0 && restPayments.length > 0)) {
+          throw new Error('Платеж уже полностью оплачен');
+        } else {
+          sessionContext.paymentType = 'single';
+          console.log(`   ✅ Создаем единый платеж (single, 100%)`);
         }
       }
+    } else {
+      console.log(`   ✅ Создаем платеж типа: ${sessionContext.paymentType}`);
+    }
 
-      return {
-        success: true,
-        sessionId: session.id,
-        sessionUrl: session.url,
-        amount: session.amount,
-        currency: session.currency
-      };
-    } else {
-      throw new Error(response.data?.error || 'Unknown error from API');
+    // Создаем сессию
+    const sessionResult = await processor.createCheckoutSessionForDeal(deal, sessionContext);
+
+    if (!sessionResult.success) {
+      throw new Error(sessionResult.error || 'Failed to create session');
     }
+
+    console.log(`\n✅ Stripe Checkout Session created successfully!`);
+    console.log(`📋 Session ID: ${sessionResult.sessionId}`);
+    console.log(`🔗 Payment URL: ${sessionResult.sessionUrl}`);
+    console.log(`💰 Amount: ${sessionResult.amount} ${sessionResult.currency}`);
+
+    if (sendNotification) {
+      try {
+        // Получаем все платежи для уведомления
+        const existingPayments = await repository.listPayments({
+          dealId: String(dealId),
+          limit: 10
+        });
+
+        const sessions = [];
+        for (const p of existingPayments) {
+          if (!p.session_id) continue;
+          
+          let sessionUrl = p.checkout_url || null;
+          if (!sessionUrl && p.raw_payload && p.raw_payload.url) {
+            sessionUrl = p.raw_payload.url;
+          }
+          
+          if (sessionUrl) {
+            sessions.push({
+              id: p.session_id,
+              url: sessionUrl,
+              type: p.payment_type,
+              amount: p.original_amount
+            });
+          }
+        }
+
+        // Добавляем новую созданную сессию
+        sessions.push({
+          id: sessionResult.sessionId,
+          url: sessionResult.sessionUrl,
+          type: sessionContext.paymentType || 'payment',
+          amount: sessionResult.amount
+        });
+
+        // Отправляем уведомление
+        const notificationResult = await processor.sendPaymentNotificationForDeal(dealId, {
+          paymentSchedule: effectivePaymentSchedule,
+          sessions: sessions,
+          currency: sessionResult.currency,
+          totalAmount: parseFloat(deal.value) || 0
+        });
+
+        if (notificationResult.success) {
+          console.log(`📨 Уведомление отправлено`);
+        } else {
+          console.log(`⚠️  Уведомление не отправлено: ${notificationResult.error}`);
+        }
+      } catch (notifyError) {
+        logger.warn('Failed to send notification', { dealId, error: notifyError.message });
+        console.log(`⚠️  Ошибка отправки уведомления: ${notifyError.message}`);
+      }
+    }
+
+    return {
+      success: true,
+      sessionId: sessionResult.sessionId,
+      sessionUrl: sessionResult.sessionUrl,
+      amount: sessionResult.amount,
+      currency: sessionResult.currency
+    };
   } catch (error) {
-    if (error.response) {
-      // API вернул ошибку
-      const errorData = error.response.data || {};
-      const errorMessage = errorData.error || errorData.message || `HTTP ${error.response.status}`;
-      throw new Error(`API Error: ${errorMessage}`);
-    } else if (error.request) {
-      // Запрос отправлен, но ответа нет
-      throw new Error(`API недоступен: ${API_BASE_URL}. Проверьте, что сервер запущен.`);
-    } else {
-      // Ошибка при настройке запроса
-      throw new Error(`Ошибка запроса: ${error.message}`);
-    }
+    logger.error('Failed to create session', {
+      dealId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
   }
 }
 
@@ -126,11 +263,6 @@ async function main() {
     console.log(`\n✅ Сессия успешно создана для Deal #${dealId}\n`);
     process.exit(0);
   } catch (error) {
-    logger.error('Failed to create session', {
-      dealId,
-      error: error.message,
-      stack: error.stack
-    });
     console.error(`\n❌ Ошибка: ${error.message}\n`);
     process.exit(1);
   }

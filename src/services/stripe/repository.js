@@ -525,6 +525,41 @@ class StripeRepository {
       return { deleted: 0, sessions: [] };
     }
   }
+
+  /**
+   * Удаляет запись о платеже по ID
+   * @param {number|string} paymentId - ID записи в БД
+   * @returns {Promise<{success: boolean, error?: string}>}
+   */
+  async deletePayment(paymentId) {
+    if (!this.isEnabled() || !paymentId) {
+      return { success: false, error: 'Repository disabled or no payment ID' };
+    }
+
+    try {
+      const { error } = await this.supabase
+        .from('stripe_payments')
+        .delete()
+        .eq('id', paymentId);
+
+      if (error) {
+        if (isTableMissing(error)) {
+          logger.warn('stripe_payments table missing, cannot delete payment');
+          return { success: false, error: 'Table not found' };
+        }
+        logger.error('Failed to delete stripe payment', { error, paymentId });
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    } catch (err) {
+      logger.error('Exception while deleting stripe payment', {
+        error: err.message,
+        paymentId
+      });
+      return { success: false, error: err.message };
+    }
+  }
 }
 
 module.exports = StripeRepository;
