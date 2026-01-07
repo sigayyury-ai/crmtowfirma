@@ -1533,38 +1533,38 @@ class StripeProcessorService {
           reason: 'stripe:unknown-payment-type'
         });
       }
-    } else if (dealId && !isNewPayment && !isRefunded) {
+    } else if (dealId && !isNewPayment && !isRefunded && session.payment_status === 'paid') {
       // Payment was already processed, but check if status needs correction
-      // For 'single' payment type, ensure it goes to Camp Waiter
+      // This handles cases where payment was saved but status wasn't updated
       const paymentType = session.metadata?.payment_type || 'payment';
-      if (paymentType === 'single') {
-        // Check current deal stage and correct if needed
-        try {
-          const dealResult = await this.pipedriveClient.getDeal(dealId);
-          if (dealResult.success && dealResult.deal) {
-            const currentStageId = dealResult.deal.stage_id;
-            // If not in Camp Waiter, correct it
-            if (currentStageId !== STAGES.CAMP_WAITER_ID) {
-              this.logger.info('Correcting deal stage for single payment', {
-                dealId,
-                currentStage: currentStageId,
-                expectedStage: STAGES.CAMP_WAITER_ID
-              });
-              await this.triggerCrmStatusAutomation(dealId, {
-                reason: 'stripe:single-payment-correction'
-              });
-              
-              // Also add note if it doesn't exist (always add for single payment correction)
-              // But only if payment is not refunded
-              if (!isRefunded) {
-                try {
-                  await this.addPaymentNoteToDeal(dealId, {
-                    paymentType: 'payment',
-                    amount: paymentRecord.original_amount,
-                    currency: paymentRecord.currency,
-                    amountPln: paymentRecord.amount_pln,
-                    sessionId: session.id
-                  });
+      
+      try {
+        const dealResult = await this.pipedriveClient.getDeal(dealId);
+        if (dealResult.success && dealResult.deal) {
+          const currentStageId = dealResult.deal.stage_id;
+          const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT_ID, 37];
+          
+          // If deal is still in First Payment stage, update it
+          if (FIRST_PAYMENT_STAGE_IDS.includes(currentStageId)) {
+            this.logger.info('Correcting deal stage for existing paid payment', {
+              dealId,
+              currentStage: currentStageId,
+              paymentType,
+              reason: 'Payment was paid but stage was not updated'
+            });
+            await this.triggerCrmStatusAutomation(dealId, {
+              reason: 'stripe:existing-payment-stage-correction'
+            });
+          } else if (paymentType === 'single' && currentStageId !== STAGES.CAMP_WAITER_ID) {
+            // For 'single' payment type, ensure it goes to Camp Waiter
+            this.logger.info('Correcting deal stage for single payment', {
+              dealId,
+              currentStage: currentStageId,
+              expectedStage: STAGES.CAMP_WAITER_ID
+            });
+            await this.triggerCrmStatusAutomation(dealId, {
+              reason: 'stripe:single-payment-correction'
+            });
                 } catch (noteError) {
                   // Note might already exist, that's OK
                   this.logger.debug('Note may already exist or failed to create', {
