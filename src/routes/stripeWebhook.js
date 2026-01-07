@@ -30,18 +30,26 @@ router.get('/webhooks/stripe', (req, res) => {
  * Middleware для получения raw body для Stripe webhook
  * Получает тело запроса напрямую из stream, минуя все парсеры
  * ВАЖНО: Этот middleware должен быть применен ДО express.json() или express.raw()
+ * 
+ * Проблема: Render/Cloudflare могут изменять body, поэтому мы читаем напрямую из stream
  */
 function getRawBody(req, res, next) {
-  // Если body уже был прочитан (например, express.raw() уже сработал), используем его
+  // Проверяем, не был ли body уже прочитан
+  // Если body уже был прочитан как Buffer (express.raw() уже сработал), используем его
   if (Buffer.isBuffer(req.body)) {
     req.rawBody = req.body;
+    logger.debug('Using req.body as rawBody (already Buffer)', {
+      bodyLength: req.body.length
+    });
     return next();
   }
   
   // Если body уже был прочитан как объект (express.json()), это ошибка
   if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
     logger.error('Stripe webhook body was already parsed as JSON. This should not happen.', {
-      hint: 'Ensure webhook routes are registered BEFORE express.json() in src/index.js'
+      hint: 'Ensure webhook routes are registered BEFORE express.json() in src/index.js',
+      bodyType: typeof req.body,
+      bodyKeys: Object.keys(req.body || {}).slice(0, 5)
     });
     return res.status(400).json({ 
       error: 'Request body was already parsed',
@@ -50,26 +58,70 @@ function getRawBody(req, res, next) {
   }
   
   // Читаем body напрямую из stream
+  // Это гарантирует, что мы получаем оригинальное тело без изменений
   const chunks = [];
   let hasError = false;
+  let bodyRead = false;
+  
+  // Проверяем, не был ли stream уже прочитан
+  if (req.readableEnded) {
+    logger.error('Request stream already ended, cannot read body', {
+      hint: 'Body may have been read by another middleware'
+    });
+    return res.status(400).json({ 
+      error: 'Request body stream already consumed',
+      hint: 'Ensure no other middleware reads the body before this webhook handler'
+    });
+  }
   
   req.on('data', (chunk) => {
-    chunks.push(chunk);
+    if (!bodyRead) {
+      chunks.push(chunk);
+    }
   });
   
   req.on('end', () => {
-    if (!hasError) {
+    if (!hasError && !bodyRead) {
+      bodyRead = true;
       req.rawBody = Buffer.concat(chunks);
+      logger.debug('Raw body read from stream', {
+        bodyLength: req.rawBody.length,
+        chunksCount: chunks.length
+      });
       next();
     }
   });
   
   req.on('error', (err) => {
     hasError = true;
-    logger.error('Error reading raw body for Stripe webhook', { error: err.message });
+    logger.error('Error reading raw body for Stripe webhook', { 
+      error: err.message,
+      stack: err.stack
+    });
     if (!res.headersSent) {
       res.status(400).json({ error: 'Failed to read request body' });
     }
+  });
+  
+  // Таймаут для чтения body (на случай, если stream зависнет)
+  const timeout = setTimeout(() => {
+    if (!bodyRead && !hasError) {
+      hasError = true;
+      logger.error('Timeout reading raw body for Stripe webhook', {
+        timeout: 10000
+      });
+      if (!res.headersSent) {
+        res.status(400).json({ error: 'Timeout reading request body' });
+      }
+    }
+  }, 10000);
+  
+  req.on('end', () => {
+    clearTimeout(timeout);
+  });
+  
+  req.on('error', () => {
+    clearTimeout(timeout);
   });
 }
 
@@ -121,6 +173,16 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       });
     }
 
+    // Дополнительная диагностика: проверяем первые байты body для отладки
+    const bodyPreview = req.rawBody.toString('utf8', 0, Math.min(100, req.rawBody.length));
+    logger.debug('Stripe webhook body preview', {
+      bodyLength: req.rawBody.length,
+      bodyPreview: bodyPreview.substring(0, 50) + '...',
+      bodyStartsWith: bodyPreview.startsWith('{') ? 'JSON object' : 'Not JSON object',
+      signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
+      webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 10) : 'N/A'
+    });
+
     event = stripe.webhooks.constructEvent(req.rawBody, sig, webhookSecret);
   } catch (err) {
     // Логируем детали для отладки проблем с верификацией
@@ -128,22 +190,49 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
     const signatureLength = sig?.length || 0;
     const isUnusualSignatureLength = signatureLength > 100; // Обычно подпись ~80 символов
     
+    // Извлекаем timestamp из подписи для диагностики
+    let signatureTimestamp = null;
+    if (sig) {
+      const timestampMatch = sig.match(/t=(\d+)/);
+      if (timestampMatch) {
+        signatureTimestamp = parseInt(timestampMatch[1], 10);
+        const timestampAge = Math.floor(Date.now() / 1000) - signatureTimestamp;
+        logger.debug('Signature timestamp analysis', {
+          signatureTimestamp,
+          timestampAge,
+          isRecent: timestampAge < 300, // 5 минут
+          hint: timestampAge > 300 ? 'Signature may be too old (Stripe allows 5 minutes)' : 'Signature timestamp is recent'
+        });
+      }
+    }
+    
+    // Проверяем, что webhook secret правильный формат
+    const isWebhookSecretValid = webhookSecret && (
+      webhookSecret.startsWith('whsec_') || 
+      webhookSecret.startsWith('whsec_test_') || 
+      webhookSecret.startsWith('whsec_live_')
+    );
+    
     logger.warn('Stripe webhook signature verification failed', { 
       error: err.message,
       errorType: err.type,
       hasSignature: !!sig,
       signatureLength,
       signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
+      signatureTimestamp,
       bodyLength: req.rawBody?.length || 0,
       bodyType: req.rawBody?.constructor?.name || typeof req.rawBody,
       contentType: req.headers['content-type'],
       userAgent: req.headers['user-agent'],
       webhookSecretLength: webhookSecret?.length || 0,
-      webhookSecretPreview: webhookSecret ? `${webhookSecret.substring(0, 20)}...` : 'N/A',
+      webhookSecretPrefix: webhookSecret ? webhookSecret.substring(0, 15) : 'N/A',
+      isWebhookSecretValid,
       isUnusualSignatureLength,
-      hint: isUnusualSignatureLength 
+      hint: !isWebhookSecretValid 
+        ? 'STRIPE_WEBHOOK_SECRET format is invalid. It should start with whsec_, whsec_test_, or whsec_live_. Check Stripe Dashboard → Developers → Webhooks → Signing secret.'
+        : isUnusualSignatureLength 
         ? 'Signature length is unusual - may be from different Stripe account or endpoint. Check if webhook is configured for correct Stripe account.'
-        : 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode). Some events may fail if sent from different Stripe accounts or test mode.'
+        : 'Check STRIPE_WEBHOOK_SECRET matches the webhook endpoint in Stripe Dashboard (live mode). Verify: 1) You are in Live mode in Stripe Dashboard, 2) The endpoint URL matches exactly, 3) The signing secret is from the correct endpoint.'
     });
     // Возвращаем 401 для неавторизованных запросов (неправильная подпись)
     return res.status(401).json({ error: `Webhook signature verification failed: ${err.message}` });
