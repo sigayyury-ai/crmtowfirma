@@ -1678,18 +1678,6 @@ class StripeProcessorService {
                 ? 'Not a single payment type'
                 : 'Stage correction conditions not met'
             });
-          } else {
-            this.logger.info('Deal stage correction not needed for existing paid payment', {
-              dealId,
-              currentStageId,
-              paymentType,
-              paymentSchedule,
-              reason: paymentType === 'single' && currentStageId === STAGES.CAMP_WAITER_ID
-                ? 'Already in Camp Waiter stage'
-                : paymentType !== 'single'
-                ? 'Not a single payment type'
-                : 'Stage correction conditions not met'
-            });
           }
         } else {
           this.logger.warn('Failed to get deal for stage correction', {
