@@ -82,7 +82,13 @@ class CrmStatusAutomationService {
   }
 
   async loadStripePayments(dealId) {
+    this.logger.info('Loading Stripe payments for deal', {
+      dealId,
+      repositoryEnabled: this.stripeRepository?.isEnabled?.() || false
+    });
+    
     if (!this.stripeRepository.isEnabled()) {
+      this.logger.warn('Stripe repository is not enabled, returning empty array', { dealId });
       return [];
     }
 
@@ -91,11 +97,25 @@ class CrmStatusAutomationService {
         dealId: String(dealId),
         limit: 500
       });
+      
+      this.logger.info('Stripe payments loaded', {
+        dealId,
+        paymentsCount: payments?.length || 0,
+        payments: payments?.map(p => ({
+          id: p.id,
+          dealId: p.deal_id,
+          amount: p.original_amount,
+          currency: p.currency,
+          paymentStatus: p.payment_status
+        })) || []
+      });
+      
       return payments || [];
     } catch (error) {
       this.logger.error('Failed to load stripe payments for CRM status automation', {
         dealId,
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
       return [];
     }
