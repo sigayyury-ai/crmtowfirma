@@ -73,12 +73,33 @@ function attachLoggingHooks(stripe) {
       });
       return response;
     } catch (error) {
-      logStripeError(error, {
+      const errorContext = {
         method,
         path,
         durationMs: Date.now() - startedAt,
-        livemode: true
-      });
+        livemode: true,
+        // Дополнительная диагностика
+        errorName: error.name,
+        errorStack: error.stack ? error.stack.split('\n').slice(0, 3).join('\n') : undefined,
+        // Проверяем, это ли connection error
+        isConnectionError: error.message?.includes('connection') || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED') || error.message?.includes('ENOTFOUND')
+      };
+      
+      logStripeError(error, errorContext);
+      
+      // Дополнительное логирование для connection errors
+      if (errorContext.isConnectionError) {
+        logger.error('Stripe connection error detected', {
+          method,
+          path,
+          durationMs: errorContext.durationMs,
+          errorMessage: error.message,
+          errorType: error.type,
+          errorCode: error.code,
+          suggestion: 'This may be a temporary network issue. Check Stripe API status and Render network connectivity.'
+        });
+      }
+      
       throw error;
     }
   };

@@ -82,6 +82,15 @@ function logStripeError(error, context = {}) {
     code: error.code,
     requestId: error.requestId,
     statusCode: error.statusCode,
+    // Дополнительная диагностика для connection errors
+    rawError: error.raw ? {
+      message: error.raw.message,
+      type: error.raw.type,
+      code: error.raw.code,
+      statusCode: error.raw.statusCode
+    } : null,
+    // Информация о сетевых ошибках
+    networkError: error.raw?.message?.includes('connection') || error.raw?.message?.includes('timeout') || error.raw?.message?.includes('ECONNREFUSED') || error.raw?.message?.includes('ENOTFOUND') ? true : undefined,
     ...context
   };
   stripeRequestLogger.error(payload);
