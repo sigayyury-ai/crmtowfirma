@@ -41,10 +41,21 @@ function resolveStripeApiKey(options = {}) {
   // Проверяем, что не перепутали ключи (Events ключ не должен быть в STRIPE_API_KEY)
   const eventsKey = process.env.STRIPE_EVENTS_API_KEY;
   if (eventsKey && apiKey === eventsKey) {
-    logger.warn('⚠️  STRIPE_API_KEY и STRIPE_EVENTS_API_KEY одинаковые! Это ошибка конфигурации.', {
-      hint: 'STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета, а STRIPE_EVENTS_API_KEY - ключом Events кабинета'
+    logger.error('❌ КРИТИЧЕСКАЯ ОШИБКА: STRIPE_API_KEY и STRIPE_EVENTS_API_KEY одинаковые!', {
+      hint: 'STRIPE_API_KEY должен быть ключом ОСНОВНОГО кабинета, а STRIPE_EVENTS_API_KEY - ключом Events кабинета',
+      apiKeyPrefix: apiKey.substring(0, 20) + '...',
+      eventsKeyPrefix: eventsKey.substring(0, 20) + '...',
+      action: 'Проверьте настройки в Render Dashboard. STRIPE_API_KEY должен указывать на ОСНОВНОЙ кабинет, НЕ на Events кабинет!'
     });
   }
+  
+  // Логируем, какой ключ используется (только префикс для безопасности)
+  logger.info('Using Stripe API key for payments', {
+    apiKeyPrefix: apiKey.substring(0, 20) + '...',
+    keyType: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
+    accountType: 'PRIMARY',
+    note: 'This key should be from PRIMARY Stripe account, NOT Events account'
+  });
 
   return apiKey;
 }
