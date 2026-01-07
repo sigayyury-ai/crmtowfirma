@@ -17,6 +17,8 @@
     "emulate:webhook": "node scripts/emulate-webhook.js",
     "logs:render": "node scripts/fetch-render-logs.js",
     "logs:render:tail": "node scripts/fetch-render-logs.js --tail",
+    "logs:render:500": "node scripts/fetch-render-logs.js --lines=500",
+    "logs:render:1000": "node scripts/fetch-render-logs.js --lines=1000",
     "logs:render:save": "node scripts/fetch-render-logs.js --output=logs/render-$(date +%Y%m%d-%H%M%S).txt"
   },
   "keywords": [
