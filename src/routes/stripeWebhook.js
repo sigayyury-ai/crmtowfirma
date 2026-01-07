@@ -154,15 +154,28 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               currentSessionInList.checkout_url = session.url;
             }
             
-            await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-              paymentSchedule: paymentScheduleFromMetadata,
-              sessions: sessions,
-              currency: session.currency,
-              totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
-              forceSend: false
-            });
-            
-            logger.info(`📧 Уведомление о платеже отправлено | Deal: ${dealId} | Session: ${session.id}`);
+            // Отправляем уведомление об успешной оплате (если платеж оплачен)
+            if (session.payment_status === 'paid') {
+              try {
+                await stripeProcessor.sendPaymentSuccessNotificationForDeal(dealId, session);
+                logger.info(`✅ Уведомление об успешной оплате отправлено | Deal: ${dealId} | Session: ${session.id}`);
+              } catch (successNotificationError) {
+                logger.warn(`⚠️  Ошибка отправки уведомления об успешной оплате | Deal: ${dealId} | Session: ${session.id}`, { 
+                  error: successNotificationError.message 
+                });
+              }
+            } else {
+              // Если платеж еще не оплачен, отправляем уведомление о выставлении счета
+              await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
+                paymentSchedule: paymentScheduleFromMetadata,
+                sessions: sessions,
+                currency: session.currency,
+                totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
+                forceSend: false
+              });
+              
+              logger.info(`📧 Уведомление о выставлении счета отправлено | Deal: ${dealId} | Session: ${session.id}`);
+            }
           } catch (notificationError) {
             // Логируем ошибку, но не прерываем обработку платежа
             logger.warn(`⚠️  Ошибка отправки уведомления о платеже | Deal: ${dealId} | Session: ${session.id}`, { 
