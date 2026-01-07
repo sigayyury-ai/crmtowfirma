@@ -111,29 +111,21 @@ function createStripeClient(options = {}) {
 
 /**
  * Проверяет можно ли получить сессию (только live сессии)
- * @param {string} sessionId - ID сессии (cs_test_... или cs_live_...)
- * @returns {boolean} - true если это live сессия, false если test сессия
+ * @param {string} sessionId - ID сессии
+ * @returns {boolean} - всегда true, работаем только с live сессиями
  */
 function canRetrieveSession(sessionId) {
   if (!sessionId || typeof sessionId !== 'string') {
     return false;
   }
   
-  // Работаем только с live сессиями, test сессии игнорируем
-  const isLiveSession = sessionId.startsWith('cs_live_');
+  // Всегда работаем только с live сессиями, test сессии игнорируем
   const isTestSession = sessionId.startsWith('cs_test_');
-  
-  // Если это test сессия - пропускаем
   if (isTestSession) {
     return false;
   }
   
-  // Если это live сессия - разрешаем
-  if (isLiveSession) {
-    return true;
-  }
-  
-  // Если формат неизвестен - разрешаем (fallback для старых сессий)
+  // Все остальные сессии разрешаем (live или старые форматы)
   return true;
 }
 

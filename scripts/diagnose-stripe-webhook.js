@@ -26,7 +26,7 @@ async function main() {
   console.log('=== Диагностика Stripe Webhook ===\n');
   console.log(`Session ID: ${sessionId}`);
   console.log(`Deal ID: ${dealId}`);
-  console.log(`Stripe Mode: ${process.env.STRIPE_MODE || 'test'}`);
+  console.log(`Stripe Mode: live (только live режим используется)`);
   console.log();
   
   // 1. Проверяем сессию в Stripe

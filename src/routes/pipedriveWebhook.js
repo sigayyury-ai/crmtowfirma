@@ -42,10 +42,8 @@ function formatStripeInvoiceMarker(sessionId) {
 }
 
 function buildStripeSearchUrl(query) {
-  const stripeMode = (process.env.STRIPE_MODE || 'test').toLowerCase();
-  const baseUrl = stripeMode === 'live'
-    ? 'https://dashboard.stripe.com'
-    : 'https://dashboard.stripe.com/test';
+  // Всегда live режим
+  const baseUrl = 'https://dashboard.stripe.com';
   const accountSegment = STRIPE_DASHBOARD_ACCOUNT_PATH ? `/${STRIPE_DASHBOARD_ACCOUNT_PATH}` : '';
   const workspaceSegment = STRIPE_DASHBOARD_WORKSPACE_ID
     ? `&search_context_id=${encodeURIComponent(STRIPE_DASHBOARD_WORKSPACE_ID)}`
@@ -1701,10 +1699,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           // Создаем заметку в сделке с графиком платежей и ссылками для мониторинга (даже если уведомление не ушло)
           try {
             const formatAmount = (amount) => parseFloat(amount).toFixed(2);
-            const stripeMode = process.env.STRIPE_MODE || 'test';
-            const stripeBaseUrl = stripeMode === 'live' 
-              ? 'https://dashboard.stripe.com' 
-              : 'https://dashboard.stripe.com/test';
+            // Всегда live режим
+            const stripeBaseUrl = 'https://dashboard.stripe.com';
             
             let noteContent = `💳 *График платежей: ${paymentSchedule}*\n\n`;
             

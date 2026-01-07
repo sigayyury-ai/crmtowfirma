@@ -27,7 +27,7 @@ class PaymentSessionCreator {
     this.repository = options.repository || new StripeRepository();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.stripe = options.stripe || getStripeClient();
-    this.mode = (process.env.STRIPE_MODE || 'live').toLowerCase();
+    this.mode = 'live'; // Всегда live режим
     this.checkoutSuccessUrl = process.env.STRIPE_CHECKOUT_SUCCESS_URL || 'https://comoon.io/comoonity/';
     this.checkoutCancelUrl = process.env.STRIPE_CHECKOUT_CANCEL_URL || this.checkoutSuccessUrl;
     this.invoiceTypeFieldKey = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';

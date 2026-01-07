@@ -239,10 +239,8 @@ router.get('/checkout-sessions/:sessionId', async (req, res) => {
 
 router.post('/processors/runs', async (req, res) => {
   try {
-    const { from, to, mode } = req.body || {};
-    if (mode) {
-      process.env.STRIPE_MODE = mode;
-    }
+    const { from, to } = req.body || {};
+    // Всегда live режим, mode игнорируется
     const runId = `api-${Date.now()}`;
     const result = await stripeProcessor.processPendingPayments({
       trigger: 'api',
@@ -267,10 +265,7 @@ router.post('/processors/runs', async (req, res) => {
 
 router.post('/processors/refunds/lost-deals', async (req, res) => {
   try {
-    const { mode } = req.body || {};
-    if (mode) {
-      process.env.STRIPE_MODE = mode;
-    }
+    // Всегда live режим, mode игнорируется
     const runId = `api-refund-${Date.now()}`;
     const result = await stripeProcessor.processLostDealRefunds({
       trigger: 'api',

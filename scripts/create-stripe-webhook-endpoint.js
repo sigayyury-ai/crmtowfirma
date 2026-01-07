@@ -31,7 +31,8 @@ const ENABLED_EVENTS = [
 ];
 
 async function main() {
-  const stripeMode = process.env.STRIPE_MODE || 'test';
+  // Всегда live режим
+  const stripeMode = 'live';
   const stripe = getStripeClient();
   
   console.log('=== Создание Stripe Webhook Endpoint ===\n');

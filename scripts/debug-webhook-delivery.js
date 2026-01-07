@@ -170,10 +170,9 @@ async function checkEnvironment() {
   console.log('4️⃣  Проверка переменных окружения...');
   
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-  const stripeMode = process.env.STRIPE_MODE;
   const stripeEventsKey = process.env.STRIPE_EVENTS_API_KEY;
   
-  console.log('   STRIPE_MODE:', stripeMode || 'не установлен');
+  console.log('   Режим: live (только live режим используется)');
   console.log('   STRIPE_EVENTS_API_KEY:', stripeEventsKey ? stripeEventsKey.substring(0, 20) + '...' : 'не установлен');
   console.log('   STRIPE_WEBHOOK_SECRET:', webhookSecret ? webhookSecret.substring(0, 15) + '...' : 'не установлен');
   

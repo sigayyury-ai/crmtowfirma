@@ -198,7 +198,6 @@ const requireVatAuth = (req, res, next) => {
 
 const STRIPE_ALLOWED_DOMAIN = process.env.STRIPE_ALLOWED_DOMAIN?.trim().toLowerCase() || null;
 const STRIPE_HEALTH_BYPASS = process.env.STRIPE_HEALTH_BYPASS === 'true';
-const STRIPE_MODE = (process.env.STRIPE_MODE || 'live').toLowerCase();
 
 const requireStripeAccess = (req, res, next) => {
   if (STRIPE_HEALTH_BYPASS && req.path === '/stripe-health') {
@@ -206,8 +205,8 @@ const requireStripeAccess = (req, res, next) => {
     return next();
   }
 
-  const isProdLive = process.env.NODE_ENV === 'production' && STRIPE_MODE !== 'test';
-  if (!isProdLive) {
+  // Всегда live режим, проверка не нужна
+  if (process.env.NODE_ENV !== 'production') {
     return next();
   }
 

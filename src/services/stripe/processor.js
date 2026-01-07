@@ -30,13 +30,17 @@ class StripeProcessorService {
     this.crmStatusAutomationService =
       options.crmStatusAutomationService || new StripeStatusAutomationService();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
-    // Force recreate Stripe client to pick up current STRIPE_MODE
+    // Force recreate Stripe client (always live mode)
     this.stripe = options.stripe || getStripeClient();
     this.eventStorageService = new StripeEventStorageService({ stripe: this.stripe });
-    this.mode = (process.env.STRIPE_MODE || 'live').toLowerCase();
+    this.mode = 'live'; // Всегда live режим
     this.maxSessions = parseInt(process.env.STRIPE_PROCESSOR_MAX_SESSIONS || '500', 10);
     this.crmCache = new Map();
     this.addressTaskCache = new Set();
+    // Кэш для защиты от дублирования уведомлений: dealId -> timestamp последней отправки
+    this.notificationCache = new Map();
+    // Время жизни кэша уведомлений (10 минут)
+    this.notificationCacheTTL = parseInt(process.env.STRIPE_NOTIFICATION_CACHE_TTL_MS || '600000', 10);
     this.invoiceTypeFieldKey = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     this.stripeTriggerValue = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75');
     this.invoiceDoneValue = String(process.env.PIPEDRIVE_INVOICE_DONE_VALUE || '73');
@@ -2376,10 +2380,7 @@ class StripeProcessorService {
         return;
       }
 
-      const stripeMode = this.mode || 'test';
-      const dashboardBase = stripeMode === 'test' 
-        ? 'https://dashboard.stripe.com/test'
-        : 'https://dashboard.stripe.com';
+      const dashboardBase = 'https://dashboard.stripe.com';
       const sessionLink = `${dashboardBase}/checkout_sessions/${sessionId}`;
 
       const today = new Date().toISOString().slice(0, 10);
@@ -2646,7 +2647,7 @@ class StripeProcessorService {
               if (paymentState.deposit.payment) {
                 sessionsToNotify.push({
                   id: paymentState.deposit.payment.session_id,
-                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${paymentState.deposit.payment.session_id}`,
+                  url: `https://dashboard.stripe.com/checkout/sessions/${paymentState.deposit.payment.session_id}`,
                   type: 'deposit',
                   amount: paymentState.deposit.payment.original_amount
                 });
@@ -2717,7 +2718,7 @@ class StripeProcessorService {
               if (paymentState.rest.payment) {
                 sessionsToNotify.push({
                   id: paymentState.rest.payment.session_id,
-                  url: `https://dashboard.stripe.com/${this.mode === 'test' ? 'test/' : ''}checkout/sessions/${paymentState.rest.payment.session_id}`,
+                  url: `https://dashboard.stripe.com/checkout/sessions/${paymentState.rest.payment.session_id}`,
                   type: 'rest',
                   amount: paymentState.rest.payment.original_amount
                 });
@@ -3122,8 +3123,8 @@ class StripeProcessorService {
             expand: ['data']
           });
           const matchingProduct = products.data.find((p) => {
-            return p.metadata?.crm_product_id === String(crmProductId) &&
-                   p.metadata?.mode === this.mode;
+            return p.metadata?.crm_product_id === String(crmProductId);
+            // Всегда live режим, проверка mode не нужна
           });
           if (matchingProduct) {
             stripeProductId = matchingProduct.id;
@@ -3500,6 +3501,25 @@ class StripeProcessorService {
       // Return totalAmount as sumPrice (with discount) to match Stripe session amount
       // This ensures notification shows correct total that matches the Stripe session
       const returnedTotalAmount = sumPrice || parseFloat(fullDeal.value) || productPrice;
+      
+      // Create note in Pipedrive about session creation
+      try {
+        await this.addSessionCreationNoteToDeal(dealId, {
+          paymentType: paymentType || 'deposit',
+          paymentSchedule: paymentSchedule || '100%',
+          amount: productPrice,
+          currency,
+          sessionId: session.id,
+          sessionUrl: session.url
+        });
+      } catch (noteError) {
+        // Don't fail session creation if note creation fails
+        this.logger.warn('Failed to create note for session creation', {
+          dealId,
+          sessionId: session.id,
+          error: noteError.message
+        });
+      }
       
       return {
         success: true,
@@ -4208,6 +4228,111 @@ class StripeProcessorService {
   }
 
   /**
+   * Add note to deal when Stripe checkout session is created
+   * @param {number} dealId - Deal ID
+   * @param {Object} sessionInfo - Session information
+   * @param {string} sessionInfo.paymentType - Payment type (deposit, rest, single)
+   * @param {string} sessionInfo.paymentSchedule - Payment schedule (50/50, 100%)
+   * @param {number} sessionInfo.amount - Payment amount in original currency
+   * @param {string} sessionInfo.currency - Currency code
+   * @param {string} sessionInfo.sessionId - Stripe session ID
+   * @param {string} sessionInfo.sessionUrl - Stripe checkout URL
+   * @returns {Promise<Object>} - Result of adding note
+   */
+  async addSessionCreationNoteToDeal(dealId, sessionInfo) {
+    const { paymentType, paymentSchedule, amount, currency, sessionId, sessionUrl } = sessionInfo;
+
+    try {
+      // Check if note with this session ID already exists to avoid duplicates
+      try {
+        const dealNotes = await this.pipedriveClient.getDealNotes(dealId);
+        if (dealNotes && dealNotes.success && dealNotes.notes) {
+          const existingNote = dealNotes.notes.find(note => {
+            const noteContent = note.content || '';
+            // Check if note contains this session ID
+            return noteContent.includes(sessionId);
+          });
+          
+          if (existingNote) {
+            this.logger.info('Session creation note already exists for this session, skipping creation', {
+              dealId,
+              sessionId,
+              existingNoteId: existingNote.id
+            });
+            return {
+              success: true,
+              skipped: true,
+              reason: 'note_already_exists',
+              note: existingNote
+            };
+          }
+        }
+      } catch (notesCheckError) {
+        // If we can't check notes, continue (don't block note creation)
+        this.logger.warn('Failed to check existing notes before creating session note', {
+          dealId,
+          sessionId,
+          error: notesCheckError.message
+        });
+      }
+
+      const formatAmount = (amt) => parseFloat(amt).toFixed(2);
+      const paymentTypeLabel = paymentType === 'deposit' ? 'Предоплата' : paymentType === 'rest' ? 'Остаток' : 'Платеж';
+      
+      // Build Stripe Dashboard link for Checkout Session
+      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
+      const stripeDashboardLink = `${dashboardBaseUrl}/${sessionId}`;
+      
+      // Build our dashboard link for diagnostics
+      const urlHelper = require('../../utils/urlHelper');
+      const baseUrl = urlHelper.getBaseUrl();
+      const diagnosticsUrl = `${baseUrl}/api/pipedrive/deals/${dealId}/diagnostics`;
+
+      let noteContent = `💳 Создана сессия оплаты: ${paymentTypeLabel}\n\n`;
+      noteContent += `Сумма: ${formatAmount(amount)} ${currency}\n`;
+      noteContent += `График платежей: ${paymentSchedule}\n\n`;
+      noteContent += `🔗 Ссылки:\n`;
+      noteContent += `• Stripe Dashboard: ${stripeDashboardLink}\n`;
+      noteContent += `• Наш дешборд (диагностика): ${diagnosticsUrl}\n`;
+      if (sessionUrl) {
+        noteContent += `• Ссылка на оплату: ${sessionUrl}\n`;
+      }
+      noteContent += `\nSession ID: ${sessionId}\n`;
+      noteContent += `Дата создания: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Warsaw' })}`;
+
+      const result = await this.pipedriveClient.addNoteToDeal(dealId, noteContent);
+
+      if (result.success) {
+        this.logger.info('Session creation note added to deal', {
+          dealId,
+          paymentType,
+          paymentSchedule,
+          amount,
+          currency,
+          sessionId,
+          noteId: result.note?.id
+        });
+      } else {
+        this.logger.warn('Failed to add session creation note to deal', {
+          dealId,
+          error: result.error
+        });
+      }
+
+      return result;
+    } catch (error) {
+      this.logger.error('Error adding session creation note to deal', {
+        dealId,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
    * Add payment note to deal
    * @param {number} dealId - Deal ID
    * @param {Object} paymentInfo - Payment information
@@ -4260,10 +4385,7 @@ class StripeProcessorService {
       const paymentTypeLabel = paymentType === 'deposit' ? 'Предоплата' : paymentType === 'rest' ? 'Остаток' : 'Платеж';
 
       // Build Stripe Dashboard link for Checkout Session
-      const stripeMode = this.mode || 'test';
-      const dashboardBaseUrl = stripeMode === 'test' 
-        ? 'https://dashboard.stripe.com/test/checkout_sessions'
-        : 'https://dashboard.stripe.com/checkout_sessions';
+      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
       const stripeDashboardLink = `${dashboardBaseUrl}/${sessionId}`;
 
       let noteContent = `💳 ${paymentTypeLabel} получена через Stripe\n\n`;
@@ -4363,10 +4485,7 @@ class StripeProcessorService {
       const currency = depositCurrency; // Используем валюту первого платежа
       
       // Строим ссылки на Stripe Dashboard
-      const stripeMode = this.mode || 'test';
-      const dashboardBaseUrl = stripeMode === 'test' 
-        ? 'https://dashboard.stripe.com/test/checkout_sessions'
-        : 'https://dashboard.stripe.com/checkout_sessions';
+      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
       
       let noteContent = `✅ Все платежи оплачены!\n\n`;
       noteContent += `💰 Общая сумма: ${formatAmount(totalAmount)} ${currency}`;
@@ -4449,10 +4568,7 @@ class StripeProcessorService {
         totalAmountPln += amountPln;
 
         // Build Stripe Dashboard link for refund
-        const stripeMode = this.mode || 'test';
-        const refundDashboardUrl = stripeMode === 'test'
-          ? `https://dashboard.stripe.com/test/refunds/${refund.id}`
-          : `https://dashboard.stripe.com/refunds/${refund.id}`;
+        const refundDashboardUrl = `https://dashboard.stripe.com/refunds/${refund.id}`;
 
         // For multiple payments, show numbered list
         if (refundedPayments.length > 1) {
@@ -4654,7 +4770,7 @@ class StripeProcessorService {
       }
 
       const formatAmount = (amt) => parseFloat(amt).toFixed(2);
-      const stripeMode = this.mode || 'test';
+      // Всегда live режим
 
       // Build refund notification message
       let message = `*Возврат средств*\n\n`;
@@ -4680,9 +4796,7 @@ class StripeProcessorService {
           refundUrl = refund.receipt_url;
         } else {
           // Build Stripe Dashboard link for refund tracking
-          refundUrl = stripeMode === 'test'
-            ? `https://dashboard.stripe.com/test/refunds/${refund.id}`
-            : `https://dashboard.stripe.com/refunds/${refund.id}`;
+          refundUrl = `https://dashboard.stripe.com/refunds/${refund.id}`;
         }
 
         if (refundedPayments.length > 1) {
@@ -4800,10 +4914,11 @@ class StripeProcessorService {
    * @param {Array} options.sessions - Array of session objects with id, url, type, amount
    * @param {string} options.currency - Currency code
    * @param {number} options.totalAmount - Total amount
+   * @param {boolean} options.forceSend - Force send notification even if recently sent (default: false)
    * @returns {Promise<Object>} - Result of sending notification
    */
   async sendPaymentNotificationForDeal(dealId, options = {}) {
-    const { paymentSchedule, sessions = [], currency, totalAmount } = options;
+    const { paymentSchedule, sessions = [], currency, totalAmount, forceSend = false } = options;
     const sessionsAmount = sessions.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
     const normalizedTotalAmount =
       typeof totalAmount === 'number' ? totalAmount : parseFloat(totalAmount) || 0;
@@ -4837,10 +4952,35 @@ class StripeProcessorService {
       }
     }
 
+    // Защита от дублирования уведомлений: проверяем, не было ли уже отправлено уведомление для этой сделки
+    const now = Date.now();
+    const lastNotificationTime = this.notificationCache.get(dealId);
+    const timeSinceLastNotification = lastNotificationTime ? now - lastNotificationTime : Infinity;
+    
+    // Пропускаем проверку, если forceSend = true
+    if (!forceSend && lastNotificationTime && timeSinceLastNotification < this.notificationCacheTTL) {
+      const minutesSinceLastNotification = Math.floor(timeSinceLastNotification / 60000);
+      this.logger.info(`⏭️  Пропуск дублирующего уведомления | Deal ID: ${dealId} | Последнее уведомление: ${minutesSinceLastNotification} мин. назад | TTL: ${this.notificationCacheTTL / 60000} мин.`, {
+        dealId,
+        lastNotificationTime: new Date(lastNotificationTime).toISOString(),
+        timeSinceLastNotification,
+        notificationCacheTTL: this.notificationCacheTTL,
+        sessionsCount: sessions.length,
+        paymentSchedule
+      });
+      return {
+        success: true,
+        skipped: true,
+        reason: `Notification already sent ${minutesSinceLastNotification} minutes ago`,
+        lastNotificationTime: new Date(lastNotificationTime).toISOString()
+      };
+    }
+
     this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
       dealId,
       sessionsCount: sessions.length,
-      paymentSchedule
+      paymentSchedule,
+      lastNotificationTime: lastNotificationTime ? new Date(lastNotificationTime).toISOString() : null
     });
 
     if (!this.sendpulseClient) {
@@ -5121,6 +5261,24 @@ class StripeProcessorService {
       const restSession = sessions.find(s => s.type === 'rest');
       const singleSession = sessions[0];
       
+      // Проверяем, есть ли уже оплаченный deposit платеж (для определения, это второй платеж или нет)
+      let hasPaidDeposit = false;
+      try {
+        const existingPayments = await this.repository.listPayments({
+          dealId: String(dealId),
+          limit: 10
+        });
+        hasPaidDeposit = existingPayments.some(p => 
+          p.payment_type === 'deposit' && 
+          (p.payment_status === 'paid' || p.status === 'processed')
+        );
+      } catch (error) {
+        this.logger.warn('Failed to check existing payments for notification', {
+          dealId,
+          error: error.message
+        });
+      }
+      
       // Сценарий 1: 100% Stripe (только Stripe, без кеша)
       if (paymentSchedule === '100%' && sessions.length >= 1 && cashRemainder === 0) {
         message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
@@ -5144,31 +5302,57 @@ class StripeProcessorService {
       // Сценарий 2: 50/50 Stripe (только Stripe, без кеша) - только первый платеж
       else if (paymentSchedule === '50/50' && sessions.length === 1 && cashRemainder === 0) {
         const firstSession = sessions[0];
-        message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
-        message += `[Ссылка на оплату](${firstSession.url})\n`;
-        message += `Ссылка действует 24 часа\n\n`;
         
-        message += `График: 50/50 (первый платеж)\n`;
-        if (secondPaymentDate) {
-          message += `📧 Вторую ссылку на оплату пришлём позже (${formatDate(secondPaymentDate)})\n`;
-        } else {
-          message += `📧 Вторую ссылку на оплату пришлём позже\n`;
-        }
-        message += `\n`;
-        
-        if (discountAmount > 0) {
-          const discountInfoToUse = productDiscountInfo || discountInfo;
-          if (discountInfoToUse) {
-            message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
-            const discountText = discountInfoToUse.type === 'percent'
-              ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
-              : `${formatAmount(discountAmount)} ${currency}`;
-            message += `Скидка: ${discountText}\n`;
+        // Если это второй платеж (rest), не упоминаем про "вторую ссылку"
+        if (firstSession.type === 'rest' || hasPaidDeposit) {
+          message = `Привет! Тебе выставлен счет на оплату остатка через Stripe.\n\n`;
+          message += `[Ссылка на оплату](${firstSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+          
+          message += `График: 50/50 (остаток)\n`;
+          message += `\n`;
+          
+          if (discountAmount > 0) {
+            const discountInfoToUse = productDiscountInfo || discountInfo;
+            if (discountInfoToUse) {
+              message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
+              const discountText = discountInfoToUse.type === 'percent'
+                ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
+                : `${formatAmount(discountAmount)} ${currency}`;
+              message += `Скидка: ${discountText}\n`;
+            }
           }
+          
+          message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+          message += `Остаток: ${formatAmount(firstSession.amount)} ${currency}\n`;
+        } else {
+          // Это первый платеж (deposit)
+          message = `Привет! Тебе выставлен счет на оплату через Stripe.\n\n`;
+          message += `[Ссылка на оплату](${firstSession.url})\n`;
+          message += `Ссылка действует 24 часа\n\n`;
+          
+          message += `График: 50/50 (первый платеж)\n`;
+          if (secondPaymentDate) {
+            message += `📧 Вторую ссылку на оплату пришлём позже (${formatDate(secondPaymentDate)})\n`;
+          } else {
+            message += `📧 Вторую ссылку на оплату пришлём позже\n`;
+          }
+          message += `\n`;
+          
+          if (discountAmount > 0) {
+            const discountInfoToUse = productDiscountInfo || discountInfo;
+            if (discountInfoToUse) {
+              message += `Сумма: ${formatAmount(dealBaseAmount)} ${currency}\n`;
+              const discountText = discountInfoToUse.type === 'percent'
+                ? `${discountInfoToUse.value}% (${formatAmount(discountAmount)} ${currency})`
+                : `${formatAmount(discountAmount)} ${currency}`;
+              message += `Скидка: ${discountText}\n`;
+            }
+          }
+          
+          message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
+          message += `Предоплата: ${formatAmount(firstSession.amount)} ${currency}\n`;
         }
-        
-        message += `Итого: ${formatAmount(totalWithDiscount)} ${currency}\n`;
-        message += `Предоплата: ${formatAmount(firstSession.amount)} ${currency}\n`;
       }
       // Сценарий 2b: 50/50 Stripe (только Stripe, без кеша) - оба платежа
       else if (paymentSchedule === '50/50' && sessions.length >= 2 && cashRemainder === 0) {
@@ -5318,12 +5502,19 @@ class StripeProcessorService {
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
+        // Сохраняем timestamp успешной отправки для защиты от дублирования
+        this.notificationCache.set(dealId, now);
+        
+        // Очищаем старые записи из кэша (старше TTL)
+        this.cleanupNotificationCache();
+        
         this.logger.info('SendPulse payment notification sent successfully', {
           dealId,
           sendpulseId,
           paymentSchedule,
           sessionsCount: sessions.length,
-          messageId: result.messageId
+          messageId: result.messageId,
+          cachedUntil: new Date(now + this.notificationCacheTTL).toISOString()
         });
         
         // Phase 9: Update SendPulse contact custom field with deal_id (Phase 0: Code Review Fixes)
@@ -5361,6 +5552,29 @@ class StripeProcessorService {
         success: false,
         error: error.message
       };
+    }
+  }
+
+  /**
+   * Очищает старые записи из кэша уведомлений (старше TTL)
+   * Вызывается автоматически после каждой успешной отправки
+   */
+  cleanupNotificationCache() {
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    for (const [dealId, timestamp] of this.notificationCache.entries()) {
+      if (now - timestamp >= this.notificationCacheTTL) {
+        this.notificationCache.delete(dealId);
+        cleanedCount++;
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      this.logger.debug(`🧹 Очистка кэша уведомлений: удалено ${cleanedCount} старых записей`, {
+        cleanedCount,
+        remainingEntries: this.notificationCache.size
+      });
     }
   }
 

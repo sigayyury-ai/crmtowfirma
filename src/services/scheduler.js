@@ -9,6 +9,8 @@ const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderSe
 const MqlSyncService = require('./analytics/mqlSyncService');
 const StripePaymentTestRunner = require('../../tests/integration/stripe-payment/testRunner');
 const logger = require('../utils/logger');
+const { getMonitor } = require('./pipedriveRateLimitMonitor');
+const PipedriveClient = require('./pipedrive');
 
 const DEFAULT_TIMEZONE = 'Europe/Warsaw';
 const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке hh:00

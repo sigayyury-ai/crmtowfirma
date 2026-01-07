@@ -1,5 +1,6 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { getMonitor } = require('./pipedriveRateLimitMonitor');
 
 // Утилита для retry с экспоненциальной задержкой
 async function retryWithBackoff(fn, maxRetries = 3, baseDelay = 1000) {
@@ -53,6 +54,12 @@ class PipedriveClient {
     this.maxRetries = parseInt(process.env.PIPEDRIVE_MAX_RETRIES || '3', 10);
     this.retryBaseDelay = parseInt(process.env.PIPEDRIVE_RETRY_BASE_DELAY || '1000', 10);
     
+    // Инициализируем монитор лимитов
+    this.rateLimitMonitor = getMonitor();
+    
+    // Название текущей задачи (устанавливается извне для отслеживания)
+    this.currentTaskName = null;
+    
     if (!this.apiToken) {
       throw new Error('PIPEDRIVE_API_TOKEN must be set in environment variables');
     }
@@ -69,11 +76,15 @@ class PipedriveClient {
       timeout: 15000
     });
 
-    // Добавляем interceptor для логирования (v1)
+    // Добавляем interceptor для логирования и мониторинга лимитов (v1)
     // Request/Response логи только на debug уровне (слишком много логов)
     // Ошибки всегда логируются
     this.client.interceptors.request.use(
       (config) => {
+        // Регистрируем запрос в мониторе лимитов
+        const taskName = this.currentTaskName || 'pipedrive_client';
+        this.rateLimitMonitor.recordRequest(taskName);
+        
         logger.debug('Pipedrive API Request:', {
           method: config.method,
           url: config.url,
@@ -128,9 +139,13 @@ class PipedriveClient {
       }
     );
     
-    // Добавляем interceptor для логирования (v2)
+    // Добавляем interceptor для логирования и мониторинга лимитов (v2)
     this.clientV2.interceptors.request.use(
       (config) => {
+        // Регистрируем запрос в мониторе лимитов
+        const taskName = this.currentTaskName || 'pipedrive_client';
+        this.rateLimitMonitor.recordRequest(taskName);
+        
         logger.debug('Pipedrive API v2 Request:', {
           method: config.method,
           url: config.url,
@@ -1820,6 +1835,32 @@ class PipedriveClient {
         details: error.response?.data || null
       };
     }
+  }
+
+  /**
+   * Установить имя текущей задачи для отслеживания в мониторе лимитов
+   * @param {string} taskName - Название задачи (например, 'cron_second_payment')
+   */
+  setCurrentTaskName(taskName) {
+    this.currentTaskName = taskName;
+  }
+
+  /**
+   * Получить статус лимитов Pipedrive API
+   * @returns {Object} - Статус лимитов
+   */
+  getRateLimitStatus() {
+    return this.rateLimitMonitor.getStatus();
+  }
+
+  /**
+   * Проверить, можно ли выполнить задачу с ожидаемым количеством запросов
+   * @param {string} taskName - Название задачи
+   * @param {number} estimatedRequests - Ожидаемое количество запросов
+   * @returns {Object} - Оценка безопасности
+   */
+  checkRateLimitSafety(taskName, estimatedRequests) {
+    return this.rateLimitMonitor.estimateTaskSafety(taskName, estimatedRequests);
   }
 }
 

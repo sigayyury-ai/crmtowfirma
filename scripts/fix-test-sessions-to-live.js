@@ -9,7 +9,7 @@
  * 3. Создает новые live-сессии
  * 4. Отправляет уведомления клиентам
  * 
- * ВАЖНО: Перед запуском убедитесь что STRIPE_MODE=live в .env
+ * ВАЖНО: Всегда используется live режим
  */
 
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env') });
@@ -41,19 +41,11 @@ function ask(question) {
 }
 
 async function main() {
-  const stripeMode = process.env.STRIPE_MODE || 'test';
+  // Всегда live режим
+  const stripeMode = 'live';
   
   console.log('\n=== Замена тестовых сессий на live ===\n');
-  console.log(`📊 Текущий STRIPE_MODE: ${stripeMode}`);
-  
-  if (stripeMode !== 'live') {
-    console.log('\n⚠️  ВНИМАНИЕ: STRIPE_MODE не установлен в "live"!');
-    console.log('   Для создания live-сессий необходимо:');
-    console.log('   1. Установить STRIPE_MODE=live в .env');
-    console.log('   2. Убедиться что STRIPE_SECRET_KEY_LIVE настроен');
-    
-    const proceed = await ask('\nПродолжить в тестовом режиме? (yes/no): ');
-    if (proceed.toLowerCase() !== 'yes') {
+  console.log(`📊 Режим: ${stripeMode} (только live режим используется)`);
       console.log('Отмена.');
       if (rl) rl.close();
       process.exit(0);

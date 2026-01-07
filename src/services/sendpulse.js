@@ -326,11 +326,29 @@ class SendPulseClient {
         throw new Error(`Failed to update contact: unexpected status ${response.status}`);
       }
     } catch (error) {
+      const status = error.response?.status;
+      const isNotFound = status === 404;
+      
+      // 404 (Not Found) is not critical - contact may not exist in SendPulse
+      if (isNotFound) {
+        logger.warn('SendPulse contact not found (404) - skipping custom fields update', {
+          contactId,
+          customFields,
+          note: 'Contact may not exist in SendPulse, this is not critical'
+        });
+        return {
+          success: false,
+          error: 'Contact not found in SendPulse',
+          notFound: true
+        };
+      }
+      
+      // Other errors are logged as errors
       logger.error('Error updating SendPulse contact custom fields', {
         contactId,
         customFields,
         error: error.message,
-        status: error.response?.status,
+        status,
         data: error.response?.data
       });
       return {

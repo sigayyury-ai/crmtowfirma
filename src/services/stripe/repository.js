@@ -61,19 +61,95 @@ class StripeRepository {
         logger.warn('Supabase table product_links is missing; skipping product link upsert');
         return null;
       }
-      // If constraint doesn't exist (42P10), try simple insert
+      // If constraint doesn't exist (42P10), try to find and update or insert
       if (error.code === '42P10') {
-        logger.warn('Unique constraint not found, attempting insert instead', { error: error.message });
-        const insertResult = await this.supabase
-          .from('product_links')
-          .insert(payload)
-          .select()
-          .maybeSingle();
-        if (insertResult.error) {
-          logger.error('Failed to insert product link', { error: insertResult.error });
+        logger.warn('Unique constraint not found, attempting find-and-update instead', { error: error.message });
+        // Try to find existing record by crm_product_id or stripe_product_id
+        let existingLink = null;
+        if (crmProductId) {
+          existingLink = await this.findProductLinkByCrmId(crmProductId);
+        }
+        if (!existingLink && stripeProductId) {
+          existingLink = await this.findProductLinkByStripeId(stripeProductId);
+        }
+        
+        if (existingLink) {
+          // Update existing record
+          const updateResult = await this.supabase
+            .from('product_links')
+            .update(payload)
+            .eq('id', existingLink.id)
+            .select()
+            .maybeSingle();
+          if (updateResult.error) {
+            logger.error('Failed to update product link', { error: updateResult.error });
+            return null;
+          }
+          return updateResult.data;
+        } else {
+          // Insert new record
+          const insertResult = await this.supabase
+            .from('product_links')
+            .insert(payload)
+            .select()
+            .maybeSingle();
+          if (insertResult.error) {
+            // If duplicate key error, try to find and update
+            if (insertResult.error.code === '23505') {
+              logger.warn('Duplicate key error, attempting to find and update existing record', { 
+                error: insertResult.error.message 
+              });
+              if (crmProductId) {
+                existingLink = await this.findProductLinkByCrmId(crmProductId);
+              }
+              if (existingLink) {
+                const updateResult = await this.supabase
+                  .from('product_links')
+                  .update(payload)
+                  .eq('id', existingLink.id)
+                  .select()
+                  .maybeSingle();
+                if (updateResult.error) {
+                  logger.error('Failed to update product link after duplicate key error', { error: updateResult.error });
+                  return null;
+                }
+                return updateResult.data;
+              }
+            }
+            logger.error('Failed to insert product link', { error: insertResult.error });
+            return null;
+          }
+          return insertResult.data;
+        }
+      }
+      // Handle duplicate key error (23505) - record already exists
+      if (error.code === '23505') {
+        logger.warn('Duplicate key error, attempting to find and update existing record', { error: error.message });
+        let existingLink = null;
+        if (crmProductId) {
+          existingLink = await this.findProductLinkByCrmId(crmProductId);
+        }
+        if (!existingLink && stripeProductId) {
+          existingLink = await this.findProductLinkByStripeId(stripeProductId);
+        }
+        
+        if (existingLink) {
+          // Update existing record
+          const updateResult = await this.supabase
+            .from('product_links')
+            .update(payload)
+            .eq('id', existingLink.id)
+            .select()
+            .maybeSingle();
+          if (updateResult.error) {
+            logger.error('Failed to update product link after duplicate key error', { error: updateResult.error });
+            return null;
+          }
+          return updateResult.data;
+        } else {
+          logger.error('Duplicate key error but existing record not found', { error: error.message, crmProductId, stripeProductId });
           return null;
         }
-        return insertResult.data;
       }
       logger.error('Failed to upsert product link', { error });
       // Don't throw - allow processor to continue without product link

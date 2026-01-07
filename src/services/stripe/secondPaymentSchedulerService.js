@@ -642,18 +642,14 @@ class SecondPaymentSchedulerService {
             try {
               // Проверяем режим Stripe перед запросом
               const { getStripeMode } = require('../stripe/client');
-              const stripeMode = getStripeMode();
               const sessionId = restPayment.session_id;
               const isTestSession = sessionId.startsWith('cs_test_');
-              const isLiveSession = sessionId.startsWith('cs_live_');
               
-              // Если режим не совпадает с сессией - пропускаем
-              if ((stripeMode === 'live' && isTestSession) || (stripeMode === 'test' && isLiveSession)) {
-                this.logger.debug('Skipping session URL retrieval - session from different Stripe mode', {
+              // Всегда live режим, пропускаем test сессии
+              if (isTestSession) {
+                this.logger.debug('Skipping session URL retrieval - test session (only live mode used)', {
                   dealId: deal.id,
-                  sessionId,
-                  stripeMode,
-                  sessionType: isTestSession ? 'test' : 'live'
+                  sessionId
                 });
                 sessionUrl = null;
               } else {
@@ -945,18 +941,14 @@ class SecondPaymentSchedulerService {
               try {
                 // Проверяем режим Stripe перед запросом
                 const { getStripeMode } = require('../stripe/client');
-                const stripeMode = getStripeMode();
                 const sessionId = activePayment.session_id;
                 const isTestSession = sessionId.startsWith('cs_test_');
-                const isLiveSession = sessionId.startsWith('cs_live_');
                 
-                // Если режим не совпадает с сессией - пропускаем
-                if ((stripeMode === 'live' && isTestSession) || (stripeMode === 'test' && isLiveSession)) {
-                  this.logger.debug('Skipping session status check - session from different Stripe mode', {
+                // Всегда live режим, пропускаем test сессии
+                if (isTestSession) {
+                  this.logger.debug('Skipping session status check - test session (only live mode used)', {
                     dealId,
-                    sessionId,
-                    stripeMode,
-                    sessionType: isTestSession ? 'test' : 'live'
+                    sessionId
                   });
                   continue;
                 }

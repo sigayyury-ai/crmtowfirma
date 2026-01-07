@@ -9,11 +9,7 @@ const PipedriveClient = require('../src/services/pipedrive');
 
 async function main() {
   const argv = yargs(hideBin(process.argv))
-    .option('mode', {
-      type: 'string',
-      default: process.env.STRIPE_MODE || 'test',
-      describe: 'Stripe mode (test/live)'
-    })
+    // Всегда live режим, опция mode удалена
     .option('from', {
       type: 'string',
       describe: 'ISO date-time filter (created >= from)'
@@ -29,7 +25,7 @@ async function main() {
     .help()
     .argv;
 
-  process.env.STRIPE_MODE = argv.mode;
+  // Всегда live режим
   
   // Reset invoice_type field from "done" (73) to "Stripe" (75) for testing
   if (argv.deal) {
