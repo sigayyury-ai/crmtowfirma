@@ -5307,12 +5307,21 @@ class StripeProcessorService {
           message += `[Ссылка на оплату](${singleSession.url})\n`;
           message += `Ссылка действует 24 часа\n\n`;
         } else {
-          this.logger.warn('Payment notification: session URL is missing', {
+          // Если URL отсутствует, это означает, что сессия уже завершена/оплачена
+          // В этом случае не нужно отправлять уведомление о выставлении счета
+          // Уведомление об успешной оплате будет отправлено через webhook
+          this.logger.warn('Payment notification: session URL is missing - session likely already completed', {
             dealId,
             sessionId: singleSession.session_id,
-            hasCheckoutUrl: !!singleSession.checkout_url
+            hasCheckoutUrl: !!singleSession.checkout_url,
+            note: 'This notification should not be sent for completed sessions. Use sendPaymentSuccessNotificationForDeal instead.'
           });
-          message += `Ссылка на оплату будет отправлена отдельно\n\n`;
+          // Не добавляем сообщение о том, что ссылка будет отправлена отдельно
+          // Вместо этого возвращаем ошибку, чтобы вызывающий код знал, что уведомление не нужно отправлять
+          return {
+            success: false,
+            error: 'Session URL is missing - session already completed. Use sendPaymentSuccessNotificationForDeal instead.'
+          };
         }
         
         if (discountAmount > 0) {

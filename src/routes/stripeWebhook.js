@@ -169,38 +169,19 @@ router.post('/webhooks/stripe', express.raw({ type: 'application/json' }), async
               currentSessionInList.checkout_url = sessionUrl;
             }
             
-            // Проверяем статус оплаты (может быть 'paid' или 'unpaid' в зависимости от типа платежа)
-            // Для checkout.session.completed обычно платеж уже оплачен
-            const isPaid = session.payment_status === 'paid' || session.status === 'complete';
+            // Для checkout.session.completed событие приходит ПОСЛЕ успешной оплаты
+            // Поэтому всегда отправляем уведомление об успешной оплате, а не о выставлении счета
+            // Уведомление о выставлении счета отправляется при создании сессии (через Pipedrive webhook)
             
-            logger.info(`🔍 Проверка статуса оплаты для уведомления | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status} | Status: ${session.status} | Is Paid: ${isPaid}`);
+            logger.info(`🔍 Отправка уведомления об успешной оплате | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status} | Status: ${session.status}`);
             
-            // Отправляем уведомление об успешной оплате (если платеж оплачен)
-            if (isPaid) {
-              try {
-                await stripeProcessor.sendPaymentSuccessNotificationForDeal(dealId, session);
-                logger.info(`✅ Уведомление об успешной оплате отправлено | Deal: ${dealId} | Session: ${session.id}`);
-              } catch (successNotificationError) {
-                logger.warn(`⚠️  Ошибка отправки уведомления об успешной оплате | Deal: ${dealId} | Session: ${session.id}`, { 
-                  error: successNotificationError.message 
-                });
-              }
-            } else {
-              // Если платеж еще не оплачен (редко для checkout.session.completed)
-              // Отправляем уведомление о выставлении счета только если URL доступен
-              if (sessions.length > 0 && sessions[0].url) {
-                await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-                  paymentSchedule: paymentScheduleFromMetadata,
-                  sessions: sessions,
-                  currency: session.currency,
-                  totalAmount: fromMinorUnit(session.amount_total || 0, session.currency),
-                  forceSend: false
-                });
-                
-                logger.info(`📧 Уведомление о выставлении счета отправлено | Deal: ${dealId} | Session: ${session.id}`);
-              } else {
-                logger.warn(`⚠️  Пропускаем уведомление - нет URL сессии | Deal: ${dealId} | Session: ${session.id} | Payment Status: ${session.payment_status}`);
-              }
+            try {
+              await stripeProcessor.sendPaymentSuccessNotificationForDeal(dealId, session);
+              logger.info(`✅ Уведомление об успешной оплате отправлено | Deal: ${dealId} | Session: ${session.id}`);
+            } catch (successNotificationError) {
+              logger.warn(`⚠️  Ошибка отправки уведомления об успешной оплате | Deal: ${dealId} | Session: ${session.id}`, { 
+                error: successNotificationError.message 
+              });
             }
           } catch (notificationError) {
             // Логируем ошибку, но не прерываем обработку платежа
