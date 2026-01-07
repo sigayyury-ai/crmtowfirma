@@ -251,13 +251,35 @@ async function main() {
     }
   } catch (error) {
     console.error('\n❌ Не удалось получить логи:', error.message);
-    if (error.message.includes('не найден')) {
+    
+    // Детальная диагностика ошибок
+    if (error.message.includes('не найден') || error.message.includes('render CLI')) {
       console.error('\n💡 Установите render CLI:');
-      console.error('   pip3 install render-cli');
-    } else if (error.message.includes('401') || error.message.includes('unauthorized')) {
-      console.error('   Проверьте правильность RENDER_API_KEY в .env');
-    } else if (error.message.includes('404') || error.message.includes('not found')) {
-      console.error('   Сервис не найден. Проверьте RENDER_SERVICE_ID');
+      console.error('   pip3 install render-cli --user');
+      console.error('   или');
+      console.error('   pip3 install render-cli --break-system-packages');
+      console.error('\n   После установки проверьте:');
+      console.error('   render-cli --version');
+      console.error('   или');
+      console.error('   ~/.local/bin/render-cli --version');
+    } else if (error.message.includes('401') || error.message.includes('unauthorized') || error.message.includes('авторизации')) {
+      console.error('\n💡 Проблема с авторизацией:');
+      console.error('   1. Проверьте правильность RENDER_API_KEY в .env файле');
+      console.error('   2. Убедитесь, что ключ не истек (создайте новый в Render Dashboard)');
+      console.error('   3. Проверьте формат ключа (должен начинаться с rnd_)');
+      console.error('\n   Render Dashboard → Account Settings → API Keys');
+    } else if (error.message.includes('404') || error.message.includes('not found') || error.message.includes('не найден')) {
+      console.error('\n💡 Сервис не найден:');
+      console.error('   1. Проверьте правильность RENDER_SERVICE_ID в .env');
+      console.error('   2. Или используйте --service-id=ID для указания сервиса');
+      console.error('   3. Убедитесь, что API ключ имеет доступ к сервису');
+      console.error('\n   Render Dashboard → Ваш сервис → Settings → Service ID');
+    } else {
+      console.error('\n💡 Общие рекомендации:');
+      console.error('   1. Проверьте наличие RENDER_API_KEY и RENDER_SERVICE_ID в .env');
+      console.error('   2. Убедитесь, что render-cli установлен и доступен');
+      console.error('   3. Проверьте подключение к интернету');
+      console.error('   4. См. полную документацию: docs/render-logs-setup.md');
     }
     process.exit(1);
   }
