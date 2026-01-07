@@ -828,6 +828,82 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
     }
 
     // Обрабатываем события Invoice Sent (отправка инвойса)
+    // Обрабатываем события Invoice Payment Succeeded (успешная оплата счета)
+    if (event.type === 'invoice.payment_succeeded') {
+      const invoice = event.data.object;
+      const dealId = invoice.metadata?.deal_id;
+      const subscriptionId = invoice.subscription;
+      const customerId = invoice.customer;
+      const paymentIntentId = invoice.latest_payment_intent;
+      
+      logger.info(`💰 Оплата счета успешна | Invoice: ${invoice.id} | Amount: ${invoice.amount_paid / 100} ${invoice.currency.toUpperCase()}`);
+      
+      if (dealId) {
+        // Если deal_id есть в metadata invoice, обрабатываем напрямую
+        logger.info(`✅ Обработка оплаты счета | Deal: ${dealId} | Invoice: ${invoice.id}`);
+        
+        try {
+          // Обновляем статус в CRM
+          const { syncDealStage } = require('../services/crm/statusAutomationService');
+          await syncDealStage(dealId, stripeProcessor.pipedriveClient);
+          
+          logger.info(`✅ Статус CRM обновлен для Invoice | Deal: ${dealId} | Invoice: ${invoice.id}`);
+        } catch (error) {
+          logger.error(`❌ Ошибка обновления статуса CRM для Invoice | Deal: ${dealId} | Invoice: ${invoice.id}`, {
+            error: error.message,
+            stack: error.stack
+          });
+        }
+      } else if (paymentIntentId) {
+        // Если нет deal_id, но есть payment_intent, пытаемся найти через него
+        logger.debug(`🔍 Invoice без deal_id, ищем через Payment Intent | Invoice: ${invoice.id} | PaymentIntent: ${paymentIntentId}`);
+        
+        try {
+          const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+          const paymentIntentDealId = paymentIntent.metadata?.deal_id;
+          const sessionId = paymentIntent.metadata?.session_id;
+          
+          if (paymentIntentDealId) {
+            logger.info(`✅ Найден deal_id через Payment Intent | Deal: ${paymentIntentDealId} | Invoice: ${invoice.id}`);
+            
+            const { syncDealStage } = require('../services/crm/statusAutomationService');
+            await syncDealStage(paymentIntentDealId, stripeProcessor.pipedriveClient);
+            
+            logger.info(`✅ Статус CRM обновлен для Invoice через Payment Intent | Deal: ${paymentIntentDealId} | Invoice: ${invoice.id}`);
+          } else if (sessionId && canRetrieveSession(sessionId)) {
+            // Пытаемся найти deal_id через session
+            try {
+              const session = await stripe.checkout.sessions.retrieve(sessionId);
+              const sessionDealId = session.metadata?.deal_id;
+              
+              if (sessionDealId) {
+                logger.info(`✅ Найден deal_id через Session | Deal: ${sessionDealId} | Invoice: ${invoice.id}`);
+                
+                await stripeProcessor.repository.updatePaymentStatus(sessionId, 'paid');
+                await stripeProcessor.persistSession(session);
+                
+                logger.info(`✅ Invoice обработан через Session | Deal: ${sessionDealId} | Invoice: ${invoice.id}`);
+              }
+            } catch (sessionError) {
+              logger.error(`❌ Ошибка получения Session для Invoice | Session: ${sessionId}`, {
+                error: sessionError.message
+              });
+            }
+          }
+        } catch (paymentIntentError) {
+          logger.error(`❌ Ошибка получения Payment Intent для Invoice | PaymentIntent: ${paymentIntentId}`, {
+            error: paymentIntentError.message
+          });
+        }
+      } else {
+        logger.debug(`ℹ️  Invoice без deal_id и payment_intent | Invoice: ${invoice.id} | Subscription: ${subscriptionId} | Customer: ${customerId}`, {
+          invoiceMetadata: invoice.metadata,
+          subscriptionId,
+          customerId
+        });
+      }
+    }
+
     if (event.type === 'invoice.sent') {
       const invoice = event.data.object;
       const subscriptionId = invoice.subscription;
@@ -859,6 +935,7 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       'charge.refunded',
       'charge.updated',
       'charge.succeeded',
+      'invoice.payment_succeeded',
       'invoice.sent'
     ];
     
