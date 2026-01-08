@@ -458,7 +458,8 @@ class CrmStatusAutomationService {
       snapshotPaymentsCount: snapshot.paymentsCount
     });
     
-    const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0;
+    // Проверяем наличие платежей: либо есть оплаченные суммы, либо есть Stripe платежи (даже если totalPaidPln еще не установлен)
+    const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0 || snapshot.paymentsCount.bank > 0;
     const hasExpectedAmount = snapshot.totals.expectedAmountPln > 0;
     
     this.logger.info('syncDealStage: payment check result', {
@@ -510,8 +511,35 @@ class CrmStatusAutomationService {
       }
     }
 
+    // Если expectedAmountPln все еще 0, но есть Stripe платежи, устанавливаем из суммы сделки
+    if (snapshot.totals.expectedAmountPln <= 0 && snapshot.paymentsCount.stripe > 0 && dealResult.deal.value) {
+      const dealValue = parseFloat(dealResult.deal.value || 0);
+      const dealCurrency = dealResult.deal.currency || 'PLN';
+      if (dealValue > 0) {
+        const expectedAmountPln = dealCurrency === 'PLN' 
+          ? dealValue 
+          : await convertToPln(dealValue, dealCurrency);
+        snapshot.totals.expectedAmountPln = expectedAmountPln;
+        this.logger.info('Fallback: Setting expectedAmountPln from deal value before evaluation', {
+          dealId: normalizedDealId,
+          dealValue,
+          dealCurrency,
+          expectedAmountPln,
+          stripePaymentsCount: snapshot.paymentsCount.stripe
+        });
+      }
+    }
+
     let evaluation;
     try {
+      this.logger.info('Calling evaluatePaymentStatus', {
+        dealId: normalizedDealId,
+        expectedAmountPln: snapshot.totals.expectedAmountPln,
+        paidAmountPln: snapshot.totals.totalPaidPln,
+        scheduleType: snapshot.scheduleType,
+        manualPaymentsCount: snapshot.paymentsCount.total
+      });
+      
       evaluation = evaluatePaymentStatus({
         expectedAmountPln: snapshot.totals.expectedAmountPln,
         paidAmountPln: snapshot.totals.totalPaidPln,
@@ -521,7 +549,12 @@ class CrmStatusAutomationService {
     } catch (error) {
       this.logger.error('Failed to evaluate payment status', {
         dealId: normalizedDealId,
-        error: error.message
+        expectedAmountPln: snapshot.totals.expectedAmountPln,
+        paidAmountPln: snapshot.totals.totalPaidPln,
+        scheduleType: snapshot.scheduleType,
+        paymentsCount: snapshot.paymentsCount,
+        error: error.message,
+        stack: error.stack
       });
       throw error;
     }
