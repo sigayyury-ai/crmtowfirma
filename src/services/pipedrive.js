@@ -1684,10 +1684,34 @@ class PipedriveClient {
         activities: []
       };
     } catch (error) {
+      const statusCode = error.response?.status;
+      const errorData = error.response?.data;
+      const is403 = statusCode === 403;
+      const isInsufficientVisibility = errorData?.error === 'Insufficient visibility to the associated deal';
+      
+      // 403 ошибки (недоступная сделка) - это не критичные ошибки, логируем как предупреждение
+      if (is403 && isInsufficientVisibility) {
+        logger.warn('Cannot get deal activities - deal not accessible (403)', {
+          dealId,
+          type,
+          reason: 'Deal may be deleted, closed, or in different organization',
+          hint: 'This is not critical - returning empty activities array',
+          note: 'Activities cannot be retrieved for inaccessible deals'
+        });
+        // Возвращаем успешный результат с пустым массивом, чтобы не блокировать выполнение
+        return {
+          success: true,
+          activities: [],
+          note: 'Deal not accessible, returning empty activities'
+        };
+      }
+      
+      // Другие ошибки логируем как ошибки
       logger.error('Failed to get deal activities', {
         dealId,
         type,
         error: error.message,
+        statusCode,
         response: error.response?.data
       });
       return {
