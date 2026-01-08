@@ -344,6 +344,20 @@ class CrmStatusAutomationService {
       stripe: stripeTotals.stripePaymentsCount,
       total: proformaTotals.bankPaymentsCount + stripeTotals.stripePaymentsCount
     };
+    
+    this.logger.info('buildDealSnapshot: creating totals and paymentsCount', {
+      dealId,
+      totals,
+      paymentsCount,
+      stripeTotals: {
+        stripePaidPln: stripeTotals.stripePaidPln,
+        stripePaymentsCount: stripeTotals.stripePaymentsCount
+      },
+      proformaTotals: {
+        expectedAmountPln: proformaTotals.expectedAmountPln,
+        bankPaymentsCount: proformaTotals.bankPaymentsCount
+      }
+    });
 
     const scheduleType = this.resolveSchedule(deal, proformas, stripePayments);
 
