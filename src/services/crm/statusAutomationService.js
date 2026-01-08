@@ -428,9 +428,15 @@ class CrmStatusAutomationService {
       snapshot: {
         totalPaidPln: snapshot.totals.totalPaidPln,
         expectedAmountPln: snapshot.totals.expectedAmountPln,
+        stripePaidPln: snapshot.totals.stripePaidPln,
+        bankPaidPln: snapshot.totals.bankPaidPln,
+        cashPaidPln: snapshot.totals.cashPaidPln,
         scheduleType: snapshot.scheduleType,
         paymentsCount: snapshot.paymentsCount,
-        proformasCount: snapshot.proformas.length
+        stripePaymentsCount: snapshot.paymentsCount.stripe,
+        bankPaymentsCount: snapshot.paymentsCount.bank,
+        proformasCount: snapshot.proformas.length,
+        stripePaymentsArrayLength: snapshot.stripePayments.length
       }
     });
     
