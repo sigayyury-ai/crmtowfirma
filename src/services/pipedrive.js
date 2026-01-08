@@ -220,7 +220,7 @@ class PipedriveClient {
         () => this.client.get(`/deals/${dealId}`, {
           params: { 
             api_token: this.apiToken,
-            include: 'stage' // Включаем информацию о стадии
+            include: 'stage,pipeline' // Включаем информацию о стадии и пайплайне
           }
         }),
         this.maxRetries,

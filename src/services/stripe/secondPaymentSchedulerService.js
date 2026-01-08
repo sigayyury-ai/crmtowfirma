@@ -546,6 +546,25 @@ class SecondPaymentSchedulerService {
           // Сначала ищем в базе данных
           const payments = await this.repository.listPayments({ dealId: String(dealId) });
           
+          // КРИТИЧЕСКИ ВАЖНО: Проверяем, есть ли уже ОПЛАЧЕННЫЙ второй платеж
+          // Если второй платеж уже оплачен, не создаем задачу-напоминание
+          const paidSecondPayment = payments.find(p => 
+            (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+            p.payment_status === 'paid'
+          );
+          
+          if (paidSecondPayment) {
+            this.logger.info('Skipping reminder task - second payment already paid', {
+              dealId,
+              paidPaymentId: paidSecondPayment.id,
+              paidSessionId: paidSecondPayment.session_id,
+              paidAmount: paidSecondPayment.original_amount || paidSecondPayment.amount,
+              paidCurrency: paidSecondPayment.currency,
+              paidAt: paidSecondPayment.processed_at || paidSecondPayment.created_at
+            });
+            continue; // Второй платеж уже оплачен, не нужно напоминание
+          }
+          
           // ВАЖНО: Проверяем, есть ли уже активная сессия для этой сделки
           // Если есть активная сессия, не показываем просроченные (они уже обработаны)
           const hasActiveSession = payments.some(p => {
@@ -1062,6 +1081,27 @@ class SecondPaymentSchedulerService {
             } 
             // Для второго платежа (rest/second/final) - только если график 50/50, дата наступила и первый оплачен
             else if (isRest) {
+              // КРИТИЧЕСКИ ВАЖНО: Проверяем, есть ли уже ОПЛАЧЕННЫЙ второй платеж
+              // Если второй платеж уже оплачен, не пересоздаем просроченную сессию
+              // Используем переменную payments, которая уже объявлена выше в этом методе
+              const paidSecondPayment = payments.find(p => 
+                (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+                p.payment_status === 'paid'
+              );
+              
+              if (paidSecondPayment) {
+                this.logger.info('Skipping expired session recreation - second payment already paid', {
+                  dealId,
+                  expiredSessionId: expiredSession.sessionId,
+                  paidPaymentId: paidSecondPayment.id,
+                  paidSessionId: paidSecondPayment.session_id,
+                  paidAmount: paidSecondPayment.original_amount || paidSecondPayment.amount,
+                  paidCurrency: paidSecondPayment.currency,
+                  paidAt: paidSecondPayment.processed_at || paidSecondPayment.created_at
+                });
+                continue; // Второй платеж уже оплачен, не пересоздаем просроченную сессию
+              }
+              
               if (schedule !== '50/50' || !secondPaymentDate) {
                 continue; // Пропускаем эту сессию
               }
