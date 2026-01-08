@@ -318,6 +318,31 @@ class PnlReportService {
               if (sp.session_id && refundedPaymentIds.has(String(sp.session_id))) {
                 return false;
               }
+              
+              // IMPORTANT: Filter by created_at (actual payment date) not processed_at (sync date)
+              // processed_at is when the payment was synced to database, not when it was paid
+              // We need to ensure the payment date (created_at) falls within the target year
+              const paymentDate = sp.created_at || null;
+              if (!paymentDate) {
+                return false; // Skip payments without payment date
+              }
+              
+              const paymentDateObj = new Date(paymentDate);
+              const paymentYear = paymentDateObj.getUTCFullYear();
+              const paymentMonth = paymentDateObj.getUTCMonth() + 1;
+              
+              // Only include payments where the actual payment date (created_at) is in the target year
+              if (paymentYear !== targetYear) {
+                logger.debug('Excluding Stripe payment: payment date year does not match target year', {
+                  sessionId: sp.session_id,
+                  paymentDate: paymentDate,
+                  paymentYear: paymentYear,
+                  targetYear: targetYear,
+                  processedAt: sp.processed_at
+                });
+                return false;
+              }
+              
               // Include all paid payments (including event payments without deal_id)
               // They will be categorized by income_category_id
               return true;
