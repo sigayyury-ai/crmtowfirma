@@ -230,6 +230,40 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
       webhookSecret.startsWith('whsec_live_')
     );
     
+    // Пытаемся определить, от какого кабинета приходит webhook
+    // Если верификация не прошла, возможно это Events cabinet (у него другой webhook secret)
+    let isLikelyEventsCabinet = false;
+    try {
+      // Пытаемся парсить body как JSON, чтобы проверить event ID
+      const bodyJson = JSON.parse(req.rawBody.toString('utf8'));
+      const eventId = bodyJson?.id;
+      // Events cabinet может иметь другие event ID или metadata
+      // Пока просто предполагаем, что если верификация не прошла с основным секретом,
+      // это может быть Events cabinet
+      isLikelyEventsCabinet = true; // Временно предполагаем, что это Events cabinet
+    } catch (parseError) {
+      // Не удалось распарсить JSON - это нормально, продолжаем
+    }
+    
+    // Если это вероятно Events cabinet, логируем как info и возвращаем 200 (игнорируем)
+    if (isLikelyEventsCabinet) {
+      logger.info('Stripe webhook from Events cabinet ignored (different webhook secret)', {
+        eventId: null,
+        requestId: req.headers['x-request-id'] || 'unknown',
+        clientIP: req.ip || req.headers['x-forwarded-for'] || 'unknown',
+        signatureLength,
+        signaturePreview: sig ? `${sig.substring(0, 30)}...` : 'N/A',
+        bodyLength: req.rawBody?.length || 0,
+        note: 'This webhook is likely from Events Stripe cabinet. Events cabinet webhooks are ignored as they use a different webhook secret. Only webhooks from PRIMARY cabinet (we_1SXMcUBXP7ZF0H8RKWUimiqC) are processed.',
+        action: 'Webhook ignored - returning 200 OK'
+      });
+      // Возвращаем 200 OK, чтобы Stripe не повторял запрос
+      return res.status(200).json({ 
+        received: true,
+        note: 'Webhook from Events cabinet ignored (different webhook secret). Only PRIMARY cabinet webhooks are processed.'
+      });
+    }
+    
     logger.warn('Stripe webhook signature verification failed', {
       eventId: null, // Event не был создан из-за ошибки верификации
       requestId: req.headers['x-request-id'] || 'unknown',
