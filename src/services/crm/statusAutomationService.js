@@ -223,8 +223,23 @@ class CrmStatusAutomationService {
     }
 
     // Если валюты совпадают или нет webhook подтверждений, используем сумму как обычно
+    const stripePaidPln = processed.reduce((acc, row) => acc + (toNumber(row.amount_pln) || 0), 0);
+    
+    this.logger.info('sumStripeTotals: returning totals', {
+      stripePaidPln,
+      stripePaymentsCount: processed.length,
+      processedCount: processed.length,
+      hasCurrencyMismatch: false,
+      processed: processed.map(p => ({
+        id: p.id,
+        amount_pln: p.amount_pln,
+        original_amount: p.original_amount,
+        amount: p.amount
+      }))
+    });
+    
     return {
-      stripePaidPln: processed.reduce((acc, row) => acc + (toNumber(row.amount_pln) || 0), 0),
+      stripePaidPln,
       stripePaymentsCount: processed.length,
       processed,
       hasCurrencyMismatch: false
