@@ -423,6 +423,15 @@ class CrmStatusAutomationService {
 
     this.logger.info('Building deal snapshot', { dealId: normalizedDealId });
     const snapshot = await this.buildDealSnapshot(normalizedDealId, dealResult.deal);
+    
+    this.logger.info('Deal snapshot received', {
+      dealId: normalizedDealId,
+      totals: snapshot.totals,
+      paymentsCount: snapshot.paymentsCount,
+      stripePaymentsArrayLength: snapshot.stripePayments?.length || 0,
+      proformasCount: snapshot.proformas?.length || 0
+    });
+    
     this.logger.info('Deal snapshot built', {
       dealId: normalizedDealId,
       snapshot: {
@@ -487,8 +496,8 @@ class CrmStatusAutomationService {
     }
     
     // Если есть Stripe платежи, но нет проформ, используем сумму сделки как expectedAmount
-    // Проверяем наличие Stripe платежей по paymentsCount.stripe, а не только по totalPaidPln
-    const hasStripePayments = snapshot.paymentsCount.stripe > 0;
+    // Проверяем наличие Stripe платежей по paymentsCount.stripe ИЛИ по массиву stripePayments
+    const hasStripePayments = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
     if (snapshot.proformas.length === 0 && hasStripePayments && snapshot.totals.expectedAmountPln <= 0) {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
@@ -512,7 +521,9 @@ class CrmStatusAutomationService {
     }
 
     // Если expectedAmountPln все еще 0, но есть Stripe платежи, устанавливаем из суммы сделки
-    if (snapshot.totals.expectedAmountPln <= 0 && snapshot.paymentsCount.stripe > 0 && dealResult.deal.value) {
+    // Проверяем по paymentsCount.stripe ИЛИ по массиву stripePayments
+    const hasStripePaymentsFallback = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
+    if (snapshot.totals.expectedAmountPln <= 0 && hasStripePaymentsFallback && dealResult.deal.value) {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
