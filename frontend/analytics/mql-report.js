@@ -361,24 +361,50 @@ init();
 function deriveInitialState() {
   const params = new URLSearchParams(window.location.search);
   const allowedViews = ['source', 'channel'];
-  const defaultYear = Number(yearSelect?.value) || new Date().getFullYear();
+  const currentYear = new Date().getFullYear();
+  
+  // Always default to current year, not the selected value in HTML
+  const defaultYear = currentYear;
+  
   const viewParam = params.get('view');
   const view = allowedViews.includes(viewParam) ? viewParam : 'source';
   const yearParam = Number(params.get('year'));
-  const year = Number.isFinite(yearParam) ? yearParam : defaultYear;
+  const year = Number.isFinite(yearParam) && yearParam > 0 ? yearParam : defaultYear;
   return { view, year };
 }
 
 function applyInitialFormState() {
   if (yearSelect) {
-    const years = Array.from(yearSelect.options).map((option) => Number(option.value));
-    if (!years.includes(state.year)) {
+    const years = Array.from(yearSelect.options).map((option) => Number(option.value)).filter(y => y > 0);
+    
+    // Ensure current year is always available
+    const currentYear = new Date().getFullYear();
+    if (!years.includes(currentYear)) {
+      const opt = document.createElement('option');
+      opt.value = String(currentYear);
+      opt.textContent = currentYear;
+      yearSelect.appendChild(opt);
+      years.push(currentYear);
+    }
+    
+    // Ensure state.year is valid (greater than 0)
+    if (state.year > 0 && !years.includes(state.year)) {
       const opt = document.createElement('option');
       opt.value = String(state.year);
       opt.textContent = state.year;
       yearSelect.appendChild(opt);
     }
-    yearSelect.value = String(state.year);
+    
+    // Set the selected year
+    // Priority: 1) year from URL parameter, 2) current year (for initial load)
+    const urlParams = new URLSearchParams(window.location.search);
+    const hasYearParam = urlParams.has('year');
+    const selectedYear = (hasYearParam && state.year > 0) ? state.year : currentYear;
+    
+    yearSelect.value = String(selectedYear);
+    
+    // Update state to match selected year (ensures consistency)
+    state.year = selectedYear;
   }
   setActiveViewButton();
 }

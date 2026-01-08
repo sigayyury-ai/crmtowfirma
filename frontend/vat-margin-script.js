@@ -796,26 +796,24 @@ function initMonthYearSelectors() {
   if (!elements.monthSelect || !elements.yearSelect) return;
 
   const today = new Date();
+  const currentYear = today.getFullYear();
   const monthOptions = Array.from(elements.monthSelect.options ?? []).map((option) => option.value);
   const yearOptions = Array.from(elements.yearSelect.options ?? []).map((option) => option.value);
+
+  // Add current year option if it doesn't exist (dynamic year support)
+  if (!yearOptions.includes(String(currentYear))) {
+    const opt = document.createElement('option');
+    opt.value = String(currentYear);
+    opt.textContent = currentYear;
+    elements.yearSelect.appendChild(opt);
+    yearOptions.push(String(currentYear));
+  }
 
   const defaultMonth = String(today.getMonth() + 1);
   const selectedMonth = monthOptions.includes(defaultMonth) ? defaultMonth : (monthOptions[0] || '');
 
-  const yearFallback = (() => {
-    const numericYears = yearOptions.map(Number).filter(Number.isFinite);
-    if (numericYears.length === 0) {
-      return String(today.getFullYear());
-    }
-    const minYear = Math.min(...numericYears);
-    const maxYear = Math.max(...numericYears);
-    const bounded = Math.min(maxYear, Math.max(minYear, today.getFullYear()));
-    return String(bounded);
-  })();
-
-  const selectedYear = yearOptions.includes(String(today.getFullYear()))
-    ? String(today.getFullYear())
-    : yearFallback;
+  // Always use current year as selected year (it's already added above if missing)
+  const selectedYear = String(currentYear);
 
   if (selectedMonth) {
     elements.monthSelect.value = selectedMonth;

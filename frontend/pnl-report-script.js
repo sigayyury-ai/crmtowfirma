@@ -56,6 +56,16 @@ function cacheDom() {
   // Set default year to current year
   if (elements.yearSelect) {
     const currentYear = new Date().getFullYear();
+    const yearOptions = Array.from(elements.yearSelect.options).map(opt => Number(opt.value));
+    
+    // Add current year option if it doesn't exist (dynamic year support)
+    if (!yearOptions.includes(currentYear)) {
+      const opt = document.createElement('option');
+      opt.value = String(currentYear);
+      opt.textContent = currentYear;
+      elements.yearSelect.appendChild(opt);
+    }
+    
     elements.yearSelect.value = currentYear.toString();
   }
 }
