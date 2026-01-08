@@ -1,3 +1,6 @@
+const { getStageIdForPipeline } = require('./pipelineConfig');
+
+// Старые ID для обратной совместимости (Camps пайплайн)
 const STAGE_IDS = {
   FIRST_PAYMENT: 18,
   SECOND_PAYMENT: 32,
@@ -83,16 +86,29 @@ function calculatePaidRatio(paidAmount, expectedAmount) {
  * @param {string} options.scheduleType
  * @param {number} options.paidRatio
  * @param {number} [options.manualPaymentsCount]
+ * @param {number|string} [options.pipelineId] - ID пайплайна для определения правильных ID статусов
+ * @param {string} [options.pipelineName] - Название пайплайна (опционально)
  * @returns {{stageId: number, stageName: string, reason: string}}
  */
-function determineStage({ scheduleType, paidRatio, manualPaymentsCount = 0 }) {
+function determineStage({ scheduleType, paidRatio, manualPaymentsCount = 0, pipelineId = null, pipelineName = null }) {
   const profile = SCHEDULE_PROFILES[scheduleType] || DEFAULT_PROFILE;
   const ratio = paidRatio || 0;
+
+  // Получаем ID статусов для пайплайна (или используем дефолтные для Camps)
+  const firstPaymentId = pipelineId 
+    ? getStageIdForPipeline(pipelineId, 'FIRST_PAYMENT', pipelineName) || STAGE_IDS.FIRST_PAYMENT
+    : STAGE_IDS.FIRST_PAYMENT;
+  const secondPaymentId = pipelineId 
+    ? getStageIdForPipeline(pipelineId, 'SECOND_PAYMENT', pipelineName) || STAGE_IDS.SECOND_PAYMENT
+    : STAGE_IDS.SECOND_PAYMENT;
+  const campWaiterId = pipelineId 
+    ? getStageIdForPipeline(pipelineId, 'CAMP_WAITER', pipelineName) || STAGE_IDS.CAMP_WAITER
+    : STAGE_IDS.CAMP_WAITER;
 
   // Fully paid → Camp Waiter
   if (ratio >= FINAL_THRESHOLD || manualPaymentsCount >= profile.paymentsExpected) {
     return {
-      stageId: STAGE_IDS.CAMP_WAITER,
+      stageId: campWaiterId,
       stageName: 'Camp Waiter',
       reason: `Оплачено ${Math.round(ratio * 100)}% (>=${Math.round(FINAL_THRESHOLD * 100)}%)`
     };
@@ -103,7 +119,7 @@ function determineStage({ scheduleType, paidRatio, manualPaymentsCount = 0 }) {
     const threshold = Math.max(0, profile.depositRatio - DEPOSIT_TOLERANCE);
     if (ratio >= threshold) {
       return {
-        stageId: STAGE_IDS.SECOND_PAYMENT,
+        stageId: secondPaymentId,
         stageName: 'Second Payment',
         reason: `Достигнут порог первой оплаты (${Math.round(ratio * 100)}% >= ${Math.round(threshold * 100)}%)`
       };
@@ -111,7 +127,7 @@ function determineStage({ scheduleType, paidRatio, manualPaymentsCount = 0 }) {
   }
 
   return {
-    stageId: STAGE_IDS.FIRST_PAYMENT,
+    stageId: firstPaymentId,
     stageName: 'First Payment',
     reason: `Ожидаем первоначальный платеж (${Math.round(ratio * 100)}% оплачено)`
   };
@@ -138,7 +154,9 @@ function evaluatePaymentStatus({
   expectedAmountPln,
   paidAmountPln,
   scheduleType = DEFAULT_PROFILE.key,
-  manualPaymentsCount = 0
+  manualPaymentsCount = 0,
+  pipelineId = null,
+  pipelineName = null
 }) {
   if (!Number.isFinite(expectedAmountPln) || expectedAmountPln <= 0) {
     throw new Error('evaluatePaymentStatus requires a positive expectedAmountPln');
@@ -149,7 +167,9 @@ function evaluatePaymentStatus({
   const stage = determineStage({
     scheduleType: normalizedSchedule,
     paidRatio,
-    manualPaymentsCount
+    manualPaymentsCount,
+    pipelineId,
+    pipelineName
   });
 
   return {

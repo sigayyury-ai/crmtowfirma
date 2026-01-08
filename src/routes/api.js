@@ -89,6 +89,7 @@ const proformaReminderService = new ProformaSecondPaymentReminderService();
 const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
 const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
 const CASH_STAGE_CAMP_WAITER_ID = Number(process.env.CASH_STAGE_CAMP_WAITER_ID || 27);
+const { getStageIdForPipeline } = require('../services/crm/pipelineConfig');
 // Configure multer with memory storage and size limits
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -5632,7 +5633,42 @@ async function updateCashDealStage(dealId, stageId, reason) {
     return;
   }
   try {
-    await pipedriveClient.updateDealStage(dealId, stageId);
+    // Получаем правильный ID статуса для пайплайна сделки
+    let finalStageId = stageId;
+    try {
+      const dealResult = await pipedriveClient.getDeal(dealId);
+      if (dealResult.success && dealResult.deal) {
+        const pipelineId = dealResult.deal.pipeline_id || null;
+        const pipelineName = dealResult.deal.pipeline?.name || null;
+        
+        // Определяем тип статуса по переданному stageId
+        let stageType = null;
+        if (stageId === CASH_STAGE_SECOND_PAYMENT_ID || stageId === 32 || stageId === 38) {
+          stageType = 'SECOND_PAYMENT';
+        } else if (stageId === CASH_STAGE_CAMP_WAITER_ID || stageId === 27 || stageId === 39) {
+          stageType = 'CAMP_WAITER';
+        }
+        
+        if (stageType && pipelineId) {
+          const pipelineStageId = getStageIdForPipeline(pipelineId, stageType, pipelineName);
+          if (pipelineStageId) {
+            finalStageId = pipelineStageId;
+            logger.debug('Using pipeline-specific stage ID for cash automation', {
+              dealId,
+              pipelineId,
+              pipelineName,
+              stageType,
+              originalStageId: stageId,
+              finalStageId
+            });
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn('Failed to get pipeline stage ID, using default', { dealId, error: error.message });
+    }
+    
+    await pipedriveClient.updateDealStage(dealId, finalStageId);
     logger.info('Cash automation: deal stage updated', {
       dealId,
       stageId,

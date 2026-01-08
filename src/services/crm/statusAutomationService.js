@@ -9,6 +9,7 @@ const {
   STAGE_IDS,
   SCHEDULE_PROFILES
 } = require('./statusCalculator');
+const { getPipelineConfig, getSupportedStageIdsForPipeline } = require('./pipelineConfig');
 const {
   toNumber,
   convertToPln,
@@ -17,7 +18,9 @@ const {
   estimateScheduleFromDeal
 } = require('./statusAutomationUtils');
 
-const SUPPORTED_STAGE_IDS = new Set([STAGE_IDS.FIRST_PAYMENT, STAGE_IDS.SECOND_PAYMENT, STAGE_IDS.CAMP_WAITER]);
+// SUPPORTED_STAGE_IDS теперь определяется динамически на основе пайплайна
+// Дефолтные ID для Camps (для обратной совместимости)
+const DEFAULT_SUPPORTED_STAGE_IDS = new Set([STAGE_IDS.FIRST_PAYMENT, STAGE_IDS.SECOND_PAYMENT, STAGE_IDS.CAMP_WAITER]);
 
 // Глобальный кеш для отслеживания последних уведомлений (работает между экземплярами сервиса)
 // Ключ: dealId, значение: timestamp последнего уведомления
@@ -371,8 +374,19 @@ class CrmStatusAutomationService {
     };
   }
 
-  shouldUpdateStage(currentStageId, targetStageId, { force = false } = {}) {
-    if (!SUPPORTED_STAGE_IDS.has(targetStageId)) {
+  shouldUpdateStage(currentStageId, targetStageId, { force = false, pipelineId = null, pipelineName = null } = {}) {
+    // Получаем поддерживаемые ID статусов для пайплайна
+    const supportedStageIds = pipelineId 
+      ? getSupportedStageIdsForPipeline(pipelineId, pipelineName)
+      : DEFAULT_SUPPORTED_STAGE_IDS;
+    
+    // Получаем конфигурацию пайплайна для определения порядка статусов
+    const pipelineConfig = getPipelineConfig(pipelineId, pipelineName);
+    const stageOrder = pipelineConfig?.stageIds 
+      ? [pipelineConfig.stageIds.FIRST_PAYMENT, pipelineConfig.stageIds.SECOND_PAYMENT, pipelineConfig.stageIds.CAMP_WAITER].filter(id => id !== null)
+      : [STAGE_IDS.FIRST_PAYMENT, STAGE_IDS.SECOND_PAYMENT, STAGE_IDS.CAMP_WAITER];
+
+    if (!supportedStageIds.has(targetStageId)) {
       return { canUpdate: false, reason: 'Target stage is not supported for automation' };
     }
 
@@ -380,7 +394,7 @@ class CrmStatusAutomationService {
       return { canUpdate: true };
     }
 
-    if (!SUPPORTED_STAGE_IDS.has(currentStageId)) {
+    if (!supportedStageIds.has(currentStageId)) {
       return { canUpdate: false, reason: 'Deal is in a custom stage; automation skipped' };
     }
 
@@ -388,9 +402,8 @@ class CrmStatusAutomationService {
       return { canUpdate: false, reason: 'Stage already matches target' };
     }
 
-    const order = [STAGE_IDS.FIRST_PAYMENT, STAGE_IDS.SECOND_PAYMENT, STAGE_IDS.CAMP_WAITER];
-    const currentIndex = order.indexOf(currentStageId);
-    const targetIndex = order.indexOf(targetStageId);
+    const currentIndex = stageOrder.indexOf(currentStageId);
+    const targetIndex = stageOrder.indexOf(targetStageId);
 
     if (currentIndex === -1 || targetIndex === -1) {
       return { canUpdate: false, reason: 'Stage order undefined' };
@@ -587,7 +600,9 @@ class CrmStatusAutomationService {
     });
     
     const updateDecision = this.shouldUpdateStage(currentStageId, evaluation.targetStageId, {
-      force: options.force === true
+      force: options.force === true,
+      pipelineId,
+      pipelineName
     });
 
     this.logger.info('CRM status automation: update decision', {

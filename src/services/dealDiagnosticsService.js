@@ -1073,7 +1073,16 @@ class DealDiagnosticsService {
    */
   async getSystemDiagnostics(options = {}) {
     const {
-      stageIds = [18, 32], // First Payment и Second Payment по умолчанию
+      // Получаем ID статусов для всех пайплайнов
+      stageIds = options.stageIds || (() => {
+        const { PIPELINE_CONFIGS } = require('./crm/pipelineConfig');
+        const allStageIds = new Set();
+        Object.values(PIPELINE_CONFIGS).forEach(config => {
+          if (config.stageIds.FIRST_PAYMENT) allStageIds.add(config.stageIds.FIRST_PAYMENT);
+          if (config.stageIds.SECOND_PAYMENT) allStageIds.add(config.stageIds.SECOND_PAYMENT);
+        });
+        return Array.from(allStageIds);
+      })(), // First Payment и Second Payment для всех пайплайнов
       includeTasks = true,
       includeStuckPayments = true,
       includeMissingSecondPayments = true,
@@ -1119,8 +1128,24 @@ class DealDiagnosticsService {
       // Обрабатываем каждую сделку
       for (const deal of allDeals) {
         const dealId = String(deal.id);
-        const isFirstPayment = deal.stage_id === 18;
-        const isSecondPayment = deal.stage_id === 32;
+        
+        // Получаем ID статусов для пайплайна сделки
+        let firstPaymentId = 18; // Default для Camps
+        let secondPaymentId = 32; // Default для Camps
+        try {
+          const pipelineId = deal.pipeline_id || null;
+          const pipelineName = deal.pipeline?.name || null;
+          if (pipelineId) {
+            const { getStageIdForPipeline } = require('./crm/pipelineConfig');
+            firstPaymentId = getStageIdForPipeline(pipelineId, 'FIRST_PAYMENT', pipelineName) || 18;
+            secondPaymentId = getStageIdForPipeline(pipelineId, 'SECOND_PAYMENT', pipelineName) || 32;
+          }
+        } catch (error) {
+          this.logger.warn('Failed to get pipeline stage IDs, using defaults', { dealId, error: error.message });
+        }
+        
+        const isFirstPayment = deal.stage_id === firstPaymentId;
+        const isSecondPayment = deal.stage_id === secondPaymentId;
 
         try {
           // Получаем полную диагностику для сделки
