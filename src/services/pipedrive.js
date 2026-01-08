@@ -1321,13 +1321,14 @@ class PipedriveClient {
       const is403 = statusCode === 403;
       const isInsufficientVisibility = errorData?.error === 'Insufficient visibility to the associated deal';
       
-      // 403 ошибки (недоступная сделка) - это не критичные ошибки, логируем как предупреждение
+      // 403 ошибки (недоступная сделка) - это не критичные ошибки, логируем как debug
       if (is403 && isInsufficientVisibility) {
-        logger.warn('Cannot create task in Pipedrive - deal not accessible (403)', {
+        logger.debug('Cannot create task in Pipedrive - deal not accessible (403)', {
           dealId: taskData.deal_id,
           subject: taskData.subject,
           reason: 'Deal may be deleted, closed, or in different organization',
-          hint: 'This is not critical - task creation is skipped for inaccessible deals'
+          hint: 'This is not critical - task creation is skipped for inaccessible deals',
+          note: 'This warning is expected for deleted/closed deals and will not appear in production logs'
         });
       } else {
         // Другие ошибки логируем как ошибки
