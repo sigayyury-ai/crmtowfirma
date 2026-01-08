@@ -61,13 +61,16 @@ function convertToPln(amount, currency, exchangeRate) {
 
 /**
  * Extract month number (1-12) from date
+ * Uses UTC to ensure consistent month extraction regardless of server timezone
  * @param {Date|string|number} date - Date value
  * @returns {number|null} Month number (1-12) or null if invalid
  */
 function extractMonthFromDate(date) {
   const parsedDate = parseDate(date);
   if (!parsedDate) return null;
-  return parsedDate.getMonth() + 1; // getMonth() returns 0-11, we need 1-12
+  // Use getUTCMonth() instead of getMonth() to ensure consistent month extraction
+  // since dates in database are stored in UTC and year filtering uses UTC
+  return parsedDate.getUTCMonth() + 1; // getUTCMonth() returns 0-11, we need 1-12
 }
 
 /**
