@@ -442,11 +442,35 @@ class CrmStatusAutomationService {
     
     // Проверяем, есть ли платежи (Stripe или проформы)
     // Для Stripe-платежей может не быть проформ, но платежи есть
+    this.logger.info('syncDealStage: checking for payments', {
+      dealId: normalizedDealId,
+      totalPaidPln: snapshot.totals.totalPaidPln,
+      stripePaidPln: snapshot.totals.stripePaidPln,
+      paymentsCountStripe: snapshot.paymentsCount.stripe,
+      paymentsCount: snapshot.paymentsCount,
+      proformasCount: snapshot.proformas.length,
+      expectedAmountPln: snapshot.totals.expectedAmountPln
+    });
+    
     const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0;
     const hasExpectedAmount = snapshot.totals.expectedAmountPln > 0;
     
+    this.logger.info('syncDealStage: payment check result', {
+      dealId: normalizedDealId,
+      hasPayments,
+      hasExpectedAmount,
+      totalPaidPln: snapshot.totals.totalPaidPln,
+      paymentsCountStripe: snapshot.paymentsCount.stripe
+    });
+    
     // Если нет проформ И нет Stripe платежей, не обновляем статус
     if (snapshot.proformas.length === 0 && !hasPayments && !hasExpectedAmount) {
+      this.logger.info('syncDealStage: early return - no payments', {
+        dealId: normalizedDealId,
+        reason: 'Нет активных проформ и нет платежей',
+        totalPaidPln: snapshot.totals.totalPaidPln,
+        paymentsCountStripe: snapshot.paymentsCount.stripe
+      });
       return {
         updated: false,
         reason: 'Нет активных проформ и нет платежей',
