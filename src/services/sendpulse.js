@@ -319,9 +319,10 @@ class SendPulseClient {
       };
 
       // Формат payload для обновления кастомных полей
-      // SendPulse использует структуру custom_fields или variables
+      // SendPulse использует структуру variables для кастомных полей контакта
+      // Поля должны быть созданы заранее в админ-панели SendPulse
       const payload = {
-        custom_fields: customFields
+        variables: customFields
       };
 
       const response = await this.client.patch(url, payload, { headers });
@@ -342,7 +343,7 @@ class SendPulseClient {
       const status = error.response?.status;
       const isNotFound = status === 404;
       
-      // 404 (Not Found) is not critical - contact may not exist in SendPulse
+      // 404 (Not Found) - контакт не найден в SendPulse
       if (isNotFound) {
         logger.warn('SendPulse contact not found (404) - skipping custom fields update', {
           contactId,
@@ -353,6 +354,38 @@ class SendPulseClient {
           success: false,
           error: 'Contact not found in SendPulse',
           notFound: true
+        };
+      }
+      
+      // 400 (Bad Request) - возможно, поле не существует или неверный формат
+      const isBadRequest = status === 400;
+      if (isBadRequest) {
+        const errorMessage = error.response?.data?.message || error.message;
+        const isFieldError = errorMessage?.toLowerCase().includes('field') || 
+                           errorMessage?.toLowerCase().includes('variable') ||
+                           errorMessage?.toLowerCase().includes('custom');
+        
+        if (isFieldError) {
+          logger.warn('SendPulse custom field error (400) - field may not exist', {
+            contactId,
+            customFields,
+            error: errorMessage,
+            note: 'Custom field "deal_id" may need to be created in SendPulse admin panel first. Go to Contacts > Settings > Fields and add "deal_id" field.',
+            hint: 'Create "deal_id" field in SendPulse: Contacts > Settings > Fields > Add Field'
+          });
+        } else {
+          logger.error('SendPulse API bad request (400)', {
+            contactId,
+            customFields,
+            error: errorMessage,
+            data: error.response?.data
+          });
+        }
+        return {
+          success: false,
+          error: errorMessage,
+          badRequest: true,
+          isFieldError
         };
       }
       
