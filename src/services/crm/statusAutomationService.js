@@ -486,7 +486,9 @@ class CrmStatusAutomationService {
     }
     
     // Если есть Stripe платежи, но нет проформ, используем сумму сделки как expectedAmount
-    if (snapshot.proformas.length === 0 && hasPayments && snapshot.totals.expectedAmountPln <= 0) {
+    // Проверяем наличие Stripe платежей по paymentsCount.stripe, а не только по totalPaidPln
+    const hasStripePayments = snapshot.paymentsCount.stripe > 0;
+    if (snapshot.proformas.length === 0 && hasStripePayments && snapshot.totals.expectedAmountPln <= 0) {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
@@ -501,7 +503,9 @@ class CrmStatusAutomationService {
           dealCurrency,
           expectedAmountPln,
           stripePaymentsCount: snapshot.paymentsCount.stripe,
-          totalPaidPln: snapshot.totals.totalPaidPln
+          totalPaidPln: snapshot.totals.totalPaidPln,
+          hasStripePayments,
+          hasPayments
         });
       }
     }
