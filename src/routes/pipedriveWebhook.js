@@ -1055,6 +1055,15 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           }
 
           const deal = dealResult.deal;
+          
+          // Логируем информацию о пайплайне для диагностики
+          logger.info('Pipeline information from Pipedrive API', {
+            dealId,
+            pipelineId: deal.pipeline_id,
+            pipelineName: deal.pipeline?.name,
+            hasPipelineObject: !!deal.pipeline,
+            pipelineKeys: deal.pipeline ? Object.keys(deal.pipeline) : []
+          });
           // Мержим данные из webhook в deal из API (чтобы сохранить все поля из webhook)
           // ВАЖНО: Приоритет отдаем данным из API, так как они более полные и актуальные
           // Webhook данные используются только для полей, которых нет в API
@@ -1699,16 +1708,18 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           // Создаем заметку в сделке с графиком платежей и ссылками для мониторинга (даже если уведомление не ушло)
           try {
             const formatAmount = (amount) => parseFloat(amount).toFixed(2);
-            // Всегда live режим
             const stripeBaseUrl = 'https://dashboard.stripe.com';
+            const searchLink = buildStripeSearchUrl(String(dealId));
             
+            // Создаем один ноут с информацией о графике платежей и ссылками
             let noteContent = `💳 *График платежей: ${paymentSchedule}*\n\n`;
             
+            // Добавляем информацию о каждом платеже с ссылкой на Stripe Dashboard
             if (paymentSchedule === '50/50' && sessions.length === 1) {
               // Только первый платеж (deposit) создан
               const firstSession = sessions[0];
               noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(firstSession.amount)} ${currency}\n`;
-              noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${firstSession.id})\n\n`;
+              noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${firstSession.id})\n\n`;
               noteContent += `2️⃣ *Остаток 50%:* будет создан позже\n\n`;
             } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
               // Оба платежа созданы
@@ -1717,21 +1728,20 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               
               if (depositSession) {
                 noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(depositSession.amount)} ${currency}\n`;
-                noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${depositSession.id})\n\n`;
+                noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${depositSession.id})\n\n`;
               }
               
               if (restSession) {
                 noteContent += `2️⃣ *Остаток 50%:* ${formatAmount(restSession.amount)} ${currency}\n`;
-                noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${restSession.id})\n\n`;
+                noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${restSession.id})\n\n`;
               }
             } else if (paymentSchedule === '100%' && sessions.length >= 1) {
               const singleSession = sessions[0];
               noteContent += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}\n`;
-              noteContent += `   [Мониторинг статуса](${stripeBaseUrl}/checkout_sessions/${singleSession.id})\n\n`;
+              noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${singleSession.id})\n\n`;
             }
             
             noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;
-            const searchLink = buildStripeSearchUrl(String(dealId));
             noteContent += `📊 [Мониторинг всех платежей по сделке](${searchLink})\n`;
             
             await stripeProcessor.pipedriveClient.addNoteToDeal(dealId, noteContent);

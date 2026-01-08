@@ -3749,24 +3749,8 @@ class StripeProcessorService {
       // This ensures notification shows correct total that matches the Stripe session
       const returnedTotalAmount = sumPrice || parseFloat(fullDeal.value) || productPrice;
       
-      // Create note in Pipedrive about session creation
-      try {
-        await this.addSessionCreationNoteToDeal(dealId, {
-          paymentType: paymentType || 'deposit',
-          paymentSchedule: paymentSchedule || '100%',
-          amount: productPrice,
-          currency,
-          sessionId: session.id,
-          sessionUrl: session.url
-        });
-      } catch (noteError) {
-        // Don't fail session creation if note creation fails
-        this.logger.warn('Failed to create note for session creation', {
-          dealId,
-          sessionId: session.id,
-          error: noteError.message
-        });
-      }
+      // Note creation is handled in pipedriveWebhook.js after all sessions are created
+      // to avoid duplicate notes
       
       return {
         success: true,
