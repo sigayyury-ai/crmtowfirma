@@ -444,12 +444,18 @@ class CrmStatusAutomationService {
     // Для Stripe-платежей может не быть проформ, но платежи есть
     this.logger.info('syncDealStage: checking for payments', {
       dealId: normalizedDealId,
-      totalPaidPln: snapshot.totals.totalPaidPln,
-      stripePaidPln: snapshot.totals.stripePaidPln,
-      paymentsCountStripe: snapshot.paymentsCount.stripe,
+      totalPaidPln: snapshot.totals?.totalPaidPln,
+      stripePaidPln: snapshot.totals?.stripePaidPln,
+      bankPaidPln: snapshot.totals?.bankPaidPln,
+      cashPaidPln: snapshot.totals?.cashPaidPln,
+      paymentsCountStripe: snapshot.paymentsCount?.stripe,
+      paymentsCountBank: snapshot.paymentsCount?.bank,
+      paymentsCountTotal: snapshot.paymentsCount?.total,
       paymentsCount: snapshot.paymentsCount,
-      proformasCount: snapshot.proformas.length,
-      expectedAmountPln: snapshot.totals.expectedAmountPln
+      proformasCount: snapshot.proformas?.length || 0,
+      expectedAmountPln: snapshot.totals?.expectedAmountPln,
+      snapshotTotals: snapshot.totals,
+      snapshotPaymentsCount: snapshot.paymentsCount
     });
     
     const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0;
