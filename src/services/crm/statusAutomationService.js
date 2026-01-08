@@ -434,6 +434,18 @@ class CrmStatusAutomationService {
       throw new Error(`Failed to load Pipedrive deal #${normalizedDealId}`);
     }
 
+    // Определяем пайплайн сразу после загрузки сделки для логирования
+    const pipelineId = dealResult.deal.pipeline_id || null;
+    const pipelineName = dealResult.deal.pipeline?.name || null;
+    const pipelineConfig = getPipelineConfig(pipelineId, pipelineName);
+    
+    this.logger.info('Pipeline detected for deal', {
+      dealId: normalizedDealId,
+      pipelineId,
+      pipelineName: pipelineConfig?.pipelineName || 'Camps (default)',
+      stageIds: pipelineConfig?.stageIds || null
+    });
+
     this.logger.info('Building deal snapshot', { dealId: normalizedDealId });
     const snapshot = await this.buildDealSnapshot(normalizedDealId, dealResult.deal);
     
