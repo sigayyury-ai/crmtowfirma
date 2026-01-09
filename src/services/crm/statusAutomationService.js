@@ -161,8 +161,13 @@ class CrmStatusAutomationService {
       }))
     });
     
+    // Фильтруем оплаченные платежи: проверяем payment_status='paid' или status='processed'
+    // Это позволяет учитывать все оплаченные платежи независимо от их внутреннего статуса обработки
     const processed = payments.filter(
-      (row) => row && row.status === 'processed' && (!row.payment_status || row.payment_status === 'paid')
+      (row) => row && (
+        row.payment_status === 'paid' || 
+        (row.status === 'processed' && (!row.payment_status || row.payment_status === 'paid'))
+      )
     );
     
     this.logger.info('sumStripeTotals: filtered payments', {

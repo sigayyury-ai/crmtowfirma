@@ -1079,14 +1079,14 @@ class SecondPaymentSchedulerService {
             if (isDeposit) {
               // Можно пересоздавать сразу
             } 
-            // Для второго платежа (rest/second/final) - только если график 50/50, дата наступила и первый оплачен
+            // Для второго платежа (rest/second/final) - проверяем условия
             else if (isRest) {
               // КРИТИЧЕСКИ ВАЖНО: Проверяем, есть ли уже ОПЛАЧЕННЫЙ второй платеж
               // Если второй платеж уже оплачен, не пересоздаем просроченную сессию
               // Используем переменную payments, которая уже объявлена выше в этом методе
               const paidSecondPayment = payments.find(p => 
                 (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
-                p.payment_status === 'paid'
+                (p.payment_status === 'paid' || p.status === 'processed')
               );
               
               if (paidSecondPayment) {
@@ -1102,20 +1102,31 @@ class SecondPaymentSchedulerService {
                 continue; // Второй платеж уже оплачен, не пересоздаем просроченную сессию
               }
               
-              if (schedule !== '50/50' || !secondPaymentDate) {
-                continue; // Пропускаем эту сессию
-              }
+              // Если график 100%, но есть истекшая rest сессия - это означает, что график изменился
+              // В этом случае нужно создать single сессию вместо rest
+              if (schedule === '100%') {
+                this.logger.info('Expired rest session found for 100% schedule - will create single session instead', {
+                  dealId,
+                  expiredSessionId: expiredSession.sessionId,
+                  schedule,
+                  note: 'Schedule changed from 50/50 to 100%, single session will be created in processExpiredSessions'
+                });
+                // Продолжаем обработку - в processExpiredSessions будет создана single сессия
+              } else if (schedule !== '50/50' || !secondPaymentDate) {
+                continue; // Пропускаем эту сессию (неизвестный график или нет даты)
+              } else {
+                // График 50/50 - проверяем стандартные условия
+                // Проверяем, что первый платеж оплачен
+                const firstPaid = await this.isFirstPaymentPaid(dealId);
+                if (!firstPaid) {
+                  continue; // Пропускаем эту сессию
+                }
 
-              // Проверяем, что первый платеж оплачен
-              const firstPaid = await this.isFirstPaymentPaid(dealId);
-              if (!firstPaid) {
-                continue; // Пропускаем эту сессию
-              }
-
-              // Проверяем, что дата второго платежа наступила
-              // Вторую сессию нужно выставлять только в день согласно графику платежей
-              if (!this.isDateReached(secondPaymentDate)) {
-                continue; // Пропускаем эту сессию
+                // Проверяем, что дата второго платежа наступила
+                // Вторую сессию нужно выставлять только в день согласно графику платежей
+                if (!this.isDateReached(secondPaymentDate)) {
+                  continue; // Пропускаем эту сессию
+                }
               }
             } else {
               continue; // Неизвестный тип платежа
@@ -1391,8 +1402,24 @@ class SecondPaymentSchedulerService {
               });
             }
           } else if (task.paymentType === 'rest' || task.paymentType === 'second' || task.paymentType === 'final') {
-            // Пересоздаем сессию для второго платежа
-            result = await this.createSecondPaymentSession(task.deal, task.secondPaymentDate);
+            // Если график изменился на 100%, создаем single сессию вместо rest
+            if (currentSchedule === '100%') {
+              this.logger.info('Payment schedule changed to 100%, creating single session instead of rest', {
+                dealId: task.dealId,
+                oldSchedule: '50/50',
+                newSchedule: '100%',
+                expiredSessionId: task.sessionId
+              });
+              result = await this.stripeProcessor.createCheckoutSessionForDeal(task.deal, {
+                trigger: 'cron_expired_session',
+                runId: runId || `expired_single_${Date.now()}`,
+                paymentType: 'single',
+                paymentSchedule: '100%'
+              });
+            } else {
+              // График все еще 50/50, пересоздаем rest сессию
+              result = await this.createSecondPaymentSession(task.deal, task.secondPaymentDate);
+            }
           } else {
             summary.errors.push({
               dealId: task.dealId,
