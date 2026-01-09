@@ -4998,6 +4998,31 @@ class StripeProcessorService {
     }
 
     try {
+      // ВАЖНО: Проверяем кэш уведомлений для защиты от дублирования возвратов
+      // Если уведомление о возврате уже было отправлено недавно (в пределах TTL), пропускаем
+      const now = Date.now();
+      const cacheKey = `refund_${dealId}`;
+      const lastNotificationTime = this.notificationCache.get(cacheKey);
+      const timeSinceLastNotification = lastNotificationTime ? now - lastNotificationTime : Infinity;
+      
+      if (lastNotificationTime && timeSinceLastNotification < this.notificationCacheTTL) {
+        const minutesSinceLastNotification = Math.floor(timeSinceLastNotification / 60000);
+        this.logger.info(`⏭️  Пропуск дублирующего уведомления о возврате | Deal ID: ${dealId} | Последнее уведомление: ${minutesSinceLastNotification} мин. назад | TTL: ${this.notificationCacheTTL / 60000} мин.`, {
+          dealId,
+          lastNotificationTime: new Date(lastNotificationTime).toISOString(),
+          timeSinceLastNotification,
+          notificationCacheTTL: this.notificationCacheTTL,
+          refundsCount: refundedPayments.length,
+          note: 'Уведомление о возврате уже было отправлено недавно для этой сделки'
+        });
+        return {
+          success: true,
+          skipped: true,
+          reason: `Refund notification already sent ${minutesSinceLastNotification} minutes ago`,
+          lastNotificationTime: new Date(lastNotificationTime).toISOString()
+        };
+      }
+
       // Get deal with person data
       const fullDealResult = await this.pipedriveClient.getDealWithRelatedData(dealId);
       if (!fullDealResult.success || !fullDealResult.person) {
@@ -5112,10 +5137,17 @@ class StripeProcessorService {
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
+        // Сохраняем timestamp успешной отправки для защиты от дублирования
+        this.notificationCache.set(cacheKey, now);
+        
+        // Очищаем старые записи из кэша (старше TTL)
+        this.cleanupNotificationCache();
+        
         this.logger.info('Refund notification sent via SendPulse', {
           dealId,
           sendpulseId,
-          refundsCount: refundedPayments.length
+          refundsCount: refundedPayments.length,
+          cachedUntil: new Date(now + this.notificationCacheTTL).toISOString()
         });
         
         // Phase 9: Update SendPulse contact custom field with deal_id (Phase 0: Code Review Fixes)
@@ -5282,6 +5314,55 @@ class StripeProcessorService {
 
       const deal = fullDealResult.deal;
       const person = fullDealResult.person;
+
+      // ВАЖНО: Проверяем, все ли платежи уже оплачены перед отправкой уведомления о создании платежа
+      // Если все оплачено, не отправляем уведомление о создании нового платежа
+      // (это уведомление о создании платежа, а не об оплате, но все равно не нужно беспокоить клиента)
+      try {
+        const allPayments = await this.repository.listPayments({
+          dealId: String(dealId),
+          limit: 100
+        });
+
+        const paidPayments = allPayments.filter(p => 
+          p.payment_status === 'paid' || p.status === 'processed'
+        );
+        
+        let totalPaidPln = 0;
+        for (const payment of paidPayments) {
+          const amountPln = payment.amount_pln !== null && payment.amount_pln !== undefined
+            ? parseFloat(payment.amount_pln || 0)
+            : parseFloat(payment.amount || 0);
+          totalPaidPln += amountPln;
+        }
+
+        const dealValue = parseFloat(deal.value) || 0;
+        const FINAL_THRESHOLD = 0.95;
+        const paidRatio = dealValue > 0 ? totalPaidPln / dealValue : 0;
+        
+        if (paidRatio >= FINAL_THRESHOLD) {
+          this.logger.info('⏭️  Пропуск уведомления о создании платежа - все платежи уже оплачены', {
+            dealId,
+            totalPaidPln,
+            dealValue,
+            paidRatio: (paidRatio * 100).toFixed(2) + '%',
+            paidPaymentsCount: paidPayments.length,
+            allPaymentsCount: allPayments.length,
+            note: 'Клиент уже полностью оплатил, не нужно отправлять уведомление о создании нового платежа'
+          });
+          return {
+            success: true,
+            skipped: true,
+            reason: `All payments already paid (${(paidRatio * 100).toFixed(2)}% >= ${(FINAL_THRESHOLD * 100)}%)`
+          };
+        }
+      } catch (paymentCheckError) {
+        // Если не удалось проверить платежи, логируем предупреждение, но продолжаем отправку уведомления
+        this.logger.warn('Failed to check if all payments are paid, proceeding with notification', {
+          dealId,
+          error: paymentCheckError.message
+        });
+      }
       
       // Get discount from deal (check various possible field names)
       const getDiscount = (deal) => {
