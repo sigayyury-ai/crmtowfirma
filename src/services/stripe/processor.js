@@ -5922,6 +5922,30 @@ class StripeProcessorService {
         return { success: false, error: 'SendPulse ID not found' };
       }
 
+      // ВАЖНО: Проверяем кэш уведомлений для защиты от дублирования
+      // Если уведомление уже было отправлено недавно (в пределах TTL), пропускаем
+      const now = Date.now();
+      const lastNotificationTime = this.notificationCache.get(dealId);
+      const timeSinceLastNotification = lastNotificationTime ? now - lastNotificationTime : Infinity;
+      
+      if (lastNotificationTime && timeSinceLastNotification < this.notificationCacheTTL) {
+        const minutesSinceLastNotification = Math.floor(timeSinceLastNotification / 60000);
+        this.logger.info(`⏭️  Пропуск дублирующего уведомления об успешной оплате | Deal ID: ${dealId} | Последнее уведомление: ${minutesSinceLastNotification} мин. назад | TTL: ${this.notificationCacheTTL / 60000} мин.`, {
+          dealId,
+          sessionId: session.id,
+          lastNotificationTime: new Date(lastNotificationTime).toISOString(),
+          timeSinceLastNotification,
+          notificationCacheTTL: this.notificationCacheTTL,
+          note: 'Уведомление уже было отправлено недавно для этой сделки'
+        });
+        return {
+          success: true,
+          skipped: true,
+          reason: `Notification already sent ${minutesSinceLastNotification} minutes ago`,
+          lastNotificationTime: new Date(lastNotificationTime).toISOString()
+        };
+      }
+
       // ВАЖНО: Проверяем, все ли платежи уже оплачены перед отправкой уведомления
       // Если все оплачено, не отправляем уведомление, чтобы не беспокоить клиента
       try {
@@ -6005,13 +6029,20 @@ class StripeProcessorService {
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
+        // Сохраняем timestamp успешной отправки для защиты от дублирования
+        this.notificationCache.set(dealId, now);
+        
+        // Очищаем старые записи из кэша (старше TTL)
+        this.cleanupNotificationCache();
+        
         this.logger.info('Payment success notification sent successfully', {
           dealId,
           sendpulseId,
           sessionId: session.id,
           amount,
           currency,
-          messageId: result.messageId
+          messageId: result.messageId,
+          cachedUntil: new Date(now + this.notificationCacheTTL).toISOString()
         });
         return {
           success: true,
