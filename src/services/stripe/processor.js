@@ -5910,6 +5910,7 @@ class StripeProcessorService {
         return { success: false, error: 'Failed to get deal/person data' };
       }
 
+      const deal = fullDealResult.deal;
       const person = fullDealResult.person;
       const sendpulseId = this.getSendpulseId(person);
 
@@ -5919,6 +5920,61 @@ class StripeProcessorService {
           personId: person.id
         });
         return { success: false, error: 'SendPulse ID not found' };
+      }
+
+      // ВАЖНО: Проверяем, все ли платежи уже оплачены перед отправкой уведомления
+      // Если все оплачено, не отправляем уведомление, чтобы не беспокоить клиента
+      try {
+        const allPayments = await this.repository.listPayments({
+          dealId: String(dealId),
+          limit: 100
+        });
+
+        // Подсчитываем оплаченные платежи
+        const paidPayments = allPayments.filter(p => 
+          p.payment_status === 'paid' || p.status === 'processed'
+        );
+        
+        // Подсчитываем общую сумму оплаченных платежей в PLN
+        // Используем amount_pln для корректного сравнения с суммой сделки (которая в PLN)
+        let totalPaidPln = 0;
+        for (const payment of paidPayments) {
+          // Приоритет: amount_pln (если есть), иначе amount (предполагаем, что это PLN)
+          const amountPln = payment.amount_pln !== null && payment.amount_pln !== undefined
+            ? parseFloat(payment.amount_pln || 0)
+            : parseFloat(payment.amount || 0);
+          totalPaidPln += amountPln;
+        }
+
+        // Получаем сумму сделки (всегда в PLN)
+        const dealValue = parseFloat(deal.value) || 0;
+        
+        // Проверяем, все ли оплачено (>= 95% от суммы сделки, как в statusCalculator)
+        const FINAL_THRESHOLD = 0.95;
+        const paidRatio = dealValue > 0 ? totalPaidPln / dealValue : 0;
+        
+        if (paidRatio >= FINAL_THRESHOLD) {
+          this.logger.info('⏭️  Пропуск уведомления об успешной оплате - все платежи уже оплачены', {
+            dealId,
+            totalPaidPln,
+            dealValue,
+            paidRatio: (paidRatio * 100).toFixed(2) + '%',
+            paidPaymentsCount: paidPayments.length,
+            allPaymentsCount: allPayments.length,
+            note: 'Клиент уже получил все необходимые уведомления, не нужно отправлять повторно'
+          });
+          return {
+            success: true,
+            skipped: true,
+            reason: `All payments already paid (${(paidRatio * 100).toFixed(2)}% >= ${(FINAL_THRESHOLD * 100)}%)`
+          };
+        }
+      } catch (paymentCheckError) {
+        // Если не удалось проверить платежи, логируем предупреждение, но продолжаем отправку уведомления
+        this.logger.warn('Failed to check if all payments are paid, proceeding with notification', {
+          dealId,
+          error: paymentCheckError.message
+        });
       }
 
       const currency = normaliseCurrency(session.currency || 'PLN');
