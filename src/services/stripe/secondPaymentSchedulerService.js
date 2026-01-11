@@ -4,6 +4,7 @@ const PipedriveClient = require('../pipedrive');
 const logger = require('../../utils/logger');
 // Phase 0: Code Review Fixes - New unified services
 const PaymentScheduleService = require('./paymentScheduleService');
+const PaymentStateAnalyzer = require('./paymentStateAnalyzer');
 
 /**
  * Сервис для автоматического создания вторых сессий оплаты для графика 50/50
@@ -15,6 +16,7 @@ class SecondPaymentSchedulerService {
     this.repository = options.repository || new StripeRepository();
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.logger = options.logger || logger;
+    this.paymentStateAnalyzer = options.paymentStateAnalyzer || new PaymentStateAnalyzer({ repository: this.repository });
   }
 
   /**
@@ -972,85 +974,79 @@ class SecondPaymentSchedulerService {
 
           const deal = dealResult.deal;
 
-          // ВАЖНО: Проверяем, есть ли уже активная сессия для этой сделки
-          // Если есть активная сессия, не показываем просроченные (они уже обработаны)
+          // Получаем платежи для проверки активных сессий
           const payments = await this.repository.listPayments({ dealId: String(dealId), limit: 100 });
           
-          // Проверяем активные сессии в базе
-          const activePayments = payments.filter(p => {
+          // Находим все просроченные сессии для этой сделки
+          const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
+          if (dealExpiredSessions.length === 0) {
+            continue;
+          }
+
+          // Проверяем активные ОТКРЫТЫЕ сессии в базе (не оплаченные!)
+          // Оплаченные сессии не должны блокировать пересоздание истекших сессий другого типа
+          const activeOpenPayments = payments.filter(p => {
             if (!p.session_id) return false;
-            // Проверяем статус в базе
-            if (p.status === 'open' || p.status === 'complete') {
-              return true;
-            }
-            // Если статус 'processed', но payment_status 'unpaid' - это может быть активная сессия
-            if (p.status === 'processed' && p.payment_status === 'unpaid') {
-              return true;
-            }
-            return false;
+            // Только открытые сессии считаются активными для блокировки пересоздания
+            return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
           });
 
-          if (activePayments.length > 0) {
-            // Проверяем статус сессий в Stripe напрямую, чтобы убедиться, что они действительно активны
-            let hasRealActiveSession = false;
-            const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
-            
-            for (const activePayment of activePayments) {
+          // Если есть активные открытые сессии, проверяем их статус в Stripe
+          // ВАЖНО: Проверка происходит по типу платежа для каждой сессии отдельно,
+          // а не для всей сделки целиком
+          if (activeOpenPayments.length > 0) {
+            for (const activePayment of activeOpenPayments) {
               try {
-                // Проверяем режим Stripe перед запросом
-                const { getStripeMode } = require('../stripe/client');
                 const sessionId = activePayment.session_id;
                 const isTestSession = sessionId.startsWith('cs_test_');
                 
-                // Всегда live режим, пропускаем test сессии
                 if (isTestSession) {
-                  this.logger.debug('Skipping session status check - test session (only live mode used)', {
-                    dealId,
-                    sessionId
-                  });
                   continue;
                 }
                 
-                const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activePayment.session_id);
+                const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
                 
-                // ВАЖНО: Проверяем только ОТКРЫТЫЕ (open) сессии как активные
-                // Оплаченные (complete) сессии не должны блокировать пересоздание истекших deposit сессий
+                // Проверяем только ОТКРЫТЫЕ (open) сессии как активные
                 if (stripeSession.status === 'open') {
-                  hasRealActiveSession = true;
+                  // ВАЖНО: Проверяем по типу платежа, а не всю сделку целиком
+                  // Если активная сессия - deposit, а истекшая - rest, продолжаем обработку
+                  // Если активная сессия - rest, а истекшая - deposit, продолжаем обработку
+                  const activePaymentType = stripeSession.metadata?.payment_type || activePayment.payment_type;
                   
-                  // Проверяем, что просроченные сессии старше активной
-                  const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                  const allExpiredOlder = dealExpiredSessions.every(s => {
-                    if (!s.expiresAt) return false;
-                    const expiredDate = new Date(s.expiresAt * 1000);
-                    return expiredDate < activeCreated;
+                  // Проверяем только истекшие сессии того же типа, что и активная
+                  const expiredSessionsSameType = dealExpiredSessions.filter(s => {
+                    if (activePaymentType === 'deposit') return s.paymentType === 'deposit';
+                    if (activePaymentType === 'rest' || activePaymentType === 'second' || activePaymentType === 'final') {
+                      return s.paymentType === 'rest' || s.paymentType === 'second' || s.paymentType === 'final';
+                    }
+                    return false;
                   });
                   
-                  if (allExpiredOlder && dealExpiredSessions.length > 0) {
-                    // Все просроченные сессии старше активной - пропускаем их
-                    this.logger.info('Skipping expired sessions, active open session exists in Stripe', {
-                      dealId,
-                      activeSessionId: activePayment.session_id,
-                      activeSessionStatus: stripeSession.status,
-                      activeSessionCreated: activeCreated.toISOString(),
-                      expiredSessionsCount: dealExpiredSessions.length
+                  if (expiredSessionsSameType.length > 0) {
+                    // Есть истекшие сессии того же типа - проверяем даты
+                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                    const allExpiredOlder = expiredSessionsSameType.every(s => {
+                      if (!s.expiresAt) return false;
+                      const expiredDate = new Date(s.expiresAt * 1000);
+                      return expiredDate < activeCreated;
                     });
-                    // Устанавливаем флаг, чтобы пропустить всю сделку
-                    hasRealActiveSession = true;
-                    break;
+                    
+                    if (allExpiredOlder) {
+                      // Все истекшие сессии того же типа старше активной - они будут пропущены в дальнейшем коде
+                      this.logger.info('Active open session exists for same payment type, expired sessions will be filtered', {
+                        dealId,
+                        activeSessionId: activePayment.session_id,
+                        activePaymentType,
+                        activeSessionStatus: stripeSession.status,
+                        activeSessionCreated: activeCreated.toISOString(),
+                        expiredSessionsSameTypeCount: expiredSessionsSameType.length
+                      });
+                      // НЕ пропускаем всю сделку - продолжаем обработку других типов платежей
+                    }
                   }
-                  // Если не все просроченные сессии старше активной открытой сессии, 
-                  // продолжаем обработку (возможно, нужно пересоздать более новые истекшие сессии)
-                  hasRealActiveSession = false;
-                  break;
-                } else if (stripeSession.status === 'complete' && stripeSession.payment_status === 'paid') {
-                  // Оплаченная сессия - НЕ блокируем пересоздание истекших сессий другого типа
-                  // Например, если оплачен rest, но истек deposit - deposit нужно пересоздать
-                  // Логика фильтрации по типу платежа будет в дальнейшем коде
-                  // Здесь просто продолжаем проверку других активных сессий
+                  // Если есть истекшие сессии другого типа - продолжаем обработку
                 }
               } catch (error) {
-                // Если не удалось получить сессию из Stripe, продолжаем проверку
                 this.logger.warn('Failed to check session status in Stripe', {
                   dealId,
                   sessionId: activePayment.session_id,
@@ -1059,19 +1055,61 @@ class SecondPaymentSchedulerService {
               }
             }
             
-            if (hasRealActiveSession) {
-              continue;
-            }
-          }
-
-          // Находим все просроченные сессии для этой сделки
-          const dealExpiredSessions = expiredSessions.filter(s => String(s.dealId) === String(dealId));
-          if (dealExpiredSessions.length === 0) {
-            continue;
+            // НЕ пропускаем всю сделку здесь - проверка по типу платежа происходит
+            // в дальнейшем коде для каждой истекшей сессии отдельно
           }
 
           // Определяем график платежей
           const { schedule, secondPaymentDate } = this.determinePaymentSchedule(deal);
+          
+          // ВАЖНО: Проверяем, полностью ли оплачена сделка
+          // Если сделка полностью оплачена, не пересоздаем истекшие сессии
+          // (они могли быть ошибочными или на неправильные суммы)
+          try {
+            const dealValue = parseFloat(deal.value) || 0;
+            
+            // Проверяем общую сумму оплаченных платежей
+            const paidPayments = payments.filter(p => p.payment_status === 'paid' || p.status === 'processed');
+            let totalPaid = 0;
+            for (const payment of paidPayments) {
+              // Используем amount_pln если есть, иначе amount
+              const amount = parseFloat(payment.amount_pln || payment.amount || 0);
+              totalPaid += amount;
+            }
+            
+            // Если оплачено >= суммы сделки (с учетом небольшой погрешности 95%),
+            // считаем сделку полностью оплаченной
+            const isFullyPaidByAmount = dealValue > 0 && totalPaid >= dealValue * 0.95;
+            
+            // Также проверяем через PaymentStateAnalyzer для графика платежей
+            const paymentSchedule = PaymentScheduleService.determineSchedule(deal);
+            const isFullyPaidBySchedule = await this.paymentStateAnalyzer.isDealFullyPaid(dealId, paymentSchedule);
+            
+            // Сделка полностью оплачена, если оплачено по сумме ИЛИ по графику
+            const isFullyPaid = isFullyPaidByAmount || isFullyPaidBySchedule;
+            
+            if (isFullyPaid) {
+              this.logger.info('Skipping expired sessions for fully paid deal', {
+                dealId,
+                dealTitle: deal.title,
+                dealValue: dealValue,
+                totalPaid: totalPaid,
+                paidRatio: dealValue > 0 ? (totalPaid / dealValue * 100).toFixed(2) + '%' : 'N/A',
+                isFullyPaidByAmount,
+                isFullyPaidBySchedule,
+                schedule: schedule,
+                expiredSessionsCount: dealExpiredSessions.length,
+                note: 'Deal is fully paid, expired sessions are likely erroneous and should not be recreated'
+              });
+              continue; // Пропускаем всю сделку, если она полностью оплачена
+            }
+          } catch (error) {
+            this.logger.warn('Failed to check if deal is fully paid, continuing with expired session processing', {
+              dealId,
+              error: error.message
+            });
+            // Продолжаем обработку в случае ошибки проверки
+          }
           
           // Группируем сессии по типу платежа, чтобы обработать только одну сессию каждого типа
           // Это предотвращает дубликаты напоминаний, если для одной сделки есть несколько просроченных сессий
@@ -1122,9 +1160,52 @@ class SecondPaymentSchedulerService {
                           expiredSession.paymentType === 'second' || 
                           expiredSession.paymentType === 'final';
 
-            // Для первого платежа (deposit) - пересоздаем всегда, если просрочена
+            // Для первого платежа (deposit) - проверяем, нет ли активной deposit сессии
             if (isDeposit) {
-              // Можно пересоздавать сразу
+              // Проверяем, есть ли активная открытая deposit сессия
+              const activeDepositPayments = payments.filter(p => {
+                if (!p.session_id || p.payment_type !== 'deposit') return false;
+                return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
+              });
+              
+              if (activeDepositPayments.length > 0) {
+                // Проверяем статус в Stripe
+                let hasActiveDepositSession = false;
+                for (const activeDepositPayment of activeDepositPayments) {
+                  try {
+                    const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activeDepositPayment.session_id);
+                    if (stripeSession.status === 'open') {
+                      // Есть активная открытая deposit сессия
+                      const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                      const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
+                      
+                      if (expiredDate < activeCreated) {
+                        // Истекшая сессия старше активной - пропускаем
+                        this.logger.info('Skipping expired deposit session, active deposit session exists', {
+                          dealId,
+                          expiredSessionId: expiredSession.sessionId,
+                          activeSessionId: activeDepositPayment.session_id,
+                          expiredDate: expiredDate.toISOString(),
+                          activeCreated: activeCreated.toISOString()
+                        });
+                        hasActiveDepositSession = true;
+                        break;
+                      }
+                    }
+                  } catch (error) {
+                    this.logger.warn('Failed to check active deposit session status', {
+                      dealId,
+                      sessionId: activeDepositPayment.session_id,
+                      error: error.message
+                    });
+                  }
+                }
+                
+                if (hasActiveDepositSession) {
+                  continue; // Есть активная deposit сессия, не пересоздаем
+                }
+              }
+              // Если нет активной deposit сессии, можно пересоздавать
             } 
             // Для второго платежа (rest/second/final) - проверяем условия
             else if (isRest) {
@@ -1256,7 +1337,7 @@ class SecondPaymentSchedulerService {
     try {
       const expiredSessions = [];
       const now = Math.floor(Date.now() / 1000);
-      const sevenDaysAgo = now - (7 * 24 * 60 * 60); // Последние 7 дней
+      const thirtyDaysAgo = now - (30 * 24 * 60 * 60); // Последние 30 дней (увеличено с 7 для поиска более старых истекших сессий)
 
       // Получаем просроченные сессии из Stripe
       let hasMore = true;
@@ -1267,7 +1348,7 @@ class SecondPaymentSchedulerService {
         const params = {
           limit,
           status: 'expired',
-          created: { gte: sevenDaysAgo }
+          created: { gte: thirtyDaysAgo }
         };
 
         if (startingAfter) {
