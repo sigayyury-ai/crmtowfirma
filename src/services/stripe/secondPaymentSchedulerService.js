@@ -2,6 +2,7 @@ const StripeProcessorService = require('./processor');
 const StripeRepository = require('./repository');
 const PipedriveClient = require('../pipedrive');
 const logger = require('../../utils/logger');
+const supabase = require('../supabaseClient');
 // Phase 0: Code Review Fixes - New unified services
 const PaymentScheduleService = require('./paymentScheduleService');
 const PaymentStateAnalyzer = require('./paymentStateAnalyzer');
@@ -17,6 +18,7 @@ class SecondPaymentSchedulerService {
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.logger = options.logger || logger;
     this.paymentStateAnalyzer = options.paymentStateAnalyzer || new PaymentStateAnalyzer({ repository: this.repository });
+    this.sentCache = new Set(); // in-memory защита от повторной отправки внутри одного процесса
   }
 
   /**
@@ -581,9 +583,20 @@ class SecondPaymentSchedulerService {
                 amount: p.original_amount || p.amount,
                 currency: p.currency
               })),
-              currency: currency
+              currency: currencyForCheck
             });
             continue; // Второй платеж уже оплачен, не нужно напоминание
+          }
+
+          // КРИТИЧЕСКИ ВАЖНО: Проверяем, не отправляли ли уже напоминание для этой сделки и даты второго платежа
+          // Защита от дубликатов работает постоянно (не только на один день), так как cron работает раз в день
+          const alreadySent = await this.wasReminderSentEver(dealId, secondPaymentDate);
+          if (alreadySent) {
+            this.logger.info('Skipping reminder task - reminder already sent for this deal and second payment date', {
+              dealId,
+              secondPaymentDate: this.normalizeDate(secondPaymentDate)
+            });
+            continue; // Напоминание уже было отправлено ранее для этой комбинации
           }
           
           // ВАЖНО: Проверяем, есть ли уже активная сессия для этой сделки
@@ -790,6 +803,168 @@ class SecondPaymentSchedulerService {
   }
 
   /**
+   * Нормализовать дату в строку формата YYYY-MM-DD
+   * @param {Date|string} value - Дата для нормализации
+   * @returns {string|null} - Нормализованная дата или null
+   */
+  normalizeDate(value) {
+    if (!value) {
+      return null;
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+
+    date.setHours(0, 0, 0, 0);
+    return date.toISOString().split('T')[0];
+  }
+
+  /**
+   * Получить ключ кеша для напоминания
+   * @param {number} dealId - ID сделки
+   * @param {Date|string} secondPaymentDate - Дата второго платежа
+   * @returns {string|null} - Ключ кеша или null
+   */
+  getReminderCacheKey(dealId, secondPaymentDate) {
+    const normalizedDate = this.normalizeDate(secondPaymentDate);
+    if (!normalizedDate) {
+      return null;
+    }
+    return `${dealId}:${normalizedDate}`;
+  }
+
+  /**
+   * Проверка, отправлялось ли напоминание когда-либо для этой сделки и даты второго платежа
+   * @param {number} dealId - ID сделки
+   * @param {Date|string} secondPaymentDate - Дата второго платежа
+   * @returns {Promise<boolean>} - true если напоминание уже отправлялось
+   */
+  async wasReminderSentEver(dealId, secondPaymentDate) {
+    try {
+      const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
+      if (cacheKey && this.sentCache.has(cacheKey)) {
+        return true;
+      }
+
+      if (!supabase || !cacheKey) {
+        return false;
+      }
+
+      const secondPaymentDateStr = this.normalizeDate(secondPaymentDate);
+      if (!secondPaymentDateStr) {
+        return false;
+      }
+
+      // Проверяем, было ли отправлено напоминание когда-либо для этой сделки и даты второго платежа
+      const { data, error } = await supabase
+        .from('stripe_reminder_logs')
+        .select('id')
+        .match({
+          deal_id: dealId,
+          second_payment_date: secondPaymentDateStr
+        })
+        .limit(1);
+
+      if (error) {
+        this.logger.warn('Failed to check Stripe reminder log in Supabase', {
+          dealId,
+          error: error.message
+        });
+        return false;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        this.sentCache.add(cacheKey);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.warn('Failed to check if Stripe reminder was sent ever', {
+        dealId,
+        error: error.message
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Сохранить запись об отправленном напоминании в базу данных
+   * @param {Object} logData - Данные для логирования
+   * @param {number} logData.dealId - ID сделки
+   * @param {Date|string} logData.secondPaymentDate - Дата второго платежа
+   * @param {string} logData.sessionId - ID Stripe checkout session
+   * @param {string} logData.sendpulseId - ID контакта в SendPulse
+   * @param {string} logData.trigger - Источник запуска
+   * @param {string} logData.runId - Run ID
+   */
+  async persistReminderLog({ dealId, secondPaymentDate, sessionId, sendpulseId, trigger, runId }) {
+    const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
+    if (cacheKey) {
+      this.sentCache.add(cacheKey);
+    }
+
+    if (!supabase) {
+      this.logger.warn('Supabase not available, cannot persist Stripe reminder log', { dealId });
+      return;
+    }
+
+    try {
+      const todayStr = this.normalizeDate(new Date());
+      const secondPaymentDateStr = this.normalizeDate(secondPaymentDate);
+      if (!todayStr || !secondPaymentDateStr) {
+        this.logger.warn('Invalid dates for Stripe reminder log', {
+          dealId,
+          secondPaymentDate,
+          todayStr,
+          secondPaymentDateStr
+        });
+        return;
+      }
+
+      const payload = {
+        deal_id: dealId,
+        second_payment_date: secondPaymentDateStr,
+        session_id: sessionId || null,
+        sent_date: todayStr,
+        run_id: runId || null,
+        trigger_source: trigger || null,
+        sendpulse_id: sendpulseId || null
+      };
+
+      const { error } = await supabase.from('stripe_reminder_logs').insert(payload);
+      if (error) {
+        if (error.code === '23505') {
+          // Unique constraint violation - это нормально, означает что напоминание уже было записано
+          this.logger.info('Stripe reminder already recorded', {
+            dealId,
+            secondPaymentDate: secondPaymentDateStr
+          });
+        } else {
+          this.logger.warn('Failed to store Stripe reminder log', {
+            dealId,
+            error: error.message,
+            errorCode: error.code
+          });
+        }
+      } else {
+        this.logger.debug('Stripe reminder log persisted successfully', {
+          dealId,
+          secondPaymentDate: secondPaymentDateStr,
+          sessionId
+        });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to persist Stripe reminder log', {
+        dealId,
+        error: error.message
+      });
+    }
+  }
+
+  /**
    * Отправить напоминание о втором платеже клиенту
    * @param {Object} task - Задача для напоминания
    * @param {Object} options - Опции отправки
@@ -916,6 +1091,16 @@ class SecondPaymentSchedulerService {
           });
           // Не прерываем выполнение, если обновление deal_id не удалось
         }
+
+        // Сохраняем запись об отправленном напоминании в базу данных
+        await this.persistReminderLog({
+          dealId: task.dealId,
+          secondPaymentDate: task.secondPaymentDate,
+          sessionId: task.sessionId || null,
+          sendpulseId: sendpulseId,
+          trigger: trigger,
+          runId: runId
+        });
       }
 
       if (result.success) {
@@ -923,7 +1108,8 @@ class SecondPaymentSchedulerService {
           dealId: task.dealId,
           sendpulseId,
           trigger,
-          runId
+          runId,
+          sessionId: task.sessionId
         });
       } else {
         this.logger.warn('Failed to send Stripe second payment reminder', {
@@ -1815,6 +2001,22 @@ class SecondPaymentSchedulerService {
               totalPaid: totalPaidSecondPayment,
               threshold: expectedSecondPayment * 0.9
             });
+          }
+
+          // КРИТИЧЕСКИ ВАЖНО: Проверяем историю напоминаний перед отправкой
+          // Защита от дубликатов работает постоянно (не только на один день)
+          const alreadySent = await this.wasReminderSentEver(task.dealId, task.secondPaymentDate);
+          if (alreadySent) {
+            this.logger.info('Skipping reminder - already sent for this deal and second payment date', {
+              dealId: task.dealId,
+              secondPaymentDate: this.normalizeDate(task.secondPaymentDate),
+              taskSessionId: task.sessionId
+            });
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'reminder_already_sent'
+            });
+            continue;
           }
 
           const result = await this.sendReminder(task, { trigger, runId });
