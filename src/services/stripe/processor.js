@@ -840,7 +840,8 @@ class StripeProcessorService {
       payment_mode: session.mode || null,
       checkout_url: session.url || null, // Сохраняем checkout URL для уведомлений
       created_at: session.created ? new Date(session.created * 1000).toISOString() : new Date().toISOString(),
-      processed_at: new Date().toISOString(),
+      // Используем реальную дату оплаты из Stripe, если доступна, иначе текущую дату
+      processed_at: this._extractPaidTimestamp(session) || new Date().toISOString(),
       raw_payload: session
     };
 
@@ -1351,6 +1352,9 @@ class StripeProcessorService {
       // 'single' payment type means it's the only payment (should go to Camp Waiter)
       const isFirst = paymentType === 'deposit' || paymentType === 'first' || paymentType === 'single';
       const isRest = paymentType === 'rest' || paymentType === 'second';
+      
+      // Get stage IDs for deal (needed for stage updates)
+      const stageIds = await this.getStageIdsForDeal(dealId);
       
       // For single payment type, always move to Camp Waiter (it's the only payment)
       if (paymentType === 'single' && session.payment_status === 'paid') {
@@ -6198,6 +6202,45 @@ class StripeProcessorService {
       }
       return `${baseUrl}?deal_id=${dealId}&type=${type}`;
     }
+  }
+
+  /**
+   * Извлекает реальную дату оплаты из Stripe session
+   * Использует status_transitions.paid_at или status_transitions.completed_at
+   * @param {Object} session - Stripe Checkout Session объект
+   * @returns {string|null} ISO строка с датой или null
+   */
+  _extractPaidTimestamp(session) {
+    if (!session || typeof session !== 'object') {
+      return null;
+    }
+
+    const transitions = session.status_transitions || {};
+    
+    // Приоритет: paid_at > completed_at > created
+    if (Number.isFinite(transitions.paid_at)) {
+      return new Date(transitions.paid_at * 1000).toISOString();
+    }
+    
+    if (Number.isFinite(transitions.completed_at)) {
+      return new Date(transitions.completed_at * 1000).toISOString();
+    }
+    
+    // Если есть payment_intent с датой создания
+    if (
+      session.payment_intent
+      && typeof session.payment_intent === 'object'
+      && Number.isFinite(session.payment_intent.created)
+    ) {
+      return new Date(session.payment_intent.created * 1000).toISOString();
+    }
+    
+    // Fallback на created сессии, если платеж уже оплачен
+    if (session.payment_status === 'paid' && Number.isFinite(session.created)) {
+      return new Date(session.created * 1000).toISOString();
+    }
+    
+    return null;
   }
 }
 
