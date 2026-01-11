@@ -193,16 +193,49 @@ class ProductReportService {
       return null;
     }
 
+    // Создаем карту Stripe платежей по deal_id для учета в paidPln проформ
+    const stripePaymentsByDealId = new Map();
+    if (Array.isArray(entry.stripePayments)) {
+      entry.stripePayments.forEach((payment) => {
+        if (payment.dealId) {
+          const dealIdStr = String(payment.dealId);
+          if (!stripePaymentsByDealId.has(dealIdStr)) {
+            stripePaymentsByDealId.set(dealIdStr, []);
+          }
+          stripePaymentsByDealId.get(dealIdStr).push(payment);
+        }
+      });
+    }
+
     const proformas = Array.from(entry.proformaDetails.values())
       .map((detail) => {
-        const status = determinePaymentStatus(detail.totalPln, detail.paidPln);
+        // Добавляем Stripe платежи к paidPln, если есть deal_id
+        let finalPaidPln = detail.paidPln;
+        
+        // Если у проформы есть deal_id, ищем Stripe платежи с таким же deal_id
+        if (detail.dealId) {
+          const dealIdStr = String(detail.dealId);
+          const stripePaymentsForDeal = stripePaymentsByDealId.get(dealIdStr) || [];
+          
+          if (stripePaymentsForDeal.length > 0) {
+            // Суммируем все Stripe платежи для этой сделки
+            const stripePaidPln = stripePaymentsForDeal.reduce((sum, p) => {
+              return sum + (toNumber(p.amountPln) || 0);
+            }, 0);
+            
+            // Добавляем Stripe платежи к paidPln проформы
+            finalPaidPln = Math.min(detail.totalPln, detail.paidPln + stripePaidPln);
+          }
+        }
+        
+        const status = determinePaymentStatus(detail.totalPln, finalPaidPln);
         return {
           proformaId: detail.proformaId,
           fullnumber: detail.fullnumber,
           date: detail.date,
           currencyTotals: roundCurrencyMap(detail.currencyTotals),
           totalPln: Number(detail.totalPln.toFixed(2)),
-          paidPln: Number(detail.paidPln.toFixed(2)),
+          paidPln: Number(finalPaidPln.toFixed(2)),
           netPln: Number(detail.totalPln.toFixed(2)), // net = gross для проформ без VAT
           vatPln: 0, // VAT = 0 для проформ
           paymentStatus: status,
@@ -303,7 +336,8 @@ class ProductReportService {
         addressValidated: payment.addressValidated !== false,
         paymentMode: payment.paymentMode || null,
         createdAt: payment.createdAt || null,
-        processedAt: payment.processedAt || null
+        processedAt: payment.processedAt || null,
+        dealId: payment.dealId || null // Сохраняем deal_id для отображения
       }))
       : [];
 
@@ -319,11 +353,13 @@ class ProductReportService {
       }
     }
 
-    const grossPln = Number(entry.totals.grossPln.toFixed(2));
+    const proformaGrossPln = Number(entry.totals.grossPln.toFixed(2));
+    const stripeGrossPln = entry.stripeTotals?.grossRevenuePln || 0;
+    const grossPln = Number((proformaGrossPln + stripeGrossPln).toFixed(2)); // Включаем и проформы, и Stripe платежи
     const netPln = grossPln; // net = gross для проформ без VAT
     const marginPln = netPln; // margin = net для проформ
     const proformaCount = entry.proformaIds.size;
-    const averageDealSize = proformaCount > 0 ? Number((grossPln / proformaCount).toFixed(2)) : 0;
+    const averageDealSize = proformaCount > 0 ? Number((proformaGrossPln / proformaCount).toFixed(2)) : 0;
 
     return {
       productId: entry.productId,
@@ -702,14 +738,37 @@ class ProductReportService {
       let matchedEntry = null;
       
       if (payment.campProductId) {
-        mapKey = `id:${payment.campProductId}`;
+        // Try both string and number formats
+        const campProductIdStr = String(payment.campProductId);
+        const campProductIdNum = Number(payment.campProductId);
+        mapKey = `id:${campProductIdNum}`;
         matchedEntry = products.get(mapKey);
+        if (!matchedEntry && Number.isFinite(campProductIdNum)) {
+          // Try string format
+          mapKey = `id:${campProductIdStr}`;
+          matchedEntry = products.get(mapKey);
+        }
         if (!matchedEntry) {
           mapKey = null; // Reset if not found
         }
       }
 
-      // If not found by campProductId, try to find by normalized product name
+      // If not found by campProductId, try crmProductId
+      if (!mapKey && payment.crmProductId) {
+        const crmProductIdStr = String(payment.crmProductId);
+        const crmProductIdNum = Number(payment.crmProductId);
+        mapKey = `id:${crmProductIdNum}`;
+        matchedEntry = products.get(mapKey);
+        if (!matchedEntry && Number.isFinite(crmProductIdNum)) {
+          mapKey = `id:${crmProductIdStr}`;
+          matchedEntry = products.get(mapKey);
+        }
+        if (!matchedEntry) {
+          mapKey = null;
+        }
+      }
+
+      // If not found by campProductId or crmProductId, try to find by normalized product name
       if (!mapKey && payment.productName) {
         const normalizedName = normalizeProductName(payment.productName);
         if (normalizedName) {
@@ -830,7 +889,8 @@ class ProductReportService {
         addressValidated: payment.addressValidated !== false,
         paymentMode: payment.paymentMode || null,
         createdAt,
-        processedAt: payment.processedAt || null
+        processedAt: payment.processedAt || null,
+        dealId: payment.dealId || null // Сохраняем deal_id для связи с проформами
       });
     });
 
