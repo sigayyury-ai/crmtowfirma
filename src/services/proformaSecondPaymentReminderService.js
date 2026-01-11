@@ -71,6 +71,61 @@ class ProformaSecondPaymentReminderService {
   }
 
   /**
+   * Проверка, отправлялось ли напоминание когда-либо для этой сделки и даты второго платежа
+   * @param {number} dealId - ID сделки
+   * @param {Date} secondPaymentDate - Дата второго платежа
+   * @returns {Promise<boolean>} - true если напоминание уже отправлялось
+   */
+  async wasReminderSentEver(dealId, secondPaymentDate) {
+    try {
+      const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
+      if (cacheKey && this.sentCache.has(cacheKey)) {
+        return true;
+      }
+
+      if (!supabase || !cacheKey) {
+        return false;
+      }
+
+      const secondPaymentDateStr = this.normalizeDate(secondPaymentDate);
+      if (!secondPaymentDateStr) {
+        return false;
+      }
+
+      // Проверяем, было ли отправлено напоминание когда-либо для этой сделки и даты второго платежа
+      const { data, error } = await supabase
+        .from('proforma_reminder_logs')
+        .select('id')
+        .match({
+          deal_id: dealId,
+          second_payment_date: secondPaymentDateStr
+        })
+        .limit(1);
+
+      if (error) {
+        this.logger.warn('Failed to check reminder log in Supabase', {
+          dealId,
+          error: error.message
+        });
+        return false;
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        this.sentCache.add(cacheKey);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.warn('Failed to check if reminder was sent ever', {
+        dealId,
+        error: error.message
+      });
+      return false;
+    }
+  }
+
+  /**
    * Проверка на повторную отправку в текущий день.
    * Сначала смотрим локальный кэш (для защиты внутри процесса), затем Supabase.
    */
@@ -176,10 +231,11 @@ class ProformaSecondPaymentReminderService {
   /**
    * Найти все сделки с проформами, требующие напоминаний о вторых платежах
    * @param {Object} options - Опции поиска
-   * @param {boolean} options.hideProcessed - Скрывать задачи, по которым уже отправляли напоминание сегодня
+   * @param {boolean} options.hideProcessed - Скрывать задачи, по которым уже отправляли напоминание (любое время)
    * @returns {Promise<Array>} - Массив задач для напоминаний
    */
   async findAllUpcomingTasks(options = {}) {
+    const { hideProcessed = false } = options;
     try {
       const dealsResult = await this.pipedriveClient.getDeals({
         filter_id: null,
@@ -271,6 +327,18 @@ class ProformaSecondPaymentReminderService {
           }
 
           if (!firstPaymentPaid || secondPaymentPaid) continue;
+
+          // Если hideProcessed=true, проверяем, не отправляли ли уже напоминание для этой сделки
+          if (hideProcessed) {
+            const alreadySent = await this.wasReminderSentEver(deal.id, secondPaymentDate);
+            if (alreadySent) {
+              this.logger.debug('Skipping task - reminder already sent', {
+                dealId: deal.id,
+                secondPaymentDate: this.normalizeDate(secondPaymentDate)
+              });
+              continue;
+            }
+          }
 
           // Получаем данные персоны
           const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(deal.id);
@@ -428,28 +496,8 @@ class ProformaSecondPaymentReminderService {
       // Фильтруем только те, где дата уже наступила
       const tasksToProcess = tasks.filter(task => task.isDateReached);
       
-      // Дополнительная проверка: не обрабатываем задачи, по которым уже отправляли напоминание
-      // Если задача просрочена более чем на 1 день, пропускаем её (значит напоминание уже отправлялось)
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      
-      const tasksToProcessFiltered = tasksToProcess.filter(task => {
-        const taskDate = new Date(task.secondPaymentDate);
-        taskDate.setHours(0, 0, 0, 0);
-        const daysOverdue = Math.ceil((today - taskDate) / (1000 * 60 * 60 * 24));
-        
-        // Если задача просрочена более чем на 1 день, пропускаем её
-        // (значит напоминание уже отправлялось ранее, не спамим клиентам)
-        if (daysOverdue > 1) {
-          result.skipped++;
-          this.logger.info('Skipping overdue task (reminder already sent)', {
-            dealId: task.dealId,
-            daysOverdue
-          });
-          return false;
-        }
-        return true;
-      });
+      // Фильтруем задачи - проверка оплаты и дубликатов будет в цикле ниже
+      const tasksToProcessFiltered = tasksToProcess;
 
       this.logger.info('Processing proforma reminders', {
         totalTasks: tasks.length,
@@ -461,11 +509,96 @@ class ProformaSecondPaymentReminderService {
       for (const task of tasksToProcessFiltered) {
         result.processed++;
         try {
-          const alreadySent = await this.wasReminderSentRecently(task.dealId, task.secondPaymentDate);
+          // КРИТИЧЕСКИ ВАЖНО: Проверяем оплату второго платежа ПЕРЕД отправкой
+          // Платеж мог быть добавлен после создания задачи
+          const dealResult = await this.pipedriveClient.getDeal(task.dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            result.skipped++;
+            result.errors.push({
+              dealId: task.dealId,
+              error: 'Deal not found'
+            });
+            continue;
+          }
+
+          const deal = dealResult.deal;
+          const dealValue = parseFloat(deal.value) || 0;
+          const expectedSecondPayment = dealValue / 2;
+
+          // Получаем актуальные данные о платежах
+          const { data: proformas } = await supabase
+            .from('proformas')
+            .select('*')
+            .eq('pipedrive_deal_id', task.dealId)
+            .is('deleted_at', null);
+
+          if (!proformas || proformas.length === 0) {
+            result.skipped++;
+            continue;
+          }
+
+          const proformaIds = proformas.map(p => p.id);
+          const { data: payments } = await supabase
+            .from('payments')
+            .select('*')
+            .in('proforma_id', proformaIds)
+            .neq('manual_status', 'rejected')
+            .order('payment_date', { ascending: true });
+
+          if (!payments || payments.length === 0) {
+            result.skipped++;
+            continue;
+          }
+
+          // Проверяем оплату второго платежа
+          const secondPaymentDateObj = new Date(task.secondPaymentDate);
+          secondPaymentDateObj.setHours(0, 0, 0, 0);
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+
+          const secondPayments = payments.filter(p => {
+            if (!p.payment_date) return false;
+            const paymentDate = new Date(p.payment_date);
+            paymentDate.setHours(0, 0, 0, 0);
+            return paymentDate >= secondPaymentDateObj;
+          });
+
+          const secondPaymentTotal = secondPayments.reduce((sum, p) => parseFloat(p.amount || 0) + sum, 0);
+          const isSecondPaymentDateReached = secondPaymentDateObj <= today;
+          let secondPaymentPaid = false;
+
+          if (isSecondPaymentDateReached) {
+            secondPaymentPaid = secondPaymentTotal >= expectedSecondPayment * 0.9;
+          } else {
+            const firstPayments = payments.filter(p => {
+              if (!p.payment_date) return false;
+              const paymentDate = new Date(p.payment_date);
+              paymentDate.setHours(0, 0, 0, 0);
+              return paymentDate < secondPaymentDateObj;
+            });
+            const firstPaymentTotal = firstPayments.reduce((sum, p) => parseFloat(p.amount || 0) + sum, 0);
+            const totalPaid = firstPaymentTotal + secondPaymentTotal;
+            secondPaymentPaid = totalPaid >= dealValue * 0.9;
+          }
+
+          // Если второй платеж оплачен, пропускаем задачу
+          if (secondPaymentPaid) {
+            result.skipped++;
+            this.logger.info('Skipping proforma reminder - second payment already paid', {
+              dealId: task.dealId,
+              secondPaymentTotal: secondPaymentTotal.toFixed(2),
+              expectedSecondPayment: expectedSecondPayment.toFixed(2),
+              secondPaymentDate: this.normalizeDate(task.secondPaymentDate)
+            });
+            continue;
+          }
+
+          // Проверяем, не отправляли ли уже напоминание
+          const alreadySent = await this.wasReminderSentEver(task.dealId, task.secondPaymentDate);
           if (alreadySent) {
             result.skipped++;
             result.skippedDuplicates++;
-            this.logger.info('Skipping proforma reminder (already sent today)', {
+            this.logger.info('Skipping proforma reminder (already sent)', {
               dealId: task.dealId,
               secondPaymentDate: this.normalizeDate(task.secondPaymentDate)
             });

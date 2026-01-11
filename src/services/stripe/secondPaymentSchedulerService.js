@@ -547,20 +547,39 @@ class SecondPaymentSchedulerService {
           const payments = await this.repository.listPayments({ dealId: String(dealId) });
           
           // КРИТИЧЕСКИ ВАЖНО: Проверяем, есть ли уже ОПЛАЧЕННЫЙ второй платеж
-          // Если второй платеж уже оплачен, не создаем задачу-напоминание
-          const paidSecondPayment = payments.find(p => 
+          // ВАЖНО: Проверяем не только статус, но и СУММУ (как в проформах)
+          const dealValueForCheck = parseFloat(deal.value) || 0;
+          const currencyForCheck = deal.currency || 'PLN';
+          const expectedSecondPayment = dealValueForCheck / 2; // Для графика 50/50
+          
+          // Находим все оплаченные вторые платежи
+          const paidSecondPayments = payments.filter(p => 
             (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
             p.payment_status === 'paid'
           );
           
-          if (paidSecondPayment) {
+          // Суммируем все оплаченные вторые платежи
+          const paidSecondPaymentTotal = paidSecondPayments.reduce((sum, p) => {
+            const amount = parseFloat(p.original_amount || p.amount || 0);
+            return sum + amount;
+          }, 0);
+          
+          // Проверяем что оплачено >= 90% от ожидаемой суммы (как в проформах)
+          const secondPaymentPaid = paidSecondPaymentTotal >= expectedSecondPayment * 0.9;
+          
+          if (secondPaymentPaid) {
             this.logger.info('Skipping reminder task - second payment already paid', {
               dealId,
-              paidPaymentId: paidSecondPayment.id,
-              paidSessionId: paidSecondPayment.session_id,
-              paidAmount: paidSecondPayment.original_amount || paidSecondPayment.amount,
-              paidCurrency: paidSecondPayment.currency,
-              paidAt: paidSecondPayment.processed_at || paidSecondPayment.created_at
+              expectedSecondPayment: expectedSecondPayment,
+              paidSecondPaymentTotal: paidSecondPaymentTotal,
+              paidSecondPaymentsCount: paidSecondPayments.length,
+              paidSecondPayments: paidSecondPayments.map(p => ({
+                id: p.id,
+                sessionId: p.session_id,
+                amount: p.original_amount || p.amount,
+                currency: p.currency
+              })),
+              currency: currency
             });
             continue; // Второй платеж уже оплачен, не нужно напоминание
           }
@@ -626,6 +645,26 @@ class SecondPaymentSchedulerService {
             expiredSession = expiredSessions.find(s => String(s.dealId) === String(dealId));
             
             if (expiredSession) {
+              // КРИТИЧЕСКИ ВАЖНО: Проверяем оплату ЕЩЕ РАЗ перед добавлением просроченной сессии
+              // Платеж мог быть оплачен через другую сессию после того, как эта просрочилась
+              const paymentsCheck = await this.repository.listPayments({ dealId: String(dealId) });
+              const paidSecondPaymentCheck = paymentsCheck.find(p => 
+                (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+                p.payment_status === 'paid'
+              );
+              
+              if (paidSecondPaymentCheck) {
+                this.logger.info('Skipping expired session - second payment already paid via another session', {
+                  dealId,
+                  expiredSessionId: expiredSession.sessionId,
+                  paidPaymentId: paidSecondPaymentCheck.id,
+                  paidSessionId: paidSecondPaymentCheck.session_id,
+                  paidAmount: paidSecondPaymentCheck.original_amount || paidSecondPaymentCheck.amount,
+                  paidAt: paidSecondPaymentCheck.processed_at || paidSecondPaymentCheck.created_at
+                });
+                continue; // Второй платеж уже оплачен через другую сессию
+              }
+              
               // Создаем объект, похожий на restPayment для единообразия
               restPayment = {
                 session_id: expiredSession.sessionId,
@@ -973,8 +1012,10 @@ class SecondPaymentSchedulerService {
                 }
                 
                 const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activePayment.session_id);
-                // Если сессия активна (open) или оплачена (complete) - это реальная активная сессия
-                if (stripeSession.status === 'open' || stripeSession.payment_status === 'paid') {
+                
+                // ВАЖНО: Проверяем только ОТКРЫТЫЕ (open) сессии как активные
+                // Оплаченные (complete) сессии не должны блокировать пересоздание истекших deposit сессий
+                if (stripeSession.status === 'open') {
                   hasRealActiveSession = true;
                   
                   // Проверяем, что просроченные сессии старше активной
@@ -987,7 +1028,7 @@ class SecondPaymentSchedulerService {
                   
                   if (allExpiredOlder && dealExpiredSessions.length > 0) {
                     // Все просроченные сессии старше активной - пропускаем их
-                    this.logger.info('Skipping expired sessions, active session exists in Stripe', {
+                    this.logger.info('Skipping expired sessions, active open session exists in Stripe', {
                       dealId,
                       activeSessionId: activePayment.session_id,
                       activeSessionStatus: stripeSession.status,
@@ -998,9 +1039,15 @@ class SecondPaymentSchedulerService {
                     hasRealActiveSession = true;
                     break;
                   }
-                  // Если не все просроченные сессии старше, продолжаем проверку других активных сессий
+                  // Если не все просроченные сессии старше активной открытой сессии, 
+                  // продолжаем обработку (возможно, нужно пересоздать более новые истекшие сессии)
                   hasRealActiveSession = false;
                   break;
+                } else if (stripeSession.status === 'complete' && stripeSession.payment_status === 'paid') {
+                  // Оплаченная сессия - НЕ блокируем пересоздание истекших сессий другого типа
+                  // Например, если оплачен rest, но истек deposit - deposit нужно пересоздать
+                  // Логика фильтрации по типу платежа будет в дальнейшем коде
+                  // Здесь просто продолжаем проверку других активных сессий
                 }
               } catch (error) {
                 // Если не удалось получить сессию из Stripe, продолжаем проверку
@@ -1540,6 +1587,153 @@ class SecondPaymentSchedulerService {
               reason: 'date_not_reached'
             });
             continue;
+          }
+
+          // КРИТИЧЕСКИ ВАЖНО: Проверяем оплату второго платежа ПЕРЕД отправкой
+          // Платеж мог быть оплачен после создания задачи
+          // Проверяем ВСЕ платежи для этой сделки, а не только task.sessionId
+          // ВАЖНО: Проверяем не только статус, но и СУММЫ (как в проформах)
+          const payments = await this.repository.listPayments({ dealId: String(task.dealId) });
+          
+          // Получаем данные сделки для расчета ожидаемой суммы
+          const dealResult = await this.pipedriveClient.getDeal(task.dealId);
+          if (!dealResult.success || !dealResult.deal) {
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'deal_not_found'
+            });
+            continue;
+          }
+          
+          const deal = dealResult.deal;
+          const dealValue = parseFloat(deal.value) || 0;
+          const currency = deal.currency || 'PLN';
+          const expectedSecondPayment = dealValue / 2; // Для графика 50/50
+          
+          // Проверка 1: В базе данных - проверяем СУММУ оплаченных вторых платежей
+          const paidSecondPayments = payments.filter(p => 
+            (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+            p.payment_status === 'paid'
+          );
+          
+          // Суммируем все оплаченные вторые платежи
+          const paidSecondPaymentTotal = paidSecondPayments.reduce((sum, p) => {
+            const amount = parseFloat(p.original_amount || p.amount || 0);
+            return sum + amount;
+          }, 0);
+          
+          // Проверяем что оплачено >= 90% от ожидаемой суммы (как в проформах)
+          const secondPaymentPaid = paidSecondPaymentTotal >= expectedSecondPayment * 0.9;
+          
+          if (secondPaymentPaid) {
+            this.logger.info('Skipping reminder - second payment already paid (checked before sending)', {
+              dealId: task.dealId,
+              expectedSecondPayment: expectedSecondPayment,
+              paidSecondPaymentTotal: paidSecondPaymentTotal,
+              paidSecondPaymentsCount: paidSecondPayments.length,
+              paidSecondPayments: paidSecondPayments.map(p => ({
+                id: p.id,
+                sessionId: p.session_id,
+                amount: p.original_amount || p.amount,
+                currency: p.currency
+              })),
+              currency: currency,
+              taskSessionId: task.sessionId
+            });
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'second_payment_already_paid',
+              expectedAmount: expectedSecondPayment,
+              paidAmount: paidSecondPaymentTotal
+            });
+            continue;
+          }
+          
+          // Проверка 2: Если не нашли достаточную сумму в базе, проверяем ВСЕ сессии через Stripe API
+          // (на случай если webhook еще не обработался и статус не обновлен)
+          // ВАЖНО: Проверяем не только task.sessionId, а ВСЕ сессии для сделки!
+          const allSessionsForDeal = payments.filter(p => p.session_id).map(p => p.session_id);
+          
+          // Также добавляем sessionId из задачи, если его еще нет в списке
+          if (task.sessionId && !allSessionsForDeal.includes(task.sessionId)) {
+            allSessionsForDeal.push(task.sessionId);
+          }
+          
+          // Проверяем каждую сессию в Stripe и суммируем оплаченные вторые платежи
+          let stripePaidSecondPaymentTotal = 0;
+          const stripePaidSessions = [];
+          
+          for (const sessionId of allSessionsForDeal) {
+            try {
+              const isTestSession = sessionId.startsWith('cs_test_');
+              if (isTestSession) continue;
+              
+              const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
+              
+              // Проверяем что это второй платеж (rest/second/final) и он оплачен
+              const paymentType = stripeSession.metadata?.payment_type;
+              const isSecondPayment = paymentType === 'rest' || paymentType === 'second' || paymentType === 'final';
+              
+              if (isSecondPayment && stripeSession.payment_status === 'paid') {
+                const sessionAmount = stripeSession.amount_total ? (stripeSession.amount_total / 100) : 0;
+                stripePaidSecondPaymentTotal += sessionAmount;
+                stripePaidSessions.push({
+                  sessionId: sessionId,
+                  amount: sessionAmount,
+                  currency: stripeSession.currency?.toUpperCase() || currency
+                });
+              }
+            } catch (error) {
+              // Если не удалось проверить сессию, продолжаем
+              this.logger.debug('Failed to check session in Stripe API', {
+                dealId: task.dealId,
+                sessionId: sessionId,
+                error: error.message
+              });
+            }
+          }
+          
+          // Проверяем общую сумму (база + Stripe)
+          const totalPaidSecondPayment = paidSecondPaymentTotal + stripePaidSecondPaymentTotal;
+          const isSecondPaymentFullyPaid = totalPaidSecondPayment >= expectedSecondPayment * 0.9;
+          
+          if (isSecondPaymentFullyPaid) {
+            this.logger.warn('Payment is paid in Stripe but not fully reflected in database - webhook delay?', {
+              dealId: task.dealId,
+              expectedSecondPayment: expectedSecondPayment,
+              paidInDatabase: paidSecondPaymentTotal,
+              paidInStripe: stripePaidSecondPaymentTotal,
+              totalPaid: totalPaidSecondPayment,
+              stripePaidSessions: stripePaidSessions
+            });
+            
+            this.logger.info('Skipping reminder - second payment already paid (checked via Stripe API)', {
+              dealId: task.dealId,
+              expectedSecondPayment: expectedSecondPayment,
+              totalPaidSecondPayment: totalPaidSecondPayment,
+              paidInDatabase: paidSecondPaymentTotal,
+              paidInStripe: stripePaidSecondPaymentTotal,
+              taskSessionId: task.sessionId
+            });
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'second_payment_already_paid_in_stripe',
+              expectedAmount: expectedSecondPayment,
+              paidAmount: totalPaidSecondPayment
+            });
+            continue;
+          }
+          
+          // Если сумма недостаточна, логируем для отладки
+          if (paidSecondPaymentTotal > 0 || stripePaidSecondPaymentTotal > 0) {
+            this.logger.debug('Second payment partially paid, but not enough for reminder skip', {
+              dealId: task.dealId,
+              expectedSecondPayment: expectedSecondPayment,
+              paidInDatabase: paidSecondPaymentTotal,
+              paidInStripe: stripePaidSecondPaymentTotal,
+              totalPaid: totalPaidSecondPayment,
+              threshold: expectedSecondPayment * 0.9
+            });
           }
 
           const result = await this.sendReminder(task, { trigger, runId });
