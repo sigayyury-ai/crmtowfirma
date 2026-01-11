@@ -945,9 +945,6 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
               });
             }
           }
-        } catch (error) {
-          logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
-        }
         }
       }
     }
