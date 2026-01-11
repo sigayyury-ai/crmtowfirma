@@ -38,7 +38,21 @@ async function listCheckoutSessionsPaged({ pageSize = 100, cursor, filters } = {
     expand: ['data.line_items']
   };
   if (cursor) params.starting_after = cursor;
-  Object.assign(params, filters);
+  
+  // Filter out invalid parameters that Stripe API doesn't accept
+  // payment_status is a property of the session object, not a filter parameter
+  const validParams = ['limit', 'starting_after', 'ending_before', 'created', 'customer', 'customer_email', 'status', 'mode', 'expand', 'subscription'];
+  if (filters) {
+    Object.keys(filters).forEach(key => {
+      if (validParams.includes(key)) {
+        params[key] = filters[key];
+      } else if (key !== 'payment_status') {
+        // Log unknown parameters (except payment_status which is common mistake)
+        logger.warn('Unknown filter parameter for checkout.sessions.list', { parameter: key });
+      }
+    });
+  }
+  
   const response = await stripe.checkout.sessions.list(params);
   return response;
 }
