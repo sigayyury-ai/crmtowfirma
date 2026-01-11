@@ -255,6 +255,16 @@ class ProformaSecondPaymentReminderService {
 
       for (const deal of dealsResult.deals) {
         try {
+          // Пропускаем удаленные сделки
+          if (deal.deleted === true || deal.status === 'deleted') {
+            this.logger.debug('Skipping deleted deal', {
+              dealId: deal.id,
+              deleted: deal.deleted,
+              status: deal.status
+            });
+            continue;
+          }
+
           const closeDate = deal.expected_close_date || deal.close_date;
           if (!closeDate) continue;
 
@@ -522,6 +532,17 @@ class ProformaSecondPaymentReminderService {
           }
 
           const deal = dealResult.deal;
+          
+          // Пропускаем удаленные сделки
+          if (deal.deleted === true || deal.status === 'deleted') {
+            result.skipped++;
+            this.logger.info('Skipping proforma reminder - deal is deleted', {
+              dealId: task.dealId,
+              deleted: deal.deleted,
+              status: deal.status
+            });
+            continue;
+          }
           const dealValue = parseFloat(deal.value) || 0;
           const expectedSecondPayment = dealValue / 2;
 

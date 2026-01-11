@@ -224,25 +224,38 @@ class PnlReportService {
       // Load proformas to get exchange rates for currency conversion
       const proformaIds = [...new Set(bankPayments.map(p => p.proforma_id).filter(Boolean))];
       const proformaMap = new Map();
+      const deletedProformaIds = new Set();
       
       if (proformaIds.length > 0) {
         try {
           const { data: proformasData, error: proformaError } = await this.supabase
             .from('proformas')
-            .select('id, currency, currency_exchange, payments_total_pln')
+            .select('id, currency, currency_exchange, payments_total_pln, deleted_at')
             .in('id', proformaIds);
-
+          
+          // Track deleted proformas to exclude their payments
           if (!proformaError && Array.isArray(proformasData)) {
             proformasData.forEach((proforma) => {
-              if (proforma.id) {
+              if (proforma.deleted_at) {
+                deletedProformaIds.add(String(proforma.id));
+              } else if (proforma.id) {
                 proformaMap.set(String(proforma.id), proforma);
               }
             });
           }
+
         } catch (proformaErr) {
           logger.warn('Failed to load proformas for exchange rates', { error: proformaErr.message });
         }
       }
+      
+      // Filter out payments linked to deleted proformas
+      const bankPaymentsFiltered = bankPayments.filter((payment) => {
+        if (payment.proforma_id && deletedProformaIds.has(String(payment.proforma_id))) {
+          return false;
+        }
+        return true;
+      });
 
       // Load income categories
       let categoriesMap = new Map();
@@ -373,8 +386,8 @@ class PnlReportService {
         }
       }
 
-      // Combine all payments
-      const allPayments = [...bankPayments, ...stripePayments];
+      // Combine all payments (use filtered bank payments to exclude deleted proformas)
+      const allPayments = [...bankPaymentsFiltered, ...stripePayments];
 
       // Filter processed payments (pass categoriesMap to include refunds)
       const processedPayments = this.filterProcessedPayments(allPayments, categoriesMap);
