@@ -19,6 +19,7 @@ const CRON_EXPRESSION = '0 * * * *'; // Каждый час, на отметке
 // Запускается раз в час вместе с основным циклом для проверки пропущенных событий
 const DELETION_CRON_EXPRESSION = '0 2 * * *'; // Раз в сутки в 2:00 ночи (редкий кейс)
 const SECOND_PAYMENT_CRON_EXPRESSION = '0 9 * * *'; // Ежедневно в 9:00 утра для создания вторых платежей
+const EXPIRED_SESSIONS_CRON_EXPRESSION = '0 */4 * * *'; // Каждые 4 часа для обработки истекших сессий
 const STRIPE_EVENTS_AGGREGATION_CRON_EXPRESSION = '10 * * * *'; // каждый час в hh:10
 const GOOGLE_MEET_CALENDAR_SCAN_CRON_EXPRESSION = '0 8 * * *'; // Ежедневно в 8:00 утра для сканирования календаря
 const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Каждые 5 минут для обработки напоминаний
@@ -69,6 +70,7 @@ class SchedulerService {
     this.mqlSyncCronJob = null;
     this.stripePaymentTestsCronJob = null;
     this.eventsCabinetMonitorCronJob = null;
+    this.expiredSessionsCronJob = null;
     this.retryTimeout = null;
     
     // Инициализируем MQL Sync Service
@@ -177,7 +179,22 @@ class SchedulerService {
         this.runStripeReminderCycle({ trigger: 'cron_stripe_reminder' }).catch((error) => {
           logger.error('Unexpected error in Stripe reminder cycle:', error);
         });
-        // Также обрабатываем просроченные сессии (пересоздание и уведомления)
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
+
+    // Отдельный cron для обработки истекших сессий (каждые 4 часа)
+    logger.info('Configuring cron job for expired sessions processing', {
+      cronExpression: EXPIRED_SESSIONS_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+    this.expiredSessionsCronJob = cron.schedule(
+      EXPIRED_SESSIONS_CRON_EXPRESSION,
+      () => {
+        // Обрабатываем просроченные сессии (пересоздание и уведомления)
         this.runExpiredSessionsCycle({ trigger: 'cron_expired_sessions' }).catch((error) => {
           logger.error('Unexpected error in expired sessions cycle:', error);
         });
@@ -426,6 +443,10 @@ class SchedulerService {
     if (this.eventsCabinetMonitorCronJob) {
       this.eventsCabinetMonitorCronJob.stop();
       this.eventsCabinetMonitorCronJob = null;
+    }
+    if (this.expiredSessionsCronJob) {
+      this.expiredSessionsCronJob.stop();
+      this.expiredSessionsCronJob = null;
     }
 
     if (this.retryTimeout) {
