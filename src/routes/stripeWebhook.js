@@ -366,10 +366,17 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 const retrievedSession = await stripe.checkout.sessions.retrieve(session.id);
                 sessionUrl = retrievedSession.url || null;
               } catch (error) {
-                logger.warn('Failed to retrieve session URL from Stripe', {
-                  sessionId: session.id,
-                  error: error.message
-                });
+                if (error.code === 'resource_missing') {
+                  logger.info('Checkout Session not found in Stripe (resource_missing), skipping URL retrieval', {
+                    sessionId: session.id
+                  });
+                } else {
+                  logger.warn('Failed to retrieve session URL from Stripe', {
+                    sessionId: session.id,
+                    error: error.message,
+                    errorCode: error.code
+                  });
+                }
               }
             }
             
@@ -516,7 +523,17 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
               logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
             }
           } catch (sessionError) {
-            logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
+            if (sessionError.code === 'resource_missing') {
+              logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | PaymentIntent: ${paymentIntent.id}`, {
+                sessionId,
+                error: sessionError.message
+              });
+            } else {
+              logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { 
+                error: sessionError.message,
+                errorCode: sessionError.code
+              });
+            }
           }
         }
       } else if (dealId) {
@@ -540,7 +557,17 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 await syncCashExpectationFromStripeSession(session);
                 logger.info(`✅ Payment Intent обработан через найденный session | Deal: ${dealId} | Session: ${sessionIdFromDb}`);
               } catch (sessionError) {
-                logger.error(`❌ Ошибка обработки найденного session | Session: ${sessionIdFromDb}`, { error: sessionError.message });
+                if (sessionError.code === 'resource_missing') {
+                  logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | Session: ${sessionIdFromDb}`, {
+                    dealId,
+                    error: sessionError.message
+                  });
+                } else {
+                  logger.error(`❌ Ошибка обработки найденного session | Session: ${sessionIdFromDb}`, { 
+                    error: sessionError.message,
+                    errorCode: sessionError.code
+                  });
+                }
               }
             }
           } else {
@@ -594,7 +621,17 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
             logger.warn(`⚠️  Deal ID не найден в Session | Session: ${sessionId}`);
           }
         } catch (sessionError) {
-          logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { error: sessionError.message });
+          if (sessionError.code === 'resource_missing') {
+            logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | PaymentIntent: ${paymentIntent.id}`, {
+              sessionId,
+              error: sessionError.message
+            });
+          } else {
+            logger.error(`❌ Ошибка получения Session | PaymentIntent: ${paymentIntent.id}`, { 
+              error: sessionError.message,
+              errorCode: sessionError.code
+            });
+          }
         }
         }
       } else {
@@ -652,7 +689,11 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                     logger.debug('Deal ID найден в session metadata', { dealId, sessionId });
                   }
                 } catch (sessionError) {
-                  logger.debug('Не удалось получить session', { sessionId, error: sessionError.message });
+                  if (sessionError.code === 'resource_missing') {
+                    logger.debug('Checkout Session not found in Stripe (resource_missing)', { sessionId });
+                  } else {
+                    logger.debug('Не удалось получить session', { sessionId, error: sessionError.message });
+                  }
                 }
               }
             }
@@ -762,11 +803,12 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 chargeId: charge.id
               });
             } else {
-              const session = await stripe.checkout.sessions.retrieve(sessionId);
-              const dealId = session.metadata?.deal_id;
-              
-              if (dealId) {
-                logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
+              try {
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+                const dealId = session.metadata?.deal_id;
+                
+                if (dealId) {
+                  logger.info(`🔄 Обработка обновления платежа | Deal: ${dealId} | Charge: ${charge.id} | Status: ${charge.status}`);
                 
                 // Обновляем статус платежа в базе данных на основе статуса charge
                 const paymentStatus = charge.status === 'succeeded' ? 'paid' : 
@@ -782,6 +824,20 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 }
                 
                 logger.info(`✅ Статус платежа обновлен | Deal: ${dealId} | Charge: ${charge.id} | Status: ${paymentStatus}`);
+                }
+              } catch (sessionError) {
+                if (sessionError.code === 'resource_missing') {
+                  logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | Charge: ${charge.id}`, {
+                    sessionId,
+                    error: sessionError.message
+                  });
+                } else {
+                  logger.error(`❌ Ошибка получения Session для Charge | Charge: ${charge.id}`, {
+                    sessionId,
+                    error: sessionError.message,
+                    errorCode: sessionError.code
+                  });
+                }
               }
             }
           }
@@ -809,11 +865,12 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 chargeId: charge.id
               });
             } else {
-              const session = await stripe.checkout.sessions.retrieve(sessionId);
-              const dealId = session.metadata?.deal_id;
-              
-              if (dealId) {
-                logger.info(`✅ Обработка успешного платежа | Deal: ${dealId} | Charge: ${charge.id} | Amount: ${charge.amount / 100} ${charge.currency.toUpperCase()}`);
+              try {
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+                const dealId = session.metadata?.deal_id;
+                
+                if (dealId) {
+                  logger.info(`✅ Обработка успешного платежа | Deal: ${dealId} | Charge: ${charge.id} | Amount: ${charge.amount / 100} ${charge.currency.toUpperCase()}`);
                 
                 // Обновляем статус платежа в базе данных
                 await stripeProcessor.repository.updatePaymentStatus(sessionId, 'paid');
@@ -822,6 +879,20 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 await stripeProcessor.persistSession(session);
                 
                 logger.info(`✅ Успешный платеж обработан | Deal: ${dealId} | Charge: ${charge.id}`);
+                }
+              } catch (sessionError) {
+                if (sessionError.code === 'resource_missing') {
+                  logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | Charge: ${charge.id}`, {
+                    sessionId,
+                    error: sessionError.message
+                  });
+                } else {
+                  logger.error(`❌ Ошибка получения Session для Charge | Charge: ${charge.id}`, {
+                    sessionId,
+                    error: sessionError.message,
+                    errorCode: sessionError.code
+                  });
+                }
               }
             }
           }
@@ -860,9 +931,23 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 status: paymentIntent.status
               });
             }
-          } catch (error) {
-            logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
+          } catch (sessionError) {
+            if (sessionError.code === 'resource_missing') {
+              logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | PaymentIntent: ${paymentIntent.id}`, {
+                sessionId,
+                error: sessionError.message
+              });
+            } else {
+              logger.error(`❌ Ошибка получения Session для PaymentIntent | PaymentIntent: ${paymentIntent.id}`, {
+                sessionId,
+                error: sessionError.message,
+                errorCode: sessionError.code
+              });
+            }
           }
+        } catch (error) {
+          logger.error(`❌ Ошибка обработки создания платежа | PaymentIntent: ${paymentIntent.id}`, { error: error.message });
+        }
         }
       }
     }
@@ -925,9 +1010,17 @@ router.post('/webhooks/stripe', getRawBody, async (req, res) => {
                 logger.info(`✅ Invoice обработан через Session | Deal: ${sessionDealId} | Invoice: ${invoice.id}`);
               }
             } catch (sessionError) {
-              logger.error(`❌ Ошибка получения Session для Invoice | Session: ${sessionId}`, {
-                error: sessionError.message
-              });
+              if (sessionError.code === 'resource_missing') {
+                logger.info(`ℹ️  Checkout Session not found in Stripe (resource_missing) | Invoice: ${invoice.id}`, {
+                  sessionId,
+                  error: sessionError.message
+                });
+              } else {
+                logger.error(`❌ Ошибка получения Session для Invoice | Session: ${sessionId}`, {
+                  error: sessionError.message,
+                  errorCode: sessionError.code
+                });
+              }
             }
           }
         } catch (paymentIntentError) {

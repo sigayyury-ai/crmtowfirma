@@ -875,13 +875,29 @@ class StripeProcessorService {
             invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice.id;
           } else {
             // Try to retrieve from Checkout Session
-            const expandedSession = await this.stripe.checkout.sessions.retrieve(session.id, {
-              expand: ['invoice']
-            });
-            if (expandedSession.invoice) {
-              invoiceId = typeof expandedSession.invoice === 'string' 
-                ? expandedSession.invoice 
-                : expandedSession.invoice.id;
+            try {
+              const expandedSession = await this.stripe.checkout.sessions.retrieve(session.id, {
+                expand: ['invoice']
+              });
+              if (expandedSession.invoice) {
+                invoiceId = typeof expandedSession.invoice === 'string' 
+                  ? expandedSession.invoice 
+                  : expandedSession.invoice.id;
+              }
+            } catch (retrieveError) {
+              if (retrieveError.code === 'resource_missing') {
+                this.logger.info('Checkout Session not found in Stripe (resource_missing)', {
+                  sessionId: session.id,
+                  dealId: session.metadata?.deal_id
+                });
+              } else {
+                this.logger.warn('Failed to retrieve Checkout Session for invoice', {
+                  sessionId: session.id,
+                  dealId: session.metadata?.deal_id,
+                  error: retrieveError.message
+                });
+              }
+              // Continue without invoiceId
             }
           }
           
@@ -961,13 +977,29 @@ class StripeProcessorService {
           invoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice.id;
         } else {
           // Try to find invoice by retrieving the Checkout Session with expanded invoice
-          const expandedSession = await this.stripe.checkout.sessions.retrieve(session.id, {
-            expand: ['invoice']
-          });
-          if (expandedSession.invoice) {
-            invoiceId = typeof expandedSession.invoice === 'string' 
-              ? expandedSession.invoice 
-              : expandedSession.invoice.id;
+          try {
+            const expandedSession = await this.stripe.checkout.sessions.retrieve(session.id, {
+              expand: ['invoice']
+            });
+            if (expandedSession.invoice) {
+              invoiceId = typeof expandedSession.invoice === 'string' 
+                ? expandedSession.invoice 
+                : expandedSession.invoice.id;
+            }
+          } catch (retrieveError) {
+            if (retrieveError.code === 'resource_missing') {
+              this.logger.info('Checkout Session not found in Stripe (resource_missing)', {
+                sessionId: session.id,
+                dealId: session.metadata?.deal_id
+              });
+            } else {
+              this.logger.warn('Failed to retrieve Checkout Session for invoice', {
+                sessionId: session.id,
+                dealId: session.metadata?.deal_id,
+                error: retrieveError.message
+              });
+            }
+            // Continue without invoiceId
           }
         }
         
@@ -4124,12 +4156,21 @@ class StripeProcessorService {
             expand: ['payment_intent']
           });
         } catch (error) {
-          this.logger.warn('Failed to retrieve Checkout Session', {
-            dealId,
-            sessionId: payment.session_id,
-            error: error.message,
-            note: 'Payment will be removed from database, but refund in Stripe may need to be created manually if payment was paid'
-          });
+          if (error.code === 'resource_missing') {
+            this.logger.info('Checkout Session not found in Stripe (resource_missing), skipping refund', {
+              dealId,
+              sessionId: payment.session_id,
+              note: 'Session was likely deleted or never existed. Payment will be removed from database.'
+            });
+          } else {
+            this.logger.warn('Failed to retrieve Checkout Session', {
+              dealId,
+              sessionId: payment.session_id,
+              error: error.message,
+              errorCode: error.code,
+              note: 'Payment will be removed from database, but refund in Stripe may need to be created manually if payment was paid'
+            });
+          }
           // Продолжаем удаление из БД даже при ошибке подключения к Stripe
           continue;
         }
