@@ -1501,8 +1501,7 @@ class StripeProcessorService {
       // 5. If final flag → Camp Waiter (stage 27)
 
       // Если сделка уже в стадии "First payment" и приходит оплата → Camp Waiter (один платеж)
-      // Получаем ID статусов для пайплайна
-      const stageIds = await this.getStageIdsForDeal(dealId);
+      // stageIds уже объявлен выше в начале блока
       const FIRST_PAYMENT_STAGE_IDS = [STAGES.FIRST_PAYMENT, stageIds.firstPayment].filter((id, index, arr) => arr.indexOf(id) === index); // Убираем дубликаты
       
       this.logger.info('Checking First Payment stage for deal', {
