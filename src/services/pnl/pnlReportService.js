@@ -207,6 +207,7 @@ class PnlReportService {
           income_category_id
         `)
         .eq('direction', 'in')
+        .is('deleted_at', null) // Exclude deleted payments
         .gte('operation_date', yearStart.toISOString())
         .lte('operation_date', yearEnd.toISOString())
         .order('operation_date', { ascending: false });
@@ -699,6 +700,7 @@ class PnlReportService {
           expense_category_id
         `)
         .eq('direction', 'out')
+        .is('deleted_at', null) // Exclude deleted payments
         .gte('operation_date', yearStart.toISOString())
         .lte('operation_date', yearEnd.toISOString())
         .order('operation_date', { ascending: false });
