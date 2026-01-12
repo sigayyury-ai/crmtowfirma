@@ -322,7 +322,9 @@ class CrmStatusAutomationService {
       const amountPerPayment = expectedPayments > 0 ? dealValue / expectedPayments : dealValue;
       
       // Конвертируем сумму в PLN для расчета
-      const amountPerPaymentPln = convertToPln(amountPerPayment, dealCurrency, null);
+      // ВАЖНО: Используем exchange_rate из сделки, если он есть
+      const dealExchangeRate = deal.exchange_rate || null;
+      const amountPerPaymentPln = convertToPln(amountPerPayment, dealCurrency, dealExchangeRate);
       
       // Рассчитываем сумму на основе количества подтвержденных платежей
       stripePaidPln = stripeTotals.webhookVerifiedCount * amountPerPaymentPln;
@@ -554,33 +556,49 @@ class CrmStatusAutomationService {
           });
         }
         
-        // Конвертируем в PLN если нужно
+        // ВАЖНО: Конвертируем в PLN только для отчетов (expectedAmountPln)
+        // Для автоматизации используем dealValue напрямую в валюте сделки
         let expectedAmountPln = dealValue;
         if (dealCurrency !== 'PLN') {
-          try {
-            if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
-              const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
-              expectedAmountPln = amountPln;
-            } else {
-              // Fallback на старый способ если stripeProcessor недоступен
-              const { getRate } = require('../stripe/exchangeRateService');
-              const rate = await getRate(dealCurrency, 'PLN');
-              expectedAmountPln = dealValue * rate;
-            }
-          } catch (error) {
-            this.logger.warn('Failed to get exchange rate for deal value conversion', {
+          // ВАЖНО: Сначала проверяем exchange_rate в сделке (если есть)
+          const dealExchangeRate = dealResult.deal.exchange_rate;
+          if (dealExchangeRate && Number.isFinite(dealExchangeRate) && dealExchangeRate > 0) {
+            expectedAmountPln = dealValue * dealExchangeRate;
+            this.logger.info('Using exchange_rate from deal for PLN conversion (for reports only)', {
               dealId: normalizedDealId,
+              dealValue,
               dealCurrency,
-              error: error.message
+              exchangeRate: dealExchangeRate,
+              expectedAmountPln,
+              note: 'This conversion is for PNL reports only, automation uses dealValue in original currency'
             });
-            // Fallback: используем сумму из Stripe платежей в PLN
-            expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+          } else {
+            // Если exchange_rate нет в сделке, используем convertAmountWithRate
+            try {
+              if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
+                const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
+                expectedAmountPln = amountPln;
+              } else {
+                // Fallback на старый способ если stripeProcessor недоступен
+                const { getRate } = require('../stripe/exchangeRateService');
+                const rate = await getRate(dealCurrency, 'PLN');
+                expectedAmountPln = dealValue * rate;
+              }
+            } catch (error) {
+              this.logger.warn('Failed to get exchange rate for deal value conversion to PLN (for reports)', {
+                dealId: normalizedDealId,
+                dealCurrency,
+                error: error.message
+              });
+              // Fallback: используем сумму из Stripe платежей в PLN
+              expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+            }
           }
         }
         snapshot.totals.expectedAmountPln = expectedAmountPln;
         // Пересчитываем totalPaidPln после установки expectedAmountPln
         snapshot.totals.totalPaidPln = (snapshot.totals.bankPaidPln || 0) + (snapshot.totals.cashPaidPln || 0) + (snapshot.totals.stripePaidPln || 0);
-        this.logger.info('Using deal value as expected amount for Stripe-only payment', {
+        this.logger.info('Using deal value for Stripe-only payment (PLN conversion for reports only)', {
           dealId: normalizedDealId,
           dealValue,
           dealCurrency,
@@ -589,13 +607,15 @@ class CrmStatusAutomationService {
           stripePaidPln: snapshot.totals.stripePaidPln,
           totalPaidPln: snapshot.totals.totalPaidPln,
           hasStripePayments,
-          hasPayments
+          hasPayments,
+          note: 'Automation will use dealValue in original currency, not expectedAmountPln'
         });
       }
     }
 
     // Если expectedAmountPln все еще 0, но есть Stripe платежи, устанавливаем из суммы сделки
     // Проверяем по paymentsCount.stripe ИЛИ по массиву stripePayments
+    // ВАЖНО: expectedAmountPln нужен только для отчетов, для автоматизации используем dealValue напрямую
     const hasStripePaymentsFallback = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
     if (snapshot.totals.expectedAmountPln <= 0 && hasStripePaymentsFallback && dealResult.deal.value) {
       // ВАЖНО: Убеждаемся, что stripePaidPln есть в snapshot.totals
@@ -613,39 +633,57 @@ class CrmStatusAutomationService {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
+        // ВАЖНО: Конвертируем в PLN только для отчетов (expectedAmountPln)
+        // Для автоматизации используем dealValue напрямую в валюте сделки
         let expectedAmountPln = dealValue;
         if (dealCurrency !== 'PLN') {
-          try {
-            if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
-              const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
-              expectedAmountPln = amountPln;
-            } else {
-              // Fallback на старый способ если stripeProcessor недоступен
-              const { getRate } = require('../stripe/exchangeRateService');
-              const rate = await getRate(dealCurrency, 'PLN');
-              expectedAmountPln = dealValue * rate;
-            }
-          } catch (error) {
-            this.logger.warn('Failed to get exchange rate for fallback conversion', {
+          // ВАЖНО: Сначала проверяем exchange_rate в сделке (если есть)
+          const dealExchangeRate = dealResult.deal.exchange_rate;
+          if (dealExchangeRate && Number.isFinite(dealExchangeRate) && dealExchangeRate > 0) {
+            expectedAmountPln = dealValue * dealExchangeRate;
+            this.logger.info('Fallback: Using exchange_rate from deal for PLN conversion (for reports only)', {
               dealId: normalizedDealId,
+              dealValue,
               dealCurrency,
-              error: error.message
+              exchangeRate: dealExchangeRate,
+              expectedAmountPln,
+              note: 'This conversion is for PNL reports only, automation uses dealValue in original currency'
             });
-            // Fallback: используем сумму из Stripe платежей в PLN
-            expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+          } else {
+            // Если exchange_rate нет в сделке, используем convertAmountWithRate
+            try {
+              if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
+                const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
+                expectedAmountPln = amountPln;
+              } else {
+                // Fallback на старый способ если stripeProcessor недоступен
+                const { getRate } = require('../stripe/exchangeRateService');
+                const rate = await getRate(dealCurrency, 'PLN');
+                expectedAmountPln = dealValue * rate;
+              }
+            } catch (error) {
+              this.logger.warn('Failed to get exchange rate for fallback conversion to PLN (for reports)', {
+                dealId: normalizedDealId,
+                dealCurrency,
+                error: error.message
+              });
+              // Fallback: используем сумму из Stripe платежей в PLN
+              expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+            }
           }
         }
         snapshot.totals.expectedAmountPln = expectedAmountPln;
         // Пересчитываем totalPaidPln после установки expectedAmountPln
         snapshot.totals.totalPaidPln = (snapshot.totals.bankPaidPln || 0) + (snapshot.totals.cashPaidPln || 0) + (snapshot.totals.stripePaidPln || 0);
-        this.logger.info('Fallback: Setting expectedAmountPln from deal value before evaluation', {
+        this.logger.info('Fallback: Setting expectedAmountPln from deal value (for reports only)', {
           dealId: normalizedDealId,
           dealValue,
           dealCurrency,
           expectedAmountPln,
           stripePaidPln: snapshot.totals.stripePaidPln,
           totalPaidPln: snapshot.totals.totalPaidPln,
-          stripePaymentsCount: snapshot.paymentsCount.stripe
+          stripePaymentsCount: snapshot.paymentsCount.stripe,
+          note: 'Automation will use dealValue in original currency, not expectedAmountPln'
         });
       }
     }
@@ -673,8 +711,9 @@ class CrmStatusAutomationService {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       
       // Вычисляем суммы в валюте сделки
-      // Для expectedAmount всегда используем сумму сделки напрямую (в валюте сделки)
-      let expectedAmount = dealValue > 0 ? dealValue : (snapshot.totals.expectedAmountPln || 0);
+      // ВАЖНО: Для expectedAmount всегда используем сумму сделки напрямую (в валюте сделки)
+      // НЕ используем expectedAmountPln для автоматизации - он нужен только для отчетов
+      let expectedAmount = dealValue;
       
       // Для paidAmount суммируем original_amount из stripePayments в валюте сделки
       // ВАЖНО: Если платеж в другой валюте, конвертируем его в валюту сделки через PLN
@@ -743,9 +782,15 @@ class CrmStatusAutomationService {
         paidAmount = snapshot.totals.totalPaidPln;
       }
       
-      // Если expectedAmount все еще 0, используем из snapshot (для обратной совместимости)
-      if (expectedAmount === 0 && snapshot.totals.expectedAmountPln > 0) {
-        expectedAmount = snapshot.totals.expectedAmountPln;
+      // ВАЖНО: Если expectedAmount = 0, это проблема данных (deal.value отсутствует или равен 0)
+      // НЕ используем expectedAmountPln для автоматизации - он нужен только для отчетов
+      if (expectedAmount === 0) {
+        this.logger.warn('Deal value is 0 or missing - cannot evaluate payment status', {
+          dealId: normalizedDealId,
+          dealValue,
+          dealCurrency,
+          note: 'Automation requires deal.value in original currency, not PLN conversion'
+        });
       }
       
       this.logger.info('Calling evaluatePaymentStatus', {
