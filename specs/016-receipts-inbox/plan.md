@@ -78,6 +78,17 @@
   - извлеченные поля (если есть),
   - список кандидатов (клик по строке = confirm).
 
+### Mobile-first UI details
+
+- В идеале используем `<label class="upload-btn">` + скрытый `<input type="file">` как уже сделано для CSV в `vat-margin.html`.
+- Для мобильных: `capture="environment"` (опционально) + большой hit-area кнопки.
+- Кандидаты отображаем как крупные карточки/строки (touch-friendly), без мелких кнопок.
+
+## Route registration notes (explicit)
+
+- Backend endpoints добавляются в `src/routes/api.js` (router).
+- Никакой дополнительной регистрации не требуется: `src/index.js` уже монтирует `app.use('/api', apiRoutes)`.
+
 ## Testing Plan
 
 - Smoke:
