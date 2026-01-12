@@ -5387,23 +5387,29 @@ class StripeProcessorService {
           p.payment_status === 'paid' || p.status === 'processed'
         );
         
-        let totalPaidPln = 0;
+        // ВАЖНО: Считаем оплаченную сумму в валюте сделки, а не в PLN
+        // Сравнивать нужно суммы в одной валюте
+        const dealCurrency = deal.currency || 'PLN';
+        let totalPaidInDealCurrency = 0;
         for (const payment of paidPayments) {
-          const amountPln = payment.amount_pln !== null && payment.amount_pln !== undefined
-            ? parseFloat(payment.amount_pln || 0)
-            : parseFloat(payment.amount || 0);
-          totalPaidPln += amountPln;
+          // Суммируем только платежи в валюте сделки
+          if (payment.currency === dealCurrency) {
+            const amount = parseFloat(payment.original_amount || payment.amount || 0);
+            totalPaidInDealCurrency += amount;
+          }
+          // Платежи в других валютах игнорируем для этой проверки
         }
 
         const dealValue = parseFloat(deal.value) || 0;
         const FINAL_THRESHOLD = 0.95;
-        const paidRatio = dealValue > 0 ? totalPaidPln / dealValue : 0;
+        const paidRatio = dealValue > 0 ? totalPaidInDealCurrency / dealValue : 0;
         
         if (paidRatio >= FINAL_THRESHOLD) {
           this.logger.info('⏭️  Пропуск уведомления о создании платежа - все платежи уже оплачены', {
             dealId,
-            totalPaidPln,
+            totalPaidInDealCurrency,
             dealValue,
+            dealCurrency,
             paidRatio: (paidRatio * 100).toFixed(2) + '%',
             paidPaymentsCount: paidPayments.length,
             allPaymentsCount: allPayments.length,
@@ -6099,29 +6105,32 @@ class StripeProcessorService {
           p.payment_status === 'paid' || p.status === 'processed'
         );
         
-        // Подсчитываем общую сумму оплаченных платежей в PLN
-        // Используем amount_pln для корректного сравнения с суммой сделки (которая в PLN)
-        let totalPaidPln = 0;
+        // ВАЖНО: Считаем оплаченную сумму в валюте сделки, а не в PLN
+        // totalPaidPln используется только для отчетов, не для бизнес-логики
+        const dealCurrency = deal.currency || 'PLN';
+        let totalPaidInDealCurrency = 0;
         for (const payment of paidPayments) {
-          // Приоритет: amount_pln (если есть), иначе amount (предполагаем, что это PLN)
-          const amountPln = payment.amount_pln !== null && payment.amount_pln !== undefined
-            ? parseFloat(payment.amount_pln || 0)
-            : parseFloat(payment.amount || 0);
-          totalPaidPln += amountPln;
+          // Суммируем только платежи в валюте сделки
+          if (payment.currency === dealCurrency) {
+            const amount = parseFloat(payment.original_amount || payment.amount || 0);
+            totalPaidInDealCurrency += amount;
+          }
+          // Платежи в других валютах игнорируем для этой проверки
         }
 
-        // Получаем сумму сделки (всегда в PLN)
+        // Получаем сумму сделки в валюте сделки
         const dealValue = parseFloat(deal.value) || 0;
         
         // Проверяем, все ли оплачено (>= 95% от суммы сделки, как в statusCalculator)
         const FINAL_THRESHOLD = 0.95;
-        const paidRatio = dealValue > 0 ? totalPaidPln / dealValue : 0;
+        const paidRatio = dealValue > 0 ? totalPaidInDealCurrency / dealValue : 0;
         
         if (paidRatio >= FINAL_THRESHOLD) {
           this.logger.info('⏭️  Пропуск уведомления об успешной оплате - все платежи уже оплачены', {
             dealId,
-            totalPaidPln,
+            totalPaidInDealCurrency,
             dealValue,
+            dealCurrency,
             paidRatio: (paidRatio * 100).toFixed(2) + '%',
             paidPaymentsCount: paidPayments.length,
             allPaymentsCount: allPayments.length,

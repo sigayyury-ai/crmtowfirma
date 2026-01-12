@@ -918,9 +918,11 @@ class CrmStatusAutomationService {
       }
 
     // Формируем информацию о платеже
-    const paidAmount = snapshot?.totals?.totalPaidPln || 0;
-    const expectedAmount = snapshot?.totals?.expectedAmountPln || 0;
-    const paidPercent = expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0;
+    // ВАЖНО: totalPaidPln и expectedAmountPln используются только для отчетов
+    // Для логирования используем значения из evaluation, которые уже в правильной валюте сделки
+    const paidAmount = evaluation?.paidAmount || 0;
+    const expectedAmount = evaluation?.expectedAmount || 0;
+    const paidPercent = evaluation?.paidRatio ? Math.round(evaluation.paidRatio * 100) : (expectedAmount > 0 ? Math.round((paidAmount / expectedAmount) * 100) : 0);
     
     const message = '✅ Твой платеж получен, спасибо!';
 

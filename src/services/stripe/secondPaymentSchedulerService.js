@@ -119,68 +119,110 @@ class SecondPaymentSchedulerService {
       // Сначала проверяем в базе данных
       const payments = await this.repository.listPayments({ dealId: String(dealId) });
       
-      const restPayment = payments.find(p => 
+      const restPayments = payments.filter(p => 
         (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final')
       );
 
-      if (restPayment) {
-        return true;
+      if (restPayments.length === 0) {
+        return false;
       }
 
-      // Если в базе нет, проверяем в Stripe напрямую
-      // Ищем активные или недавно просроченные сессии (за последние 7 дней)
-      const now = Math.floor(Date.now() / 1000);
-      const sevenDaysAgo = now - (7 * 24 * 60 * 60);
+      // Проверяем каждую rest сессию - активна ли она (создана менее 24 часов назад)
+      const now = new Date();
+      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-      let hasMore = true;
-      let startingAfter = null;
-      const limit = 100;
-
-      while (hasMore) {
-        const params = {
-          limit,
-          created: { gte: sevenDaysAgo }
-        };
-
-        if (startingAfter) {
-          params.starting_after = startingAfter;
+      for (const restPayment of restPayments) {
+        // Если платеж оплачен - сессия не нужна
+        if (restPayment.payment_status === 'paid' || restPayment.status === 'processed') {
+          continue;
         }
 
-        const sessions = await this.stripeProcessor.stripe.checkout.sessions.list(params);
-
-        for (const session of sessions.data) {
-          if (session.metadata?.deal_id === String(dealId)) {
-            const paymentType = session.metadata?.payment_type || '';
-            // Проверяем, что это второй платеж (rest/second/final)
-            if (paymentType === 'rest' || paymentType === 'second' || paymentType === 'final') {
-              // Если сессия активна (open) или оплачена - считаем, что сессия существует
-              // Просроченные неоплаченные сессии не считаем, чтобы можно было создать новую
-              if (session.status === 'open' || session.payment_status === 'paid') {
-                this.logger.info('Found active or paid second payment session in Stripe', {
+        // Если есть session_id - проверяем, когда была создана сессия
+        if (restPayment.session_id) {
+          const sessionCreatedAt = restPayment.created_at ? new Date(restPayment.created_at) : null;
+          
+          // Если сессия создана менее 24 часов назад - она еще активна
+          if (sessionCreatedAt && sessionCreatedAt > twentyFourHoursAgo) {
+            // Дополнительно проверяем в Stripe, не истекла ли сессия
+            try {
+              const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
+              
+              // Если сессия активна (open) или оплачена - она еще активна
+              if (stripeSession.status === 'open' || stripeSession.payment_status === 'paid') {
+                this.logger.info('Found active second payment session', {
                   dealId,
-                  sessionId: session.id,
-                  status: session.status,
-                  paymentStatus: session.payment_status
+                  sessionId: restPayment.session_id,
+                  status: stripeSession.status,
+                  paymentStatus: stripeSession.payment_status,
+                  createdAt: sessionCreatedAt.toISOString(),
+                  isWithin24Hours: true
                 });
                 return true;
               }
+              
+              // Если сессия истекла (expired) или завершена без оплаты - она неактивна
+              if (stripeSession.status === 'expired' || (stripeSession.status === 'complete' && stripeSession.payment_status !== 'paid')) {
+                this.logger.debug('Second payment session expired or completed without payment', {
+                  dealId,
+                  sessionId: restPayment.session_id,
+                  status: stripeSession.status,
+                  paymentStatus: stripeSession.payment_status
+                });
+                continue; // Проверяем следующую сессию
+              }
+            } catch (error) {
+              // Если сессия не найдена в Stripe - она истекла или удалена
+              if (error.code === 'resource_missing') {
+                this.logger.debug('Second payment session not found in Stripe (expired or deleted)', {
+                  dealId,
+                  sessionId: restPayment.session_id
+                });
+                continue; // Проверяем следующую сессию
+              }
+              // Другие ошибки - логируем, но продолжаем проверку
+              this.logger.warn('Error checking session in Stripe', {
+                dealId,
+                sessionId: restPayment.session_id,
+                error: error.message
+              });
+            }
+          } else {
+            // Сессия создана более 24 часов назад - проверяем в Stripe, не истекла ли она
+            try {
+              const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(restPayment.session_id);
+              
+              // Если сессия все еще активна (open) - она активна
+              if (stripeSession.status === 'open') {
+                this.logger.info('Found active second payment session (older than 24h but still open in Stripe)', {
+                  dealId,
+                  sessionId: restPayment.session_id,
+                  status: stripeSession.status,
+                  createdAt: sessionCreatedAt ? sessionCreatedAt.toISOString() : 'N/A'
+                });
+                return true;
+              }
+            } catch (error) {
+              // Если сессия не найдена - она истекла
+              if (error.code === 'resource_missing') {
+                this.logger.debug('Second payment session expired (not found in Stripe)', {
+                  dealId,
+                  sessionId: restPayment.session_id
+                });
+                continue;
+              }
             }
           }
-        }
-
-        hasMore = sessions.has_more;
-        if (sessions.data.length > 0) {
-          startingAfter = sessions.data[sessions.data.length - 1].id;
         } else {
-          hasMore = false;
-        }
-
-        // Ограничиваем поиск 500 сессиями
-        if (sessions.data.length < limit) {
-          hasMore = false;
+          // Если нет session_id, но есть запись в БД - считаем, что сессия неактивна
+          // (возможно, это старая запись или ошибка)
+          this.logger.debug('Rest payment without session_id found', {
+            dealId,
+            paymentId: restPayment.id
+          });
         }
       }
 
+      // Если дошли сюда - нет активных rest сессий
       return false;
     } catch (error) {
       this.logger.error('Failed to check second payment session', {
@@ -241,6 +283,8 @@ class SecondPaymentSchedulerService {
       });
 
       const eligibleDeals = [];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
 
       for (const dealId of dealIds) {
         try {
@@ -252,56 +296,110 @@ class SecondPaymentSchedulerService {
 
           const deal = dealResult.deal;
 
-        // ВАЖНО: Используем первичный график из первого платежа, а не текущий график
-        // Это исправляет проблему, когда график "изменился" с 50/50 на 100% из-за того,
-        // что до лагеря осталось меньше 30 дней, но первый платеж был создан с графиком 50/50
-        const initialSchedule = await this.getInitialPaymentSchedule(deal.id);
-        
-        let schedule = null;
-        let secondPaymentDate = null;
-
-        // Если есть первичный график 50/50 из первого платежа - используем его
-        if (initialSchedule.schedule === '50/50') {
-          schedule = '50/50';
-          // Вычисляем дату второго платежа на основе expected_close_date
-          const closeDate = deal.expected_close_date || deal.close_date;
-          if (closeDate) {
-            secondPaymentDate = this.calculateSecondPaymentDate(closeDate);
+          // ПЕРВЫЙ ДОВОД: Проверяем дату второго платежа (за 30 дней до окончания кемпа) и полную оплату
+          const campEndDate = deal.expected_close_date || deal.close_date;
+          if (!campEndDate) {
+            this.logger.debug('Skipping deal - no camp end date', { dealId: deal.id });
+            continue;
           }
+
+          // Вычисляем дату второго платежа (за 30 дней до окончания кемпа = expected_close_date - 1 месяц)
+          const initialSchedule = await this.getInitialPaymentSchedule(deal.id);
+          let secondPaymentDate = null;
           
-          this.logger.info('Using initial payment schedule from first payment', {
+          if (initialSchedule.schedule === '50/50' && campEndDate) {
+            secondPaymentDate = this.calculateSecondPaymentDate(campEndDate);
+          } else {
+            const currentSchedule = this.determinePaymentSchedule(deal);
+            secondPaymentDate = currentSchedule.secondPaymentDate;
+          }
+
+          // Если график не 50/50 или дата второго платежа не определена - пропускаем
+          if (!secondPaymentDate) {
+            this.logger.debug('Skipping deal - no second payment date (schedule is not 50/50)', {
+              dealId: deal.id,
+              initialSchedule: initialSchedule.schedule
+            });
+            continue;
+          }
+
+          const secondPaymentDateObj = new Date(secondPaymentDate);
+          secondPaymentDateObj.setHours(0, 0, 0, 0);
+
+          // ВАЖНО: Проверяем, наступила ли дата второго платежа (за 30 дней до окончания кемпа)
+          // Второй платеж выставляется за 30 дней до даты закрытия сделки
+          const isSecondPaymentDateReached = secondPaymentDateObj <= today;
+          if (!isSecondPaymentDateReached) {
+            this.logger.debug('Skipping deal - second payment date not reached (30 days before camp end)', {
+              dealId: deal.id,
+              campEndDate: new Date(campEndDate).toISOString().split('T')[0],
+              secondPaymentDate: secondPaymentDateObj.toISOString().split('T')[0],
+              today: today.toISOString().split('T')[0]
+            });
+            continue;
+          }
+
+          // Проверяем, оплачена ли вся сумма сделки
+          const dealValue = parseFloat(deal.value) || 0;
+          if (dealValue <= 0) {
+            this.logger.debug('Skipping deal - no deal value', { dealId: deal.id });
+            continue;
+          }
+
+          // Получаем все платежи для этой сделки
+          const dealPayments = await this.repository.listPayments({ dealId: String(dealId) });
+          const paidPayments = dealPayments.filter(p => p.payment_status === 'paid' || p.status === 'processed');
+
+          // ВАЖНО: Считаем оплаченную сумму ТОЛЬКО в валюте сделки из CRM
+          // Суммируем только платежи, где валюта платежа совпадает с валютой сделки
+          const dealCurrency = deal.currency || 'PLN';
+          let totalPaidInDealCurrency = 0;
+          
+          for (const payment of paidPayments) {
+            // Суммируем только платежи в валюте сделки
+            if (payment.currency === dealCurrency) {
+              // Используем original_amount (сумма в оригинальной валюте платежа)
+              // Если валюта совпадает с валютой сделки, это и есть нужная сумма
+              const amount = parseFloat(payment.original_amount || payment.amount || 0);
+              totalPaidInDealCurrency += amount;
+            }
+            // Платежи в других валютах игнорируем - они не должны влиять на проверку оплаты
+            // Если нужна конвертация, это должно быть сделано отдельно и явно
+          }
+
+          // Проверяем, оплачена ли вся сумма (с учетом погрешности 95%)
+          const isFullyPaid = totalPaidInDealCurrency >= dealValue * 0.95;
+          if (isFullyPaid) {
+            this.logger.debug('Skipping deal - fully paid', {
+              dealId: deal.id,
+              dealValue,
+              totalPaid: totalPaidInDealCurrency,
+              currency: deal.currency
+            });
+            continue;
+          }
+
+          // ВТОРОЙ ДОВОД: Проверяем, нет ли активных rest сессий (чтобы не было дублей)
+          const hasSecond = await this.hasSecondPaymentSession(deal.id);
+          if (hasSecond) {
+            this.logger.debug('Skipping deal - already has active rest session', { dealId: deal.id });
+            continue;
+          }
+
+          this.logger.info('Deal needs second payment', {
             dealId: deal.id,
-            initialSchedule: initialSchedule.schedule,
-            firstPaymentDate: initialSchedule.firstPaymentDate,
-            secondPaymentDate: secondPaymentDate ? secondPaymentDate.toISOString().split('T')[0] : null
+            dealTitle: deal.title,
+            campEndDate: new Date(campEndDate).toISOString().split('T')[0],
+            secondPaymentDate: secondPaymentDateObj.toISOString().split('T')[0],
+            dealValue,
+            totalPaid: totalPaidInDealCurrency,
+            currency: deal.currency
           });
-        } else {
-          // Если первичного графика нет, используем текущий график (fallback)
-          const currentSchedule = this.determinePaymentSchedule(deal);
-          schedule = currentSchedule.schedule;
-          secondPaymentDate = currentSchedule.secondPaymentDate;
-        }
 
-        // Проверяем, что график 50/50 и дата второго платежа определена
-        if (schedule !== '50/50' || !secondPaymentDate) {
-          continue;
-        }
-
-        // Проверяем, что дата второго платежа наступила
-        if (!this.isDateReached(secondPaymentDate)) {
-          continue;
-        }
-
-        // Проверяем, что вторая сессия еще не создана
-        const hasSecond = await this.hasSecondPaymentSession(deal.id);
-        if (hasSecond) {
-          continue;
-        }
-
-        eligibleDeals.push({
-          deal,
-          secondPaymentDate
-        });
+          eligibleDeals.push({
+            deal,
+            secondPaymentDate: secondPaymentDateObj
+          });
         } catch (error) {
           this.logger.error('Error processing deal in findDealsNeedingSecondPayment', {
             dealId,
@@ -310,6 +408,10 @@ class SecondPaymentSchedulerService {
           continue;
         }
       }
+
+      this.logger.info('Found deals needing second payment', {
+        count: eligibleDeals.length
+      });
 
       return eligibleDeals;
     } catch (error) {
@@ -439,6 +541,43 @@ class SecondPaymentSchedulerService {
           sessionId: result.sessionId,
           sessionUrl: result.sessionUrl
         });
+
+        // Отправляем уведомление клиенту (так как создание через cron, а не webhook)
+        // В webhook уведомление отправляется после создания всех сессий, но здесь только одна сессия
+        try {
+          const notificationResult = await this.stripeProcessor.sendPaymentNotificationForDeal(deal.id, {
+            paymentSchedule: '50/50',
+            sessions: [{
+              id: result.sessionId,
+              url: result.sessionUrl,
+              type: 'rest',
+              amount: result.amount
+            }],
+            currency: result.currency,
+            totalAmount: parseFloat(deal.value) || 0
+          });
+
+          if (notificationResult.success) {
+            this.logger.info('Payment notification sent successfully', {
+              dealId: deal.id,
+              sessionId: result.sessionId
+            });
+          } else {
+            this.logger.warn('Failed to send payment notification', {
+              dealId: deal.id,
+              sessionId: result.sessionId,
+              error: notificationResult.error
+            });
+          }
+        } catch (notifyError) {
+          this.logger.error('Error sending payment notification', {
+            dealId: deal.id,
+            sessionId: result.sessionId,
+            error: notifyError.message
+          });
+          // Не прерываем выполнение, если уведомление не отправилось
+        }
+
         // Логируем, что задача-напоминание будет доступна в cron
         this.logger.info('✅ Reminder task will be available in cron queue', {
           dealId: deal.id,
@@ -891,7 +1030,7 @@ class SecondPaymentSchedulerService {
   }
 
   /**
-   * Сохранить запись об отправленном напоминании в базу данных
+   * Сохранить запись об отправленном напоминании или создании сессии в базу данных
    * @param {Object} logData - Данные для логирования
    * @param {number} logData.dealId - ID сделки
    * @param {Date|string} logData.secondPaymentDate - Дата второго платежа
@@ -899,8 +1038,9 @@ class SecondPaymentSchedulerService {
    * @param {string} logData.sendpulseId - ID контакта в SendPulse
    * @param {string} logData.trigger - Источник запуска
    * @param {string} logData.runId - Run ID
+   * @param {string} logData.actionType - Тип действия: 'session_created' или 'reminder_sent'
    */
-  async persistReminderLog({ dealId, secondPaymentDate, sessionId, sendpulseId, trigger, runId }) {
+  async persistReminderLog({ dealId, secondPaymentDate, sessionId, sendpulseId, trigger, runId, actionType = 'reminder_sent' }) {
     const cacheKey = this.getReminderCacheKey(dealId, secondPaymentDate);
     if (cacheKey) {
       this.sentCache.add(cacheKey);
@@ -931,7 +1071,8 @@ class SecondPaymentSchedulerService {
         sent_date: todayStr,
         run_id: runId || null,
         trigger_source: trigger || null,
-        sendpulse_id: sendpulseId || null
+        sendpulse_id: sendpulseId || null,
+        action_type: actionType || 'reminder_sent'
       };
 
       const { error } = await supabase.from('stripe_reminder_logs').insert(payload);
@@ -1099,7 +1240,8 @@ class SecondPaymentSchedulerService {
           sessionId: task.sessionId || null,
           sendpulseId: sendpulseId,
           trigger: trigger,
-          runId: runId
+          runId: runId,
+          actionType: 'reminder_sent'
         });
       }
 
@@ -1160,6 +1302,26 @@ class SecondPaymentSchedulerService {
 
           const deal = dealResult.deal;
 
+          // ИСКЛЮЧАЕМ тестовые сделки TEST_AUTO_
+          if (deal.title && deal.title.includes('TEST_AUTO_')) {
+            this.logger.debug('Skipping test deal in expired sessions', {
+              dealId: deal.id,
+              dealTitle: deal.title
+            });
+            continue;
+          }
+
+          // ИСКЛЮЧАЕМ сделки в статусе "lost" - не нужно пересоздавать сессии для потерянных сделок
+          if (deal.status === 'lost') {
+            this.logger.debug('Skipping lost deal in expired sessions', {
+              dealId: deal.id,
+              dealTitle: deal.title,
+              status: deal.status,
+              lostReason: deal.lost_reason || 'не указан'
+            });
+            continue;
+          }
+
           // Получаем платежи для проверки активных сессий
           const payments = await this.repository.listPayments({ dealId: String(dealId), limit: 100 });
           
@@ -1169,18 +1331,77 @@ class SecondPaymentSchedulerService {
             continue;
           }
 
-          // Проверяем активные ОТКРЫТЫЕ сессии в базе (не оплаченные!)
-          // Оплаченные сессии не должны блокировать пересоздание истекших сессий другого типа
+          // ВАЖНО: Проверяем активные сессии напрямую в Stripe API, а не только в БД
+          // В БД может быть запись с status: 'open', но в Stripe сессия уже истекла
+          // Также в Stripe может быть активная сессия, которой нет в БД
+          let hasActiveSessionInStripe = false;
+          try {
+            // Сначала проверяем сессии с deal_id в metadata (быстрее)
+            const stripeSessionsWithDealId = await this.stripeProcessor.stripe.checkout.sessions.list({
+              limit: 100,
+              metadata: { deal_id: String(dealId) }
+            });
+            
+            // Проверяем статус каждой сессии
+            for (const stripeSession of stripeSessionsWithDealId.data) {
+              const isTestSession = stripeSession.id.startsWith('cs_test_');
+              if (isTestSession) continue;
+              
+              // Только открытые (open) сессии считаются активными
+              if (stripeSession.status === 'open') {
+                hasActiveSessionInStripe = true;
+                this.logger.debug('Found active open session in Stripe', {
+                  dealId,
+                  sessionId: stripeSession.id,
+                  paymentType: stripeSession.metadata?.payment_type,
+                  status: stripeSession.status
+                });
+                break; // Нашли активную сессию, достаточно
+              }
+            }
+            
+            // Если не нашли через metadata, делаем более широкий поиск (медленнее)
+            if (!hasActiveSessionInStripe) {
+              const sevenDaysAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+              const allRecentSessions = await this.stripeProcessor.stripe.checkout.sessions.list({
+                limit: 100,
+                created: { gte: sevenDaysAgo },
+                status: 'open'
+              });
+              
+              // Фильтруем по deal_id в metadata
+              const dealSessions = allRecentSessions.data.filter(s => 
+                s.metadata?.deal_id === String(dealId)
+              );
+              
+              if (dealSessions.length > 0) {
+                hasActiveSessionInStripe = true;
+                this.logger.debug('Found active open session in Stripe (via broader search)', {
+                  dealId,
+                  sessionId: dealSessions[0].id,
+                  paymentType: dealSessions[0].metadata?.payment_type,
+                  status: dealSessions[0].status
+                });
+              }
+            }
+          } catch (error) {
+            this.logger.warn('Failed to check active sessions in Stripe API', {
+              dealId,
+              error: error.message
+            });
+            // Продолжаем обработку в случае ошибки
+          }
+          
+          // Также проверяем сессии из БД, которые помечены как 'open'
+          // ВАЖНО: Проверяем их реальный статус в Stripe, так как в БД может быть устаревшая информация
           const activeOpenPayments = payments.filter(p => {
             if (!p.session_id) return false;
             // Только открытые сессии считаются активными для блокировки пересоздания
             return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
           });
 
-          // Если есть активные открытые сессии, проверяем их статус в Stripe
-          // ВАЖНО: Проверка происходит по типу платежа для каждой сессии отдельно,
-          // а не для всей сделки целиком
-          if (activeOpenPayments.length > 0) {
+          // Проверяем реальный статус в Stripe для сессий из БД
+          if (activeOpenPayments.length > 0 && !hasActiveSessionInStripe) {
             for (const activePayment of activeOpenPayments) {
               try {
                 const sessionId = activePayment.session_id;
@@ -1194,43 +1415,14 @@ class SecondPaymentSchedulerService {
                 
                 // Проверяем только ОТКРЫТЫЕ (open) сессии как активные
                 if (stripeSession.status === 'open') {
-                  // ВАЖНО: Проверяем по типу платежа, а не всю сделку целиком
-                  // Если активная сессия - deposit, а истекшая - rest, продолжаем обработку
-                  // Если активная сессия - rest, а истекшая - deposit, продолжаем обработку
-                  const activePaymentType = stripeSession.metadata?.payment_type || activePayment.payment_type;
-                  
-                  // Проверяем только истекшие сессии того же типа, что и активная
-                  const expiredSessionsSameType = dealExpiredSessions.filter(s => {
-                    if (activePaymentType === 'deposit') return s.paymentType === 'deposit';
-                    if (activePaymentType === 'rest' || activePaymentType === 'second' || activePaymentType === 'final') {
-                      return s.paymentType === 'rest' || s.paymentType === 'second' || s.paymentType === 'final';
-                    }
-                    return false;
+                  hasActiveSessionInStripe = true;
+                  this.logger.debug('Found active open session in Stripe (from DB)', {
+                    dealId,
+                    sessionId: activePayment.session_id,
+                    paymentType: stripeSession.metadata?.payment_type || activePayment.payment_type,
+                    status: stripeSession.status
                   });
-                  
-                  if (expiredSessionsSameType.length > 0) {
-                    // Есть истекшие сессии того же типа - проверяем даты
-                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                    const allExpiredOlder = expiredSessionsSameType.every(s => {
-                      if (!s.expiresAt) return false;
-                      const expiredDate = new Date(s.expiresAt * 1000);
-                      return expiredDate < activeCreated;
-                    });
-                    
-                    if (allExpiredOlder) {
-                      // Все истекшие сессии того же типа старше активной - они будут пропущены в дальнейшем коде
-                      this.logger.info('Active open session exists for same payment type, expired sessions will be filtered', {
-                        dealId,
-                        activeSessionId: activePayment.session_id,
-                        activePaymentType,
-                        activeSessionStatus: stripeSession.status,
-                        activeSessionCreated: activeCreated.toISOString(),
-                        expiredSessionsSameTypeCount: expiredSessionsSameType.length
-                      });
-                      // НЕ пропускаем всю сделку - продолжаем обработку других типов платежей
-                    }
-                  }
-                  // Если есть истекшие сессии другого типа - продолжаем обработку
+                  break; // Нашли активную сессию, достаточно
                 }
               } catch (error) {
                 this.logger.warn('Failed to check session status in Stripe', {
@@ -1240,9 +1432,15 @@ class SecondPaymentSchedulerService {
                 });
               }
             }
-            
-            // НЕ пропускаем всю сделку здесь - проверка по типу платежа происходит
-            // в дальнейшем коде для каждой истекшей сессии отдельно
+          }
+          
+          // Если есть активная сессия в Stripe, логируем для отладки
+          if (hasActiveSessionInStripe) {
+            this.logger.info('Active open session found in Stripe, expired sessions will be filtered by type', {
+              dealId,
+              expiredSessionsCount: dealExpiredSessions.length,
+              note: 'Expired sessions of different payment types will still be processed'
+            });
           }
 
           // Определяем график платежей
@@ -1348,48 +1546,93 @@ class SecondPaymentSchedulerService {
 
             // Для первого платежа (deposit) - проверяем, нет ли активной deposit сессии
             if (isDeposit) {
-              // Проверяем, есть ли активная открытая deposit сессия
-              const activeDepositPayments = payments.filter(p => {
-                if (!p.session_id || p.payment_type !== 'deposit') return false;
-                return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
-              });
+              // ВАЖНО: Проверяем активные deposit сессии напрямую в Stripe API
+              let hasActiveDepositSession = false;
               
-              if (activeDepositPayments.length > 0) {
-                // Проверяем статус в Stripe
-                let hasActiveDepositSession = false;
-                for (const activeDepositPayment of activeDepositPayments) {
-                  try {
-                    const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(activeDepositPayment.session_id);
-                    if (stripeSession.status === 'open') {
-                      // Есть активная открытая deposit сессия
-                      const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                      const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
-                      
-                      if (expiredDate < activeCreated) {
-                        // Истекшая сессия старше активной - пропускаем
-                        this.logger.info('Skipping expired deposit session, active deposit session exists', {
-                          dealId,
-                          expiredSessionId: expiredSession.sessionId,
-                          activeSessionId: activeDepositPayment.session_id,
-                          expiredDate: expiredDate.toISOString(),
-                          activeCreated: activeCreated.toISOString()
-                        });
-                        hasActiveDepositSession = true;
-                        break;
-                      }
+              try {
+                // Проверяем сессии с deal_id в metadata
+                const stripeSessionsWithDealId = await this.stripeProcessor.stripe.checkout.sessions.list({
+                  limit: 100,
+                  metadata: { deal_id: String(dealId) }
+                });
+                
+                // Ищем активные deposit сессии
+                for (const stripeSession of stripeSessionsWithDealId.data) {
+                  const isTestSession = stripeSession.id.startsWith('cs_test_');
+                  if (isTestSession) continue;
+                  
+                  const paymentType = stripeSession.metadata?.payment_type;
+                  if (paymentType === 'deposit' && stripeSession.status === 'open') {
+                    // Есть активная открытая deposit сессия
+                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                    const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
+                    
+                    if (expiredDate < activeCreated) {
+                      // Истекшая сессия старше активной - пропускаем
+                      this.logger.info('Skipping expired deposit session, active deposit session exists', {
+                        dealId,
+                        expiredSessionId: expiredSession.sessionId,
+                        activeSessionId: stripeSession.id,
+                        expiredDate: expiredDate.toISOString(),
+                        activeCreated: activeCreated.toISOString()
+                      });
+                      hasActiveDepositSession = true;
+                      break;
                     }
-                  } catch (error) {
-                    this.logger.warn('Failed to check active deposit session status', {
-                      dealId,
-                      sessionId: activeDepositPayment.session_id,
-                      error: error.message
-                    });
                   }
                 }
                 
-                if (hasActiveDepositSession) {
-                  continue; // Есть активная deposit сессия, не пересоздаем
+                // Если не нашли через metadata, проверяем сессии из БД
+                if (!hasActiveDepositSession) {
+                  const activeDepositPayments = payments.filter(p => {
+                    if (!p.session_id || p.payment_type !== 'deposit') return false;
+                    return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
+                  });
+                  
+                  for (const activeDepositPayment of activeDepositPayments) {
+                    try {
+                      const sessionId = activeDepositPayment.session_id;
+                      const isTestSession = sessionId.startsWith('cs_test_');
+                      if (isTestSession) continue;
+                      
+                      const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
+                      if (stripeSession.status === 'open') {
+                        // Есть активная открытая deposit сессия
+                        const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                        const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
+                        
+                        if (expiredDate < activeCreated) {
+                          // Истекшая сессия старше активной - пропускаем
+                          this.logger.info('Skipping expired deposit session, active deposit session exists', {
+                            dealId,
+                            expiredSessionId: expiredSession.sessionId,
+                            activeSessionId: activeDepositPayment.session_id,
+                            expiredDate: expiredDate.toISOString(),
+                            activeCreated: activeCreated.toISOString()
+                          });
+                          hasActiveDepositSession = true;
+                          break;
+                        }
+                      }
+                    } catch (error) {
+                      this.logger.warn('Failed to check active deposit session status', {
+                        dealId,
+                        sessionId: activeDepositPayment.session_id,
+                        error: error.message
+                      });
+                    }
+                  }
                 }
+              } catch (error) {
+                this.logger.warn('Failed to check active deposit sessions in Stripe', {
+                  dealId,
+                  error: error.message
+                });
+                // Продолжаем обработку в случае ошибки
+              }
+              
+              if (hasActiveDepositSession) {
+                continue; // Есть активная deposit сессия, не пересоздаем
               }
               // Если нет активной deposit сессии, можно пересоздавать
             } 
@@ -1546,6 +1789,21 @@ class SecondPaymentSchedulerService {
         for (const session of sessions.data) {
           // Фильтруем только неоплаченные сессии с deal_id
           if (session.payment_status !== 'paid' && session.metadata?.deal_id) {
+            // ИСКЛЮЧАЕМ тестовые сделки TEST_AUTO_ по email
+            const customerEmail = session.customer_details?.email || session.customer_email || '';
+            const isTestEmail = customerEmail.includes('test_deposit_') || 
+                               customerEmail.includes('test_rest_') || 
+                               customerEmail.includes('test_') && customerEmail.includes('@example.com');
+            
+            if (isTestEmail) {
+              this.logger.debug('Skipping test session', {
+                sessionId: session.id,
+                dealId: session.metadata.deal_id,
+                customerEmail
+              });
+              continue;
+            }
+
             const paymentType = session.metadata?.payment_type || '';
             // Нас интересуют все типы платежей (deposit, rest, second, final)
             if (paymentType === 'deposit' || paymentType === 'rest' || paymentType === 'second' || paymentType === 'final') {
@@ -1557,7 +1815,8 @@ class SecondPaymentSchedulerService {
                 amount: session.amount_total ? session.amount_total / 100 : null,
                 currency: session.currency?.toUpperCase() || 'PLN',
                 expiresAt: session.expires_at,
-                url: session.url
+                url: session.url,
+                customerEmail: customerEmail
               });
             }
           }
@@ -1688,6 +1947,43 @@ class SecondPaymentSchedulerService {
             });
           }
           
+          // ВАЖНО: Проверяем, полностью ли оплачена сделка перед пересозданием сессии
+          // Если сделка уже полностью оплачена, не пересоздаем сессию и не отправляем уведомление
+          const dealPayments = await this.repository.listPayments({ dealId: String(task.dealId) });
+          const paidPayments = dealPayments.filter(p => p.payment_status === 'paid' || p.status === 'processed');
+          
+          const dealCurrency = task.deal.currency || 'PLN';
+          let totalPaidInDealCurrency = 0;
+          for (const payment of paidPayments) {
+            if (payment.currency === dealCurrency) {
+              totalPaidInDealCurrency += parseFloat(payment.original_amount || payment.amount || 0);
+            }
+          }
+
+          const dealValue = parseFloat(task.deal.value) || 0;
+          const FINAL_THRESHOLD = 0.95;
+          const paidRatio = dealValue > 0 ? totalPaidInDealCurrency / dealValue : 0;
+          
+          if (paidRatio >= FINAL_THRESHOLD) {
+            this.logger.info('Skipping expired session recreation - deal is fully paid', {
+              dealId: task.dealId,
+              dealValue,
+              totalPaid: totalPaidInDealCurrency,
+              currency: dealCurrency,
+              paidRatio: (paidRatio * 100).toFixed(2) + '%',
+              paymentType: task.paymentType,
+              note: 'Deal is fully paid, no need to recreate expired session'
+            });
+            summary.skipped.push({
+              dealId: task.dealId,
+              paymentType: task.paymentType,
+              reason: 'deal_fully_paid',
+              dealValue,
+              totalPaid: totalPaidInDealCurrency
+            });
+            continue;
+          }
+
           let result;
           
           // Определяем тип платежа и пересоздаем соответствующую сессию
@@ -1876,6 +2172,37 @@ class SecondPaymentSchedulerService {
           const dealValue = parseFloat(deal.value) || 0;
           const currency = deal.currency || 'PLN';
           const expectedSecondPayment = dealValue / 2; // Для графика 50/50
+          
+          // ВАЖНО: Сначала проверяем, полностью ли оплачена вся сделка
+          // Если сделка уже полностью оплачена (через депозиты или другие платежи), не отправляем напоминание
+          const paidPayments = payments.filter(p => p.payment_status === 'paid' || p.status === 'processed');
+          let totalPaidInDealCurrency = 0;
+          for (const payment of paidPayments) {
+            if (payment.currency === currency) {
+              totalPaidInDealCurrency += parseFloat(payment.original_amount || payment.amount || 0);
+            }
+          }
+
+          const FINAL_THRESHOLD = 0.95;
+          const paidRatio = dealValue > 0 ? totalPaidInDealCurrency / dealValue : 0;
+          
+          if (paidRatio >= FINAL_THRESHOLD) {
+            this.logger.info('Skipping reminder - deal is fully paid', {
+              dealId: task.dealId,
+              dealValue,
+              totalPaid: totalPaidInDealCurrency,
+              currency,
+              paidRatio: (paidRatio * 100).toFixed(2) + '%',
+              note: 'Deal is fully paid, no need to send reminder about unpaid rest session'
+            });
+            summary.skipped.push({
+              dealId: task.dealId,
+              reason: 'deal_fully_paid',
+              dealValue,
+              totalPaid: totalPaidInDealCurrency
+            });
+            continue;
+          }
           
           // Проверка 1: В базе данных - проверяем СУММУ оплаченных вторых платежей
           const paidSecondPayments = payments.filter(p => 
@@ -2085,6 +2412,36 @@ class SecondPaymentSchedulerService {
           
           if (result.success) {
             summary.created++;
+            
+            // Сохраняем запись о создании сессии в таблицу stripe_reminder_logs
+            // Это позволяет отслеживать историю всех действий (создание сессии + напоминания)
+            try {
+              const dealWithRelated = await this.pipedriveClient.getDealWithRelatedData(deal.id);
+              const person = dealWithRelated?.person;
+              const SENDPULSE_ID_FIELD_KEY = 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+              const sendpulseId = person?.[SENDPULSE_ID_FIELD_KEY] || null;
+              
+              await this.persistReminderLog({
+                dealId: deal.id,
+                secondPaymentDate: secondPaymentDate,
+                sessionId: result.sessionId || null,
+                sendpulseId: sendpulseId,
+                trigger: 'cron_second_payment',
+                runId: null, // run_id может быть null для создания сессии (UUID генерируется в scheduler)
+                actionType: 'session_created'
+              });
+              
+              this.logger.debug('Session creation logged to stripe_reminder_logs', {
+                dealId: deal.id,
+                sessionId: result.sessionId
+              });
+            } catch (logError) {
+              // Не критично, если не удалось записать в лог
+              this.logger.warn('Failed to log session creation to stripe_reminder_logs', {
+                dealId: deal.id,
+                error: logError.message
+              });
+            }
           } else {
             summary.errors.push({
               dealId: deal.id,
