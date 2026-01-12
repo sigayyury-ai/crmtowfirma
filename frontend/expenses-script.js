@@ -89,6 +89,71 @@ function addLog(type, message) {
   logContainer.scrollTop = logContainer.scrollHeight;
 }
 
+// Filter products for autocomplete
+function filterProducts(query, suggestionsContainer, searchInput, idInput) {
+  const products = expenseProductLinkState.products || [];
+  
+  console.log('filterProducts called', {
+    query,
+    productsCount: products.length,
+    queryLength: query?.length,
+    hasContainer: !!suggestionsContainer
+  });
+  
+  if (!suggestionsContainer) {
+    console.error('filterProducts: suggestionsContainer is missing');
+    return;
+  }
+  
+  if (!query || query.length < 2) {
+    suggestionsContainer.style.display = 'none';
+    return;
+  }
+  
+  const queryLower = query.toLowerCase();
+  const filtered = products.filter(product => {
+    const name = (product.name || '').toLowerCase();
+    return name.includes(queryLower);
+  }).slice(0, 10); // Limit to 10 results
+  
+  console.log('filtered products', {
+    query,
+    filteredCount: filtered.length,
+    products: filtered.map(p => p.name)
+  });
+  
+  if (filtered.length === 0) {
+    suggestionsContainer.innerHTML = '<div class="suggestion-item" style="color: #999; font-style: italic; padding: 8px 12px;">Продукты не найдены</div>';
+    suggestionsContainer.style.display = 'block';
+    return;
+  }
+  
+  suggestionsContainer.innerHTML = filtered.map(product => {
+    const name = escapeHtml(product.name || 'Без названия');
+    return `
+      <div class="suggestion-item" data-product-id="${product.id}" data-product-name="${escapeHtml(product.name || '')}">
+        ${name}
+      </div>
+    `;
+  }).join('');
+  
+  // Add click handlers
+  suggestionsContainer.querySelectorAll('.suggestion-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const productId = item.dataset.productId;
+      const productName = item.dataset.productName;
+      if (productId && productName && idInput && searchInput) {
+        idInput.value = productId;
+        searchInput.value = productName;
+        suggestionsContainer.style.display = 'none';
+        console.log('Product selected', { productId, productName });
+      }
+    });
+  });
+  
+  suggestionsContainer.style.display = 'block';
+}
+
 async function ensureExpenseProductsLoaded({ force = false } = {}) {
   if (expenseProductLinkState.loaded && !force) {
     return expenseProductLinkState.products;
@@ -108,6 +173,14 @@ async function ensureExpenseProductsLoaded({ force = false } = {}) {
         throw new Error(payload.error || 'Не удалось получить продукты');
       }
       const products = Array.isArray(payload.data) ? payload.data : [];
+      console.log('Products loaded for expenses (in_progress only)', {
+        count: products.length,
+        products: products.slice(0, 5).map(p => ({ 
+          id: p.id, 
+          name: p.name, 
+          status: p.calculation_status || 'unknown' 
+        }))
+      });
       expenseProductLinkState.products = products;
       expenseProductLinkState.loaded = true;
       expenseProductLinkState.error = null;
@@ -1146,20 +1219,7 @@ function renderExpenseProductLinkPanel(link) {
 
   const products = expenseProductLinkState.products || [];
   const linkedProductId = link?.product_id ? String(link.product_id) : '';
-  const options = [
-    '<option value="">Не выбрано</option>',
-    ...products.map((product) => {
-      const value = escapeHtml(String(product.id));
-      const label = escapeHtml(product.name || 'Без названия');
-      const selected = linkedProductId === String(product.id) ? 'selected' : '';
-      return `<option value="${value}" ${selected}>${label}</option>`;
-    })
-  ];
-
-  if (linkedProductId && !products.some((product) => String(product.id) === linkedProductId)) {
-    const label = escapeHtml(link?.product?.name || `Продукт #${linkedProductId}`);
-    options.splice(1, 0, `<option value="${escapeHtml(linkedProductId)}" selected>${label} (неактивный)</option>`);
-  }
+  const linkedProductName = link?.product?.name || (linkedProductId && !products.some((product) => String(product.id) === linkedProductId) ? `Продукт #${linkedProductId}` : '');
 
   const linkedMeta = link
     ? `<div class="product-link-meta">Связано ${escapeHtml(formatDateTime(link.linked_at) || '')}${link.linked_by ? ` • ${escapeHtml(link.linked_by)}` : ''}</div>`
@@ -1167,10 +1227,20 @@ function renderExpenseProductLinkPanel(link) {
 
   return `
     <div class="product-link-panel">
-      <label for="expense-product-select">Привязка к продукту</label>
-      <select id="expense-product-select"${products.length === 0 ? ' disabled' : ''}>
-        ${options.join('')}
-      </select>
+      <label for="expense-product-search">Привязка к продукту</label>
+      <div class="product-search-wrapper" style="position: relative;">
+        <input 
+          type="text" 
+          id="expense-product-search" 
+          class="input-field" 
+          placeholder="Начните вводить название продукта..."
+          value="${linkedProductName ? escapeHtml(linkedProductName) : ''}"
+          autocomplete="off"
+          ${products.length === 0 ? ' disabled' : ''}
+        />
+        <input type="hidden" id="expense-product-id" value="${linkedProductId || ''}" />
+        <div id="expense-product-suggestions" class="suggestions-list" style="display: none;"></div>
+      </div>
       <div class="product-link-actions">
         <button class="btn btn-primary" id="expense-product-link-btn"${products.length === 0 ? ' disabled' : ''}>🔗 Связать</button>
         <button class="btn btn-secondary" id="expense-product-unlink-btn"${link ? '' : ' disabled'}>✖ Отвязать</button>
@@ -1221,7 +1291,9 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
   const moveToIncomeButton = root.querySelector('#expense-move-to-income');
   const moveToExpenseButton = root.querySelector('#expense-move-to-expense');
   const candidateCards = root.querySelectorAll('.candidate-card');
-  const productSelect = root.querySelector('#expense-product-select');
+  const productSearchInput = root.querySelector('#expense-product-search');
+  const productIdInput = root.querySelector('#expense-product-id');
+  const productSuggestions = root.querySelector('#expense-product-suggestions');
   const productLinkBtn = root.querySelector('#expense-product-link-btn');
   const productUnlinkBtn = root.querySelector('#expense-product-unlink-btn');
   const reloadProductsBtn = root.querySelector('#expense-products-reload');
@@ -1552,6 +1624,75 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
   });
 
   if (isExpense) {
+    // Setup product search autocomplete
+    if (productSearchInput && productIdInput && productSuggestions) {
+      console.log('Setting up product search autocomplete', {
+        hasSearchInput: !!productSearchInput,
+        hasIdInput: !!productIdInput,
+        hasSuggestions: !!productSuggestions
+      });
+      
+      // Ensure products are loaded
+      ensureExpenseProductsLoaded().then(products => {
+        console.log('Products loaded for autocomplete', {
+          count: products?.length || 0,
+          products: products?.slice(0, 3).map(p => p.name)
+        });
+      }).catch(err => {
+        console.error('Failed to load products for autocomplete:', err);
+      });
+      
+      let searchTimeout = null;
+      
+      productSearchInput.addEventListener('input', (e) => {
+        const query = e.target.value.trim();
+        console.log('Product search input', { query, length: query.length });
+        
+        // Clear hidden input when search is cleared
+        if (!query) {
+          productIdInput.value = '';
+          productSuggestions.style.display = 'none';
+          return;
+        }
+        
+        // Debounce search
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+          console.log('Calling filterProducts', { query });
+          filterProducts(query, productSuggestions, productSearchInput, productIdInput);
+        }, 200);
+      });
+      
+      // Hide suggestions when clicking outside
+      const clickHandler = (e) => {
+        if (productSearchInput && productSuggestions && 
+            !productSearchInput.contains(e.target) && 
+            !productSuggestions.contains(e.target)) {
+          productSuggestions.style.display = 'none';
+        }
+      };
+      document.addEventListener('click', clickHandler);
+      
+      // Handle Enter key
+      productSearchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const firstSuggestion = productSuggestions.querySelector('.suggestion-item');
+          if (firstSuggestion) {
+            firstSuggestion.click();
+          }
+        } else if (e.key === 'Escape') {
+          productSuggestions.style.display = 'none';
+        }
+      });
+    } else {
+      console.warn('Product search elements not found', {
+        productSearchInput: !!productSearchInput,
+        productIdInput: !!productIdInput,
+        productSuggestions: !!productSuggestions
+      });
+    }
+
     reloadProductsBtn?.addEventListener('click', async () => {
       try {
         setButtonLoading(reloadProductsBtn, true, 'Обновление...');
@@ -1566,11 +1707,11 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
     });
 
     productLinkBtn?.addEventListener('click', async () => {
-      if (!productSelect) return;
-      const productId = productSelect.value;
+      if (!productIdInput) return;
+      const productId = productIdInput.value;
       if (!productId) {
         addLog('warning', 'Выберите продукт перед привязкой');
-        productSelect.focus();
+        productSearchInput?.focus();
         return;
       }
       try {
@@ -1584,7 +1725,8 @@ function setupExpenseDetailHandlers(paymentId, root = expensesState.detailCellEl
         if (!response.ok || !payload.success) {
           throw new Error(payload.error || 'Не удалось связать платеж');
         }
-        addLog('success', `Расход ${paymentId} привязан к продукту ${productSelect.selectedOptions[0]?.textContent || productId}`);
+        const productName = productSearchInput?.value || productId;
+        addLog('success', `Расход ${paymentId} привязан к продукту ${productName}`);
         const refreshed = await loadExpenseDetails(paymentId, { forceReload: true });
         renderExpenseDetail(refreshed, root);
       } catch (error) {

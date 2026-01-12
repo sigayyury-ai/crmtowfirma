@@ -160,7 +160,7 @@ app.get(['/deleted', '/vat-margin/deleted'], requireAuth, sendPage('vat-margin.h
 app.get(['/payments', '/vat-margin/payments'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/vat-margin/diagnostics'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/vat-margin/facebook-ads'], requireAuth, sendPage('vat-margin.html'));
-app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('expenses.html'));
+app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/cash-journal', '/vat-margin/cash-journal'], requireAuth, sendPage('cash-journal.html'));
 app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html'));
 app.get(
