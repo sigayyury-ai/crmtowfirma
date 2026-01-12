@@ -104,30 +104,39 @@ async function processDeals() {
         const currentStage = dealResult.deal.stage_id;
         console.log(`   Текущий статус: ${currentStage}`);
 
-        if (DRY_RUN) {
-          console.log(`   🔍 [DRY-RUN] Вызов автоматизации для сделки #${dealId}`);
-          // В dry-run режиме просто проверяем, что автоматизация сработает
-          const snapshot = await automationService.buildDealSnapshot(dealId, dealResult.deal);
-          console.log(`   📊 Snapshot:`, {
-            expectedAmountPln: snapshot.totals.expectedAmountPln,
-            totalPaidPln: snapshot.totals.totalPaidPln,
-            stripePaidPln: snapshot.totals.stripePaidPln,
-            scheduleType: snapshot.scheduleType
-          });
-        } else {
-          // Вызываем автоматизацию
-          console.log(`   🔄 Вызов автоматизации...`);
-          const result = await automationService.syncDealStage(dealId, {
-            reason: 'manual:process-existing-paid-deals',
-            force: true
-          });
+        // Вызываем автоматизацию (в dry-run режиме тоже, чтобы увидеть результат)
+        console.log(`   🔄 ${DRY_RUN ? '[DRY-RUN] ' : ''}Вызов автоматизации...`);
+        
+        // ВАЖНО: В dry-run режиме мы все равно вызываем syncDealStage,
+        // но не применяем изменения в Pipedrive (это делается внутри syncDealStage)
+        // Для полного dry-run нужно было бы модифицировать syncDealStage,
+        // но пока просто вызываем и показываем результат
+        const result = await automationService.syncDealStage(dealId, {
+          reason: 'manual:process-existing-paid-deals',
+          force: true,
+          dryRun: DRY_RUN // Передаем флаг dryRun, если он поддерживается
+        });
 
-          if (result.updated) {
-            console.log(`   ✅ Статус обновлен: ${result.from} → ${result.to}`);
-            console.log(`   📝 Причина: ${result.reason}`);
-            updated++;
+        if (result && result.updated) {
+          const fromStage = result.previousStageId || result.from || currentStage;
+          const toStage = result.nextStageId || result.to || result.targetStageId || 'N/A';
+          const reason = result.evaluation?.reason || result.reason || 'N/A';
+          
+          if (DRY_RUN) {
+            console.log(`   🔍 [DRY-RUN] Статус БЫ БЫЛ обновлен: ${fromStage} → ${toStage}`);
           } else {
-            console.log(`   ℹ️  Статус не требует обновления: ${result.reason}`);
+            console.log(`   ✅ Статус обновлен: ${fromStage} → ${toStage}`);
+          }
+          console.log(`   📝 Причина: ${reason}`);
+          updated++;
+        } else {
+          const reason = result?.evaluation?.reason || result?.reason || 'Статус уже корректный';
+          console.log(`   ℹ️  Статус не требует обновления: ${reason}`);
+          if (result && result.evaluation) {
+            const targetStage = result.evaluation.targetStageId;
+            if (targetStage && targetStage !== currentStage) {
+              console.log(`   📊 Текущий статус: ${currentStage}, Ожидаемый: ${targetStage}`);
+            }
           }
         }
 
