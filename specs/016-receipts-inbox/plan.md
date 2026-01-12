@@ -11,7 +11,7 @@
 
 - **Frontend**: `frontend/vat-margin.html` + `frontend/vat-margin-script.js` (таб “Платежи” уже имеет саб-табы).
 - **Backend**: `src/routes/api.js` (уже есть `multer` и endpoints для payments).
-- **Storage**: Supabase (DB). Для файлов — Supabase Storage (предпочтительно) или DB-only (нежелательно).
+- **Storage**: Supabase (DB). Для файлов — **персистентное внешнее хранилище** (object storage). Хранить файлы на локальной ФС контейнера (Render) нельзя: при деплоях/рестартах файлы могут пропасть.
 - **AI**: есть `src/services/ai/openAIService.js` (уже используется для категоризации расходов; можно расширять для OCR/vision).
 
 ## Proposed Architecture
@@ -63,12 +63,25 @@
 - **A (предпочтительно)**: сервер конвертирует HEIC → JPEG перед OCR/vision (и сохраняет оба файла или только конвертированный для обработки).
 - **B**: если конвертация недоступна, сохраняем оригинал и помечаем статусом “needs_conversion/failed” с понятным сообщением.
 
+### File storage layout (year/month)
+
+Чтобы удобно хранить “по месяцам и годам” и не упираться в особенности деплоя/FS:
+
+- bucket: `receipts` (или аналогичный)
+- path: `receipts/YYYY/MM/<receiptId>/<originalFilename>`
+
+Метаданные `storage_path` в `receipt_uploads` являются источником истины.
+
 ## API Plan (new endpoints)
 
 - `POST /api/receipts/upload` (multipart `file`) → создаёт `receipt_uploads`, кладёт файл в storage, запускает обработку/матчинг, возвращает `receipt_id` + статус + кандидаты (если успели).
 - `GET /api/receipts/:id` → детали: метаданные, извлеченные поля, кандидаты, текущее состояние линка.
 - `POST /api/receipts/:id/link-payment` body `{ paymentId }` → подтверждение кандидата (создаёт/обновляет `receipt_payment_links`).
 - `DELETE /api/receipts/:id/link-payment` → отвязать.
+
+Также предусмотреть (для безопасного доступа к файлам):
+
+- `GET /api/receipts/:id/file-url` → signed URL (короткоживущий)
 
 ## Frontend Plan (Payments → subtab “Чеки”)
 

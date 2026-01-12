@@ -42,6 +42,24 @@
   - писать в таблицы,
   - работать с Supabase Storage (если включить в код).
 
+## File persistence research (Render vs external storage)
+
+Render web services run in containers; **локальная файловая система контейнера не является надёжным персистентным хранилищем** для пользовательских uploads:
+
+- при деплое/рестарте/релоаде контейнера файлы могут пропасть,
+- масштабирование может приводить к нескольким инстансам без общего диска.
+
+Следовательно, для чеков/инвойсов нужен внешний storage:
+
+- object storage (Supabase Storage / S3-совместимое), либо
+- Render Persistent Disk (возможен вариант, но требует отдельной настройки диска/маунта и всё равно хуже по доступу/шерингу между инстансами).
+
+Для этого проекта, учитывая уже используемый Supabase, **Supabase Storage** выглядит наиболее консистентным решением.
+
+Требование “хранить по месяцам/годам” реализуется на уровне `storage_path`, например:
+
+`receipts/YYYY/MM/<receiptId>/<filename>`
+
 ## Data research: current DB tables we already rely on (payments pipeline)
 
 ### `payments` (bank CSV → normalized payments)
