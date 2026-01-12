@@ -85,6 +85,10 @@ const crmStatusAutomationService = new CrmStatusAutomationService();
 const SecondPaymentSchedulerService = require('../services/stripe/secondPaymentSchedulerService');
 const secondPaymentScheduler = new SecondPaymentSchedulerService();
 const proformaReminderService = new ProformaSecondPaymentReminderService();
+const FacebookAdsMappingService = require('../services/facebookAds/facebookAdsMappingService');
+const facebookAdsMappingService = new FacebookAdsMappingService();
+const FacebookAdsImportService = require('../services/facebookAds/facebookAdsImportService');
+const facebookAdsImportService = new FacebookAdsImportService();
 
 const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
 const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
@@ -5683,4 +5687,406 @@ async function updateCashDealStage(dealId, stageId, reason) {
     });
   }
 }
+
+// ============================================================================
+// Facebook Ads Expenses API Endpoints
+// ============================================================================
+
+/**
+ * GET /api/facebook-ads/mappings
+ * Получить список всех маппингов кампаний на продукты
+ */
+router.get('/facebook-ads/mappings', async (req, res) => {
+  try {
+    const { productId } = req.query;
+    const filters = {};
+    if (productId) {
+      const numericProductId = Number(productId);
+      if (Number.isInteger(numericProductId)) {
+        filters.productId = numericProductId;
+      }
+    }
+
+    const mappings = await facebookAdsMappingService.getAllMappings(filters);
+    res.json({
+      success: true,
+      data: mappings
+    });
+  } catch (error) {
+    logger.error('Error getting Facebook Ads mappings:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить маппинги'
+    });
+  }
+});
+
+/**
+ * GET /api/facebook-ads/mappings/unmapped
+ * Получить список неразмеченных кампаний
+ */
+router.get('/facebook-ads/mappings/unmapped', async (req, res) => {
+  try {
+    const campaigns = await facebookAdsMappingService.getUnmappedCampaigns();
+    logger.info('Facebook Ads: Unmapped campaigns loaded', {
+      count: campaigns.length
+    });
+    res.json({
+      success: true,
+      data: campaigns
+    });
+  } catch (error) {
+    logger.error('Error getting unmapped campaigns:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить неразмеченные кампании'
+    });
+  }
+});
+
+/**
+ * GET /api/facebook-ads/campaigns/all
+ * Получить все кампании из expenses (для отладки и проверки)
+ */
+router.get('/facebook-ads/campaigns/all', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase недоступен'
+      });
+    }
+
+    const { data: expenses, error } = await supabase
+      .from('facebook_ads_expenses')
+      .select('campaign_name, campaign_name_normalized, amount_pln')
+      .order('amount_pln', { ascending: false });
+
+    if (error) {
+      logger.error('Error getting all campaigns:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Не удалось получить кампании'
+      });
+    }
+
+    // Group by campaign
+    const campaignMap = new Map();
+    (expenses || []).forEach(expense => {
+      const key = expense.campaign_name_normalized;
+      if (!campaignMap.has(key)) {
+        campaignMap.set(key, {
+          campaign_name: expense.campaign_name,
+          campaign_name_normalized: expense.campaign_name_normalized,
+          total_amount_pln: 0
+        });
+      }
+      campaignMap.get(key).total_amount_pln += parseFloat(expense.amount_pln || 0);
+    });
+
+    const campaigns = Array.from(campaignMap.values())
+      .sort((a, b) => b.total_amount_pln - a.total_amount_pln);
+
+    res.json({
+      success: true,
+      data: campaigns
+    });
+  } catch (error) {
+    logger.error('Error getting all campaigns:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить кампании'
+    });
+  }
+});
+
+/**
+ * GET /api/facebook-ads/mappings/suggestions/:campaignName
+ * Получить предложения продуктов для кампании
+ */
+router.get('/facebook-ads/mappings/suggestions/:campaignName', async (req, res) => {
+  try {
+    const campaignName = decodeURIComponent(req.params.campaignName);
+    const limit = parseInt(req.query.limit, 10) || 5;
+
+    const suggestions = await facebookAdsMappingService.suggestProducts(campaignName, limit);
+    res.json({
+      success: true,
+      data: suggestions
+    });
+  } catch (error) {
+    logger.error('Error getting product suggestions:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить предложения'
+    });
+  }
+});
+
+/**
+ * POST /api/facebook-ads/mappings
+ * Создать новый маппинг кампании на продукт
+ */
+router.post('/facebook-ads/mappings', async (req, res) => {
+  try {
+    const { campaignName, productId } = req.body;
+
+    if (!campaignName || typeof campaignName !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Название кампании обязательно'
+      });
+    }
+
+    const numericProductId = Number(productId);
+    if (!Number.isInteger(numericProductId) || numericProductId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор продукта'
+      });
+    }
+
+    // Try to find original campaign name from expenses
+    let originalCampaignName = campaignName.trim();
+    if (supabase) {
+      // Create temporary instance to use normalizeCampaignName
+      const tempService = new FacebookAdsMappingService();
+      const normalizedName = tempService.normalizeCampaignName(campaignName);
+      if (normalizedName) {
+        const { data: expense } = await supabase
+          .from('facebook_ads_expenses')
+          .select('campaign_name')
+          .eq('campaign_name_normalized', normalizedName)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (expense && expense.campaign_name) {
+          originalCampaignName = expense.campaign_name;
+          logger.info('Facebook Ads: Found original campaign name', {
+            input: campaignName,
+            original: originalCampaignName,
+            normalized: normalizedName
+          });
+        } else {
+          logger.warn('Facebook Ads: Original campaign name not found in expenses', {
+            input: campaignName,
+            normalized: normalizedName
+          });
+        }
+      }
+    }
+
+    const createdBy = req.user?.email || req.user?.id || null;
+    const mapping = await facebookAdsMappingService.createMapping({
+      campaignName: originalCampaignName, // Use original name from expenses
+      productId: numericProductId,
+      createdBy
+    });
+
+    logger.info('Facebook Ads: Mapping created successfully', {
+      mappingId: mapping.id,
+      campaignName: mapping.campaign_name,
+      productId: mapping.product_id
+    });
+
+    // Return mapping with product info
+    const { data: mappingWithProduct } = await supabase
+      .from('facebook_ads_campaign_mappings')
+      .select(`
+        *,
+        product:product_id (
+          id,
+          name,
+          normalized_name
+        )
+      `)
+      .eq('id', mapping.id)
+      .single();
+
+    res.json({
+      success: true,
+      data: mappingWithProduct || mapping
+    });
+  } catch (error) {
+    logger.error('Error creating Facebook Ads mapping:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось создать маппинг'
+    });
+  }
+});
+
+/**
+ * PUT /api/facebook-ads/mappings/:id
+ * Обновить маппинг (изменить продукт)
+ */
+router.put('/facebook-ads/mappings/:id', async (req, res) => {
+  try {
+    const mappingId = req.params.id;
+    const { productId } = req.body;
+
+    logger.info('Facebook Ads: Updating mapping', {
+      mappingId,
+      productId
+    });
+
+    if (productId === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'productId обязателен для обновления'
+      });
+    }
+
+    const numericProductId = Number(productId);
+    if (!Number.isInteger(numericProductId) || numericProductId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Некорректный идентификатор продукта'
+      });
+    }
+
+    const mapping = await facebookAdsMappingService.updateMapping(mappingId, {
+      productId: numericProductId
+    });
+
+    logger.info('Facebook Ads: Mapping updated successfully', {
+      mappingId: mapping.id,
+      productId: mapping.product_id
+    });
+
+    res.json({
+      success: true,
+      data: mapping
+    });
+  } catch (error) {
+    logger.error('Error updating Facebook Ads mapping:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось обновить маппинг'
+    });
+  }
+});
+
+/**
+ * DELETE /api/facebook-ads/mappings/:id
+ * Удалить маппинг
+ */
+router.delete('/facebook-ads/mappings/:id', async (req, res) => {
+  try {
+    const mappingId = req.params.id;
+    await facebookAdsMappingService.deleteMapping(mappingId);
+
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    logger.error('Error deleting Facebook Ads mapping:', error);
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось удалить маппинг'
+    });
+  }
+});
+
+/**
+ * POST /api/facebook-ads/import
+ * Импортировать CSV файл с расходами Facebook Ads
+ */
+router.post('/facebook-ads/import', upload.single('file'), async (req, res) => {
+  try {
+    logger.info('Facebook Ads import request received', {
+      hasFile: !!req.file,
+      fileName: req.file?.originalname,
+      fileSize: req.file?.size,
+      contentType: req.file?.mimetype
+    });
+
+    if (!req.file) {
+      logger.warn('Facebook Ads import: No file uploaded');
+      return res.status(400).json({
+        success: false,
+        error: 'Файл не загружен'
+      });
+    }
+
+    const csvContent = req.file.buffer.toString('utf-8');
+    const fileName = req.file.originalname;
+    const userId = req.user?.email || req.user?.id || null;
+
+    logger.info('Facebook Ads import: Starting CSV processing', {
+      fileName,
+      contentLength: csvContent.length,
+      userId
+    });
+
+    const result = await facebookAdsImportService.importCsv(csvContent, fileName, userId);
+
+    logger.info('Facebook Ads import: Completed successfully', {
+      fileName,
+      processedRows: result.processedRows,
+      mappedRows: result.mappedRows,
+      unmappedRows: result.unmappedRows
+    });
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    logger.error('Error importing Facebook Ads CSV:', {
+      error: error.message,
+      stack: error.stack,
+      fileName: req.file?.originalname
+    });
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось импортировать файл'
+    });
+  }
+});
+
+/**
+ * GET /api/facebook-ads/import-batches
+ * Получить историю импортов
+ */
+router.get('/facebook-ads/import-batches', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase недоступен'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('facebook_ads_import_batches')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) {
+      logger.error('Error getting import batches:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Не удалось получить историю импортов'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: data || []
+    });
+  } catch (error) {
+    logger.error('Error getting import batches:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить историю импортов'
+    });
+  }
+});
+
 module.exports = router;

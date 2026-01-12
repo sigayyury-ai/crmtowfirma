@@ -146,6 +146,7 @@ function cacheDom() {
     paymentsIncomingSection: document.getElementById('payments-incoming'),
     paymentsOutgoingSection: document.getElementById('payments-outgoing'),
     paymentsDiagnosticsSection: document.getElementById('payments-diagnostics'),
+    paymentsFacebookAdsSection: document.getElementById('payments-facebook-ads'),
     diagnosticsDealId: document.getElementById('diagnostics-deal-id'),
     diagnosticsLoadBtn: document.getElementById('diagnostics-load-btn'),
     diagnosticsClearBtn: document.getElementById('diagnostics-clear-btn'),
@@ -344,7 +345,8 @@ function togglePaymentsSubtab(subtab, options = {}) {
   const sections = {
     incoming: elements.paymentsIncomingSection,
     outgoing: elements.paymentsOutgoingSection,
-    diagnostics: elements.paymentsDiagnosticsSection
+    diagnostics: elements.paymentsDiagnosticsSection,
+    'facebook-ads': elements.paymentsFacebookAdsSection
   };
 
   elements.paymentsSubtabButtons.forEach((btn) => {
@@ -365,10 +367,26 @@ function togglePaymentsSubtab(subtab, options = {}) {
     paymentsLoaded = true;
   }
 
+  if (
+    !suppressDataLoad &&
+    activeTab === 'payments' &&
+    activePaymentsSubtab === 'facebook-ads'
+  ) {
+    // Initialize Facebook Ads tab if not already initialized
+    console.log('Facebook Ads: Tab activated, checking initFacebookAdsTab function');
+    if (typeof initFacebookAdsTab === 'function') {
+      console.log('Facebook Ads: Calling initFacebookAdsTab');
+      initFacebookAdsTab();
+    } else {
+      console.error('Facebook Ads: initFacebookAdsTab function not found! Make sure facebook-ads-script.js is loaded.');
+    }
+  }
+
   if (!suppressPathUpdate && activeTab === 'payments') {
     const targetPath =
       activePaymentsSubtab === 'incoming' ? '/vat-margin/payments' : 
       activePaymentsSubtab === 'outgoing' ? '/vat-margin/expenses' :
+      activePaymentsSubtab === 'facebook-ads' ? '/vat-margin/facebook-ads' :
       '/vat-margin/diagnostics';
     if (window.location.pathname !== targetPath) {
       window.history.replaceState(null, '', targetPath);
@@ -3164,6 +3182,9 @@ function getInitialTabFromPath(pathname) {
       return 'payments';
     case '/vat-margin/diagnostics':
       return 'payments'; // Диагностика находится внутри вкладки payments
+    case '/vat-margin/facebook-ads':
+    case '/facebook-ads':
+      return 'payments'; // Facebook Ads находится внутри вкладки payments
     case '/expenses':
     case '/vat-margin/expenses':
       return 'payments';
@@ -3191,6 +3212,9 @@ function getInitialPaymentsSubtabFromPath(pathname) {
   }
   if (pathname === '/vat-margin/diagnostics') {
     return 'diagnostics';
+  }
+  if (pathname === '/vat-margin/facebook-ads' || pathname === '/facebook-ads') {
+    return 'facebook-ads';
   }
   return 'incoming';
 }
