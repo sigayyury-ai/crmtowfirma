@@ -29,7 +29,9 @@ class StripeProcessorService {
     this.repository = options.repository || new StripeRepository();
     this.paymentPlanService = options.paymentPlanService || new ParticipantPaymentPlanService();
     this.crmStatusAutomationService =
-      options.crmStatusAutomationService || new StripeStatusAutomationService();
+      options.crmStatusAutomationService || new StripeStatusAutomationService({
+        stripeProcessor: this // Передаем сам processor для доступа к convertAmountWithRate
+      });
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     
     /**
@@ -3553,8 +3555,21 @@ class StripeProcessorService {
         line_items: [lineItem],
         metadata,
         success_url: this.buildCheckoutUrl(this.checkoutSuccessUrl, dealId, 'success'),
-        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel')
-        // Валюта уже задана в line_items, дополнительное ограничение не требуется
+        cancel_url: this.buildCheckoutUrl(this.checkoutCancelUrl || this.checkoutSuccessUrl, dealId, 'cancel'),
+        // ВАЖНО: Валюта жестко задана в line_items[].price_data.currency (валюта сделки)
+        // Stripe Checkout НЕ позволяет клиенту изменить валюту, если она задана в line_items
+        // 
+        // НО: Если клиент платит из другой страны, Stripe может автоматически конвертировать
+        // валюту платежа в валюту страны клиента (например, EUR сделка → USD платеж)
+        // В таком случае:
+        // 1. Webhook придет с session.currency = валюта платежа (может отличаться от валюты сделки)
+        // 2. Это обрабатывается через hasCurrencyMismatch логику в statusAutomationService
+        // 3. Статус обновляется на основе webhook подтверждения, а не сравнения сумм
+        // 4. См. код в persistSession() и sumStripeTotals() для деталей обработки
+        //
+        // К сожалению, Stripe API не позволяет полностью запретить автоматическую конвертацию
+        // валюты через параметры сессии. Это поведение Stripe на стороне клиента.
+        // Мы компенсируем это через логику обработки разных валют в коде.
       };
 
       // 10. Set customer (B2B) or customer_email (B2C)

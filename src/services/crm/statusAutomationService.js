@@ -32,6 +32,7 @@ class CrmStatusAutomationService {
     this.logger = options.logger || logger;
     this.pipedriveClient = options.pipedriveClient || new PipedriveClient();
     this.stripeRepository = options.stripeRepository || new StripeRepository();
+    this.stripeProcessor = options.stripeProcessor; // Для конвертации валют через convertAmountWithRate
     
     // Инициализируем SendPulse клиент (опционально)
     try {
@@ -465,17 +466,19 @@ class CrmStatusAutomationService {
     this.logger.info('Deal snapshot built', {
       dealId: normalizedDealId,
       snapshot: {
-        totalPaidPln: snapshot.totals.totalPaidPln,
-        expectedAmountPln: snapshot.totals.expectedAmountPln,
-        stripePaidPln: snapshot.totals.stripePaidPln,
-        bankPaidPln: snapshot.totals.bankPaidPln,
-        cashPaidPln: snapshot.totals.cashPaidPln,
+        totalPaidPln: snapshot.totals?.totalPaidPln,
+        expectedAmountPln: snapshot.totals?.expectedAmountPln,
+        stripePaidPln: snapshot.totals?.stripePaidPln,
+        bankPaidPln: snapshot.totals?.bankPaidPln,
+        cashPaidPln: snapshot.totals?.cashPaidPln,
         scheduleType: snapshot.scheduleType,
         paymentsCount: snapshot.paymentsCount,
-        stripePaymentsCount: snapshot.paymentsCount.stripe,
-        bankPaymentsCount: snapshot.paymentsCount.bank,
-        proformasCount: snapshot.proformas.length,
-        stripePaymentsArrayLength: snapshot.stripePayments.length
+        stripePaymentsCount: snapshot.paymentsCount?.stripe,
+        bankPaymentsCount: snapshot.paymentsCount?.bank,
+        proformasCount: snapshot.proformas?.length || 0,
+        stripePaymentsArrayLength: snapshot.stripePayments?.length || 0,
+        totalsKeys: Object.keys(snapshot.totals || {}),
+        totalsFull: snapshot.totals
       }
     });
     
@@ -494,19 +497,24 @@ class CrmStatusAutomationService {
       proformasCount: snapshot.proformas?.length || 0,
       expectedAmountPln: snapshot.totals?.expectedAmountPln,
       snapshotTotals: snapshot.totals,
-      snapshotPaymentsCount: snapshot.paymentsCount
+      snapshotPaymentsCount: snapshot.paymentsCount,
+      stripePaymentsArrayLength: snapshot.stripePayments?.length || 0
     });
     
     // Проверяем наличие платежей: либо есть оплаченные суммы, либо есть Stripe платежи (даже если totalPaidPln еще не установлен)
-    const hasPayments = snapshot.totals.totalPaidPln > 0 || snapshot.paymentsCount.stripe > 0 || snapshot.paymentsCount.bank > 0;
+    // ВАЖНО: Проверяем как paymentsCount.stripe, так и массив stripePayments (fallback на случай, если счетчик не заполнен)
+    const hasStripePayments = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
+    const hasPayments = snapshot.totals.totalPaidPln > 0 || hasStripePayments || snapshot.paymentsCount.bank > 0;
     const hasExpectedAmount = snapshot.totals.expectedAmountPln > 0;
     
     this.logger.info('syncDealStage: payment check result', {
       dealId: normalizedDealId,
       hasPayments,
+      hasStripePayments,
       hasExpectedAmount,
       totalPaidPln: snapshot.totals.totalPaidPln,
-      paymentsCountStripe: snapshot.paymentsCount.stripe
+      paymentsCountStripe: snapshot.paymentsCount.stripe,
+      stripePaymentsArrayLength: snapshot.stripePayments?.length || 0
     });
     
     // Если нет проформ И нет Stripe платежей, не обновляем статус
@@ -527,22 +535,58 @@ class CrmStatusAutomationService {
     
     // Если есть Stripe платежи, но нет проформ, используем сумму сделки как expectedAmount
     // Проверяем наличие Stripe платежей по paymentsCount.stripe ИЛИ по массиву stripePayments
-    const hasStripePayments = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
+    // (hasStripePayments уже объявлена выше)
     if (snapshot.proformas.length === 0 && hasStripePayments && snapshot.totals.expectedAmountPln <= 0) {
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
+        // ВАЖНО: Убеждаемся, что stripePaidPln есть в snapshot.totals
+        // Если его нет, пересчитываем из stripePayments
+        if (!snapshot.totals.stripePaidPln && snapshot.stripePayments && snapshot.stripePayments.length > 0) {
+          const stripeTotal = snapshot.stripePayments
+            .filter(p => p.payment_status === 'paid' || p.status === 'processed')
+            .reduce((sum, p) => sum + (parseFloat(p.amount_pln) || 0), 0);
+          snapshot.totals.stripePaidPln = stripeTotal;
+          this.logger.info('Recalculated stripePaidPln from stripePayments array', {
+            dealId: normalizedDealId,
+            stripePaidPln: snapshot.totals.stripePaidPln,
+            stripePaymentsCount: snapshot.stripePayments.length
+          });
+        }
+        
         // Конвертируем в PLN если нужно
-        const expectedAmountPln = dealCurrency === 'PLN' 
-          ? dealValue 
-          : await convertToPln(dealValue, dealCurrency);
+        let expectedAmountPln = dealValue;
+        if (dealCurrency !== 'PLN') {
+          try {
+            if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
+              const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
+              expectedAmountPln = amountPln;
+            } else {
+              // Fallback на старый способ если stripeProcessor недоступен
+              const { getRate } = require('../stripe/exchangeRateService');
+              const rate = await getRate(dealCurrency, 'PLN');
+              expectedAmountPln = dealValue * rate;
+            }
+          } catch (error) {
+            this.logger.warn('Failed to get exchange rate for deal value conversion', {
+              dealId: normalizedDealId,
+              dealCurrency,
+              error: error.message
+            });
+            // Fallback: используем сумму из Stripe платежей в PLN
+            expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+          }
+        }
         snapshot.totals.expectedAmountPln = expectedAmountPln;
+        // Пересчитываем totalPaidPln после установки expectedAmountPln
+        snapshot.totals.totalPaidPln = (snapshot.totals.bankPaidPln || 0) + (snapshot.totals.cashPaidPln || 0) + (snapshot.totals.stripePaidPln || 0);
         this.logger.info('Using deal value as expected amount for Stripe-only payment', {
           dealId: normalizedDealId,
           dealValue,
           dealCurrency,
           expectedAmountPln,
           stripePaymentsCount: snapshot.paymentsCount.stripe,
+          stripePaidPln: snapshot.totals.stripePaidPln,
           totalPaidPln: snapshot.totals.totalPaidPln,
           hasStripePayments,
           hasPayments
@@ -554,18 +598,53 @@ class CrmStatusAutomationService {
     // Проверяем по paymentsCount.stripe ИЛИ по массиву stripePayments
     const hasStripePaymentsFallback = snapshot.paymentsCount.stripe > 0 || (snapshot.stripePayments && snapshot.stripePayments.length > 0);
     if (snapshot.totals.expectedAmountPln <= 0 && hasStripePaymentsFallback && dealResult.deal.value) {
+      // ВАЖНО: Убеждаемся, что stripePaidPln есть в snapshot.totals
+      if (!snapshot.totals.stripePaidPln && snapshot.stripePayments && snapshot.stripePayments.length > 0) {
+        const stripeTotal = snapshot.stripePayments
+          .filter(p => p.payment_status === 'paid' || p.status === 'processed')
+          .reduce((sum, p) => sum + (parseFloat(p.amount_pln) || 0), 0);
+        snapshot.totals.stripePaidPln = stripeTotal;
+        this.logger.info('Fallback: Recalculated stripePaidPln from stripePayments array', {
+          dealId: normalizedDealId,
+          stripePaidPln: snapshot.totals.stripePaidPln
+        });
+      }
+      
       const dealValue = parseFloat(dealResult.deal.value || 0);
       const dealCurrency = dealResult.deal.currency || 'PLN';
       if (dealValue > 0) {
-        const expectedAmountPln = dealCurrency === 'PLN' 
-          ? dealValue 
-          : await convertToPln(dealValue, dealCurrency);
+        let expectedAmountPln = dealValue;
+        if (dealCurrency !== 'PLN') {
+          try {
+            if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
+              const { amountPln } = await this.stripeProcessor.convertAmountWithRate(dealValue, dealCurrency);
+              expectedAmountPln = amountPln;
+            } else {
+              // Fallback на старый способ если stripeProcessor недоступен
+              const { getRate } = require('../stripe/exchangeRateService');
+              const rate = await getRate(dealCurrency, 'PLN');
+              expectedAmountPln = dealValue * rate;
+            }
+          } catch (error) {
+            this.logger.warn('Failed to get exchange rate for fallback conversion', {
+              dealId: normalizedDealId,
+              dealCurrency,
+              error: error.message
+            });
+            // Fallback: используем сумму из Stripe платежей в PLN
+            expectedAmountPln = snapshot.totals.stripePaidPln || 0;
+          }
+        }
         snapshot.totals.expectedAmountPln = expectedAmountPln;
+        // Пересчитываем totalPaidPln после установки expectedAmountPln
+        snapshot.totals.totalPaidPln = (snapshot.totals.bankPaidPln || 0) + (snapshot.totals.cashPaidPln || 0) + (snapshot.totals.stripePaidPln || 0);
         this.logger.info('Fallback: Setting expectedAmountPln from deal value before evaluation', {
           dealId: normalizedDealId,
           dealValue,
           dealCurrency,
           expectedAmountPln,
+          stripePaidPln: snapshot.totals.stripePaidPln,
+          totalPaidPln: snapshot.totals.totalPaidPln,
           stripePaymentsCount: snapshot.paymentsCount.stripe
         });
       }
@@ -573,19 +652,126 @@ class CrmStatusAutomationService {
 
     let evaluation;
     try {
+      // ВАЖНО: Убеждаемся, что stripePaidPln есть в snapshot.totals перед пересчетом totalPaidPln
+      if (!snapshot.totals.stripePaidPln && snapshot.stripePayments && snapshot.stripePayments.length > 0) {
+        const stripeTotal = snapshot.stripePayments
+          .filter(p => p.payment_status === 'paid' || p.status === 'processed')
+          .reduce((sum, p) => sum + (parseFloat(p.amount_pln) || 0), 0);
+        snapshot.totals.stripePaidPln = stripeTotal;
+        this.logger.info('Final check: Recalculated stripePaidPln before evaluation', {
+          dealId: normalizedDealId,
+          stripePaidPln: snapshot.totals.stripePaidPln
+        });
+      }
+      
+      // ВАЖНО: Убеждаемся, что totalPaidPln пересчитан перед вызовом evaluatePaymentStatus
+      snapshot.totals.totalPaidPln = (snapshot.totals.bankPaidPln || 0) + (snapshot.totals.cashPaidPln || 0) + (snapshot.totals.stripePaidPln || 0);
+      
+      // ВАЖНО: Сравниваем суммы в валюте сделки, а не в PLN!
+      // PLN нужен только для отчетов
+      const dealCurrency = dealResult.deal.currency || 'PLN';
+      const dealValue = parseFloat(dealResult.deal.value || 0);
+      
+      // Вычисляем суммы в валюте сделки
+      // Для expectedAmount всегда используем сумму сделки напрямую (в валюте сделки)
+      let expectedAmount = dealValue > 0 ? dealValue : (snapshot.totals.expectedAmountPln || 0);
+      
+      // Для paidAmount суммируем original_amount из stripePayments в валюте сделки
+      // ВАЖНО: Если платеж в другой валюте, конвертируем его в валюту сделки через PLN
+      let paidAmount = 0;
+      
+      if (snapshot.stripePayments && snapshot.stripePayments.length > 0) {
+        const paidPayments = snapshot.stripePayments.filter(
+          p => p.payment_status === 'paid' || p.status === 'processed'
+        );
+        
+        // Суммируем все оплаченные платежи, конвертируя в валюту сделки если нужно
+        for (const payment of paidPayments) {
+          const paymentAmount = parseFloat(payment.original_amount) || 0;
+          const paymentCurrency = payment.currency || dealCurrency;
+          
+          if (paymentCurrency === dealCurrency) {
+            // Платеж в валюте сделки - используем напрямую
+            paidAmount += paymentAmount;
+          } else {
+            // Платеж в другой валюте - конвертируем в валюту сделки через PLN
+            if (this.stripeProcessor && this.stripeProcessor.convertAmountWithRate) {
+              try {
+                // Шаг 1: Конвертируем из валюты платежа в PLN
+                const toPlnConversion = await this.stripeProcessor.convertAmountWithRate(paymentAmount, paymentCurrency);
+                const plnAmount = toPlnConversion.amountPln;
+                
+                // Шаг 2: Конвертируем из PLN в валюту сделки
+                if (dealCurrency === 'PLN') {
+                  paidAmount += plnAmount;
+                } else {
+                  // Конвертируем 1 единицу валюты сделки в PLN, чтобы получить курс
+                  const dealToPlnConversion = await this.stripeProcessor.convertAmountWithRate(1, dealCurrency);
+                  const dealToPlnRate = dealToPlnConversion.amountPln; // Сколько PLN в 1 единице валюты сделки
+                  
+                  // Конвертируем PLN обратно в валюту сделки
+                  const amountInDealCurrency = plnAmount / dealToPlnRate;
+                  paidAmount += amountInDealCurrency;
+                }
+              } catch (error) {
+                this.logger.warn('Failed to convert payment amount to deal currency', {
+                  dealId: normalizedDealId,
+                  dealCurrency,
+                  paymentCurrency,
+                  paymentAmount,
+                  error: error.message
+                });
+                // Fallback: используем original_amount (может быть неточным, но лучше чем ничего)
+                paidAmount += paymentAmount;
+              }
+            } else {
+              // Fallback: если нет stripeProcessor, используем original_amount
+              this.logger.warn('No stripeProcessor available for currency conversion', {
+                dealId: normalizedDealId,
+                dealCurrency,
+                paymentCurrency
+              });
+              paidAmount += paymentAmount;
+            }
+          }
+        }
+      }
+      
+      // Если нет Stripe платежей в валюте сделки, но есть в PLN (для PLN сделок)
+      // или если валюта PLN и нет original_amount, используем amount_pln
+      if (paidAmount === 0 && dealCurrency === 'PLN' && snapshot.totals.totalPaidPln > 0) {
+        paidAmount = snapshot.totals.totalPaidPln;
+      }
+      
+      // Если expectedAmount все еще 0, используем из snapshot (для обратной совместимости)
+      if (expectedAmount === 0 && snapshot.totals.expectedAmountPln > 0) {
+        expectedAmount = snapshot.totals.expectedAmountPln;
+      }
+      
       this.logger.info('Calling evaluatePaymentStatus', {
         dealId: normalizedDealId,
+        dealCurrency,
+        expectedAmount,
+        paidAmount,
         expectedAmountPln: snapshot.totals.expectedAmountPln,
         paidAmountPln: snapshot.totals.totalPaidPln,
+        stripePaidPln: snapshot.totals.stripePaidPln,
+        bankPaidPln: snapshot.totals.bankPaidPln,
+        cashPaidPln: snapshot.totals.cashPaidPln,
         scheduleType: snapshot.scheduleType,
-        manualPaymentsCount: snapshot.paymentsCount.total
+        manualPaymentsCount: snapshot.paymentsCount.total,
+        paymentsCountStripe: snapshot.paymentsCount.stripe
       });
       
       evaluation = evaluatePaymentStatus({
-        expectedAmountPln: snapshot.totals.expectedAmountPln,
-        paidAmountPln: snapshot.totals.totalPaidPln,
+        expectedAmount,
+        paidAmount,
         scheduleType: snapshot.scheduleType,
-        manualPaymentsCount: snapshot.paymentsCount.total
+        manualPaymentsCount: snapshot.paymentsCount.total,
+        pipelineId: pipelineId,
+        pipelineName: pipelineName,
+        expectedAmountPln: snapshot.totals.expectedAmountPln,
+        paidAmountPln: snapshot.totals.totalPaidPln
       });
     } catch (error) {
       this.logger.error('Failed to evaluate payment status', {

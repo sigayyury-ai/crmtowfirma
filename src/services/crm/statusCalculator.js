@@ -135,35 +135,46 @@ function determineStage({ scheduleType, paidRatio, manualPaymentsCount = 0, pipe
 
 /**
  * Evaluate payment status for CRM automation.
+ * ВАЖНО: Сравниваем суммы в валюте сделки, а не в PLN!
  * @param {object} payload
- * @param {number} payload.expectedAmountPln - total amount to collect (converted to PLN)
- * @param {number} payload.paidAmountPln - total confirmed amount (PLN)
+ * @param {number} payload.expectedAmount - total amount to collect (в валюте сделки)
+ * @param {number} payload.paidAmount - total confirmed amount (в валюте сделки)
  * @param {string} [payload.scheduleType='100%']
  * @param {number} [payload.manualPaymentsCount=0]
+ * @param {number} [payload.expectedAmountPln] - для отчетов (опционально)
+ * @param {number} [payload.paidAmountPln] - для отчетов (опционально)
  * @returns {{
  *   scheduleType: string,
- *   paidAmountPln: number,
- *   expectedAmountPln: number,
+ *   paidAmount: number,
+ *   expectedAmount: number,
  *   paidRatio: number,
  *   targetStageId: number,
  *   targetStageName: string,
- *   reason: string
+ *   reason: string,
+ *   paidAmountPln: number,
+ *   expectedAmountPln: number
  * }}
  */
 function evaluatePaymentStatus({
-  expectedAmountPln,
-  paidAmountPln,
+  expectedAmount,
+  paidAmount,
   scheduleType = DEFAULT_PROFILE.key,
   manualPaymentsCount = 0,
   pipelineId = null,
-  pipelineName = null
+  pipelineName = null,
+  expectedAmountPln = null,
+  paidAmountPln = null
 }) {
-  if (!Number.isFinite(expectedAmountPln) || expectedAmountPln <= 0) {
-    throw new Error('evaluatePaymentStatus requires a positive expectedAmountPln');
+  // Поддержка старого формата для обратной совместимости
+  const expected = expectedAmount !== undefined ? expectedAmount : expectedAmountPln;
+  const paid = paidAmount !== undefined ? paidAmount : paidAmountPln;
+  
+  if (!Number.isFinite(expected) || expected <= 0) {
+    throw new Error('evaluatePaymentStatus requires a positive expectedAmount');
   }
 
   const normalizedSchedule = normalizeSchedule(scheduleType);
-  const paidRatio = calculatePaidRatio(paidAmountPln || 0, expectedAmountPln);
+  const paidRatio = calculatePaidRatio(paid || 0, expected);
   const stage = determineStage({
     scheduleType: normalizedSchedule,
     paidRatio,
@@ -174,14 +185,17 @@ function evaluatePaymentStatus({
 
   return {
     scheduleType: normalizedSchedule,
-    paidAmountPln: Number.isFinite(paidAmountPln) ? paidAmountPln : 0,
-    expectedAmountPln,
+    paidAmount: Number.isFinite(paid) ? paid : 0,
+    expectedAmount: expected,
     paidRatio,
     targetStageId: stage.stageId,
     targetStageName: stage.stageName,
     reason: stage.reason,
     paymentsExpected: (SCHEDULE_PROFILES[normalizedSchedule] || DEFAULT_PROFILE).paymentsExpected,
-    manualPaymentsCount
+    manualPaymentsCount,
+    // Для обратной совместимости и отчетов
+    paidAmountPln: Number.isFinite(paidAmountPln) ? paidAmountPln : (Number.isFinite(paid) ? paid : 0),
+    expectedAmountPln: Number.isFinite(expectedAmountPln) ? expectedAmountPln : expected
   };
 }
 

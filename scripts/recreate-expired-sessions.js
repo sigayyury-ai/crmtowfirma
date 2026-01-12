@@ -106,19 +106,72 @@ async function recreateExpiredSessions() {
         }
 
         // Проверяем, нет ли уже активной сессии для этого deal
+        // ВАЖНО: Проверяем как в БД, так и напрямую в Stripe API
         const existingPayments = await repository.listPayments({
           dealId: String(dealId),
           limit: 10
         });
 
-        const hasActiveSession = existingPayments.some(p => {
-          if (!p.session_id) return false;
-          // Проверяем статус сессии в Stripe
-          return p.status === 'complete' || p.status === 'open';
-        });
+        // Проверяем активные сессии в Stripe API напрямую
+        // ВАЖНО: Не используем status: 'open' фильтр, так как он может быть медленным
+        // Вместо этого проверяем все сессии для этого deal и фильтруем по статусу
+        let hasActiveSessionInStripe = false;
+        try {
+          // Получаем все сессии за последние 7 дней (включая истекшие)
+          // Это быстрее, чем фильтр по status: 'open'
+          const allSessions = await stripe.checkout.sessions.list({
+            limit: 100,
+            created: {
+              gte: sevenDaysAgo
+            }
+          });
+          
+          // Фильтруем по deal_id и проверяем статус
+          hasActiveSessionInStripe = allSessions.data.some(s => {
+            const sessionDealId = s.metadata?.deal_id || s.metadata?.dealId;
+            return String(sessionDealId) === String(dealId) && s.status === 'open';
+          });
+        } catch (error) {
+          logger.warn('Failed to check active sessions in Stripe', { dealId, error: error.message });
+        }
 
-        if (hasActiveSession) {
-          logger.info('Deal already has active session, skipping', { dealId, sessionId: session.id });
+        // Проверяем статус в БД (но только для реально активных сессий)
+        // Используем Promise.all для проверки всех сессий в БД
+        let hasActiveSessionInDb = false;
+        if (existingPayments.length > 0) {
+          const sessionChecks = await Promise.all(
+            existingPayments.map(async (p) => {
+              if (!p.session_id) return false;
+              
+              // Если статус 'complete', сессия точно оплачена - пропускаем
+              if (p.status === 'complete') return true;
+              
+              // Если статус 'open', проверяем реальный статус в Stripe
+              if (p.status === 'open') {
+                try {
+                  const stripeSession = await stripe.checkout.sessions.retrieve(p.session_id);
+                  // Если сессия реально открыта (не истекла), значит есть активная сессия
+                  return stripeSession.status === 'open';
+                } catch (error) {
+                  // Если сессия не найдена или ошибка, считаем что активной нет
+                  return false;
+                }
+              }
+              
+              return false;
+            })
+          );
+          
+          hasActiveSessionInDb = sessionChecks.some(r => r === true);
+        }
+
+        if (hasActiveSessionInStripe || hasActiveSessionInDb) {
+          logger.info('Deal already has active session, skipping', { 
+            dealId, 
+            sessionId: session.id,
+            hasActiveSessionInStripe,
+            hasActiveSessionInDb
+          });
           continue;
         }
 
