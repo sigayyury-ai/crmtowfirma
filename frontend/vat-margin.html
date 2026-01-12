@@ -167,6 +167,7 @@
                 <div class="payments-subnav">
                     <button class="subtab-button active" data-payments-tab="incoming">Входящие</button>
                     <button class="subtab-button" data-payments-tab="outgoing">Исходящие</button>
+                    <button class="subtab-button" data-payments-tab="receipts">🧾 Чеки</button>
                     <button class="subtab-button" data-payments-tab="diagnostics">🔍 Диагностика</button>
                     <button class="subtab-button" data-payments-tab="facebook-ads">📱 Facebook Ads</button>
                 </div>
@@ -256,6 +257,21 @@
                             <div class="placeholder">Загрузка неразмеченных кампаний...</div>
                         </div>
                     </section>
+                </section>
+                <section class="payments-section payments-subtab-content" id="payments-receipts">
+                    <div class="section-header">
+                        <h2>🧾 Чеки</h2>
+                        <div class="controls">
+                            <label class="upload-btn">
+                                <input type="file" id="receipt-upload-input" accept=".heic,.heif,.jpg,.jpeg,.pdf,image/heic,image/heif,image/jpeg,application/pdf" capture="environment" hidden>
+                                📤 Загрузить документ
+                            </label>
+                            <button id="receipts-refresh" class="btn btn-secondary">🔄 Обновить</button>
+                        </div>
+                    </div>
+                    <div id="receipts-container" class="receipts-container">
+                        <div class="placeholder">Нажмите "Загрузить документ" чтобы загрузить чек или инвойс</div>
+                    </div>
                 </section>
             </div>
             <div class="tab-content" id="tab-cash-journal">

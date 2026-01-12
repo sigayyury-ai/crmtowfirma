@@ -89,6 +89,7 @@ const FacebookAdsMappingService = require('../services/facebookAds/facebookAdsMa
 const facebookAdsMappingService = new FacebookAdsMappingService();
 const FacebookAdsImportService = require('../services/facebookAds/facebookAdsImportService');
 const facebookAdsImportService = new FacebookAdsImportService();
+const receiptService = require('../services/receipts/receiptService');
 
 const ENABLE_CASH_STAGE_AUTOMATION = String(process.env.ENABLE_CASH_STAGE_AUTOMATION || 'true').toLowerCase() === 'true';
 const CASH_STAGE_SECOND_PAYMENT_ID = Number(process.env.CASH_STAGE_SECOND_PAYMENT_ID || 32);
@@ -6085,6 +6086,333 @@ router.get('/facebook-ads/import-batches', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Не удалось получить историю импортов'
+    });
+  }
+});
+
+/**
+ * POST /api/receipts/upload
+ * Upload receipt document (HEIC/JPG/PDF)
+ */
+router.post('/receipts/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'Файл не загружен'
+      });
+    }
+
+    const fileBuffer = req.file.buffer;
+    const originalFilename = req.file.originalname;
+    const mimeType = req.file.mimetype;
+    const uploadedBy = req.user?.email || req.user?.id || null;
+
+    // Validate file type
+    const allowedTypes = [
+      'image/jpeg',
+      'image/jpg',
+      'image/heic',
+      'image/heif',
+      'application/pdf'
+    ];
+
+    if (!allowedTypes.includes(mimeType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Неподдерживаемый тип файла: ${mimeType}. Поддерживаются: HEIC, JPG, PDF`
+      });
+    }
+
+    // Validate file size (max 10MB)
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (fileBuffer.length > maxSize) {
+      return res.status(400).json({
+        success: false,
+        error: `Файл слишком большой: ${(fileBuffer.length / 1024 / 1024).toFixed(2)}MB. Максимум: 10MB`
+      });
+    }
+
+    logger.info('Receipt upload started', {
+      filename: originalFilename,
+      mimeType,
+      size: fileBuffer.length,
+      uploadedBy
+    });
+
+    // Upload receipt (processing starts async)
+    const result = await receiptService.uploadReceipt(
+      fileBuffer,
+      originalFilename,
+      mimeType,
+      uploadedBy
+    );
+
+    // Return 202 Accepted for mobile-friendly async processing
+    res.status(202).json({
+      success: true,
+      data: {
+        receiptId: result.receiptId,
+        status: result.status
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error uploading receipt', {
+      error: error.message,
+      stack: error.stack,
+      filename: req.file?.originalname
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось загрузить документ'
+    });
+  }
+});
+
+/**
+ * GET /api/receipts/:id
+ * Get receipt details with extraction and candidates
+ */
+router.get('/receipts/:id', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+
+    const details = await receiptService.getReceiptDetails(receiptId);
+
+    res.json({
+      success: true,
+      data: details
+    });
+
+  } catch (error) {
+    logger.error('Error getting receipt details', {
+      error: error.message,
+      receiptId: req.params.id
+    });
+    res.status(404).json({
+      success: false,
+      error: error.message || 'Чек не найден'
+    });
+  }
+});
+
+/**
+ * POST /api/receipts/:id/link-payment
+ * Link receipt to payment
+ */
+router.post('/receipts/:id/link-payment', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+    const { paymentId } = req.body;
+
+    if (!paymentId) {
+      return res.status(400).json({
+        success: false,
+        error: 'paymentId обязателен'
+      });
+    }
+
+    const linkedBy = req.user?.email || req.user?.id || null;
+
+    const link = await receiptService.linkPayment(receiptId, parseInt(paymentId, 10), linkedBy);
+
+    res.json({
+      success: true,
+      data: link
+    });
+
+  } catch (error) {
+    logger.error('Error linking receipt to payment', {
+      error: error.message,
+      receiptId: req.params.id
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось привязать чек к платежу'
+    });
+  }
+});
+
+/**
+ * DELETE /api/receipts/:id/link-payment
+ * Unlink receipt from payment
+ */
+router.delete('/receipts/:id/link-payment', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+
+    await receiptService.unlinkPayment(receiptId);
+
+    res.json({
+      success: true
+    });
+
+  } catch (error) {
+    logger.error('Error unlinking receipt', {
+      error: error.message,
+      receiptId: req.params.id
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось отвязать чек'
+    });
+  }
+});
+
+/**
+ * POST /api/receipts/:id/re-search
+ * Re-search candidates for a receipt (useful when payments are added later)
+ */
+router.post('/receipts/:id/re-search', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+
+    const candidates = await receiptService.reSearchCandidates(receiptId);
+
+    res.json({
+      success: true,
+      data: { candidates }
+    });
+
+  } catch (error) {
+    logger.error('Error re-searching candidates', {
+      error: error.message,
+      receiptId: req.params.id
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось выполнить повторный поиск кандидатов'
+    });
+  }
+});
+
+/**
+ * GET /api/receipts
+ * List all receipts
+ */
+router.get('/receipts', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const status = req.query.status || null;
+
+    const receipts = await receiptService.listReceipts({ limit, offset, status });
+
+    res.json({
+      success: true,
+      data: receipts
+    });
+
+  } catch (error) {
+    logger.error('Error listing receipts', {
+      error: error.message
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить список чеков'
+    });
+  }
+});
+
+/**
+ * GET /api/receipts/:id/file
+ * Get signed URL for receipt file (preview)
+ */
+router.get('/receipts/:id/file', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+    const fileUrl = await receiptService.getReceiptFileUrl(receiptId);
+
+    if (!fileUrl) {
+      return res.status(404).json({
+        success: false,
+        error: 'Файл чека не найден'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { fileUrl }
+    });
+
+  } catch (error) {
+    logger.error('Error getting receipt file URL', {
+      error: error.message,
+      receiptId: req.params.id
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось получить файл чека'
+    });
+  }
+});
+
+/**
+ * GET /api/payments/search
+ * Search payments by description, amount, date (for manual matching)
+ */
+router.get('/payments/search', async (req, res) => {
+  try {
+    const { description, amount, date, currency, limit = 20 } = req.query;
+
+    if (!supabase) {
+      return res.status(503).json({
+        success: false,
+        error: 'Supabase недоступен'
+      });
+    }
+
+    let query = supabase
+      .from('payments')
+      .select('id, operation_date, amount, currency, description, payer_name, direction')
+      .is('deleted_at', null)
+      .order('operation_date', { ascending: false })
+      .limit(parseInt(limit, 10));
+
+    // Filter by description (case-insensitive partial match)
+    if (description) {
+      query = query.ilike('description', `%${description}%`);
+    }
+
+    // Filter by amount (with tolerance ±1)
+    if (amount) {
+      const amountNum = parseFloat(amount);
+      if (!isNaN(amountNum)) {
+        query = query
+          .gte('amount', amountNum - 1)
+          .lte('amount', amountNum + 1);
+      }
+    }
+
+    // Filter by date (exact match or range)
+    if (date) {
+      query = query.eq('operation_date', date);
+    }
+
+    // Filter by currency
+    if (currency) {
+      query = query.eq('currency', currency);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({
+      success: true,
+      data: data || []
+    });
+
+  } catch (error) {
+    logger.error('Error searching payments', {
+      error: error.message
+    });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Не удалось выполнить поиск платежей'
     });
   }
 });

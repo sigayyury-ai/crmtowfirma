@@ -145,8 +145,12 @@ function cacheDom() {
     paymentsSubtabButtons: Array.from(document.querySelectorAll('[data-payments-tab]')),
     paymentsIncomingSection: document.getElementById('payments-incoming'),
     paymentsOutgoingSection: document.getElementById('payments-outgoing'),
+    paymentsReceiptsSection: document.getElementById('payments-receipts'),
     paymentsDiagnosticsSection: document.getElementById('payments-diagnostics'),
     paymentsFacebookAdsSection: document.getElementById('payments-facebook-ads'),
+    receiptUploadInput: document.getElementById('receipt-upload-input'),
+    receiptsContainer: document.getElementById('receipts-container'),
+    receiptsRefresh: document.getElementById('receipts-refresh'),
     diagnosticsDealId: document.getElementById('diagnostics-deal-id'),
     diagnosticsLoadBtn: document.getElementById('diagnostics-load-btn'),
     diagnosticsClearBtn: document.getElementById('diagnostics-clear-btn'),
@@ -221,6 +225,10 @@ function bindEvents() {
   });
   initPaymentsSubtabs();
   
+  // Receipts
+  elements.receiptUploadInput?.addEventListener('change', handleReceiptUpload);
+  elements.receiptsRefresh?.addEventListener('click', () => loadReceipts());
+  
   // Диагностика сделок
   elements.diagnosticsLoadBtn?.addEventListener('click', loadDealDiagnostics);
   elements.diagnosticsClearBtn?.addEventListener('click', clearDealDiagnostics);
@@ -244,11 +252,17 @@ function bindEvents() {
 }
 
 function initTabs() {
-  const initialTab = getInitialTabFromPath(window.location.pathname) || 'report2';
+  const pathname = window.location.pathname;
+  console.log('initTabs: Initializing tabs', { pathname });
+  
+  const initialTab = getInitialTabFromPath(pathname) || 'report2';
+  console.log('initTabs: Initial tab determined', { initialTab, pathname });
+  
   switchTab(initialTab, { suppressPathUpdate: true });
 
   if (initialTab === 'payments') {
-    const initialPaymentsSubtab = getInitialPaymentsSubtabFromPath(window.location.pathname) || 'incoming';
+    const initialPaymentsSubtab = getInitialPaymentsSubtabFromPath(pathname) || 'incoming';
+    console.log('initTabs: Initial payments subtab determined', { initialPaymentsSubtab, pathname });
     togglePaymentsSubtab(initialPaymentsSubtab, {
       suppressDataLoad: false,
       suppressPathUpdate: true
@@ -345,6 +359,7 @@ function togglePaymentsSubtab(subtab, options = {}) {
   const sections = {
     incoming: elements.paymentsIncomingSection,
     outgoing: elements.paymentsOutgoingSection,
+    receipts: elements.paymentsReceiptsSection,
     diagnostics: elements.paymentsDiagnosticsSection,
     'facebook-ads': elements.paymentsFacebookAdsSection
   };
@@ -382,10 +397,19 @@ function togglePaymentsSubtab(subtab, options = {}) {
     }
   }
 
+  if (
+    !suppressDataLoad &&
+    activeTab === 'payments' &&
+    activePaymentsSubtab === 'receipts'
+  ) {
+    loadReceipts();
+  }
+
   if (!suppressPathUpdate && activeTab === 'payments') {
     const targetPath =
       activePaymentsSubtab === 'incoming' ? '/vat-margin/payments' : 
       activePaymentsSubtab === 'outgoing' ? '/vat-margin/expenses' :
+      activePaymentsSubtab === 'receipts' ? '/vat-margin/receipts' :
       activePaymentsSubtab === 'facebook-ads' ? '/vat-margin/facebook-ads' :
       '/vat-margin/diagnostics';
     if (window.location.pathname !== targetPath) {
@@ -3950,3 +3974,773 @@ function escapeHtml(text) {
   div.textContent = text;
   return div.innerHTML;
 }
+
+// ==================== Receipts Management ====================
+
+let receiptsState = {
+  items: [],
+  pollingIntervals: new Map()
+};
+
+// Batch upload state
+const batchUploadState = {
+  queue: [],
+  processing: [],
+  completed: [],
+  failed: [],
+  isProcessing: false
+};
+
+async function handleReceiptUpload(event) {
+  const files = Array.from(event.target.files || []);
+  if (files.length === 0) return;
+
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/heic', 'image/heif', 'application/pdf'];
+  const maxSize = 10 * 1024 * 1024; // 10MB
+
+  // Validate all files
+  const validFiles = [];
+  const errors = [];
+
+  files.forEach((file, index) => {
+    if (!allowedTypes.includes(file.type)) {
+      errors.push(`${file.name}: неподдерживаемый тип файла`);
+      return;
+    }
+    if (file.size > maxSize) {
+      errors.push(`${file.name}: файл слишком большой (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+      return;
+    }
+    validFiles.push(file);
+  });
+
+  if (errors.length > 0) {
+    errors.forEach(error => addLog('error', error));
+  }
+
+  if (validFiles.length === 0) {
+    event.target.value = '';
+    return;
+  }
+
+  // Add files to batch queue
+  const batchItems = validFiles.map(file => ({
+    file,
+    id: `batch-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+    status: 'pending',
+    receiptId: null,
+    error: null
+  }));
+
+  batchUploadState.queue.push(...batchItems);
+  
+  addLog('info', `Добавлено ${validFiles.length} файл(ов) в очередь обработки`);
+
+  // Start batch processing
+  processBatchQueue();
+
+  // Reset input
+  event.target.value = '';
+}
+
+async function processBatchQueue() {
+  if (batchUploadState.isProcessing || batchUploadState.queue.length === 0) {
+    return;
+  }
+
+  batchUploadState.isProcessing = true;
+  updateBatchUploadUI();
+
+  // Process files in parallel (max 3 at a time to avoid overwhelming the server)
+  const maxConcurrent = 3;
+  const batch = batchUploadState.queue.splice(0, maxConcurrent);
+  
+  batch.forEach(item => {
+    item.status = 'uploading';
+    batchUploadState.processing.push(item);
+  });
+
+  updateBatchUploadUI();
+
+  // Process all files in batch concurrently
+  const uploadPromises = batch.map(item => uploadReceiptFile(item));
+
+  try {
+    await Promise.allSettled(uploadPromises);
+  } catch (error) {
+    console.error('Batch upload error:', error);
+  }
+
+  // Continue processing if there are more files
+  if (batchUploadState.queue.length > 0) {
+    // Wait a bit before processing next batch
+    setTimeout(() => {
+      batchUploadState.isProcessing = false;
+      processBatchQueue();
+    }, 500);
+  } else {
+    batchUploadState.isProcessing = false;
+  }
+
+  updateBatchUploadUI();
+  
+  // Reload receipts list after batch completes
+  if (batchUploadState.queue.length === 0 && batchUploadState.processing.length === 0) {
+    setTimeout(() => loadReceipts(), 1000);
+  }
+}
+
+async function uploadReceiptFile(batchItem) {
+  const { file, id } = batchItem;
+
+  try {
+    batchItem.status = 'uploading';
+    updateBatchUploadUI();
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const response = await fetch(`${API_BASE}/receipts/upload`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка загрузки');
+    }
+
+    const result = await response.json();
+    batchItem.receiptId = result.data.receiptId;
+    batchItem.status = 'processing';
+    
+    // Move to processing (background processing)
+    const index = batchUploadState.processing.findIndex(item => item.id === id);
+    if (index >= 0) {
+      batchUploadState.processing[index] = batchItem;
+    }
+
+    addLog('success', `✓ ${file.name} загружен. Обработка в фоне...`);
+
+    // Start background polling (non-blocking)
+    startReceiptPolling(batchItem.receiptId, batchItem);
+
+    // Mark as completed after a delay (processing continues in background)
+    setTimeout(() => {
+      const itemIndex = batchUploadState.processing.findIndex(item => item.id === id);
+      if (itemIndex >= 0) {
+        const item = batchUploadState.processing[itemIndex];
+        batchUploadState.processing.splice(itemIndex, 1);
+        batchUploadState.completed.push(item);
+        updateBatchUploadUI();
+      }
+    }, 2000);
+
+  } catch (error) {
+    console.error('Receipt upload error:', error);
+    batchItem.status = 'failed';
+    batchItem.error = error.message;
+
+    const index = batchUploadState.processing.findIndex(item => item.id === id);
+    if (index >= 0) {
+      batchUploadState.processing.splice(index, 1);
+      batchUploadState.failed.push(batchItem);
+    }
+
+    addLog('error', `✗ ${file.name}: ${error.message}`);
+    updateBatchUploadUI();
+  }
+}
+
+function updateBatchUploadUI() {
+  // Update batch upload status if UI element exists
+  const total = batchUploadState.queue.length + batchUploadState.processing.length + 
+                 batchUploadState.completed.length + batchUploadState.failed.length;
+  const processing = batchUploadState.processing.length;
+  const completed = batchUploadState.completed.length;
+  const failed = batchUploadState.failed.length;
+
+  if (total > 0 && elements.receiptsContainer) {
+    // Add or update batch status indicator
+    let statusEl = document.getElementById('batch-upload-status');
+    if (!statusEl) {
+      statusEl = document.createElement('div');
+      statusEl.id = 'batch-upload-status';
+      statusEl.className = 'batch-upload-status';
+      elements.receiptsContainer.parentElement?.insertBefore(statusEl, elements.receiptsContainer);
+    }
+
+    const queueCount = batchUploadState.queue.length;
+    const statusText = queueCount > 0 
+      ? `В очереди: ${queueCount} | Обработка: ${processing} | Готово: ${completed}${failed > 0 ? ` | Ошибок: ${failed}` : ''}`
+      : processing > 0
+        ? `Обработка: ${processing} | Готово: ${completed}${failed > 0 ? ` | Ошибок: ${failed}` : ''}`
+        : `Готово: ${completed}${failed > 0 ? ` | Ошибок: ${failed}` : ''}`;
+
+    statusEl.innerHTML = `
+      <div class="batch-status-header">
+        <span>📦 Пакетная обработка: ${statusText}</span>
+        ${total > 0 ? `<button class="btn btn-link btn-sm" onclick="clearBatchStatus()">Очистить</button>` : ''}
+      </div>
+    `;
+  }
+}
+
+function clearBatchStatus() {
+  batchUploadState.queue = [];
+  batchUploadState.processing = [];
+  batchUploadState.completed = [];
+  batchUploadState.failed = [];
+  const statusEl = document.getElementById('batch-upload-status');
+  if (statusEl) {
+    statusEl.remove();
+  }
+}
+
+// Make function available globally
+window.clearBatchStatus = clearBatchStatus;
+
+function startReceiptPolling(receiptId, batchItem = null) {
+  // Stop existing polling for this receipt
+  const existingInterval = receiptsState.pollingIntervals.get(receiptId);
+  if (existingInterval) {
+    clearInterval(existingInterval);
+  }
+
+  let pollCount = 0;
+  const maxPolls = 20; // 20 polls = ~40 seconds max
+  const pollInterval = 2000; // 2 seconds
+
+  const interval = setInterval(async () => {
+    pollCount++;
+    
+    try {
+      const response = await fetch(`${API_BASE}/receipts/${receiptId}`);
+      if (!response.ok) {
+        clearInterval(interval);
+        receiptsState.pollingIntervals.delete(receiptId);
+        if (batchItem) {
+          batchItem.status = 'failed';
+          batchItem.error = 'Не удалось получить статус';
+        }
+        return;
+      }
+
+      const result = await response.json();
+      const receipt = result.data.receipt;
+
+      // Update batch item status if provided
+      if (batchItem) {
+        if (receipt.status === 'matched') {
+          batchItem.status = 'completed';
+        } else if (receipt.status === 'failed') {
+          batchItem.status = 'failed';
+          batchItem.error = 'Обработка завершилась с ошибкой';
+        }
+      }
+
+      // Stop polling if processing is complete
+      if (receipt.status === 'matched' || receipt.status === 'failed') {
+        clearInterval(interval);
+        receiptsState.pollingIntervals.delete(receiptId);
+        await loadReceipts(); // Refresh list
+        return;
+      }
+
+      // Stop if max polls reached
+      if (pollCount >= maxPolls) {
+        clearInterval(interval);
+        receiptsState.pollingIntervals.delete(receiptId);
+        await loadReceipts(); // Refresh list
+      }
+
+    } catch (error) {
+      console.error('Receipt polling error:', error);
+      clearInterval(interval);
+      receiptsState.pollingIntervals.delete(receiptId);
+      if (batchItem) {
+        batchItem.status = 'failed';
+        batchItem.error = error.message;
+      }
+    }
+  }, pollInterval);
+
+  receiptsState.pollingIntervals.set(receiptId, interval);
+}
+
+async function loadReceipts() {
+  if (!elements.receiptsContainer) return;
+
+  try {
+    elements.receiptsContainer.innerHTML = '<div class="placeholder">Загрузка чеков...</div>';
+
+    const response = await fetch(`${API_BASE}/receipts?limit=100`);
+    if (!response.ok) {
+      throw new Error('Не удалось загрузить чеки');
+    }
+
+    const result = await response.json();
+    receiptsState.items = result.data || [];
+
+    renderReceipts();
+
+  } catch (error) {
+    console.error('Error loading receipts:', error);
+    elements.receiptsContainer.innerHTML = `<div class="placeholder error">Ошибка загрузки: ${error.message}</div>`;
+  }
+}
+
+async function renderReceipts() {
+  if (!elements.receiptsContainer) return;
+
+  if (!receiptsState.items || receiptsState.items.length === 0) {
+    elements.receiptsContainer.innerHTML = '<div class="placeholder">Нет загруженных чеков</div>';
+    return;
+  }
+
+  const html = receiptsState.items.map(receipt => {
+    const statusLabels = {
+      uploaded: 'Загружен',
+      processing: 'Обработка...',
+      matched: 'Привязан',
+      failed: 'Ошибка'
+    };
+
+    const statusClass = {
+      uploaded: 'status-uploaded',
+      processing: 'status-processing',
+      matched: 'status-matched',
+      failed: 'status-failed'
+    }[receipt.status] || '';
+
+    return `
+      <div class="receipt-card" data-receipt-id="${receipt.id}">
+        <div class="receipt-header">
+          <div class="receipt-info">
+            <h4>${escapeHtml(receipt.original_filename)}</h4>
+            <div class="receipt-meta">
+              <span class="receipt-date">${new Date(receipt.uploaded_at).toLocaleString('ru-RU')}</span>
+              <span class="receipt-size">${(receipt.size_bytes / 1024).toFixed(1)} KB</span>
+            </div>
+          </div>
+          <div class="receipt-status ${statusClass}">
+            ${statusLabels[receipt.status] || receipt.status}
+          </div>
+        </div>
+        <div class="receipt-content" data-receipt-content="${receipt.id}">
+          <div class="loading-indicator">Загрузка деталей...</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  elements.receiptsContainer.innerHTML = html;
+
+  // Load details for each receipt
+  receiptsState.items.forEach(receipt => {
+    loadReceiptDetails(receipt.id);
+  });
+}
+
+async function loadReceiptDetails(receiptId) {
+  const contentEl = document.querySelector(`[data-receipt-content="${receiptId}"]`);
+  if (!contentEl) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/receipts/${receiptId}`);
+    if (!response.ok) {
+      throw new Error('Не удалось загрузить детали');
+    }
+
+    const result = await response.json();
+    const { receipt, extraction, link, candidates } = result.data;
+
+    // Debug logging
+    console.log('Receipt details loaded:', {
+      receiptId,
+      hasExtraction: !!extraction,
+      extractionStatus: extraction?.status,
+      hasLink: !!link,
+      candidatesCount: candidates?.length || 0,
+      candidates: candidates
+    });
+
+    let html = '';
+
+    // Show extracted data
+    if (extraction && extraction.status === 'done' && extraction.extracted_json) {
+      const extracted = extraction.extracted_json;
+      html += `
+        <div class="receipt-extracted">
+          <h5>Извлеченные данные:</h5>
+          <div class="extracted-fields">
+            ${extracted.vendor ? `<div><strong>Вендор:</strong> ${escapeHtml(extracted.vendor)}</div>` : ''}
+            ${extracted.date ? `<div><strong>Дата:</strong> ${escapeHtml(extracted.date)}</div>` : ''}
+            ${extracted.amount ? `<div><strong>Сумма:</strong> ${extracted.amount} ${extracted.currency || ''}</div>` : ''}
+            ${extracted.confidence ? `<div><strong>Уверенность:</strong> ${extracted.confidence}%</div>` : ''}
+          </div>
+        </div>
+      `;
+    } else if (extraction && extraction.status === 'failed') {
+      html += `<div class="receipt-error">Ошибка извлечения: ${escapeHtml(extraction.error || 'Неизвестная ошибка')}</div>`;
+    } else if (extraction && extraction.status === 'processing') {
+      html += `<div class="receipt-processing">Обработка документа...</div>`;
+    }
+
+    // Show linked payment
+    if (link) {
+      html += `
+        <div class="receipt-linked">
+          <h5>Привязан к платежу:</h5>
+          <div class="linked-payment">
+            <span>Платеж #${link.payment_id}</span>
+            <button class="btn btn-link btn-sm" onclick="unlinkReceipt('${receiptId}')">Отвязать</button>
+          </div>
+        </div>
+      `;
+    }
+
+    // Show candidates ONLY if payment is NOT linked
+    if (!link && candidates && Array.isArray(candidates) && candidates.length > 0) {
+      html += `
+        <div class="receipt-candidates">
+          <h5>Кандидаты платежей (${candidates.length}):</h5>
+          <div class="candidates-list">
+            ${candidates.map(candidate => {
+              try {
+                const isLinked = link && link.payment_id === candidate.payment_id;
+                return `
+                  <div class="candidate-item ${isLinked ? 'candidate-linked' : ''}" onclick="${isLinked ? '' : `linkReceiptToPayment('${receiptId}', ${candidate.payment_id})`}" style="${isLinked ? 'opacity: 0.7; cursor: default;' : 'cursor: pointer;'}">
+                    ${isLinked ? '<div style="position: absolute; top: 8px; right: 8px; background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">✓ Привязан</div>' : ''}
+                    <div class="candidate-main">
+                      <div class="candidate-amount">${candidate.amount} ${candidate.currency || 'PLN'}</div>
+                      <div class="candidate-date">${new Date(candidate.operation_date).toLocaleDateString('ru-RU')}</div>
+                    </div>
+                    <div class="candidate-details">
+                      <div class="candidate-description">${escapeHtml(candidate.description || '')}</div>
+                      <div class="candidate-payer">${escapeHtml(candidate.payer_name || '')}</div>
+                    </div>
+                    <div class="candidate-score">
+                      <span class="score-badge">${candidate.score}%</span>
+                      <div class="score-reasons">${(candidate.reasons || []).join(', ')}</div>
+                    </div>
+                  </div>
+                `;
+              } catch (err) {
+                console.error('Error rendering candidate:', err, candidate);
+                return '';
+              }
+            }).filter(Boolean).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    // Show manual search only if no link and no candidates
+    if (!link && extraction && extraction.status === 'done') {
+      if (!candidates || candidates.length === 0) {
+        // Show manual search when no candidates found
+        const extracted = extraction.extracted_json || {};
+        html += `
+          <div class="receipt-no-candidates">
+            <div class="no-candidates-message">
+              Кандидаты не найдены автоматически
+              <br>
+              <small style="color: #64748b; margin-top: 8px; display: block;">
+                Если платежи еще не загружены в систему, используйте кнопку "Повторить поиск" после их загрузки
+              </small>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="reSearchReceiptCandidates('${receiptId}')" style="margin-top: 12px;">
+              🔄 Повторить поиск кандидатов
+            </button>
+            <div class="manual-search-section">
+              <h5>Ручной поиск платежа:</h5>
+              <div class="manual-search-form">
+                <div class="search-field">
+                  <label>Описание (название вендора):</label>
+                  <input type="text" id="manual-search-description-${receiptId}" 
+                         class="input-field" 
+                         placeholder="Введите название или описание платежа"
+                         value="${escapeHtml(extracted.vendor || '')}">
+                </div>
+                <div class="search-field">
+                  <label>Сумма:</label>
+                  <input type="number" step="0.01" id="manual-search-amount-${receiptId}" 
+                         class="input-field" 
+                         placeholder="Сумма"
+                         value="${extracted.amount || ''}">
+                </div>
+                <div class="search-field">
+                  <label>Дата:</label>
+                  <input type="date" id="manual-search-date-${receiptId}" 
+                         class="input-field" 
+                         value="${extracted.date || ''}">
+                </div>
+                <div class="search-field">
+                  <label>Валюта:</label>
+                  <select id="manual-search-currency-${receiptId}" class="input-field">
+                    <option value="">Все</option>
+                    <option value="PLN" ${extracted.currency === 'PLN' ? 'selected' : ''}>PLN</option>
+                    <option value="EUR" ${extracted.currency === 'EUR' ? 'selected' : ''}>EUR</option>
+                    <option value="USD" ${extracted.currency === 'USD' ? 'selected' : ''}>USD</option>
+                  </select>
+                </div>
+                <button class="btn btn-primary" onclick="searchPaymentsManually('${receiptId}')">
+                  🔍 Найти платежи
+                </button>
+              </div>
+              <div id="manual-search-results-${receiptId}" class="manual-search-results" style="display: none;"></div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    // Show receipt preview if available
+    if (receipt && receipt.storage_path) {
+      html += `
+        <div class="receipt-preview-section">
+          <h5>Превью чека:</h5>
+          <div class="receipt-preview-container">
+            <img id="receipt-preview-${receiptId}" 
+                 src="" 
+                 alt="Превью чека" 
+                 class="receipt-preview-image"
+                 style="max-width: 100%; max-height: 400px; border: 1px solid #e2e8f0; border-radius: 4px; cursor: pointer;"
+                 onclick="window.open(this.src, '_blank')"
+                 onerror="this.style.display='none'">
+            <div class="receipt-preview-loading">Загрузка превью...</div>
+          </div>
+        </div>
+      `;
+    }
+
+    contentEl.innerHTML = html;
+
+    // Load receipt preview
+    if (receipt && receipt.storage_path) {
+      loadReceiptPreview(receiptId);
+    }
+
+  } catch (error) {
+    console.error('Error loading receipt details:', error);
+    contentEl.innerHTML = `<div class="receipt-error">Ошибка загрузки: ${error.message}</div>`;
+  }
+}
+
+/**
+ * Load receipt preview image
+ * @param {string} receiptId - Receipt ID
+ */
+async function loadReceiptPreview(receiptId) {
+  try {
+    const imgElement = document.getElementById(`receipt-preview-${receiptId}`);
+    const loadingElement = imgElement?.parentElement?.querySelector('.receipt-preview-loading');
+    
+    if (!imgElement) {
+      console.warn('Receipt preview image element not found', { receiptId });
+      return;
+    }
+
+    // Show loading state
+    if (loadingElement) {
+      loadingElement.textContent = 'Загрузка превью...';
+      loadingElement.style.display = 'block';
+    }
+    imgElement.style.display = 'none';
+
+    // Fetch file URL from API
+    const response = await fetch(`${API_BASE}/receipts/${receiptId}/file`);
+    
+    if (!response.ok) {
+      let errorMessage = 'Не удалось загрузить превью';
+      try {
+        const error = await response.json();
+        errorMessage = error.error || error.message || errorMessage;
+      } catch (e) {
+        errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    const result = await response.json();
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Ошибка получения URL файла');
+    }
+
+    const fileUrl = result.data?.fileUrl;
+
+    if (!fileUrl) {
+      throw new Error('URL файла не получен от сервера');
+    }
+
+    // Set image source
+    imgElement.src = fileUrl;
+    
+    // Show image on successful load
+    imgElement.onload = () => {
+      imgElement.style.display = 'block';
+      if (loadingElement) {
+        loadingElement.style.display = 'none';
+      }
+    };
+
+    // Handle image load error
+    imgElement.onerror = () => {
+      console.error('Image load error', { receiptId, fileUrl });
+      imgElement.style.display = 'none';
+      if (loadingElement) {
+        loadingElement.textContent = 'Не удалось загрузить изображение. Возможно, файл поврежден или недоступен.';
+        loadingElement.style.display = 'block';
+      }
+    };
+
+    // Timeout fallback - if image doesn't load within 10 seconds, show error
+    setTimeout(() => {
+      if (imgElement.style.display === 'none' && loadingElement && loadingElement.textContent === 'Загрузка превью...') {
+        loadingElement.textContent = 'Таймаут загрузки. Попробуйте обновить страницу.';
+      }
+    }, 10000);
+
+  } catch (error) {
+    console.error('Error loading receipt preview:', error);
+    const imgElement = document.getElementById(`receipt-preview-${receiptId}`);
+    const loadingElement = imgElement?.parentElement?.querySelector('.receipt-preview-loading');
+    
+    if (imgElement) {
+      imgElement.style.display = 'none';
+    }
+    
+    if (loadingElement) {
+      const errorMsg = error.message || 'Неизвестная ошибка';
+      loadingElement.textContent = `Ошибка загрузки: ${errorMsg}`;
+      loadingElement.style.display = 'block';
+    }
+  }
+}
+
+async function linkReceiptToPayment(receiptId, paymentId) {
+  try {
+    const response = await fetch(`${API_BASE}/receipts/${receiptId}/link-payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentId })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка привязки');
+    }
+
+    addLog('success', `Чек привязан к платежу #${paymentId}`);
+    await loadReceipts();
+
+  } catch (error) {
+    console.error('Error linking receipt:', error);
+    addLog('error', `Не удалось привязать чек: ${error.message}`);
+  }
+}
+
+async function unlinkReceipt(receiptId) {
+  if (!confirm('Отвязать чек от платежа?')) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/receipts/${receiptId}/link-payment`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка отвязки');
+    }
+
+    addLog('success', 'Чек отвязан от платежа');
+    await loadReceipts();
+
+  } catch (error) {
+    console.error('Error unlinking receipt:', error);
+    addLog('error', `Не удалось отвязать чек: ${error.message}`);
+  }
+}
+
+/**
+ * Re-search candidates for a receipt
+ * @param {string} receiptId - Receipt ID
+ */
+async function reSearchReceiptCandidates(receiptId) {
+  try {
+    const contentEl = document.querySelector(`[data-receipt-content="${receiptId}"]`);
+    if (!contentEl) {
+      addLog('error', 'Элемент чека не найден');
+      return;
+    }
+
+    // Show loading state
+    const noCandidatesEl = contentEl.querySelector('.receipt-no-candidates');
+    if (noCandidatesEl) {
+      const messageEl = noCandidatesEl.querySelector('.no-candidates-message');
+      if (messageEl) {
+        messageEl.innerHTML = '🔄 Поиск кандидатов...';
+      }
+      const buttonEl = noCandidatesEl.querySelector('button');
+      if (buttonEl) {
+        buttonEl.disabled = true;
+        buttonEl.textContent = '🔄 Поиск...';
+      }
+    }
+
+    const response = await fetch(`${API_BASE}/receipts/${receiptId}/re-search`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Ошибка поиска');
+    }
+
+    const result = await response.json();
+    const candidates = result.data?.candidates || [];
+
+    if (candidates.length > 0) {
+      addLog('success', `Найдено кандидатов: ${candidates.length}`);
+    } else {
+      addLog('info', 'Кандидаты не найдены. Платежи могут быть еще не загружены.');
+    }
+
+    // Reload receipt details to show new candidates
+    await loadReceiptDetails(receiptId);
+
+  } catch (error) {
+    console.error('Error re-searching candidates:', error);
+    addLog('error', `Не удалось выполнить поиск: ${error.message}`);
+    
+    // Restore original message
+    const contentEl = document.querySelector(`[data-receipt-content="${receiptId}"]`);
+    if (contentEl) {
+      const noCandidatesEl = contentEl.querySelector('.receipt-no-candidates');
+      if (noCandidatesEl) {
+        const messageEl = noCandidatesEl.querySelector('.no-candidates-message');
+        if (messageEl) {
+          messageEl.innerHTML = `
+            Кандидаты не найдены автоматически
+            <br>
+            <small style="color: #64748b; margin-top: 8px; display: block;">
+              Если платежи еще не загружены в систему, используйте кнопку "Повторить поиск" после их загрузки
+            </small>
+          `;
+        }
+        const buttonEl = noCandidatesEl.querySelector('button');
+        if (buttonEl) {
+          buttonEl.disabled = false;
+          buttonEl.textContent = '🔄 Повторить поиск кандидатов';
+        }
+      }
+    }
+  }
+}
+
+// Make functions available globally for onclick handlers
+window.linkReceiptToPayment = linkReceiptToPayment;
+window.unlinkReceipt = unlinkReceipt;
+window.reSearchReceiptCandidates = reSearchReceiptCandidates;
