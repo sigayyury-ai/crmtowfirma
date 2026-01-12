@@ -27,12 +27,14 @@
 - `receipt_extractions`
 - `receipt_payment_links`
 - индексы (по `uploaded_at`, `payment_id`)
+ - добавить дедуп поля: `sha256`, `duplicate_of`
 
 ### BE-002: Upload endpoint
 - `POST /api/receipts/upload` (multipart)
 - Валидации: формат/размер
 - Сохранение файла (storage) + запись в БД
 - Mobile-friendly: быстрый ответ `202` + polling (не держать длинный запрос)
+ - Дедуп: если `sha256` уже существует → вернуть оригинал/создать дубль с `duplicate_of`
 
 ### BE-003: Extract + match (v1)
 - Извлечь сумму/валюту/дату/вендор (через AI/vision или fallback)

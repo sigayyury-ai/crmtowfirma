@@ -27,6 +27,8 @@
   - `original_filename` TEXT
   - `mime_type` TEXT
   - `size_bytes` BIGINT
+  - `sha256` TEXT (для дедупликации)
+  - `duplicate_of` UUID NULL (self-FK на `receipt_uploads.id`, если это дубль)
   - `uploaded_by` TEXT NULL
   - `uploaded_at` TIMESTAMPTZ DEFAULT now()
   - `status` TEXT (`uploaded` | `processing` | `matched` | `failed`)
@@ -71,6 +73,13 @@
 - path: `receipts/YYYY/MM/<receiptId>/<originalFilename>`
 
 Метаданные `storage_path` в `receipt_uploads` являются источником истины.
+
+### Duplicates strategy (v1)
+
+- Считать `sha256` файла на backend при загрузке.
+- Если найден существующий `receipt_uploads.sha256` без `deleted_at`:
+  - создать запись-дубль с `duplicate_of=<original>` (или не создавать новую запись, а вернуть ссылку на оригинал — выбрать в реализации),
+  - UI должен показать “уже загружено” и дать перейти к оригиналу.
 
 ## API Plan (new endpoints)
 
