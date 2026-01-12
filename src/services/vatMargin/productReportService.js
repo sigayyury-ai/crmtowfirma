@@ -1165,6 +1165,7 @@ class ProductReportService {
       return { incoming: [], outgoing: [] };
     }
 
+    // Load bank payment links
     const { data, error } = await supabase
       .from('payment_product_links')
       .select(`
@@ -1201,7 +1202,6 @@ class ProductReportService {
         productId,
         error: error.message
       });
-      return { incoming: [], outgoing: [] };
     }
 
     const mapped = (data || [])
@@ -1228,9 +1228,66 @@ class ProductReportService {
       })
       .filter((item) => Number.isFinite(item.amount));
 
+    // Load Facebook Ads expenses
+    const { data: facebookAdsData, error: facebookAdsError } = await supabase
+      .from('facebook_ads_expenses')
+      .select('*')
+      .eq('product_id', productId)
+      .order('report_start_date', { ascending: false });
+
+    if (facebookAdsError) {
+      logger.error('Failed to load Facebook Ads expenses for product', {
+        productId,
+        error: facebookAdsError.message
+      });
+    }
+
+    logger.info('Facebook Ads expenses loaded for product', {
+      productId,
+      count: facebookAdsData?.length || 0,
+      expenses: (facebookAdsData || []).map(e => ({
+        campaign_name: e.campaign_name,
+        amount_pln: e.amount_pln,
+        product_id: e.product_id
+      }))
+    });
+
+    const facebookAdsMapped = (facebookAdsData || [])
+      .map((expense) => ({
+        linkId: null,
+        paymentId: null,
+        direction: 'out',
+        amount: Number((toNumber(expense.amount_pln) || 0).toFixed(2)),
+        currency: (expense.currency || 'PLN').toUpperCase(),
+        description: `Facebook Ads: ${expense.campaign_name}`,
+        payerName: expense.campaign_name || null,
+        operationDate: expense.report_end_date || null,
+        manualStatus: null,
+        manualProforma: null,
+        source: 'facebook_ads',
+        linkedBy: null,
+        linkedAt: expense.created_at || null,
+        expenseCategoryId: null,
+        expenseCategoryName: 'Facebook Ads',
+        campaignName: expense.campaign_name,
+        reportStartDate: expense.report_start_date,
+        reportEndDate: expense.report_end_date,
+        isCampaignActive: expense.is_campaign_active
+      }))
+      .filter((item) => Number.isFinite(item.amount) && item.amount > 0);
+
+    logger.info('Facebook Ads expenses mapped for product', {
+      productId,
+      mappedCount: facebookAdsMapped.length,
+      totalAmount: facebookAdsMapped.reduce((sum, item) => sum + item.amount, 0)
+    });
+
+    // Combine bank payments and Facebook Ads expenses
+    const allPayments = [...mapped, ...facebookAdsMapped];
+
     return {
-      incoming: mapped.filter((item) => item.direction === 'in'),
-      outgoing: mapped.filter((item) => item.direction === 'out')
+      incoming: allPayments.filter((item) => item.direction === 'in'),
+      outgoing: allPayments.filter((item) => item.direction === 'out')
     };
   }
 

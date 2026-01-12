@@ -135,6 +135,11 @@ class PnlReportService {
     }
     
     return payments.filter((payment) => {
+      // Exclude Facebook Ads expenses - they are not real bank transactions
+      if (payment.source === 'facebook_ads') {
+        return false;
+      }
+      
       // Always include refunds (payments with income_category_id = "Возвраты")
       // Refunds are marked as unmatched but should still appear in PNL report
       if (refundsCategoryId !== null && payment.income_category_id === refundsCategoryId) {

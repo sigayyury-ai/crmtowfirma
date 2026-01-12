@@ -168,6 +168,7 @@
                     <button class="subtab-button active" data-payments-tab="incoming">Входящие</button>
                     <button class="subtab-button" data-payments-tab="outgoing">Исходящие</button>
                     <button class="subtab-button" data-payments-tab="diagnostics">🔍 Диагностика</button>
+                    <button class="subtab-button" data-payments-tab="facebook-ads">📱 Facebook Ads</button>
                 </div>
                 <section class="payments-section payments-subtab-content active" id="payments-incoming">
                     <div class="section-header">
@@ -215,6 +216,46 @@
                     <div id="diagnostics-content" class="diagnostics-content">
                         <div class="placeholder">Введите ID сделки и нажмите "Загрузить" для получения диагностической информации</div>
                     </div>
+                </section>
+                <section class="payments-section payments-subtab-content" id="payments-facebook-ads">
+                    <div class="section-header">
+                        <h2>📱 Facebook Ads - Расходы на рекламу</h2>
+                        <div class="controls">
+                            <label class="upload-btn">
+                                <input type="file" id="facebook-ads-csv-input" accept=".csv" hidden>
+                                📤 Импорт CSV
+                            </label>
+                            <button id="facebook-ads-refresh" class="btn btn-secondary">🔄 Обновить</button>
+                        </div>
+                    </div>
+                    
+                    <section class="facebook-ads-section">
+                        <div class="section-header">
+                            <h3>📋 История импортов</h3>
+                        </div>
+                        <div id="facebook-ads-import-history" class="table-wrapper">
+                            <div class="placeholder">Загрузка истории импортов...</div>
+                        </div>
+                    </section>
+
+                    <section class="facebook-ads-section">
+                        <div class="section-header">
+                            <h3>✅ Размеченные кампании</h3>
+                            <button id="facebook-ads-create-mapping" class="btn btn-primary">➕ Создать маппинг</button>
+                        </div>
+                        <div id="facebook-ads-mapped-table" class="table-wrapper">
+                            <div class="placeholder">Загрузка размеченных кампаний...</div>
+                        </div>
+                    </section>
+
+                    <section class="facebook-ads-section">
+                        <div class="section-header">
+                            <h3>⚠️ Неразмеченные кампании</h3>
+                        </div>
+                        <div id="facebook-ads-unmapped-table" class="table-wrapper">
+                            <div class="placeholder">Загрузка неразмеченных кампаний...</div>
+                        </div>
+                    </section>
                 </section>
             </div>
             <div class="tab-content" id="tab-cash-journal">
@@ -308,6 +349,42 @@
         </div>
     </div>
 
+    <div id="facebook-ads-mapping-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3 id="facebook-ads-mapping-title">Создать маппинг кампании</h3>
+                <button class="modal-close" id="facebook-ads-mapping-close" aria-label="Закрыть">&times;</button>
+            </div>
+            <div class="modal-body" id="facebook-ads-mapping-body">
+                <div class="form-group">
+                    <label for="mapping-campaign-name">Название кампании (из CSV):</label>
+                    <input type="text" id="mapping-campaign-name" class="input-field" placeholder="Введите название кампании из CSV файла">
+                    <small style="color: #666; font-size: 0.9em;">Введите точное название кампании, как оно указано в CSV файле</small>
+                </div>
+                <div class="form-group">
+                    <label for="mapping-product-search">Поиск продукта:</label>
+                    <input type="text" id="mapping-product-search" class="input-field" placeholder="Начните вводить название продукта...">
+                    <div id="mapping-product-suggestions" class="suggestions-list" style="display: none;"></div>
+                </div>
+                <div class="form-group">
+                    <label for="mapping-product-select">Или выберите из списка:</label>
+                    <select id="mapping-product-select" class="input-field">
+                        <option value="">Загрузка продуктов...</option>
+                    </select>
+                </div>
+                <div id="mapping-suggestions" class="mapping-suggestions" style="display: none;">
+                    <h4>Автопредложения:</h4>
+                    <div id="mapping-suggestions-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="facebook-ads-mapping-save" class="btn btn-primary">Сохранить</button>
+                <button id="facebook-ads-mapping-cancel" class="btn btn-secondary">Отмена</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/vat-margin-script.js"></script>
+    <script src="/facebook-ads-script.js"></script>
 </body>
 </html>
