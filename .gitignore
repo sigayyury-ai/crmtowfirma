@@ -28,9 +28,6 @@ coverage/
 .specify/scripts/bash/*.log
 reports/
 
-# Documentation
-docs/
-
 # Test scripts
 test-*.js
 check-*.js
