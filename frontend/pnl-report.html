@@ -150,6 +150,73 @@
         </div>
     </div>
 
+    <!-- Modal for adding manual cash expense entry -->
+    <div id="add-expense-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 id="add-entry-title">Добавить</h3>
+                <button class="modal-close" onclick="handleCloseAddModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="expense-amount">Сумма (PLN) *</label>
+                    <input type="number" id="expense-amount" step="0.01" min="0.01" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="expense-comment">Комментарий</label>
+                    <textarea id="expense-comment" rows="3" maxlength="5000" placeholder="Описание расхода (необязательно)"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="handleSaveEntry()">Сохранить</button>
+                <button class="btn btn-secondary" onclick="handleCloseAddModal()">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for viewing/editing expense entries list -->
+    <div id="expense-list-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h3 id="list-entry-title">Расходы за месяц</h3>
+                <button class="modal-close" onclick="handleCloseListModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="expense-list-container">
+                    <!-- Entries will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="add-entry-from-list-btn" onclick="handleAddEntryFromList()">Добавить</button>
+                <button class="btn btn-secondary" onclick="closeExpenseListModal()">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for editing expense entry -->
+    <div id="edit-expense-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 id="edit-entry-title">Редактировать</h3>
+                <button class="modal-close" onclick="handleCloseEditModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="edit-expense-amount">Сумма (PLN) *</label>
+                    <input type="number" id="edit-expense-amount" step="0.01" min="0.01" required placeholder="0.00">
+                </div>
+                <div class="form-group">
+                    <label for="edit-expense-comment">Комментарий</label>
+                    <textarea id="edit-expense-comment" rows="3" maxlength="5000" placeholder="Описание расхода (необязательно)"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="handleSaveEditedEntry()">Сохранить</button>
+                <button class="btn btn-secondary" onclick="handleCloseEditModal()">Отмена</button>
+            </div>
+        </div>
+    </div>
+
     <script src="/pnl-report-script.js"></script>
 </body>
 </html>

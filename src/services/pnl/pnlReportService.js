@@ -510,31 +510,37 @@ class PnlReportService {
         // Add manual entries to category/month
         // For auto categories: this adds to existing payment data
         // For manual categories: this is the only data (payments were skipped)
-        monthEntries.forEach((entry, month) => {
-          const amountPln = toNumber(entry.amount_pln) || 0;
-          if (amountPln !== 0) { // Allow negative values for refunds
-            categoryMonthlyData[categoryId][month].amountPln += amountPln;
-            if (!isManualCategory) {
-              // For auto categories, count manual entries separately
-              categoryMonthlyData[categoryId][month].paymentCount += 1;
-            } else {
-              // For manual categories, manual entries are the primary source
-              categoryMonthlyData[categoryId][month].paymentCount += 1;
-            } // Count as 1 entry
+        // monthEntries is now an array of entries (allows multiple entries per month)
+        monthEntries.forEach((entries, month) => {
+          // Handle both single entry (backward compatibility) and array of entries
+          const entriesArray = Array.isArray(entries) ? entries : (entries ? [entries] : []);
+          
+          entriesArray.forEach(entry => {
+            const amountPln = toNumber(entry.amount_pln) || 0;
+            if (amountPln !== 0) { // Allow negative values for refunds
+              categoryMonthlyData[categoryId][month].amountPln += amountPln;
+              if (!isManualCategory) {
+                // For auto categories, count manual entries separately
+                categoryMonthlyData[categoryId][month].paymentCount += 1;
+              } else {
+                // For manual categories, manual entries are the primary source
+                categoryMonthlyData[categoryId][month].paymentCount += 1;
+              }
 
-            // Add currency breakdown if available
-            if (includeBreakdown && entry.currency_breakdown && typeof entry.currency_breakdown === 'object') {
-              Object.keys(entry.currency_breakdown).forEach((curr) => {
-                const currAmount = toNumber(entry.currency_breakdown[curr]) || 0;
-                if (currAmount > 0) {
-                  if (!categoryMonthlyData[categoryId][month].currencyBreakdown[curr]) {
-                    categoryMonthlyData[categoryId][month].currencyBreakdown[curr] = 0;
+              // Add currency breakdown if available
+              if (includeBreakdown && entry.currency_breakdown && typeof entry.currency_breakdown === 'object') {
+                Object.keys(entry.currency_breakdown).forEach((curr) => {
+                  const currAmount = toNumber(entry.currency_breakdown[curr]) || 0;
+                  if (currAmount > 0) {
+                    if (!categoryMonthlyData[categoryId][month].currencyBreakdown[curr]) {
+                      categoryMonthlyData[categoryId][month].currencyBreakdown[curr] = 0;
+                    }
+                    categoryMonthlyData[categoryId][month].currencyBreakdown[curr] += currAmount;
                   }
-                  categoryMonthlyData[categoryId][month].currencyBreakdown[curr] += currAmount;
-                }
-              });
+                });
+              }
             }
-          }
+          });
         });
       });
 
@@ -831,6 +837,7 @@ class PnlReportService {
       }
 
       // Process manual entries for expense categories
+      // Note: monthEntries is now a Map where values are arrays of entries (for expenses)
       manualExpenseEntriesMap.forEach((monthEntries, categoryId) => {
         // Initialize category data if needed
         if (!expenseMonthlyData[categoryId]) {
@@ -845,25 +852,31 @@ class PnlReportService {
         }
 
         // Add manual entries to category/month
-        monthEntries.forEach((entry, month) => {
-          const amountPln = toNumber(entry.amount_pln) || 0;
-          if (amountPln > 0) {
-            expenseMonthlyData[categoryId][month].amountPln += amountPln;
-            expenseMonthlyData[categoryId][month].paymentCount += 1;
+        // monthEntries is a Map: month -> array of entries (for expenses)
+        monthEntries.forEach((entries, month) => {
+          // entries is now an array (for expenses) or single entry (for revenue - backward compat)
+          const entriesArray = Array.isArray(entries) ? entries : [entries];
+          
+          entriesArray.forEach(entry => {
+            const amountPln = toNumber(entry.amount_pln) || 0;
+            if (amountPln > 0) {
+              expenseMonthlyData[categoryId][month].amountPln += amountPln;
+              expenseMonthlyData[categoryId][month].paymentCount += 1;
 
-            // Add currency breakdown if available
-            if (includeBreakdown && entry.currency_breakdown && typeof entry.currency_breakdown === 'object') {
-              Object.keys(entry.currency_breakdown).forEach((curr) => {
-                const currAmount = toNumber(entry.currency_breakdown[curr]) || 0;
-                if (currAmount > 0) {
-                  if (!expenseMonthlyData[categoryId][month].currencyBreakdown[curr]) {
-                    expenseMonthlyData[categoryId][month].currencyBreakdown[curr] = 0;
+              // Add currency breakdown if available
+              if (includeBreakdown && entry.currency_breakdown && typeof entry.currency_breakdown === 'object') {
+                Object.keys(entry.currency_breakdown).forEach((curr) => {
+                  const currAmount = toNumber(entry.currency_breakdown[curr]) || 0;
+                  if (currAmount > 0) {
+                    if (!expenseMonthlyData[categoryId][month].currencyBreakdown[curr]) {
+                      expenseMonthlyData[categoryId][month].currencyBreakdown[curr] = 0;
+                    }
+                    expenseMonthlyData[categoryId][month].currencyBreakdown[curr] += currAmount;
                   }
-                  expenseMonthlyData[categoryId][month].currencyBreakdown[curr] += currAmount;
-                }
-              });
+                });
+              }
             }
-          }
+          });
         });
       });
 
