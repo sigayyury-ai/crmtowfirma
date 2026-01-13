@@ -20,7 +20,27 @@ let elements = {};
 document.addEventListener('DOMContentLoaded', () => {
   cacheDom();
   bindEvents();
-  loadPnlReport();
+  
+  // Restore active tab from URL
+  const urlParams = new URLSearchParams(window.location.search);
+  const tabFromUrl = urlParams.get('tab');
+  if (tabFromUrl && ['report', 'insights', 'settings'].includes(tabFromUrl)) {
+    switchTab(tabFromUrl);
+    
+    // If insights tab, restore sub-tab
+    if (tabFromUrl === 'insights') {
+      const subTabFromUrl = urlParams.get('subtab');
+      if (subTabFromUrl && ['overview', 'comparison', 'operations', 'trends', 'strategic'].includes(subTabFromUrl)) {
+        switchInsightsSubTab(subTabFromUrl);
+      } else {
+        switchInsightsSubTab('overview');
+      }
+    }
+  } else {
+    // Default to report tab
+    loadPnlReport();
+  }
+  
   addLog('info', 'PNL отчет инициализирован');
 });
 
@@ -51,23 +71,40 @@ function cacheDom() {
     addMappingBtn: document.getElementById('add-mapping-btn'),
     mappingsContainer: document.getElementById('mappings-container'),
     mappingsLoading: document.getElementById('mappings-loading'),
-    mappingsError: document.getElementById('mappings-error')
+    mappingsError: document.getElementById('mappings-error'),
+    // Insights elements
+    insightsYearSelect: document.getElementById('insights-year-select'),
+    regenerateAIInsightsBtn: document.getElementById('regenerate-ai-insights-btn'),
+    insightsLoading: document.getElementById('insights-loading'),
+    insightsError: document.getElementById('insights-error'),
+    // Insights sub-tabs
+    insightsSubTabs: document.querySelectorAll('.subtab-button[data-subtab]'),
+    insightsSubTabContents: document.querySelectorAll('.insights-subtab-content'),
+    insightsOverviewContainer: document.getElementById('insights-overview'),
+    insightsComparisonContainer: document.getElementById('insights-comparison'),
+    insightsOperationsContainer: document.getElementById('insights-operations'),
+    insightsTrendsContainer: document.getElementById('insights-trends'),
+    insightsStrategicContainer: document.getElementById('insights-strategic')
   };
   
   // Set default year to current year
+  const currentYear = new Date().getFullYear();
+  const yearOptions = Array.from(elements.yearSelect?.options || []).map(opt => Number(opt.value));
+  
+  // Add current year option if it doesn't exist (dynamic year support)
+  if (!yearOptions.includes(currentYear)) {
+    const opt = document.createElement('option');
+    opt.value = String(currentYear);
+    opt.textContent = currentYear;
+    if (elements.yearSelect) elements.yearSelect.appendChild(opt);
+    if (elements.insightsYearSelect) elements.insightsYearSelect.appendChild(opt.cloneNode(true));
+  }
+  
   if (elements.yearSelect) {
-    const currentYear = new Date().getFullYear();
-    const yearOptions = Array.from(elements.yearSelect.options).map(opt => Number(opt.value));
-    
-    // Add current year option if it doesn't exist (dynamic year support)
-    if (!yearOptions.includes(currentYear)) {
-      const opt = document.createElement('option');
-      opt.value = String(currentYear);
-      opt.textContent = currentYear;
-      elements.yearSelect.appendChild(opt);
-    }
-    
     elements.yearSelect.value = currentYear.toString();
+  }
+  if (elements.insightsYearSelect) {
+    elements.insightsYearSelect.value = currentYear.toString();
   }
 }
 
@@ -80,12 +117,29 @@ function bindEvents() {
 
   if (elements.yearSelect) {
     elements.yearSelect.addEventListener('change', () => {
-      // Save expanded state of current year before switching
-      const currentYear = elements.yearSelect.value;
-      if (currentYear) {
-        saveExpandedState(currentYear);
-      }
+      // Cache removed - no longer saving expanded state
       loadPnlReport();
+      // Sync insights year selector
+      if (elements.insightsYearSelect) {
+        elements.insightsYearSelect.value = currentYear;
+      }
+    });
+  }
+
+  if (elements.insightsYearSelect) {
+    elements.insightsYearSelect.addEventListener('change', () => {
+      const selectedYear = elements.insightsYearSelect.value;
+      // Sync main year selector
+      if (elements.yearSelect) {
+        elements.yearSelect.value = selectedYear;
+      }
+      loadInsights();
+    });
+  }
+
+  if (elements.regenerateAIInsightsBtn) {
+    elements.regenerateAIInsightsBtn.addEventListener('click', () => {
+      loadInsights(true); // Force regeneration
     });
   }
 
@@ -131,19 +185,45 @@ function bindEvents() {
     });
   }
 
-  // Load categories when settings tab is opened
-  if (elements.tabs) {
-    elements.tabs.forEach(tab => {
-      tab.addEventListener('click', () => {
-        const tabName = tab.getAttribute('data-tab');
-        if (tabName === 'settings') {
-          loadCategories();
-          loadExpenseCategories();
-          loadMappings();
-        }
+  // Insights sub-tabs switching
+  if (elements.insightsSubTabs) {
+    elements.insightsSubTabs.forEach(subTab => {
+      subTab.addEventListener('click', () => {
+        const subTabName = subTab.getAttribute('data-subtab');
+        switchInsightsSubTab(subTabName);
       });
     });
   }
+}
+
+// Insights sub-tab management
+function switchInsightsSubTab(subTabName) {
+  // Update sub-tab buttons
+  if (elements.insightsSubTabs) {
+    elements.insightsSubTabs.forEach(subTab => {
+      if (subTab.getAttribute('data-subtab') === subTabName) {
+        subTab.classList.add('active');
+      } else {
+        subTab.classList.remove('active');
+      }
+    });
+  }
+
+  // Update sub-tab contents
+  if (elements.insightsSubTabContents) {
+    elements.insightsSubTabContents.forEach(content => {
+      if (content.id === `insights-${subTabName}`) {
+        content.classList.add('active');
+      } else {
+        content.classList.remove('active');
+      }
+    });
+  }
+
+  // Update URL
+  const url = new URL(window.location);
+  url.searchParams.set('subtab', subTabName);
+  window.history.pushState({ subtab: subTabName }, '', url);
 }
 
 async function loadPnlReport() {
@@ -183,130 +263,18 @@ async function loadPnlReport() {
 
 /**
  * Save expanded state of collapsible sections
+ * REMOVED: Cache functionality removed - no longer saving to localStorage
  */
 function saveExpandedState(year) {
-  const state = {};
-  const headers = document.querySelectorAll('.collapsible-header');
-  
-  headers.forEach(header => {
-    const rowLabel = header.querySelector('.row-label');
-    if (!rowLabel) return;
-    
-    // Get text without arrow symbols (▼ or ▶) for consistent matching
-    let headerText = rowLabel.textContent?.trim() || '';
-    // Remove arrow symbols for consistent key matching
-    headerText = headerText.replace(/[▼▶]/g, '').trim();
-    if (!headerText) return;
-    
-    // Find content rows for this header
-    const allRows = Array.from(header.parentElement.querySelectorAll('tr'));
-    const headerIndex = allRows.indexOf(header);
-    const contentRows = [];
-    
-    for (let i = headerIndex + 1; i < allRows.length; i++) {
-      const row = allRows[i];
-      if (row.classList.contains('collapsible-header') || 
-          row.classList.contains('profit-loss-row') ||
-          row.classList.contains('balance-row') ||
-          row.classList.contains('roi-row') ||
-          row.classList.contains('ebitda-row')) {
-        break;
-      }
-      if (row.classList.contains('collapsible-content')) {
-        contentRows.push(row);
-      }
-    }
-    
-    if (contentRows.length > 0) {
-      // Check if section is expanded (display is not 'none')
-      // Use computed style to check actual visibility
-      const firstRow = contentRows[0];
-      if (firstRow) {
-        const computedStyle = window.getComputedStyle(firstRow);
-        const isExpanded = computedStyle.display !== 'none';
-        state[headerText] = isExpanded;
-      }
-    }
-  });
-  
-  // Save to localStorage
-  const storageKey = `pnl-report-expanded-${year}`;
-  localStorage.setItem(storageKey, JSON.stringify(state));
+  // Cache removed - function kept for compatibility but does nothing
 }
 
 /**
  * Restore expanded state of collapsible sections
+ * REMOVED: Cache functionality removed - no longer restoring from localStorage
  */
 function restoreExpandedState(year) {
-  const storageKey = `pnl-report-expanded-${year}`;
-  const savedState = localStorage.getItem(storageKey);
-  
-  if (!savedState) {
-    return;
-  }
-  
-  try {
-    const state = JSON.parse(savedState);
-    const headers = document.querySelectorAll('.collapsible-header');
-    
-    headers.forEach(header => {
-      const rowLabel = header.querySelector('.row-label');
-      if (!rowLabel) return;
-      
-      // Get text without arrow symbols (▼ or ▶) for consistent matching
-      let headerText = rowLabel.textContent?.trim() || '';
-      // Remove arrow symbols for consistent key matching
-      headerText = headerText.replace(/[▼▶]/g, '').trim();
-      if (!headerText) return;
-      
-      const shouldBeExpanded = state[headerText];
-      if (shouldBeExpanded === undefined) {
-        return;
-      }
-      
-      if (!shouldBeExpanded) {
-        return; // Already collapsed by default
-      }
-      
-      // Find content rows for this header
-      const allRows = Array.from(header.parentElement.querySelectorAll('tr'));
-      const headerIndex = allRows.indexOf(header);
-      const contentRows = [];
-      
-      for (let i = headerIndex + 1; i < allRows.length; i++) {
-        const row = allRows[i];
-        if (row.classList.contains('collapsible-header') || 
-            row.classList.contains('profit-loss-row') ||
-            row.classList.contains('balance-row') ||
-            row.classList.contains('roi-row') ||
-            row.classList.contains('ebitda-row')) {
-          break;
-        }
-        if (row.classList.contains('collapsible-content')) {
-          contentRows.push(row);
-        }
-      }
-      
-      if (contentRows.length > 0 && shouldBeExpanded) {
-        // Expand the section
-        contentRows.forEach(row => {
-          row.style.display = '';
-        });
-        
-        // Update icon
-        const toggleBtn = header.querySelector('.collapse-toggle');
-        if (toggleBtn) {
-          const icon = toggleBtn.querySelector('.collapse-icon');
-          if (icon) {
-            icon.textContent = '▼';
-          }
-          toggleBtn.setAttribute('title', 'Нажмите для скрытия деталей');
-        }
-      }
-    });
-  } catch (error) {
-    console.error('Error restoring expanded state:', error);
-  }
+  // Cache removed - function kept for compatibility but does nothing
 }
 
 /**
@@ -327,8 +295,7 @@ async function refreshPnlReportSilently() {
     // Save current scroll position
     const scrollPosition = window.pageYOffset || document.documentElement.scrollTop;
     
-    // Save expanded state before refresh
-    saveExpandedState(selectedYear);
+    // Cache removed - no longer saving expanded state
     
     const url = `${API_BASE}/pnl/report?year=${encodeURIComponent(selectedYear)}`;
     const response = await fetch(url);
@@ -345,10 +312,7 @@ async function refreshPnlReportSilently() {
     // Restore scroll position
     window.scrollTo(0, scrollPosition);
     
-    // Restore expanded state after DOM is fully rendered
-    setTimeout(() => {
-      restoreExpandedState(selectedYear);
-    }, 100);
+    // Cache removed - no longer restoring expanded state
   } catch (error) {
     // Silent fail - don't show error, just log it
     addLog('error', `Ошибка обновления отчета: ${error.message}`);
@@ -802,14 +766,7 @@ function renderReport(data) {
     elements.reportContainer._handlersAttached = true;
   }
   
-  // Restore expanded state after all handlers are attached and DOM is ready
-  // Use setTimeout to ensure DOM is fully rendered
-  const selectedYear = elements.yearSelect ? elements.yearSelect.value : new Date().getFullYear().toString();
-  if (selectedYear) {
-    setTimeout(() => {
-      restoreExpandedState(selectedYear);
-    }, 0);
-  }
+  // Cache removed - no longer restoring expanded state
 }
 
 function attachCollapseHandlers() {
@@ -862,11 +819,7 @@ function attachCollapseHandlers() {
       // Update button title
       toggleBtn.setAttribute('title', isExpanded ? 'Нажмите для просмотра деталей' : 'Нажмите для скрытия деталей');
       
-      // Save expanded state to localStorage
-      const selectedYear = elements.yearSelect ? elements.yearSelect.value : new Date().getFullYear().toString();
-      if (selectedYear) {
-        saveExpandedState(selectedYear);
-      }
+      // Cache removed - no longer saving expanded state to localStorage
     });
   });
 }
@@ -1222,6 +1175,11 @@ function clearLogs() {
 
 // Tab management
 function switchTab(tabName) {
+  // Update URL without reloading page
+  const url = new URL(window.location);
+  url.searchParams.set('tab', tabName);
+  window.history.pushState({ tab: tabName }, '', url);
+
   // Update tab buttons
   if (elements.tabs) {
     elements.tabs.forEach(tab => {
@@ -1243,7 +1201,44 @@ function switchTab(tabName) {
       }
     });
   }
+
+  // Load data for specific tabs
+  if (tabName === 'report') {
+    loadPnlReport();
+  } else if (tabName === 'insights') {
+    // Re-cache insights elements when tab becomes active
+    elements.insightsSubTabs = document.querySelectorAll('.subtab-button[data-subtab]');
+    elements.insightsSubTabContents = document.querySelectorAll('.insights-subtab-content');
+    elements.insightsOverviewContainer = document.getElementById('insights-overview');
+    elements.insightsComparisonContainer = document.getElementById('insights-comparison');
+    elements.insightsOperationsContainer = document.getElementById('insights-operations');
+    elements.insightsTrendsContainer = document.getElementById('insights-trends');
+    elements.insightsStrategicContainer = document.getElementById('insights-strategic');
+    
+    loadInsights();
+    // Set default sub-tab if not set
+    const urlParams = new URLSearchParams(window.location.search);
+    const subTabFromUrl = urlParams.get('subtab');
+    if (!subTabFromUrl || !['overview', 'comparison', 'operations', 'trends', 'strategic'].includes(subTabFromUrl)) {
+      switchInsightsSubTab('overview');
+    }
+  } else if (tabName === 'settings') {
+    loadCategories();
+    loadExpenseCategories();
+    loadMappings();
+  }
 }
+
+// Handle browser back/forward buttons
+window.addEventListener('popstate', (event) => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const tabFromUrl = urlParams.get('tab');
+  if (tabFromUrl && ['report', 'insights', 'settings'].includes(tabFromUrl)) {
+    switchTab(tabFromUrl);
+  } else {
+    switchTab('report');
+  }
+});
 
 // Categories management
 let categoriesEventDelegateAttached = false;
@@ -4295,5 +4290,1279 @@ async function deleteAllDuplicatesInGroup(groupIndex, direction, month = null) {
     addLog('error', `Ошибка удаления дублей: ${error.message}`);
     alert('Ошибка: ' + error.message);
   }
+}
+
+// Insights management
+async function loadInsights(forceRegenerateAI = false) {
+  if (!elements.insightsOverviewContainer) return;
+
+  const year = elements.insightsYearSelect?.value || elements.yearSelect?.value;
+  if (!year) {
+    showInsightsError('Год не выбран');
+    return;
+  }
+
+  // Use default 'month' period for AI caching
+  const aiPeriod = 'month';
+  const regenerateAI = forceRegenerateAI ? 'true' : 'false';
+
+  showInsightsLoading(true);
+  hideInsightsError();
+
+  try {
+    const url = `${API_BASE}/pnl/insights?year=${year}&aiPeriod=${aiPeriod}&regenerateAI=${regenerateAI}`;
+    addLog('info', `Загрузка аналитики: ${url}${forceRegenerateAI ? ' (принудительная регенерация AI)' : ''}`);
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      addLog('error', `Ошибка HTTP ${response.status}: ${errorText}`);
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+    
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Не удалось загрузить аналитические данные');
+    }
+
+    renderInsights(result.data || {});
+    addLog('success', 'Аналитические данные успешно загружены');
+  } catch (error) {
+    showInsightsError(error.message || 'Ошибка при загрузке аналитических данных');
+    addLog('error', `Ошибка загрузки аналитики: ${error.message}`);
+  } finally {
+    showInsightsLoading(false);
+  }
+}
+
+function showInsightsLoading(show) {
+  if (elements.insightsLoading) {
+    elements.insightsLoading.style.display = show ? 'block' : 'none';
+  }
+}
+
+function hideInsightsError() {
+  if (elements.insightsError) {
+    elements.insightsError.style.display = 'none';
+    elements.insightsError.textContent = '';
+  }
+}
+
+function showInsightsError(message) {
+  if (elements.insightsError) {
+    elements.insightsError.style.display = 'block';
+    elements.insightsError.textContent = message;
+  }
+}
+
+function renderInsights(insights) {
+  if (!elements.insightsOverviewContainer) return;
+
+  // Render each sub-tab content
+  renderOverviewTab(insights);
+  renderComparisonTab(insights);
+  renderOperationsTab(insights);
+  renderTrendsTab(insights);
+  renderStrategicTab(insights);
+}
+
+// Overview Tab: Key Revenue Metrics, Expenses Statistics, Break-Even Analysis, Profitability Metrics
+function renderOverviewTab(insights) {
+  if (!elements.insightsOverviewContainer) return;
+  
+  let html = '';
+
+  // Revenue Metrics Section (Phase 4)
+  if (insights.revenueMetrics) {
+    const metrics = insights.revenueMetrics;
+    html += `
+      <div class="insights-section">
+        <h3>Ключевые метрики выручки</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Общая годовая выручка</td>
+              <td>${formatCurrency(metrics.totalAnnual)} PLN</td>
+            </tr>
+            <tr>
+              <td>Средняя месячная выручка</td>
+              <td>${metrics.averageMonthly !== null ? formatCurrency(metrics.averageMonthly) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Лучший месяц</td>
+              <td>${metrics.bestMonth ? `${metrics.bestMonth.monthName}: ${formatCurrency(metrics.bestMonth.amount)} PLN` : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Худший месяц</td>
+              <td>${metrics.worstMonth ? `${metrics.worstMonth.monthName}: ${formatCurrency(metrics.worstMonth.amount)} PLN` : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Всего платежей</td>
+              <td>${metrics.totalPayments || 0}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Expenses Statistics Section (Phase 5)
+  if (insights.expensesStatistics) {
+    const expenses = insights.expensesStatistics;
+    html += `
+      <div class="insights-section">
+        <h3>Статистика расходов</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Общие годовые расходы</td>
+              <td>${formatCurrency(expenses.totalAnnual)} PLN</td>
+            </tr>
+            <tr>
+              <td>
+                Средние месячные расходы<br>
+                <span style="font-size: 12px; color: #64748b; font-weight: normal;">
+                  Среднее арифметическое месячных сумм всех расходов за год.<br>
+                  Учитываются все категории расходов из ручных записей (все категории с entry_type = 'expense').
+                </span>
+              </td>
+              <td>${expenses.averageMonthly !== null ? formatCurrency(expenses.averageMonthly) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Соотношение расходов к доходам</td>
+              <td>${expenses.expensesToRevenueRatio !== null ? formatCurrency(expenses.expensesToRevenueRatio) + '%' : 'N/A'}</td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Top expense categories
+    if (expenses.topCategories && expenses.topCategories.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Топ категории расходов</h4>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Категория</th>
+              <th>Сумма</th>
+              <th>% от оборота</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      expenses.topCategories.forEach(cat => {
+        html += `
+            <tr>
+              <td>${cat.categoryName}</td>
+              <td>${formatCurrency(cat.total)} PLN</td>
+              <td style="font-weight: 600; color: ${cat.percentageOfRevenue !== null && cat.percentageOfRevenue > 10 ? '#dc2626' : '#059669'};">
+                ${cat.percentageOfRevenue !== null ? formatCurrency(cat.percentageOfRevenue) + '%' : 'N/A'}
+              </td>
+            </tr>
+        `;
+      });
+      html += `
+          </tbody>
+        </table>
+        <p style="margin-top: 8px; font-size: 12px; color: #64748b; font-style: italic;">
+          Процент показывает долю расходов категории от общей годовой выручки. Помогает оценить влияние категории на ценообразование.
+        </p>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  // Break-Even Analysis Section (Phase 6)
+  if (insights.breakEvenAnalysis) {
+    const bea = insights.breakEvenAnalysis;
+    html += `
+      <div class="insights-section">
+        <h3>Анализ безубыточности</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                Месячная точка безубыточности<br>
+                <span style="font-size: 12px; color: #64748b; font-weight: normal;">
+                  Минимальная сумма выручки в месяц для покрытия всех расходов.<br>
+                  <strong>Формула:</strong> средние месячные расходы = сумма всех расходов за год / количество месяцев с расходами<br>
+                  <strong>Учитываются:</strong> все категории расходов из ручных записей (все категории с entry_type = 'expense' из таблицы pnl_manual_entries)
+                </span>
+              </td>
+              <td>${bea.monthlyBreakEven !== null ? formatCurrency(bea.monthlyBreakEven) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Годовая точка безубыточности</td>
+              <td>${bea.annualBreakEven !== null ? formatCurrency(bea.annualBreakEven) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Месяцев до безубыточности</td>
+              <td>${bea.monthsToBreakEven !== null ? bea.monthsToBreakEven + ' мес.' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Прибыль/Убыток</td>
+              <td style="color: ${bea.profitLoss >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(bea.profitLoss)} PLN
+              </td>
+            </tr>
+            <tr>
+              <td>Маржа прибыли</td>
+              <td style="color: ${bea.profitMargin !== null && bea.profitMargin >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${bea.profitMargin !== null ? formatCurrency(bea.profitMargin) + '%' : 'N/A'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Profitability Metrics Section (Phase 8)
+  if (insights.profitabilityMetrics) {
+    const pm = insights.profitabilityMetrics;
+    const showOperatingMargin = pm.operatingMargin !== null && 
+                                 pm.netProfitMargin !== null && 
+                                 Math.abs(pm.operatingMargin - pm.netProfitMargin) > 0.01;
+    
+    html += `
+      <div class="insights-section">
+        <h3>Метрики прибыльности</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${showOperatingMargin ? `
+            <tr>
+              <td>Операционная маржа<br><span style="font-size: 12px; color: #64748b; font-weight: normal;">(до налогов)</span></td>
+              <td style="color: ${pm.operatingMargin !== null && pm.operatingMargin >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${pm.operatingMargin !== null ? formatCurrency(pm.operatingMargin) + '%' : 'N/A'}
+              </td>
+            </tr>
+            ` : ''}
+            <tr>
+              <td>${showOperatingMargin ? 'Чистая маржа' : 'Маржа прибыли'}<br><span style="font-size: 12px; color: #64748b; font-weight: normal;">${showOperatingMargin ? '(после налогов)' : '(после всех расходов)'}</span></td>
+              <td style="color: ${pm.netProfitMargin !== null && pm.netProfitMargin >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${pm.netProfitMargin !== null ? formatCurrency(pm.netProfitMargin) + '%' : 'N/A'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Month-by-Month Insights Section (Phase 17)
+  if (insights.monthByMonth) {
+    const mbm = insights.monthByMonth;
+    html += `
+      <div class="insights-section">
+        <h3>Анализ по месяцам</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Месяцев выше безубыточности</td>
+              <td style="color: #059669; font-weight: 600;">
+                ${mbm.monthsAboveBreakEven ? mbm.monthsAboveBreakEven.length : 0}
+                ${mbm.monthsAboveBreakEven && mbm.monthsAboveBreakEven.length > 0 
+                  ? ` (${mbm.monthsAboveBreakEven.map(m => m.monthName).join(', ')})`
+                  : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Месяцев ниже безубыточности</td>
+              <td style="color: ${mbm.monthsBelowBreakEven && mbm.monthsBelowBreakEven.length > 0 ? '#dc2626' : '#64748b'}; font-weight: 600;">
+                ${mbm.monthsBelowBreakEven ? mbm.monthsBelowBreakEven.length : 0}
+                ${mbm.monthsBelowBreakEven && mbm.monthsBelowBreakEven.length > 0 
+                  ? ` (${mbm.monthsBelowBreakEven.map(m => m.monthName).join(', ')})`
+                  : ''}
+              </td>
+            </tr>
+            ${mbm.consecutiveProfitableStreak ? `
+            <tr>
+              <td>Серия прибыльных месяцев</td>
+              <td style="color: #059669; font-weight: 600;">
+                ${mbm.consecutiveProfitableStreak.length} месяцев подряд
+                ${mbm.consecutiveProfitableStreak.startMonthName ? ` (начиная с ${mbm.consecutiveProfitableStreak.startMonthName})` : ''}
+              </td>
+            </tr>
+            ` : ''}
+            ${mbm.consecutiveLossStreak ? `
+            <tr>
+              <td>Серия убыточных месяцев</td>
+              <td style="color: #dc2626; font-weight: 600;">
+                ${mbm.consecutiveLossStreak.length} месяцев подряд
+                ${mbm.consecutiveLossStreak.startMonthName ? ` (начиная с ${mbm.consecutiveLossStreak.startMonthName})` : ''}
+              </td>
+            </tr>
+            ` : ''}
+            ${mbm.recoveryMonths && mbm.recoveryMonths.length > 0 ? `
+            <tr>
+              <td>Месяцы восстановления</td>
+              <td style="color: #059669; font-weight: 600;">
+                ${mbm.recoveryMonths.length} месяц(ев)
+                ${mbm.recoveryMonths.map(m => m.monthName).join(', ')}
+              </td>
+            </tr>
+            ` : ''}
+          </tbody>
+        </table>
+    `;
+
+    // Detailed recovery months table
+    if (mbm.recoveryMonths && mbm.recoveryMonths.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Детали восстановления</h4>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Месяц</th>
+              <th>Предыдущая прибыль</th>
+              <th>Текущая прибыль</th>
+              <th>Восстановление</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      mbm.recoveryMonths.forEach(recovery => {
+        html += `
+          <tr>
+            <td><strong>${recovery.monthName}</strong></td>
+            <td style="color: #dc2626;">${formatCurrency(recovery.previousProfit)} PLN</td>
+            <td style="color: #059669;">${formatCurrency(recovery.currentProfit)} PLN</td>
+            <td style="color: #059669; font-weight: 600;">+${formatCurrency(recovery.recoveryAmount)} PLN</td>
+          </tr>
+        `;
+      });
+      html += `
+          </tbody>
+        </table>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  if (!html) {
+    html = '<div class="insights-placeholder"><p>Нет данных для отображения</p></div>';
+  }
+
+  elements.insightsOverviewContainer.innerHTML = html;
+}
+
+// Comparison Tab: Year-over-Year Comparison, Quarterly Analysis, Performance Benchmarks
+function renderComparisonTab(insights) {
+  if (!elements.insightsComparisonContainer) return;
+  
+  let html = '';
+
+  // Year-over-Year Comparison Section (Phase 7)
+  if (insights.yearOverYear) {
+    const yoy = insights.yearOverYear;
+    html += `
+      <div class="insights-section">
+        <h3>Сравнение год к году (${insights.year} vs ${yoy.previousYear})</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Изменение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Рост выручки</td>
+              <td style="color: ${yoy.revenueGrowthRate !== null && yoy.revenueGrowthRate >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${yoy.revenueGrowthRate !== null ? formatCurrency(yoy.revenueGrowthRate) + '%' : 'N/A'}
+              </td>
+            </tr>
+            <tr>
+              <td>Рост расходов</td>
+              <td style="color: ${yoy.expensesGrowthRate !== null && yoy.expensesGrowthRate >= 0 ? '#dc2626' : '#059669'}; font-weight: 600;">
+                ${yoy.expensesGrowthRate !== null ? formatCurrency(yoy.expensesGrowthRate) + '%' : 'N/A'}
+              </td>
+            </tr>
+            <tr>
+              <td>Изменение прибыли</td>
+              <td style="color: ${yoy.profitChange >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(yoy.profitChange)} PLN
+                ${yoy.profitChangePercent !== null ? ` (${formatCurrency(yoy.profitChangePercent)}%)` : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Средняя месячная выручка</td>
+              <td>
+                ${yoy.averageMonthlyComparison.change !== null 
+                  ? `<span style="color: ${yoy.averageMonthlyComparison.change >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                      ${formatCurrency(yoy.averageMonthlyComparison.change)} PLN
+                      ${yoy.averageMonthlyComparison.changePercent !== null ? ` (${formatCurrency(yoy.averageMonthlyComparison.changePercent)}%)` : ''}
+                    </span>`
+                  : 'N/A'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Best/Worst month comparison - compare across all available years
+    if (yoy.bestMonthComparison && (yoy.bestMonthComparison.allYears || yoy.bestMonthComparison.current)) {
+      const allYearsData = yoy.bestMonthComparison.allYears || [];
+      const uniqueYears = [...new Set(allYearsData.map(m => m.year))].sort((a, b) => b - a);
+      const hasMultipleYears = uniqueYears.length > 1;
+      
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Сравнение лучших/худших месяцев</h4>
+        ${hasMultipleYears ? `
+          <p style="margin-bottom: 12px; font-size: 13px; color: #64748b;">
+            Сравнение по всем годам с данными в PNL отчете
+          </p>
+        ` : ''}
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              ${hasMultipleYears ? uniqueYears.map(year => `<th>${year}</th>`).join('') : ''}
+              ${!hasMultipleYears && yoy.previousYear ? `<th>${insights.year}</th><th>${yoy.previousYear}</th>` : ''}
+              ${hasMultipleYears && yoy.bestMonthComparison.overallBest ? '<th>Лучший за все годы</th>' : ''}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Лучший месяц</td>
+              ${hasMultipleYears ? uniqueYears.map(year => {
+                const month = allYearsData.find(m => m.year === year);
+                return `<td>${month ? `${month.monthName}: ${formatCurrency(month.amount)} PLN` : 'N/A'}</td>`;
+              }).join('') : ''}
+              ${!hasMultipleYears && yoy.previousYear ? `
+                <td>${yoy.bestMonthComparison.current ? `${yoy.bestMonthComparison.current.monthName}: ${formatCurrency(yoy.bestMonthComparison.current.amount)} PLN` : 'N/A'}</td>
+                <td>${yoy.bestMonthComparison.previous ? `${yoy.bestMonthComparison.previous.monthName}: ${formatCurrency(yoy.bestMonthComparison.previous.amount)} PLN` : 'N/A'}</td>
+              ` : ''}
+              ${hasMultipleYears && yoy.bestMonthComparison.overallBest ? `
+                <td style="background-color: rgba(5, 150, 105, 0.1); font-weight: 600;">
+                  ${yoy.bestMonthComparison.overallBest.year}: ${yoy.bestMonthComparison.overallBest.monthName}<br>
+                  <span style="font-size: 12px;">${formatCurrency(yoy.bestMonthComparison.overallBest.amount)} PLN</span>
+                </td>
+              ` : ''}
+            </tr>
+            <tr>
+              <td>Худший месяц</td>
+              ${hasMultipleYears ? uniqueYears.map(year => {
+                const month = (yoy.worstMonthComparison.allYears || []).find(m => m.year === year);
+                return `<td>${month ? `${month.monthName}: ${formatCurrency(month.amount)} PLN` : 'N/A'}</td>`;
+              }).join('') : ''}
+              ${!hasMultipleYears && yoy.previousYear ? `
+                <td>${yoy.worstMonthComparison.current ? `${yoy.worstMonthComparison.current.monthName}: ${formatCurrency(yoy.worstMonthComparison.current.amount)} PLN` : 'N/A'}</td>
+                <td>${yoy.worstMonthComparison.previous ? `${yoy.worstMonthComparison.previous.monthName}: ${formatCurrency(yoy.worstMonthComparison.previous.amount)} PLN` : 'N/A'}</td>
+              ` : ''}
+              ${hasMultipleYears && yoy.worstMonthComparison.overallWorst ? `
+                <td style="background-color: rgba(220, 38, 38, 0.1); font-weight: 600;">
+                  ${yoy.worstMonthComparison.overallWorst.year}: ${yoy.worstMonthComparison.overallWorst.monthName}<br>
+                  <span style="font-size: 12px;">${formatCurrency(yoy.worstMonthComparison.overallWorst.amount)} PLN</span>
+                </td>
+              ` : ''}
+            </tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  // Quarterly Analysis Section (Phase 9)
+  if (insights.quarterlyAnalysis) {
+    const qa = insights.quarterlyAnalysis;
+    html += `
+      <div class="insights-section">
+        <h3>Квартальный анализ</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Квартал</th>
+              <th>Выручка</th>
+              <th>Прибыль/Убыток</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr ${qa.bestQuarter && qa.bestQuarter.quarter === 'Q1' ? 'style="background-color: rgba(5, 150, 105, 0.1);"' : ''}>
+              <td>Q1 (Январь-Март)</td>
+              <td>${formatCurrency(qa.q1.revenue)} PLN</td>
+              <td style="color: ${qa.q1.profitLoss >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(qa.q1.profitLoss)} PLN
+              </td>
+            </tr>
+            <tr ${qa.bestQuarter && qa.bestQuarter.quarter === 'Q2' ? 'style="background-color: rgba(5, 150, 105, 0.1);"' : ''}>
+              <td>Q2 (Апрель-Июнь)</td>
+              <td>${formatCurrency(qa.q2.revenue)} PLN</td>
+              <td style="color: ${qa.q2.profitLoss >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(qa.q2.profitLoss)} PLN
+              </td>
+            </tr>
+            <tr ${qa.bestQuarter && qa.bestQuarter.quarter === 'Q3' ? 'style="background-color: rgba(5, 150, 105, 0.1);"' : ''}>
+              <td>Q3 (Июль-Сентябрь)</td>
+              <td>${formatCurrency(qa.q3.revenue)} PLN</td>
+              <td style="color: ${qa.q3.profitLoss >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(qa.q3.profitLoss)} PLN
+              </td>
+            </tr>
+            <tr ${qa.bestQuarter && qa.bestQuarter.quarter === 'Q4' ? 'style="background-color: rgba(5, 150, 105, 0.1);"' : ''}>
+              <td>Q4 (Октябрь-Декабрь)</td>
+              <td>${formatCurrency(qa.q4.revenue)} PLN</td>
+              <td style="color: ${qa.q4.profitLoss >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${formatCurrency(qa.q4.profitLoss)} PLN
+              </td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Best/Worst quarters and trends
+    if (qa.bestQuarter || qa.worstQuarter || (qa.quarterlyTrends && qa.quarterlyTrends.length > 0)) {
+      html += `
+        <div style="margin-top: 20px;">
+          ${qa.bestQuarter ? `<p><strong>Лучший квартал:</strong> ${qa.bestQuarter.quarter} (${formatCurrency(qa.bestQuarter.revenue)} PLN)</p>` : ''}
+          ${qa.worstQuarter ? `<p><strong>Худший квартал:</strong> ${qa.worstQuarter.quarter} (${formatCurrency(qa.worstQuarter.revenue)} PLN)</p>` : ''}
+        </div>
+      `;
+
+      if (qa.quarterlyTrends && qa.quarterlyTrends.length > 0) {
+        html += `
+          <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Квартальные тренды</h4>
+          <table class="insights-table">
+            <thead>
+              <tr>
+                <th>Период</th>
+                <th>Темп роста</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+        qa.quarterlyTrends.forEach(trend => {
+          html += `
+            <tr>
+              <td>${trend.from} → ${trend.to}</td>
+              <td style="color: ${trend.growthRate !== null && trend.growthRate >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${trend.growthRate !== null ? formatCurrency(trend.growthRate) + '%' : 'N/A'}
+              </td>
+            </tr>
+          `;
+        });
+        html += `
+            </tbody>
+          </table>
+        `;
+      }
+    }
+
+    html += `</div>`;
+  }
+
+  // Performance Benchmarks Section (Phase 16)
+  if (insights.performanceBenchmarks) {
+    const pb = insights.performanceBenchmarks;
+    const performanceLabels = {
+      'better': { label: 'Лучше', color: '#059669', icon: '↑' },
+      'worse': { label: 'Хуже', color: '#dc2626', icon: '↓' },
+      'same': { label: 'Одинаково', color: '#64748b', icon: '→' }
+    };
+
+    html += `
+      <div class="insights-section">
+        <h3>Бенчмарки производительности</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pb.overallPerformance ? `
+            <tr>
+              <td>Общая производительность (год к году)</td>
+              <td style="color: ${performanceLabels[pb.overallPerformance].color}; font-weight: 600;">
+                ${performanceLabels[pb.overallPerformance].icon} ${performanceLabels[pb.overallPerformance].label}
+              </td>
+            </tr>
+            ` : ''}
+            <tr>
+              <td>Достигнута безубыточность</td>
+              <td style="color: ${pb.breakEvenAchieved ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${pb.breakEvenAchieved ? '✓ Да' : '✗ Нет'}
+                ${pb.breakEvenAchievedMonth ? ` (${pb.breakEvenAchievedMonth.monthName})` : ''}
+              </td>
+            </tr>
+            ${pb.revenueComparison ? `
+            <tr>
+              <td>Сравнение выручки</td>
+              <td style="color: ${performanceLabels[pb.revenueComparison].color}; font-weight: 600;">
+                ${performanceLabels[pb.revenueComparison].icon} ${performanceLabels[pb.revenueComparison].label}
+                ${pb.growthRateComparison && pb.growthRateComparison.current !== null ? ` (${formatCurrency(pb.growthRateComparison.current)}%)` : ''}
+              </td>
+            </tr>
+            ` : ''}
+            ${pb.expensesComparison ? `
+            <tr>
+              <td>Сравнение расходов</td>
+              <td style="color: ${performanceLabels[pb.expensesComparison].color}; font-weight: 600;">
+                ${performanceLabels[pb.expensesComparison].icon} ${performanceLabels[pb.expensesComparison].label}
+                ${insights.yearOverYear && insights.yearOverYear.expensesGrowthRate !== null ? ` (${formatCurrency(insights.yearOverYear.expensesGrowthRate)}%)` : ''}
+              </td>
+            </tr>
+            ` : ''}
+            ${pb.profitComparison ? `
+            <tr>
+              <td>Сравнение прибыли</td>
+              <td style="color: ${performanceLabels[pb.profitComparison].color}; font-weight: 600;">
+                ${performanceLabels[pb.profitComparison].icon} ${performanceLabels[pb.profitComparison].label}
+                ${insights.yearOverYear && insights.yearOverYear.profitChangePercent !== null ? ` (${formatCurrency(insights.yearOverYear.profitChangePercent)}%)` : ''}
+              </td>
+            </tr>
+            ` : ''}
+            ${pb.profitabilityImprovement ? `
+            <tr>
+              <td>Улучшение прибыльности</td>
+              <td style="color: ${pb.profitabilityImprovement === 'improved' ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${pb.profitabilityImprovement === 'improved' ? '↑ Улучшена' : '↓ Снизилась'}
+              </td>
+            </tr>
+            ` : ''}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  if (!html) {
+    html = '<div class="insights-placeholder"><p>Нет данных для отображения</p></div>';
+  }
+
+  elements.insightsComparisonContainer.innerHTML = html;
+}
+
+// Operations Tab: Operational Efficiency, Expense Efficiency Analysis, Cash Runway Analysis
+function renderOperationsTab(insights) {
+  if (!elements.insightsOperationsContainer) return;
+  
+  let html = '';
+
+  // Operational Efficiency Section (Phase 10)
+  if (insights.operationalEfficiency) {
+    const oe = insights.operationalEfficiency;
+    html += `
+      <div class="insights-section">
+        <h3>Операционная эффективность</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Средний чек</td>
+              <td>${oe.averageTransactionValue !== null ? formatCurrency(oe.averageTransactionValue) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Выручка на месяц</td>
+              <td>${oe.revenuePerMonth !== null ? formatCurrency(oe.revenuePerMonth) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Расходы на месяц</td>
+              <td>${oe.expensesPerMonth !== null ? formatCurrency(oe.expensesPerMonth) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Коэффициент эффективности</td>
+              <td style="color: ${oe.efficiencyRatio !== null && oe.efficiencyRatio <= 100 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${oe.efficiencyRatio !== null ? formatCurrency(oe.efficiencyRatio) + '%' : 'N/A'}
+                ${oe.efficiencyRatio !== null ? '<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(меньше = лучше)</span>' : ''}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Expense Efficiency Analysis Section (Phase 14)
+  if (insights.expenseEfficiency) {
+    const ee = insights.expenseEfficiency;
+    
+    // Category growth rates
+    if (ee.categoryGrowthRates && ee.categoryGrowthRates.length > 0) {
+      html += `
+        <div class="insights-section">
+          <h3>Анализ эффективности расходов</h3>
+          <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Темпы роста категорий расходов (год к году)</h4>
+          <table class="insights-table">
+            <thead>
+              <tr>
+                <th>Категория</th>
+                <th>Текущий год</th>
+                <th>Предыдущий год</th>
+                <th>Темп роста</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      ee.categoryGrowthRates.forEach(cat => {
+        html += `
+          <tr>
+            <td>${cat.categoryName}</td>
+            <td>${formatCurrency(cat.currentTotal)} PLN</td>
+            <td>${formatCurrency(cat.previousTotal)} PLN</td>
+            <td style="color: ${cat.growthRate !== null && cat.growthRate > 0 ? '#dc2626' : '#059669'}; font-weight: 600;">
+              ${cat.growthRate !== null ? formatCurrency(cat.growthRate) + '%' : 'N/A'}
+            </td>
+          </tr>
+        `;
+      });
+      html += `
+            </tbody>
+          </table>
+      `;
+    }
+
+    // Optimization opportunities
+    if (ee.optimizationOpportunities && ee.optimizationOpportunities.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #dc2626;">Возможности оптимизации</h4>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Категория</th>
+              <th>Темп роста</th>
+              <th>Рекомендация</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      ee.optimizationOpportunities.forEach(opp => {
+        html += `
+          <tr>
+            <td><strong>${opp.categoryName}</strong></td>
+            <td style="color: #dc2626; font-weight: 600;">+${formatCurrency(opp.growthRate)}%</td>
+            <td style="font-size: 13px; color: #475569;">${opp.recommendation}</td>
+          </tr>
+        `;
+      });
+      html += `
+          </tbody>
+        </table>
+      `;
+    }
+
+    if (ee.categoryGrowthRates && ee.categoryGrowthRates.length > 0) {
+      html += `</div>`;
+    }
+  }
+
+  // Cash Runway Analysis Section (Phase 13)
+  if (insights.cashRunway) {
+    const cr = insights.cashRunway;
+    html += `
+      <div class="insights-section">
+        <h3>Анализ запаса прочности</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Месяцев до безубыточности</td>
+              <td>${cr.monthsUntilBreakEven !== null ? cr.monthsUntilBreakEven + ' мес.' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Месяцы запаса прочности</td>
+              <td>${cr.monthsOfRunway !== null ? cr.monthsOfRunway + ' мес.' : '<span style="color: #64748b; font-style: italic;">Требуются данные о текущем балансе</span>'}</td>
+            </tr>
+            <tr>
+              <td>Необходимый темп роста</td>
+              <td style="color: ${cr.requiredGrowthRate !== null && cr.requiredGrowthRate > 0 ? '#dc2626' : '#059669'}; font-weight: 600;">
+                ${cr.requiredGrowthRate !== null ? formatCurrency(cr.requiredGrowthRate) + '% в месяц' : 'N/A'}
+                ${cr.requiredGrowthRate !== null && cr.requiredGrowthRate > 0 ? '<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(для достижения безубыточности)</span>' : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Burn rate</td>
+              <td style="color: ${cr.burnRate !== null ? '#dc2626' : '#059669'}; font-weight: 600;">
+                ${cr.burnRate !== null ? formatCurrency(cr.burnRate) + ' PLN/мес.' : '<span style="color: #059669;">Прибыльно</span>'}
+                ${cr.burnRate !== null ? '<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(расходы превышают доходы)</span>' : ''}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Marketing Metrics Section
+  if (insights.marketingMetrics) {
+    const mm = insights.marketingMetrics;
+    html += `
+      <div class="insights-section">
+        <h3>Маркетинговые метрики</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Всего MQL (маркетинговых лидов)</td>
+              <td style="font-weight: 600;">${mm.totalMQL || 0}</td>
+            </tr>
+            <tr>
+              <td>Всего маркетинговых расходов</td>
+              <td style="font-weight: 600;">${formatCurrency(mm.totalMarketingExpense)} PLN</td>
+            </tr>
+            <tr>
+              <td>Выигранных сделок</td>
+              <td style="font-weight: 600;">${mm.totalWonDeals || 0}</td>
+            </tr>
+            <tr>
+              <td>Закрытых сделок</td>
+              <td style="font-weight: 600;">${mm.totalClosedDeals || 0}</td>
+            </tr>
+            <tr>
+              <td>Средняя стоимость лида (Cost per MQL)</td>
+              <td>${mm.averageCostPerMQL !== null ? formatCurrency(mm.averageCostPerMQL) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Средняя стоимость сделки (Cost per Deal)</td>
+              <td>${mm.averageCostPerDeal !== null ? formatCurrency(mm.averageCostPerDeal) + ' PLN' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Конверсия MQL → закрытые сделки</td>
+              <td style="color: ${mm.conversionRate !== null && mm.conversionRate > 0 ? '#059669' : '#64748b'}; font-weight: 600;">
+                ${mm.conversionRate !== null ? formatCurrency(mm.conversionRate) + '%' : 'N/A'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    // Monthly breakdown
+    if (mm.monthlyBreakdown && mm.monthlyBreakdown.length > 0) {
+      html += `
+        <div class="insights-section">
+          <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Помесячная разбивка</h4>
+          <table class="insights-table">
+            <thead>
+              <tr>
+                <th>Месяц</th>
+                <th>MQL</th>
+                <th>Маркетинговые расходы</th>
+                <th>Выигранные сделки</th>
+                <th>Закрытые сделки</th>
+                <th>Cost per MQL</th>
+                <th>Cost per Deal</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      mm.monthlyBreakdown.forEach(month => {
+        html += `
+          <tr>
+            <td><strong>${month.monthName}</strong></td>
+            <td>${month.mql}</td>
+            <td>${formatCurrency(month.marketingExpense)} PLN</td>
+            <td>${month.wonDeals}</td>
+            <td>${month.closedDeals}</td>
+            <td>${month.costPerMQL !== null ? formatCurrency(month.costPerMQL) + ' PLN' : 'N/A'}</td>
+            <td>${month.costPerDeal !== null ? formatCurrency(month.costPerDeal) + ' PLN' : 'N/A'}</td>
+          </tr>
+        `;
+      });
+      html += `
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+  }
+
+  if (!html) {
+    html = '<div class="insights-placeholder"><p>Нет данных для отображения</p></div>';
+  }
+
+  elements.insightsOperationsContainer.innerHTML = html;
+}
+
+// Trends Tab: Trend Analysis, Stability/Volatility Analysis, Predictive Insights
+function renderTrendsTab(insights) {
+  if (!elements.insightsTrendsContainer) return;
+  
+  let html = '';
+
+  // Trend Analysis Section (Phase 11)
+  if (insights.trendAnalysis) {
+    const ta = insights.trendAnalysis;
+    html += `
+      <div class="insights-section">
+        <h3>Анализ трендов</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Сравнение первой и второй половины года</td>
+              <td style="color: ${ta.firstHalfVsSecondHalf !== null && ta.firstHalfVsSecondHalf >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+                ${ta.firstHalfVsSecondHalf !== null ? formatCurrency(ta.firstHalfVsSecondHalf) + '%' : 'N/A'}
+                ${ta.firstHalfVsSecondHalf !== null ? '<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(положительное = рост во второй половине)</span>' : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Пиковый период</td>
+              <td>${ta.peakPeriod ? `${ta.peakPeriod.startMonthName}-${ta.peakPeriod.endMonthName}: ${formatCurrency(ta.peakPeriod.totalRevenue)} PLN` : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Низкий период</td>
+              <td>${ta.lowPeriod ? `${ta.lowPeriod.startMonthName}-${ta.lowPeriod.endMonthName}: ${formatCurrency(ta.lowPeriod.totalRevenue)} PLN` : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Сезонность обнаружена</td>
+              <td>${ta.seasonalityDetected ? '<span style="color: #059669; font-weight: 600;">Да</span>' : '<span style="color: #64748b;">Нет</span>'}</td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Month-over-month growth rates
+    if (ta.monthOverMonthGrowth && ta.monthOverMonthGrowth.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Месячные темпы роста</h4>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Период</th>
+              <th>Темп роста</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      ta.monthOverMonthGrowth.forEach(growth => {
+        html += `
+          <tr>
+            <td>${growth.fromMonthName} → ${growth.toMonthName}</td>
+            <td style="color: ${growth.growthRate !== null && growth.growthRate >= 0 ? '#059669' : '#dc2626'}; font-weight: 600;">
+              ${growth.growthRate !== null ? formatCurrency(growth.growthRate) + '%' : 'N/A'}
+            </td>
+          </tr>
+        `;
+      });
+      html += `
+          </tbody>
+        </table>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  // Stability/Volatility Analysis Section (Phase 12)
+  if (insights.stabilityVolatility) {
+    const sv = insights.stabilityVolatility;
+    const stabilityScoreLabels = {
+      'very_stable': { label: 'Очень стабильно', color: '#059669' },
+      'stable': { label: 'Стабильно', color: '#10b981' },
+      'moderate': { label: 'Умеренная волатильность', color: '#f59e0b' },
+      'high_volatility': { label: 'Высокая волатильность', color: '#dc2626' },
+      'no_data': { label: 'Нет данных', color: '#64748b' }
+    };
+    const scoreInfo = stabilityScoreLabels[sv.stabilityScore] || { label: 'N/A', color: '#64748b' };
+
+    html += `
+      <div class="insights-section">
+        <h3>Анализ стабильности и волатильности</h3>
+        <p style="margin-bottom: 16px; font-size: 14px; color: #64748b; line-height: 1.6;">
+          Этот анализ показывает, насколько предсказуема и стабильна ваша выручка по месяцам. 
+          <strong>Стабильность</strong> означает, что доходы предсказуемы и не сильно колеблются. 
+          <strong>Волатильность</strong> показывает степень изменчивости доходов. 
+          Низкая волатильность (высокая стабильность) позволяет лучше планировать бюджет и управлять денежными потоками.
+        </p>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Значение</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Коэффициент вариации</td>
+              <td>${sv.coefficientOfVariation !== null ? formatCurrency(sv.coefficientOfVariation) + '%' : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Оценка стабильности</td>
+              <td style="color: ${scoreInfo.color}; font-weight: 600;">
+                ${scoreInfo.label}
+                ${sv.coefficientOfVariation !== null ? `<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(CV: ${formatCurrency(sv.coefficientOfVariation)}%)</span>` : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Индикатор предсказуемости</td>
+              <td>${sv.consistencyIndicator !== null ? formatCurrency(sv.consistencyIndicator) + '% месяцев в пределах 1σ' : 'N/A'}</td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Outlier months
+    if (sv.outlierMonths && sv.outlierMonths.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Месяцы-выбросы</h4>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Месяц</th>
+              <th>Выручка</th>
+              <th>Отклонение от среднего</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+      sv.outlierMonths.forEach(outlier => {
+        html += `
+          <tr>
+            <td>${outlier.monthName}</td>
+            <td>${formatCurrency(outlier.amount)} PLN</td>
+            <td>${formatCurrency(outlier.deviation)} PLN</td>
+          </tr>
+        `;
+      });
+      html += `
+          </tbody>
+        </table>
+      `;
+    } else if (sv.stabilityScore !== 'no_data') {
+      html += `
+        <p style="margin-top: 12px; font-size: 13px; color: #64748b; font-style: italic;">
+          Выбросов не обнаружено - все месяцы находятся в пределах нормального распределения.
+        </p>
+      `;
+    }
+
+    html += `</div>`;
+  }
+
+  // Predictive Insights Section (Phase 15)
+  if (insights.predictiveInsights) {
+    const pi = insights.predictiveInsights;
+    html += `
+      <div class="insights-section">
+        <h3>Прогнозные инсайты</h3>
+        <table class="insights-table">
+          <thead>
+            <tr>
+              <th>Метрика</th>
+              <th>Прогноз</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Прогноз выручки на следующий год</td>
+              <td style="font-weight: 600;">
+                ${pi.projectedAnnualRevenue !== null ? formatCurrency(pi.projectedAnnualRevenue) + ' PLN' : 'N/A'}
+                ${pi.projectedAnnualRevenue !== null ? '<span style="font-size: 12px; color: #64748b; margin-left: 8px;">(на основе текущих трендов)</span>' : ''}
+              </td>
+            </tr>
+            <tr>
+              <td>Прогноз безубыточности</td>
+              <td>
+                ${pi.projectedBreakEvenTimeline !== null 
+                  ? `${pi.projectedBreakEvenTimeline.months} мес. (примерно ${pi.projectedBreakEvenTimeline.estimatedDate})`
+                  : insights.breakEvenAnalysis && insights.breakEvenAnalysis.profitLoss >= 0 
+                    ? '<span style="color: #059669; font-weight: 600;">Уже достигнута</span>'
+                    : 'N/A'}
+              </td>
+            </tr>
+            <tr>
+              <td>Прогноз лучшего периода</td>
+              <td>${pi.forecastedBestMonth ? `${pi.forecastedBestMonth.period} (${pi.forecastedBestMonth.note})` : 'N/A'}</td>
+            </tr>
+            <tr>
+              <td>Прогноз худшего периода</td>
+              <td>${pi.forecastedWorstMonth ? `${pi.forecastedWorstMonth.period} (${pi.forecastedWorstMonth.note})` : 'N/A'}</td>
+            </tr>
+          </tbody>
+        </table>
+    `;
+
+    // Risk indicators
+    if (pi.riskIndicators && pi.riskIndicators.length > 0) {
+      html += `
+        <h4 style="margin-top: 20px; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #dc2626;">Индикаторы рисков</h4>
+        <div style="background: #fef2f2; border-left: 4px solid #dc2626; padding: 12px; border-radius: 4px;">
+      `;
+      pi.riskIndicators.forEach(risk => {
+        const riskColor = risk.level === 'high' ? '#dc2626' : '#f59e0b';
+        html += `
+          <p style="margin: 8px 0; color: ${riskColor}; font-weight: ${risk.level === 'high' ? '600' : '500'};">
+            <strong>${risk.level === 'high' ? '⚠️ Высокий риск:' : '⚡ Средний риск:'}</strong> ${risk.message}
+          </p>
+        `;
+      });
+      html += `</div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  if (!html) {
+    html = '<div class="insights-placeholder"><p>Нет данных для отображения</p></div>';
+  }
+
+  elements.insightsTrendsContainer.innerHTML = html;
+}
+
+// Strategic Insights Tab: Strategic Insights (Rule-Based и AI-Powered), Month-by-Month Insights
+function renderStrategicTab(insights) {
+  if (!elements.insightsStrategicContainer) return;
+  
+  let html = '';
+
+  // Strategic Insights Section (Phase 18)
+  if (insights.strategicInsights) {
+    const si = insights.strategicInsights;
+    html += `
+      <div class="insights-section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <h3>Стратегические выводы</h3>
+          <span style="font-size: 12px; color: #64748b;">
+            ${si.generatedBy === 'ai' ? '🤖 Сгенерировано AI' : '📊 Сгенерировано автоматически'}
+            ${si.generatedAt ? ` • ${new Date(si.generatedAt).toLocaleString('ru-RU')}` : ''}
+          </span>
+        </div>
+        
+        ${si.summary ? `
+        <div style="background: #f0f9ff; border-left: 4px solid #1d4ed8; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: #1e40af;">Общая сводка</h4>
+          <p style="margin: 0; color: #1e293b; line-height: 1.6;">${si.summary}</p>
+        </div>
+        ` : ''}
+
+        ${si.breakEvenStatus ? `
+        <div style="background: ${insights.breakEvenAnalysis && insights.breakEvenAnalysis.profitLoss >= 0 ? '#f0fdf4' : '#fef2f2'}; border-left: 4px solid ${insights.breakEvenAnalysis && insights.breakEvenAnalysis.profitLoss >= 0 ? '#059669' : '#dc2626'}; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: ${insights.breakEvenAnalysis && insights.breakEvenAnalysis.profitLoss >= 0 ? '#059669' : '#dc2626'};">
+            ${insights.breakEvenAnalysis && insights.breakEvenAnalysis.profitLoss >= 0 ? '✓' : '⚠️'} Статус безубыточности
+          </h4>
+          <p style="margin: 0; color: #1e293b; line-height: 1.6;">${si.breakEvenStatus}</p>
+        </div>
+        ` : ''}
+
+        ${si.growthTrajectory ? `
+        <div style="background: #fffbeb; border-left: 4px solid #f59e0b; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: #92400e;">Траектория роста</h4>
+          <p style="margin: 0; color: #1e293b; line-height: 1.6;">${si.growthTrajectory}</p>
+        </div>
+        ` : ''}
+
+        ${si.seasonalPatterns ? `
+        <div style="background: #f5f3ff; border-left: 4px solid #7c3aed; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: #6b21a8;">Сезонные паттерны</h4>
+          <p style="margin: 0; color: #1e293b; line-height: 1.6;">${si.seasonalPatterns}</p>
+        </div>
+        ` : ''}
+
+        ${si.keyObservations && si.keyObservations.length > 0 ? `
+        <div style="margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #475569;">Ключевые наблюдения</h4>
+          <ul style="margin: 0; padding-left: 20px; color: #1e293b; line-height: 1.8;">
+            ${si.keyObservations.map(obs => `<li>${obs}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        ${si.recommendations && si.recommendations.length > 0 ? `
+        <div style="background: #ecfdf5; border-left: 4px solid #10b981; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #047857;">Стратегические рекомендации</h4>
+          <ul style="margin: 0; padding-left: 20px; color: #1e293b; line-height: 1.8;">
+            ${si.recommendations.map(rec => `<li style="margin-bottom: 8px;">${rec}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        ${si.vision ? `
+        <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 8px; font-size: 16px; font-weight: 600; color: #92400e;">🌟 Видение развития бизнеса</h4>
+          <p style="margin: 0; color: #1e293b; line-height: 1.6;">${si.vision}</p>
+        </div>
+        ` : ''}
+
+        ${si.scalingOpportunities && si.scalingOpportunities.length > 0 ? `
+        <div style="background: #dbeafe; border-left: 4px solid #3b82f6; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #1e40af;">📈 Возможности масштабирования</h4>
+          <ul style="margin: 0; padding-left: 20px; color: #1e293b; line-height: 1.8;">
+            ${si.scalingOpportunities.map(opp => `<li style="margin-bottom: 8px;">${opp}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+
+        ${si.diversificationIdeas && si.diversificationIdeas.length > 0 ? `
+        <div style="background: #f3e8ff; border-left: 4px solid #9333ea; padding: 16px; border-radius: 4px; margin-bottom: 20px;">
+          <h4 style="margin-top: 0; margin-bottom: 12px; font-size: 16px; font-weight: 600; color: #6b21a8;">💡 Идеи для диверсификации</h4>
+          <ul style="margin: 0; padding-left: 20px; color: #1e293b; line-height: 1.8;">
+            ${si.diversificationIdeas.map(idea => `<li style="margin-bottom: 8px;">${idea}</li>`).join('')}
+          </ul>
+        </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  if (!html) {
+    html = '<div class="insights-placeholder"><p>Стратегические выводы будут доступны после реализации соответствующих метрик</p></div>';
+  }
+
+  elements.insightsStrategicContainer.innerHTML = html;
+}
+
+function formatCurrency(amount) {
+  if (amount === null || amount === undefined) return '0.00';
+  return new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(amount);
 }
 

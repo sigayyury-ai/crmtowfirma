@@ -20,6 +20,7 @@
         <div class="tab-container">
             <div class="tab-header">
                 <button class="tab-button active" data-tab="report">Отчет</button>
+                <button class="tab-button" data-tab="insights">Выводы</button>
                 <button class="tab-button" data-tab="settings">Настройки</button>
             </div>
         </div>
@@ -56,6 +57,71 @@
                 <div class="placeholder">Нажмите "Обновить" для загрузки данных...</div>
             </div>
         </div>
+        </div>
+
+        <!-- Insights Tab -->
+        <div class="tab-content" id="tab-insights">
+            <div class="pnl-report-section">
+                <div class="section-header">
+                    <h2>Аналитические выводы</h2>
+                    <div class="controls">
+                        <div class="year-selector-group">
+                            <label for="insights-year-select" class="year-label">Год:</label>
+                            <select id="insights-year-select" class="year-select" aria-label="Выберите год для аналитики">
+                                <option value="2024">2024</option>
+                                <option value="2025">2025</option>
+                                <option value="2026">2026</option>
+                                <option value="2027">2027</option>
+                                <option value="2028">2028</option>
+                            </select>
+                        </div>
+                        <button id="regenerate-ai-insights-btn" class="btn btn-secondary" style="margin-left: 20px;" title="Принудительно обновить AI-выводы">
+                            🔄 Обновить выводы
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Insights Sub-tabs -->
+                <div class="sub-nav" style="margin-top: 20px; margin-bottom: 20px;">
+                    <button class="subtab-button active" data-subtab="overview">Обзор</button>
+                    <button class="subtab-button" data-subtab="comparison">Сравнения</button>
+                    <button class="subtab-button" data-subtab="operations">Операции</button>
+                    <button class="subtab-button" data-subtab="trends">Тренды</button>
+                    <button class="subtab-button" data-subtab="strategic">Выводы</button>
+                </div>
+
+                <div id="insights-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                    <span class="sr-only">Загрузка аналитических данных...</span>
+                    Загрузка аналитических данных...
+                </div>
+
+                <div id="insights-error" class="error-message" style="display: none;" role="alert" aria-live="assertive"></div>
+
+                <!-- Overview Sub-tab -->
+                <div class="insights-subtab-content active" id="insights-overview">
+                    <div class="placeholder">Выберите год и дождитесь загрузки данных...</div>
+                </div>
+
+                <!-- Comparison Sub-tab -->
+                <div class="insights-subtab-content" id="insights-comparison">
+                    <div class="placeholder">Выберите год и дождитесь загрузки данных...</div>
+                </div>
+
+                <!-- Operations Sub-tab -->
+                <div class="insights-subtab-content" id="insights-operations">
+                    <div class="placeholder">Выберите год и дождитесь загрузки данных...</div>
+                </div>
+
+                <!-- Trends Sub-tab -->
+                <div class="insights-subtab-content" id="insights-trends">
+                    <div class="placeholder">Выберите год и дождитесь загрузки данных...</div>
+                </div>
+
+                <!-- Strategic Insights Sub-tab -->
+                <div class="insights-subtab-content" id="insights-strategic">
+                    <div class="placeholder">Выберите год и дождитесь загрузки данных...</div>
+                </div>
+            </div>
         </div>
 
         <!-- Settings Tab -->

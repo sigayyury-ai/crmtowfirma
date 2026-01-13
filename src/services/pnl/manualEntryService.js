@@ -586,6 +586,62 @@ class ManualEntryService {
       throw error;
     }
   }
+
+  /**
+   * Get all expense entries for a year (for insights calculations)
+   * @param {number} year - Year (2020-2030)
+   * @param {string} [asOfDate] - Optional ISO 8601 date string for historical filtering
+   * @returns {Promise<Array>} Array of expense entry objects
+   */
+  async getExpenses(year, asOfDate = null) {
+    try {
+      // Validate year
+      if (!Number.isFinite(year) || year < 2020 || year > 2030) {
+        throw new Error('Year must be a number between 2020 and 2030');
+      }
+
+      // Validate asOfDate if provided
+      if (asOfDate) {
+        const date = new Date(asOfDate);
+        if (isNaN(date.getTime())) {
+          throw new Error('Invalid asOfDate format. Expected ISO 8601 date string.');
+        }
+        if (date > new Date()) {
+          throw new Error('asOfDate cannot be in the future');
+        }
+      }
+
+      let query = supabase
+        .from(this.tableName)
+        .select('*')
+        .eq('year', year)
+        .eq('entry_type', 'expense')
+        .order('month', { ascending: true })
+        .order('created_at', { ascending: true });
+
+      // Apply historical date filtering if provided
+      if (asOfDate) {
+        const asOfDateObj = new Date(asOfDate);
+        const asOfDateISO = asOfDateObj.toISOString();
+        // Filter: created_at <= asOfDate AND (updated_at IS NULL OR updated_at <= asOfDate)
+        query = query
+          .lte('created_at', asOfDateISO)
+          .or(`updated_at.is.null,updated_at.lte.${asOfDateISO}`);
+      }
+
+      const { data, error } = await query;
+
+      if (error) {
+        logger.error('Error getting expenses:', error);
+        throw error;
+      }
+
+      return data || [];
+    } catch (error) {
+      logger.error('Failed to get expenses:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = ManualEntryService;

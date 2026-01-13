@@ -66,6 +66,8 @@ const paymentRevenueReportService = new PaymentRevenueReportService();
 const deletedProformaReportService = new DeletedProformaReportService();
 const PnlReportService = require('../services/pnl/pnlReportService');
 const pnlReportService = new PnlReportService();
+const PnlInsightsService = require('../services/pnl/pnlInsightsService');
+const pnlInsightsService = new PnlInsightsService();
 const IncomeCategoryService = require('../services/pnl/incomeCategoryService');
 const incomeCategoryService = new IncomeCategoryService();
 const ExpenseCategoryService = require('../services/pnl/expenseCategoryService');
@@ -4312,6 +4314,100 @@ router.get('/pnl/report', async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to get PNL report',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/insights
+ * Get analytical insights for PNL report
+ * Query parameters:
+ *   - year (required): Year to get insights for (2020-2030)
+ *   - asOfDate (optional): ISO 8601 date string for historical filtering
+ *   - regenerateAI (optional): Force regeneration of AI insights (true/false)
+ */
+// Endpoint to clear AI insights cache (cache is disabled, always generates fresh data)
+router.delete('/pnl/insights/cache', async (req, res) => {
+  try {
+    pnlInsightsService.clearAICache();
+    res.json({
+      success: true,
+      message: 'AI insights cache cleared (cache is disabled, always generates fresh data)'
+    });
+  } catch (error) {
+    logger.error('Error clearing cache', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clear cache',
+      message: error.message
+    });
+  }
+});
+
+router.get('/pnl/insights', async (req, res) => {
+  try {
+    const { year, asOfDate, regenerateAI, aiPeriod } = req.query;
+    
+    // Year is required
+    if (!year) {
+      return res.status(400).json({
+        success: false,
+        error: 'Year parameter is required. Expected year between 2020 and 2030.'
+      });
+    }
+    
+    const yearParam = parseInt(year, 10);
+    
+    if (Number.isNaN(yearParam) || yearParam < 2020 || yearParam > 2030) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid year parameter. Expected year between 2020 and 2030.'
+      });
+    }
+
+    // Validate asOfDate if provided
+    let asOfDateParam = null;
+    if (asOfDate) {
+      const date = new Date(asOfDate);
+      if (isNaN(date.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid asOfDate format. Expected ISO 8601 date string.'
+        });
+      }
+      if (date > new Date()) {
+        return res.status(400).json({
+          success: false,
+          error: 'asOfDate cannot be in the future.'
+        });
+      }
+      asOfDateParam = asOfDate;
+    }
+
+    const regenerateAIParam = regenerateAI === 'true' || regenerateAI === '1';
+    
+    // Validate aiPeriod: 'month', 'quarter', or 'year' (default: 'month')
+    const aiPeriodParam = ['month', 'quarter', 'year'].includes(aiPeriod) ? aiPeriod : 'month';
+
+    const insights = await pnlInsightsService.getInsights(yearParam, asOfDateParam, regenerateAIParam, aiPeriodParam);
+
+    logger.info('PNL insights generated', {
+      year: yearParam,
+      asOfDate: asOfDateParam,
+      regenerateAI: regenerateAIParam,
+      hasData: !!insights
+    });
+
+    res.json({
+      success: true,
+      data: insights
+    });
+  } catch (error) {
+    logger.error('Error getting PNL insights:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get PNL insights',
       message: error.message
     });
   }
