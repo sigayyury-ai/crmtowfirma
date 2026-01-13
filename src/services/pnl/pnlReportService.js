@@ -291,6 +291,57 @@ class PnlReportService {
         }
       }
 
+      // Load confirmed cash payments (Hybrid Cash Payments)
+      // These should be included in the "Наличные" category (ID: 1) or "Hybrid Cash Payments" category (ID: 6)
+      let cashPayments = [];
+      try {
+        // Load all cash payments with status='received' and filter by date in code
+        // Use confirmed_at if available, otherwise use expected_date or created_at
+        const { data: cashPaymentsData, error: cashError } = await this.supabase
+          .from('cash_payments')
+          .select('id, deal_id, cash_received_amount, currency, amount_pln, confirmed_at, expected_date, created_at, source, status')
+          .eq('status', 'received') // Only confirmed cash payments
+          .order('confirmed_at', { ascending: false, nullsLast: true });
+
+        if (cashError) {
+          logger.warn('Failed to load cash payments', { error: cashError.message });
+        } else {
+          // Filter by date: use confirmed_at if available, otherwise expected_date or created_at
+          cashPayments = (Array.isArray(cashPaymentsData) ? cashPaymentsData : []).filter((cp) => {
+            const dateToCheck = cp.confirmed_at || cp.expected_date || cp.created_at;
+            if (!dateToCheck) return false;
+            
+            const date = new Date(dateToCheck);
+            return date >= yearStart && date <= yearEnd;
+          });
+          
+          logger.info('Loaded cash payments for PNL report', { 
+            total: cashPaymentsData?.length || 0,
+            filtered: cashPayments.length 
+          });
+        }
+
+      } catch (cashErr) {
+        logger.warn('Error loading cash payments', { error: cashErr.message });
+      }
+
+      // Find cash category (prefer "Наличные" ID: 1, fallback to "Hybrid Cash Payments" ID: 6)
+      let cashCategoryId = null;
+      const cashCategory = Array.from(categoriesMap.values()).find(cat => 
+        cat.id === 1 || (cat.id === 6 && cat.name && cat.name.toLowerCase().includes('cash'))
+      );
+      if (cashCategory) {
+        cashCategoryId = cashCategory.id;
+      } else {
+        // Try to find any category with "наличн" or "cash" in name
+        const foundCashCat = Array.from(categoriesMap.values()).find(cat => 
+          cat.name && (cat.name.toLowerCase().includes('наличн') || cat.name.toLowerCase().includes('cash'))
+        );
+        if (foundCashCat) {
+          cashCategoryId = foundCashCat.id;
+        }
+      }
+
       // Load Stripe payments
       let stripePayments = [];
       let refundedPaymentIds = new Set();
@@ -543,6 +594,79 @@ class PnlReportService {
           });
         });
       });
+
+      // Process cash payments and add them to the cash category
+      if (cashPayments.length > 0 && cashCategoryId !== null) {
+        // Initialize category data if needed
+        if (!categoryMonthlyData[cashCategoryId]) {
+          categoryMonthlyData[cashCategoryId] = {};
+          for (let m = 1; m <= 12; m++) {
+            categoryMonthlyData[cashCategoryId][m] = {
+              amountPln: 0,
+              paymentCount: 0,
+              currencyBreakdown: {}
+            };
+          }
+        }
+
+        cashPayments.forEach((cashPayment) => {
+          // Determine month from confirmed_at (preferred) or expected_date
+          const dateToUse = cashPayment.confirmed_at || cashPayment.expected_date;
+          const month = extractMonthFromDate(dateToUse);
+          
+          if (!month || month < 1 || month > 12) {
+            logger.warn('Invalid month for cash payment', {
+              cashPaymentId: cashPayment.id,
+              confirmedAt: cashPayment.confirmed_at,
+              expectedDate: cashPayment.expected_date
+            });
+            return;
+          }
+
+          // Get amount in PLN
+          let amountPln = null;
+          if (cashPayment.amount_pln !== null && cashPayment.amount_pln !== undefined) {
+            amountPln = toNumber(cashPayment.amount_pln);
+          } else if (cashPayment.currency === 'PLN' && cashPayment.cash_received_amount) {
+            amountPln = toNumber(cashPayment.cash_received_amount);
+          } else {
+            // For non-PLN currencies without amount_pln, we can't convert accurately
+            logger.warn('Cash payment missing PLN amount', {
+              cashPaymentId: cashPayment.id,
+              currency: cashPayment.currency,
+              cashReceivedAmount: cashPayment.cash_received_amount
+            });
+            return;
+          }
+
+          if (Number.isFinite(amountPln) && amountPln > 0) {
+            // Add to category/month
+            categoryMonthlyData[cashCategoryId][month].amountPln += amountPln;
+            categoryMonthlyData[cashCategoryId][month].paymentCount += 1;
+
+            // Track original currency amounts for breakdown
+            if (includeBreakdown && cashPayment.cash_received_amount && cashPayment.currency) {
+              const currency = (cashPayment.currency || 'PLN').toUpperCase();
+              const originalAmount = toNumber(cashPayment.cash_received_amount) || 0;
+              if (originalAmount > 0) {
+                if (!categoryMonthlyData[cashCategoryId][month].currencyBreakdown[currency]) {
+                  categoryMonthlyData[cashCategoryId][month].currencyBreakdown[currency] = 0;
+                }
+                categoryMonthlyData[cashCategoryId][month].currencyBreakdown[currency] += originalAmount;
+              }
+            }
+          }
+        });
+
+        logger.info('Processed cash payments for PNL report', {
+          cashCategoryId,
+          cashPaymentsCount: cashPayments.length
+        });
+      } else if (cashPayments.length > 0 && cashCategoryId === null) {
+        logger.warn('Cash payments found but no cash category available', {
+          cashPaymentsCount: cashPayments.length
+        });
+      }
 
       // Build categories array with monthly data
       const categoriesList = Array.from(categoriesMap.values())
