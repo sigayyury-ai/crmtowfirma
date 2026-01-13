@@ -41,6 +41,7 @@
                         </select>
                     </div>
                     <button id="refresh-pnl" class="btn btn-primary">🔄 Обновить</button>
+                    <button id="check-duplicates-btn" class="btn btn-secondary">🔍 Проверить дубли</button>
                 </div>
             </div>
 
@@ -193,6 +194,28 @@
         </div>
     </div>
 
+    <!-- Modal for viewing payment list (for auto-managed revenue categories) -->
+    <div id="payment-list-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3 id="payment-list-title">Платежи за месяц</h3>
+                <button class="modal-close" onclick="closePaymentListModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="payment-list-loading" class="loading-indicator" style="display: none;" role="status" aria-live="polite">
+                    <span class="sr-only">Загрузка платежей...</span>
+                    Загрузка платежей...
+                </div>
+                <div id="payment-list-container">
+                    <!-- Payments will be loaded here -->
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closePaymentListModal()">Закрыть</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal for editing expense entry -->
     <div id="edit-expense-modal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 500px;">
@@ -213,6 +236,24 @@
             <div class="modal-footer">
                 <button class="btn btn-primary" onclick="handleSaveEditedEntry()">Сохранить</button>
                 <button class="btn btn-secondary" onclick="handleCloseEditModal()">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Duplicates Modal -->
+    <div id="duplicates-modal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h3 id="duplicates-modal-title">Дубли платежей</h3>
+                <button class="modal-close" onclick="closeDuplicatesModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="duplicates-container">
+                    <div class="loading-indicator">Загрузка дублей...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeDuplicatesModal()">Закрыть</button>
             </div>
         </div>
     </div>

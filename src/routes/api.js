@@ -74,6 +74,8 @@ const ExpenseCategoryMappingService = require('../services/pnl/expenseCategoryMa
 const expenseCategoryMappingService = new ExpenseCategoryMappingService();
 const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
+const PaymentDetailsService = require('../services/pnl/paymentDetailsService');
+const paymentDetailsService = new PaymentDetailsService();
 const PaymentProductLinkService = require('../services/payments/paymentProductLinkService');
 const proformaAdjustmentRoutes = require('./internal/proformaAdjustmentRoutes');
 const paymentProductLinkService = new PaymentProductLinkService();
@@ -4952,6 +4954,357 @@ router.delete('/pnl/manual-entries/:id', async (req, res) => {
     res.status(statusCode).json({
       success: false,
       error: 'Failed to delete manual entry',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/duplicates
+ * Find duplicate payments/expenses
+ * Query params: year (number), month (number 1-12), direction ('in' for revenue, 'out' for expenses)
+ */
+router.get('/pnl/duplicates', async (req, res) => {
+  try {
+    logger.info('GET /pnl/duplicates - Request received', {
+      query: req.query,
+      url: req.url
+    });
+
+    const year = parseInt(req.query.year, 10);
+    const month = parseInt(req.query.month, 10);
+    const direction = req.query.direction || 'out'; // Default to expenses
+
+    if (Number.isNaN(year) || year < 2020 || year > 2030) {
+      logger.warn('GET /pnl/duplicates - Invalid year', { year });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid year parameter (must be between 2020 and 2030)'
+      });
+    }
+
+    if (Number.isNaN(month) || month < 1 || month > 12) {
+      logger.warn('GET /pnl/duplicates - Invalid month', { month });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid month parameter (must be between 1 and 12)'
+      });
+    }
+
+    if (direction !== 'in' && direction !== 'out') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid direction parameter (must be "in" or "out")'
+      });
+    }
+
+    logger.info('GET /pnl/duplicates - Finding duplicates', {
+      year,
+      month,
+      direction
+    });
+
+    const duplicates = await paymentDetailsService.findDuplicates(year, month, direction);
+
+    logger.info('GET /pnl/duplicates - Success', {
+      year,
+      month,
+      direction,
+      duplicateGroupCount: duplicates.length
+    });
+
+    res.json({
+      success: true,
+      data: duplicates
+    });
+  } catch (error) {
+    logger.error('GET /pnl/duplicates - Error finding duplicates', {
+      error: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to find duplicates',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/payments
+ * Get payments by category and month
+ * Query params: categoryId (number or 'null' for uncategorized), year (number), month (number 1-12)
+ */
+router.get('/pnl/payments', async (req, res) => {
+  try {
+    logger.info('GET /pnl/payments - Request received', {
+      query: req.query,
+      url: req.url
+    });
+
+    const categoryIdParam = req.query.categoryId;
+    const year = parseInt(req.query.year, 10);
+    const month = parseInt(req.query.month, 10);
+
+    // Parse categoryId - handle 'null' string or actual null
+    let categoryId = null;
+    if (categoryIdParam !== undefined && categoryIdParam !== null && categoryIdParam !== 'null') {
+      categoryId = parseInt(categoryIdParam, 10);
+      if (Number.isNaN(categoryId)) {
+        logger.warn('GET /pnl/payments - Invalid categoryId', { categoryIdParam });
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid categoryId parameter'
+        });
+      }
+    }
+
+    if (Number.isNaN(year) || year < 2020 || year > 2030) {
+      logger.warn('GET /pnl/payments - Invalid year', { year });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid year parameter (must be between 2020 and 2030)'
+      });
+    }
+
+    if (Number.isNaN(month) || month < 1 || month > 12) {
+      logger.warn('GET /pnl/payments - Invalid month', { month });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid month parameter (must be between 1 and 12)'
+      });
+    }
+
+    logger.info('GET /pnl/payments - Fetching payments', {
+      categoryId,
+      year,
+      month
+    });
+
+    const payments = await paymentDetailsService.getPaymentsByCategoryAndMonth(categoryId, year, month);
+
+    logger.info('GET /pnl/payments - Success', {
+      categoryId,
+      year,
+      month,
+      paymentCount: payments.length
+    });
+
+    res.json({
+      success: true,
+      data: payments
+    });
+  } catch (error) {
+    logger.error('GET /pnl/payments - Error fetching payments', {
+      error: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch payments',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/expenses
+ * Get expenses by category and month
+ * Query params: expenseCategoryId (number or 'null' for uncategorized), year (number), month (number 1-12)
+ */
+router.get('/pnl/expenses', async (req, res) => {
+  // Explicit route handler - must be before /pnl/expense-categories/:id
+  try {
+    logger.info('GET /pnl/expenses - Request received', {
+      query: req.query,
+      url: req.url,
+      path: req.path,
+      originalUrl: req.originalUrl,
+      method: req.method
+    });
+
+    const expenseCategoryIdParam = req.query.expenseCategoryId;
+    const year = parseInt(req.query.year, 10);
+    const month = parseInt(req.query.month, 10);
+
+    // Parse expenseCategoryId - handle 'null' string or actual null
+    let expenseCategoryId = null;
+    if (expenseCategoryIdParam !== undefined && expenseCategoryIdParam !== null && expenseCategoryIdParam !== 'null') {
+      expenseCategoryId = parseInt(expenseCategoryIdParam, 10);
+      if (Number.isNaN(expenseCategoryId)) {
+        logger.warn('GET /pnl/expenses - Invalid expenseCategoryId', { expenseCategoryIdParam });
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid expenseCategoryId parameter'
+        });
+      }
+    }
+
+    if (Number.isNaN(year) || year < 2020 || year > 2030) {
+      logger.warn('GET /pnl/expenses - Invalid year', { year });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid year parameter (must be between 2020 and 2030)'
+      });
+    }
+
+    if (Number.isNaN(month) || month < 1 || month > 12) {
+      logger.warn('GET /pnl/expenses - Invalid month', { month });
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid month parameter (must be between 1 and 12)'
+      });
+    }
+
+    logger.info('GET /pnl/expenses - Fetching expenses', {
+      expenseCategoryId,
+      year,
+      month
+    });
+
+    const expenses = await paymentDetailsService.getExpensesByCategoryAndMonth(expenseCategoryId, year, month);
+
+    logger.info('GET /pnl/expenses - Success', {
+      expenseCategoryId,
+      year,
+      month,
+      expenseCount: expenses.length
+    });
+
+    res.json({
+      success: true,
+      data: expenses
+    });
+  } catch (error) {
+    logger.error('GET /pnl/expenses - Error fetching expenses', {
+      error: error.message,
+      stack: error.stack,
+      query: req.query
+    });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch expenses',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/pnl/expenses/:id/unlink
+ * Unlink an expense from its category (set expense_category_id to NULL)
+ */
+router.put('/pnl/expenses/:id/unlink', async (req, res) => {
+  try {
+    const expenseId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(expenseId) || expenseId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid expense ID'
+      });
+    }
+
+    logger.info('PUT /pnl/expenses/:id/unlink', {
+      expenseId
+    });
+
+    const updatedExpense = await paymentDetailsService.unlinkExpenseFromCategory(expenseId);
+
+    res.json({
+      success: true,
+      data: updatedExpense
+    });
+  } catch (error) {
+    logger.error('Error unlinking expense:', error);
+    const statusCode = error.message.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({
+      success: false,
+      error: 'Failed to unlink expense',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/pnl/expenses/:id/delete
+ * Mark an expense payment as duplicate (soft delete by setting deleted_at)
+ */
+router.put('/pnl/expenses/:id/delete', async (req, res) => {
+  try {
+    const expenseId = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(expenseId) || expenseId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid expense ID'
+      });
+    }
+
+    logger.info('PUT /pnl/expenses/:id/delete', {
+      expenseId
+    });
+
+    const updatedExpense = await paymentDetailsService.markExpenseAsDuplicate(expenseId);
+
+    res.json({
+      success: true,
+      data: updatedExpense,
+      message: 'Расход помечен как дубль и удален'
+    });
+  } catch (error) {
+    logger.error('Error marking expense as duplicate:', error);
+    const statusCode = error.message.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({
+      success: false,
+      error: 'Failed to mark expense as duplicate',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/pnl/payments/:id/unlink
+ * Unlink a payment from its category (set income_category_id to NULL)
+ * Body: { source: 'bank' | 'stripe' }
+ */
+router.put('/pnl/payments/:id/unlink', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    const { source } = req.body;
+
+    if (Number.isNaN(paymentId) || paymentId <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment ID'
+      });
+    }
+
+    if (!source || (source !== 'bank' && source !== 'stripe')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid source parameter (must be "bank" or "stripe")'
+      });
+    }
+
+    logger.info('PUT /pnl/payments/:id/unlink', {
+      paymentId,
+      source
+    });
+
+    const updatedPayment = await paymentDetailsService.unlinkPaymentFromCategory(paymentId, source);
+
+    res.json({
+      success: true,
+      data: updatedPayment
+    });
+  } catch (error) {
+    logger.error('Error unlinking payment:', error);
+    const statusCode = error.message.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({
+      success: false,
+      error: 'Failed to unlink payment',
       message: error.message
     });
   }

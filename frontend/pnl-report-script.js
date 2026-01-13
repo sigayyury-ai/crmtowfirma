@@ -28,6 +28,7 @@ function cacheDom() {
   elements = {
     refreshBtn: document.getElementById('refresh-pnl'),
     yearSelect: document.getElementById('year-select'),
+    checkDuplicatesBtn: document.getElementById('check-duplicates-btn'),
     loadingIndicator: document.getElementById('pnl-loading'),
     errorMessage: document.getElementById('pnl-error'),
     reportContainer: document.getElementById('pnl-report-container'),
@@ -451,7 +452,9 @@ function renderReport(data) {
             }
             
             const editableClass = isManual ? ' editable' : '';
-            const dataAttrs = isManual ? `data-expense-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="expense" data-has-data="${hasData}"` : '';
+            // Add data attributes for ALL expense categories (both manual and auto) so click handlers can find them
+            const categoryIdValue = category.id === null || category.id === undefined ? 'null' : category.id;
+            const dataAttrs = `data-expense-category-id="${categoryIdValue}" data-year="${year}" data-month="${entry.month}" data-entry-type="expense" data-has-data="${hasData}"`;
             
             // For manual categories: show plus icon centered if no data, otherwise show amount
             let cellContent = '';
@@ -466,7 +469,9 @@ function renderReport(data) {
               cellContent = hasData ? formatCurrency(amount) + monthBreakdownHtml : '';
             }
             
-            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="position: relative; cursor: ${isManual ? 'pointer' : 'default'};">
+            // Add cursor pointer for all categories (both manual and auto) since they're clickable
+            const cursorStyle = 'cursor: pointer; position: relative;';
+            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="${cursorStyle}">
                       ${cellContent}
                     </td>`;
           }).join('')}
@@ -533,7 +538,10 @@ function renderReport(data) {
             }
             
             const editableClass = isManual ? ' editable' : '';
-            const dataAttrs = isManual ? `data-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="revenue" data-has-data="${hasData}"` : '';
+            // Add data attributes for ALL categories (both manual and auto) so click handlers can find them
+            // Handle null categoryId for "Uncategorized" category
+            const categoryIdValue = category.id === null || category.id === undefined ? 'null' : category.id;
+            const dataAttrs = `data-category-id="${categoryIdValue}" data-year="${year}" data-month="${entry.month}" data-entry-type="revenue" data-has-data="${hasData}"`;
             
             // For manual categories: show plus icon centered if no data, otherwise show amount
             let cellContent = '';
@@ -548,7 +556,9 @@ function renderReport(data) {
               cellContent = `${amountDisplay}${monthBreakdownHtml}`;
             }
             
-            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="${isManual ? 'cursor: pointer; position: relative;' : ''}">${cellContent}</td>`;
+            // Add cursor pointer for all categories (both manual and auto) since they're clickable
+            const cursorStyle = 'cursor: pointer; position: relative;';
+            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="${cursorStyle}">${cellContent}</td>`;
           }).join('')}
           <td class="amount-cell total-cell"><strong>${formatCurrency(categoryTotal)}</strong></td>
         </tr>
@@ -783,11 +793,14 @@ function renderReport(data) {
   // Attach collapse/expand handlers for category sections
   attachCollapseHandlers();
   
-  // Attach click handlers for expense cells (opens add modal if no data, list modal if data exists)
-  attachExpenseCellClickHandlers();
-  
-  // Attach click handlers for revenue cells (opens add modal if no data, list modal if data exists)
-  attachRevenueCellClickHandlers();
+  // Attach click handlers for expense and revenue cells
+  // These use event delegation, so they only need to be attached once
+  // But we call them here to ensure they're set up after DOM is ready
+  if (!elements.reportContainer._handlersAttached) {
+    attachExpenseCellClickHandlers();
+    attachRevenueCellClickHandlers();
+    elements.reportContainer._handlersAttached = true;
+  }
   
   // Restore expanded state after all handlers are attached and DOM is ready
   // Use setTimeout to ensure DOM is fully rendered
@@ -873,69 +886,150 @@ function attachEditableCellListeners() {
 }
 
 /**
+ * Check if expense category is auto-managed or manual-managed
+ * @param {number} expenseCategoryId - Expense category ID
+ * @returns {Promise<'auto'|'manual'|null>} Management type or null if category not found
+ */
+async function checkExpenseCategoryManagementType(expenseCategoryId) {
+  try {
+    if (!expenseCategoryId || expenseCategoryId === null) {
+      // Uncategorized category is always auto
+      return 'auto';
+    }
+
+    const response = await fetch(`${API_BASE}/pnl/expense-categories/${expenseCategoryId}`);
+    const result = await response.json();
+
+    if (!response.ok || !result.success || !result.data) {
+      // Default to auto if category not found
+      return 'auto';
+    }
+
+    return result.data.management_type || 'auto';
+  } catch (error) {
+    addLog('error', `Ошибка проверки типа категории расходов: ${error.message}`);
+    // Default to auto on error
+    return 'auto';
+  }
+}
+
+/**
  * Attach click handlers for expense category cells
- * If no data: open add modal
- * If data exists: open list modal
+ * Uses event delegation to handle clicks even on collapsed sections
+ * For auto categories: show expense payment list
+ * For manual categories: show manual entry modal (existing behavior)
  */
 function attachExpenseCellClickHandlers() {
-  const expenseCells = elements.reportContainer.querySelectorAll('.amount-cell[data-entry-type="expense"]');
-  
-  expenseCells.forEach(cell => {
-    cell.addEventListener('click', (e) => {
+  // Use event delegation on the container to catch clicks on all cells, even in collapsed sections
+  if (elements.reportContainer) {
+    elements.reportContainer.addEventListener('click', async (e) => {
+      const cell = e.target.closest('.amount-cell[data-entry-type="expense"]');
+      if (!cell) return;
+      
       e.stopPropagation(); // Prevent other handlers from firing
       
-      const expenseCategoryId = parseInt(cell.getAttribute('data-expense-category-id'), 10);
+      const expenseCategoryIdAttr = cell.getAttribute('data-expense-category-id');
+      const expenseCategoryId = expenseCategoryIdAttr === 'null' || expenseCategoryIdAttr === null || expenseCategoryIdAttr === '' ? null : parseInt(expenseCategoryIdAttr, 10);
       const year = parseInt(cell.getAttribute('data-year'), 10);
       const month = parseInt(cell.getAttribute('data-month'), 10);
       const hasData = cell.getAttribute('data-has-data') === 'true';
       
-      if (!expenseCategoryId || !year || !month) {
+      // Check year and month (expenseCategoryId can be null for uncategorized)
+      if (!year || !month) {
         addLog('error', `Недостаточно данных для открытия модального окна: expenseCategoryId=${expenseCategoryId}, year=${year}, month=${month}`);
         return;
       }
+
+      // Check category management type (null expenseCategoryId means uncategorized, which is always auto)
+      const managementType = await checkExpenseCategoryManagementType(expenseCategoryId);
       
-      if (hasData) {
-        // If data exists, show list modal
-        showExpenseListModal(expenseCategoryId, year, month);
+      if (managementType === 'manual') {
+        // Manual categories: use existing manual entry flow
+        if (hasData) {
+          showExpenseListModal(expenseCategoryId, year, month);
+        } else {
+          showAddExpenseModal(expenseCategoryId, year, month);
+        }
       } else {
-        // If no data, show add modal
-        showAddExpenseModal(expenseCategoryId, year, month);
+        // Auto categories: show expense payment list
+        showExpensePaymentListModal(expenseCategoryId, year, month);
       }
     });
-  });
+  }
+}
+
+/**
+ * Check if category is auto-managed or manual-managed
+ * @param {number} categoryId - Category ID
+ * @returns {Promise<'auto'|'manual'|null>} Management type or null if category not found
+ */
+async function checkCategoryManagementType(categoryId) {
+  try {
+    if (!categoryId || categoryId === null) {
+      // Uncategorized category is always auto
+      return 'auto';
+    }
+
+    const response = await fetch(`${API_BASE}/pnl/categories/${categoryId}`);
+    const result = await response.json();
+
+    if (!response.ok || !result.success || !result.data) {
+      // Default to auto if category not found
+      return 'auto';
+    }
+
+    return result.data.management_type || 'auto';
+  } catch (error) {
+    addLog('error', `Ошибка проверки типа категории: ${error.message}`);
+    // Default to auto on error
+    return 'auto';
+  }
 }
 
 /**
  * Attach click handlers for revenue category cells
- * If no data: open add modal
- * If data exists: open list modal
+ * Uses event delegation to handle clicks even on collapsed sections
+ * For auto categories: show payment list
+ * For manual categories: show manual entry modal (existing behavior)
  */
 function attachRevenueCellClickHandlers() {
-  const revenueCells = elements.reportContainer.querySelectorAll('.amount-cell[data-entry-type="revenue"]');
-  
-  revenueCells.forEach(cell => {
-    cell.addEventListener('click', (e) => {
+  // Use event delegation on the container to catch clicks on all cells, even in collapsed sections
+  if (elements.reportContainer) {
+    elements.reportContainer.addEventListener('click', async (e) => {
+      const cell = e.target.closest('.amount-cell[data-entry-type="revenue"]');
+      if (!cell) return;
+      
       e.stopPropagation(); // Prevent other handlers from firing
       
-      const categoryId = parseInt(cell.getAttribute('data-category-id'), 10);
+      const categoryIdAttr = cell.getAttribute('data-category-id');
+      // categoryId can be null for "Uncategorized" category, so parse carefully
+      const categoryId = categoryIdAttr === 'null' || categoryIdAttr === null || categoryIdAttr === '' ? null : parseInt(categoryIdAttr, 10);
       const year = parseInt(cell.getAttribute('data-year'), 10);
       const month = parseInt(cell.getAttribute('data-month'), 10);
       const hasData = cell.getAttribute('data-has-data') === 'true';
       
-      if (!categoryId || !year || !month) {
+      // Check year and month (categoryId can be null for uncategorized)
+      if (!year || !month) {
         addLog('error', `Недостаточно данных для открытия модального окна: categoryId=${categoryId}, year=${year}, month=${month}`);
         return;
       }
+
+      // Check category management type (null categoryId means uncategorized, which is always auto)
+      const managementType = await checkCategoryManagementType(categoryId);
       
-      if (hasData) {
-        // If data exists, show list modal
-        showRevenueListModal(categoryId, year, month);
+      if (managementType === 'manual') {
+        // Manual categories: use existing manual entry flow
+        if (hasData) {
+          showRevenueListModal(categoryId, year, month);
+        } else {
+          showAddRevenueModal(categoryId, year, month);
+        }
       } else {
-        // If no data, show add modal
-        showAddRevenueModal(categoryId, year, month);
+        // Auto categories: show payment list
+        showPaymentListModal(categoryId, year, month);
       }
     });
-  });
+  }
 }
 
 function handleCellClick(e) {
@@ -3247,6 +3341,472 @@ async function deleteRevenueEntry(entryId) {
   }
 }
 
+// ==================== Payment List Modal (for auto-managed categories) ====================
+
+let currentPaymentListContext = null; // { categoryId, year, month }
+
+/**
+ * Show payment list modal for auto-managed revenue categories
+ */
+async function showPaymentListModal(categoryId, year, month) {
+  currentPaymentListContext = { categoryId, year, month };
+  
+  const modal = document.getElementById('payment-list-modal');
+  const loadingIndicator = document.getElementById('payment-list-loading');
+  const container = document.getElementById('payment-list-container');
+  const title = document.getElementById('payment-list-title');
+  
+  if (!modal || !container) {
+    addLog('error', 'Модальное окно списка платежей не найдено');
+    return;
+  }
+
+  // Show modal and loading indicator
+  modal.style.display = 'block';
+  if (loadingIndicator) loadingIndicator.style.display = 'block';
+  container.innerHTML = '';
+
+  // Update title
+  if (title) {
+    const monthName = monthNames[month] || `Месяц ${month}`;
+    title.textContent = `Платежи за ${monthName} ${year}`;
+  }
+
+  try {
+    // Validate parameters
+    if (!year || !Number.isFinite(year) || year < 2020 || year > 2030) {
+      throw new Error(`Некорректный year: ${year}`);
+    }
+    if (!month || !Number.isFinite(month) || month < 1 || month > 12) {
+      throw new Error(`Некорректный month: ${month}`);
+    }
+    
+    addLog('info', `Загрузка списка платежей: categoryId=${categoryId}, year=${year}, month=${month}`);
+    
+    // Build URL with categoryId (use 'null' string for uncategorized)
+    const categoryParam = categoryId === null || categoryId === undefined ? 'null' : categoryId;
+    const url = `${API_BASE}/pnl/payments?categoryId=${categoryParam}&year=${year}&month=${month}`;
+    
+    addLog('info', `Запрос к API: ${url}`);
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      addLog('error', `HTTP ${response.status}: ${errorText}`);
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+
+    if (!result.success) {
+      throw new Error(result.error || result.message || 'Неизвестная ошибка');
+    }
+
+    const payments = result.data || [];
+    addLog('success', `Загружено платежей: ${payments.length}`);
+    
+    renderPaymentList(payments, categoryId, year, month);
+    
+  } catch (error) {
+    addLog('error', `Ошибка загрузки списка платежей: ${error.message}`);
+    container.innerHTML = `<div class="error-message">Ошибка загрузки платежей: ${error.message}</div>`;
+  } finally {
+    if (loadingIndicator) loadingIndicator.style.display = 'none';
+  }
+}
+
+/**
+ * Render payment list
+ */
+function renderPaymentList(payments, categoryId, year, month) {
+  const container = document.getElementById('payment-list-container');
+  if (!container) return;
+
+  if (!payments || payments.length === 0) {
+    container.innerHTML = '<div class="placeholder">Нет платежей</div>';
+    return;
+  }
+
+  // Format currency
+  function formatCurrency(amount, currency = 'PLN') {
+    const numAmount = parseFloat(amount) || 0;
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: currency || 'PLN',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(numAmount);
+  }
+
+  // Format date
+  function formatDate(dateString) {
+    if (!dateString) return 'Не указана';
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  const html = `
+    <div class="payment-list">
+      <div class="payment-list-header" style="display: grid; grid-template-columns: 1fr 120px 150px 100px 80px; gap: 10px; padding: 10px; background: #f5f5f5; font-weight: bold; border-bottom: 2px solid #ddd;">
+        <div>Плательщик / Описание</div>
+        <div>Дата</div>
+        <div>Сумма</div>
+        <div>Источник</div>
+        <div>Действия</div>
+      </div>
+      ${payments.map(payment => `
+        <div class="payment-item" style="display: grid; grid-template-columns: 1fr 120px 150px 100px 80px; gap: 10px; padding: 10px; border-bottom: 1px solid #eee; align-items: center;">
+          <div>
+            <div style="font-weight: 500;">${escapeHtml(payment.payer || 'Не указан')}</div>
+            ${payment.description ? `<div style="font-size: 0.9em; color: #666; margin-top: 4px;">${escapeHtml(payment.description)}</div>` : ''}
+          </div>
+          <div style="font-size: 0.9em;">${formatDate(payment.date)}</div>
+          <div style="font-weight: 600; color: #10b981;">${formatCurrency(payment.amount, payment.currency)}</div>
+          <div>
+            <span style="display: inline-block; padding: 4px 8px; background: ${payment.source === 'stripe' ? '#635bff' : '#0066cc'}; color: white; border-radius: 4px; font-size: 0.85em;">
+              ${payment.source === 'stripe' ? 'Stripe' : 'Банк'}
+            </span>
+          </div>
+          <div style="display: flex; gap: 5px; flex-direction: column;">
+            ${categoryId !== null && categoryId !== undefined ? `
+              <button class="btn btn-link btn-sm" onclick="unlinkPayment(${payment.id}, '${payment.source}', ${categoryId}, ${year}, ${month})" 
+                      style="color: #dc3545; padding: 4px 8px; font-size: 0.85em;" 
+                      title="Отвязать от категории">
+                Отвязать
+              </button>
+            ` : ''}
+            <button class="btn btn-link btn-sm" onclick="deletePayment(${payment.id}, '${payment.source}', ${categoryId}, ${year}, ${month})" 
+                    style="color: #999; padding: 4px 8px; font-size: 0.85em;" 
+                    title="Пометить как дубль и удалить">
+              Удалить дубль
+            </button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    <div style="margin-top: 15px; padding: 10px; background: #f9f9f9; border-radius: 4px;">
+      <strong>Всего платежей:</strong> ${payments.length}
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+/**
+ * Close payment list modal
+ */
+function closePaymentListModal() {
+  const modal = document.getElementById('payment-list-modal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+  currentPaymentListContext = null;
+}
+
+/**
+ * Show expense payment list modal for auto-managed expense categories
+ */
+async function showExpensePaymentListModal(expenseCategoryId, year, month) {
+  const modal = document.getElementById('expense-list-modal');
+  const container = document.getElementById('expense-list-container');
+  const title = document.getElementById('list-entry-title');
+  
+  if (!modal || !container) {
+    addLog('error', 'Модальное окно списка расходов не найдено');
+    return;
+  }
+
+  // Show modal
+  modal.style.display = 'block';
+  container.innerHTML = '<div class="loading-indicator">Загрузка расходов...</div>';
+
+  // Update title
+  if (title) {
+    const monthName = monthNames[month] || `Месяц ${month}`;
+    title.textContent = `Расходы за ${monthName} ${year}`;
+  }
+
+  try {
+    // Validate parameters
+    if (!year || !Number.isFinite(year) || year < 2020 || year > 2030) {
+      throw new Error(`Некорректный year: ${year}`);
+    }
+    if (!month || !Number.isFinite(month) || month < 1 || month > 12) {
+      throw new Error(`Некорректный month: ${month}`);
+    }
+    
+    addLog('info', `Загрузка списка расходов: expenseCategoryId=${expenseCategoryId}, year=${year}, month=${month}`);
+    
+    // Build URL with expenseCategoryId (use 'null' string for uncategorized)
+    const categoryParam = expenseCategoryId === null || expenseCategoryId === undefined ? 'null' : expenseCategoryId;
+    const url = `${API_BASE}/pnl/expenses?expenseCategoryId=${categoryParam}&year=${year}&month=${month}`;
+    
+    addLog('info', `Запрос к API: ${url}`);
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      addLog('error', `HTTP ${response.status}: ${errorText}`);
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+
+    if (!result.success) {
+      throw new Error(result.error || result.message || 'Неизвестная ошибка');
+    }
+
+    const expenses = result.data || [];
+    addLog('success', `Загружено расходов: ${expenses.length}`);
+    
+    renderExpensePaymentList(expenses, expenseCategoryId, year, month);
+    
+  } catch (error) {
+    addLog('error', `Ошибка загрузки списка расходов: ${error.message}`);
+    container.innerHTML = `<div class="error-message">Ошибка загрузки расходов: ${error.message}</div>`;
+  }
+}
+
+/**
+ * Render expense payment list
+ */
+function renderExpensePaymentList(expenses, expenseCategoryId, year, month) {
+  const container = document.getElementById('expense-list-container');
+  if (!container) return;
+
+  if (!expenses || expenses.length === 0) {
+    container.innerHTML = '<div class="placeholder">Нет расходов</div>';
+    return;
+  }
+
+  // Format currency
+  function formatCurrency(amount, currency = 'PLN') {
+    const numAmount = parseFloat(amount) || 0;
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: currency || 'PLN',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(numAmount);
+  }
+
+  // Format date
+  function formatDate(dateString) {
+    if (!dateString) return 'Не указана';
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+
+  const total = expenses.reduce((sum, e) => sum + (parseFloat(e.amount) || 0), 0);
+  const monthName = monthNames[month] || `Месяц ${month}`;
+
+  const html = `
+    <div class="expense-list-header" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+      <strong>Итого за ${monthName}: ${formatCurrency(total)} PLN</strong>
+      <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Всего расходов: ${expenses.length}</div>
+    </div>
+    <div class="expense-payment-list">
+      <div class="expense-payment-list-header" style="display: grid; grid-template-columns: 1fr 120px 150px 80px; gap: 10px; padding: 10px; background: #f5f5f5; font-weight: bold; border-bottom: 2px solid #ddd;">
+        <div>Плательщик / Описание</div>
+        <div>Дата</div>
+        <div>Сумма</div>
+        <div>Действия</div>
+      </div>
+      ${expenses.map(expense => `
+        <div class="expense-payment-item" style="display: grid; grid-template-columns: 1fr 120px 150px 80px; gap: 10px; padding: 10px; border-bottom: 1px solid #eee; align-items: center;">
+          <div>
+            <div style="font-weight: 500;">${escapeHtml(expense.payer || 'Не указан')}</div>
+            ${expense.description ? `<div style="font-size: 0.9em; color: #666; margin-top: 4px;">${escapeHtml(expense.description)}</div>` : ''}
+          </div>
+          <div style="font-size: 0.9em;">${formatDate(expense.date)}</div>
+          <div style="font-weight: 600; color: #dc3545;">${formatCurrency(expense.amount, expense.currency)}</div>
+          <div>
+            ${expenseCategoryId !== null && expenseCategoryId !== undefined ? `
+              <button class="btn btn-link btn-sm" onclick="unlinkExpense(${expense.id}, ${expenseCategoryId}, ${year}, ${month})" 
+                      style="color: #dc3545; padding: 4px 8px; font-size: 0.85em;" 
+                      title="Отвязать от категории">
+                Отвязать
+              </button>
+            ` : '<span style="color: #999; font-size: 0.85em;">—</span>'}
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+/**
+ * Delete expense (mark as duplicate)
+ */
+async function deleteExpense(expenseId, expenseCategoryId, year, month) {
+  if (!confirm('Вы уверены, что хотите пометить этот расход как дубль и удалить? Расход будет скрыт из всех отчетов.')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление расхода-дубля: expenseId=${expenseId}`);
+    
+    const response = await fetch(`${API_BASE}/pnl/expenses/${expenseId}/delete`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({})
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Расход успешно помечен как дубль и удален`);
+    
+    // Refresh the expense list
+    await showExpensePaymentListModal(expenseCategoryId, year, month);
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка удаления расхода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Unlink expense from category
+ */
+async function unlinkExpense(expenseId, expenseCategoryId, year, month) {
+  if (!confirm('Вы уверены, что хотите отвязать этот расход от категории? Расход будет перемещен в категорию "Без категории".')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Отвязка расхода: expenseId=${expenseId}`);
+    
+    const response = await fetch(`${API_BASE}/pnl/expenses/${expenseId}/unlink`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({})
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Расход успешно отвязан от категории`);
+    
+    // Refresh expense list
+    await showExpensePaymentListModal(expenseCategoryId, year, month);
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка отвязки расхода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Delete payment (mark as duplicate)
+ */
+async function deletePayment(paymentId, source, categoryId, year, month) {
+  if (!confirm('Вы уверены, что хотите пометить этот платеж как дубль и удалить? Платеж будет скрыт из всех отчетов.')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление платежа-дубля: paymentId=${paymentId}, source=${source}`);
+    
+    const response = await fetch(`${API_BASE}/pnl/payments/${paymentId}/delete`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ source })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Платеж успешно помечен как дубль и удален`);
+    
+    // Refresh the payment list
+    await showPaymentListModal(categoryId, year, month);
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка удаления платежа: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Unlink payment from category
+ */
+async function unlinkPayment(paymentId, source, categoryId, year, month) {
+  if (!confirm('Вы уверены, что хотите отвязать этот платеж от категории? Платеж будет перемещен в категорию "Без категории".')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Отвязка платежа: paymentId=${paymentId}, source=${source}`);
+    
+    const response = await fetch(`${API_BASE}/pnl/payments/${paymentId}/unlink`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ source })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Платеж успешно отвязан от категории`);
+    
+    // Refresh payment list
+    await showPaymentListModal(categoryId, year, month);
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка отвязки платежа: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
 // Make functions available globally
 window.showAddExpenseModal = showAddExpenseModal;
 window.closeAddExpenseModal = closeAddExpenseModal;
@@ -3263,6 +3823,13 @@ window.showAddRevenueModalFromList = showAddRevenueModalFromList;
 window.editRevenueEntry = editRevenueEntry;
 window.saveEditedRevenueEntry = saveEditedRevenueEntry;
 window.deleteRevenueEntry = deleteRevenueEntry;
+window.showPaymentListModal = showPaymentListModal;
+window.closePaymentListModal = closePaymentListModal;
+window.unlinkPayment = unlinkPayment;
+window.showExpensePaymentListModal = showExpensePaymentListModal;
+window.unlinkExpense = unlinkExpense;
+window.deleteExpense = deleteExpense;
+window.deletePayment = deletePayment;
 
 /**
  * Handle add entry from list (works for both expense and revenue)
@@ -3361,4 +3928,372 @@ window.editExpenseEntry = editExpenseEntry;
 window.closeEditExpenseModal = closeEditExpenseModal;
 window.saveEditedExpenseEntry = saveEditedExpenseEntry;
 window.deleteExpenseEntry = deleteExpenseEntry;
+window.closeDuplicatesModal = closeDuplicatesModal;
+window.deleteDuplicatePayment = deleteDuplicatePayment;
+window.deleteAllDuplicatesInGroup = deleteAllDuplicatesInGroup;
+
+/**
+ * Check for duplicate payments/expenses
+ */
+async function checkDuplicates() {
+  const year = parseInt(elements.yearSelect?.value || new Date().getFullYear(), 10);
+  // Check all months for the selected year
+  const monthsToCheck = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  
+  if (!year) {
+    alert('Пожалуйста, выберите год');
+    return;
+  }
+
+  try {
+    addLog('info', `Проверка дублей за ${year} год`);
+    
+    // Check all months
+    const allDuplicates = [];
+    
+    for (const month of monthsToCheck) {
+      // Check expenses
+      const expensesUrl = `${API_BASE}/pnl/duplicates?year=${year}&month=${month}&direction=out`;
+      const expensesResponse = await fetch(expensesUrl);
+      const expensesResult = await expensesResponse.json();
+      
+      if (expensesResponse.ok && expensesResult.success) {
+        const expenseDuplicates = expensesResult.data || [];
+        allDuplicates.push(...expenseDuplicates.map(d => ({ ...d, direction: 'out', month })));
+      }
+      
+      // Check revenue
+      const revenueUrl = `${API_BASE}/pnl/duplicates?year=${year}&month=${month}&direction=in`;
+      const revenueResponse = await fetch(revenueUrl);
+      const revenueResult = await revenueResponse.json();
+      
+      if (revenueResponse.ok && revenueResult.success) {
+        const revenueDuplicates = revenueResult.data || [];
+        allDuplicates.push(...revenueDuplicates.map(d => ({ ...d, direction: 'in', month })));
+      }
+    }
+    
+    if (allDuplicates.length === 0) {
+      addLog('success', 'Дубли не найдены');
+      alert('Дубли не найдены за выбранный год');
+      return;
+    }
+    
+    addLog('success', `Найдено групп дублей: ${allDuplicates.length}`);
+    showDuplicatesModal(allDuplicates, year);
+    
+  } catch (error) {
+    addLog('error', `Ошибка проверки дублей: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Check duplicates for specific month (legacy function, kept for compatibility)
+ */
+async function checkDuplicatesForMonth(year, month) {
+
+  try {
+    addLog('info', `Проверка дублей за ${monthNames[month]} ${year}`);
+    
+    // Check expenses first (most common duplicates)
+    const expensesUrl = `${API_BASE}/pnl/duplicates?year=${year}&month=${month}&direction=out`;
+    addLog('info', `Запрос: ${expensesUrl}`);
+    
+    const expensesResponse = await fetch(expensesUrl);
+    const expensesResult = await expensesResponse.json();
+    
+    if (!expensesResponse.ok || !expensesResult.success) {
+      throw new Error(expensesResult.error || `HTTP ${expensesResponse.status}`);
+    }
+    
+    const expenseDuplicates = expensesResult.data || [];
+    
+    // Check revenue duplicates
+    const revenueUrl = `${API_BASE}/pnl/duplicates?year=${year}&month=${month}&direction=in`;
+    const revenueResponse = await fetch(revenueUrl);
+    const revenueResult = await revenueResponse.json();
+    
+    const revenueDuplicates = revenueResult.success ? (revenueResult.data || []) : [];
+    
+    const allDuplicates = [
+      ...expenseDuplicates.map(d => ({ ...d, direction: 'out' })),
+      ...revenueDuplicates.map(d => ({ ...d, direction: 'in' }))
+    ];
+    
+    if (allDuplicates.length === 0) {
+      addLog('success', 'Дубли не найдены');
+      alert('Дубли не найдены за выбранный период');
+      return;
+    }
+    
+    addLog('success', `Найдено групп дублей: ${allDuplicates.length}`);
+    showDuplicatesModal(allDuplicates, year, month);
+    
+  } catch (error) {
+    addLog('error', `Ошибка проверки дублей: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Show duplicates modal
+ */
+function showDuplicatesModal(duplicates, year, month = null) {
+  const modal = document.getElementById('duplicates-modal');
+  const container = document.getElementById('duplicates-container');
+  const title = document.getElementById('duplicates-modal-title');
+  
+  if (!modal || !container) {
+    addLog('error', 'Модальное окно дублей не найдено');
+    return;
+  }
+  
+  modal.style.display = 'block';
+  
+  if (title) {
+    if (month) {
+      const monthName = monthNames[month] || `Месяц ${month}`;
+      title.textContent = `Дубли за ${monthName} ${year} (${duplicates.length} групп)`;
+    } else {
+      title.textContent = `Дубли за ${year} год (${duplicates.length} групп)`;
+    }
+  }
+  
+  // Format currency
+  function formatCurrency(amount, currency = 'PLN') {
+    const numAmount = parseFloat(amount) || 0;
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: currency || 'PLN',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(numAmount);
+  }
+  
+  // Format date
+  function formatDate(dateString) {
+    if (!dateString) return 'Не указана';
+    const date = new Date(dateString);
+    return new Intl.DateTimeFormat('ru-RU', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    }).format(date);
+  }
+  
+  // Group duplicates by month for better organization
+  const duplicatesByMonth = {};
+  duplicates.forEach(dup => {
+    const dupMonth = dup.month || new Date().getMonth() + 1;
+    if (!duplicatesByMonth[dupMonth]) {
+      duplicatesByMonth[dupMonth] = [];
+    }
+    duplicatesByMonth[dupMonth].push(dup);
+  });
+  
+  const html = `
+    <div style="max-height: 70vh; overflow-y: auto;">
+      ${Object.entries(duplicatesByMonth).map(([monthNum, monthDuplicates]) => {
+        const monthName = monthNames[parseInt(monthNum, 10)] || `Месяц ${monthNum}`;
+        return `
+          <div style="margin-bottom: 30px;">
+            <h3 style="margin-bottom: 15px; color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px;">
+              ${monthName} ${year}
+            </h3>
+            ${monthDuplicates.map((dup, idx) => {
+              const direction = dup.direction || 'out';
+              return `
+              <div class="duplicate-group" style="margin-bottom: 20px; padding: 15px; border: 2px solid #ffc107; border-radius: 8px; background: #fffbf0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                  <div>
+                    <h4 style="margin: 0; color: #856404;">Группа ${idx + 1}: ${escapeHtml(dup.payer || 'Не указан')}</h4>
+                    <div style="margin-top: 5px; color: #666;">
+                      Сумма: <strong>${formatCurrency(dup.amount, dup.currency)}</strong> • 
+                      Количество дублей: <strong>${dup.count}</strong>
+                    </div>
+                  </div>
+                  <button class="btn btn-sm" onclick="deleteAllDuplicatesInGroup(${idx}, '${direction}')" 
+                          style="background: #dc3545; color: white; padding: 6px 12px;">
+                    Удалить все кроме первого
+                  </button>
+                </div>
+                <div style="display: grid; gap: 10px;">
+                  ${dup.payments.map((payment, pIdx) => `
+                    <div class="duplicate-payment-item" style="display: grid; grid-template-columns: 1fr 120px 150px 100px; gap: 10px; padding: 10px; background: ${pIdx === 0 ? '#e7f3ff' : '#fff'}; border-left: 4px solid ${pIdx === 0 ? '#0066cc' : '#ffc107'}; border-radius: 4px;">
+                      <div>
+                        <div style="font-weight: 500;">${escapeHtml(payment.payer || 'Не указан')}</div>
+                        ${payment.description ? `<div style="font-size: 0.9em; color: #666; margin-top: 4px;">${escapeHtml(payment.description)}</div>` : ''}
+                        ${pIdx === 0 ? '<div style="font-size: 0.85em; color: #0066cc; margin-top: 4px;">✓ Оставить (первый)</div>' : ''}
+                      </div>
+                      <div style="font-size: 0.9em;">${formatDate(payment.date)}</div>
+                      <div style="font-weight: 600; color: ${direction === 'out' ? '#dc3545' : '#10b981'};">
+                        ${formatCurrency(payment.amount, payment.currency)}
+                      </div>
+                      <div>
+                        ${pIdx > 0 ? `
+                          <button class="btn btn-link btn-sm" onclick="deleteDuplicatePayment(${payment.id}, '${direction}')" 
+                                  style="color: #dc3545; padding: 4px 8px; font-size: 0.85em;">
+                            Удалить дубль
+                          </button>
+                        ` : ''}
+                      </div>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+            `;
+            }).join('')}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  
+  container.innerHTML = html;
+}
+
+/**
+ * Close duplicates modal
+ */
+function closeDuplicatesModal() {
+  const modal = document.getElementById('duplicates-modal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+/**
+ * Delete duplicate payment
+ */
+async function deleteDuplicatePayment(paymentId, direction) {
+  if (!confirm('Вы уверены, что хотите пометить этот платеж как дубль и удалить?')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление дубля: paymentId=${paymentId}, direction=${direction}`);
+    
+    const endpoint = direction === 'out' 
+      ? `${API_BASE}/pnl/expenses/${paymentId}/delete`
+      : `${API_BASE}/pnl/payments/${paymentId}/delete`;
+    
+    const body = direction === 'out' 
+      ? {}
+      : { source: 'bank' };
+    
+    const response = await fetch(endpoint, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Дубль успешно удален`);
+    
+    // Refresh duplicates list
+    await checkDuplicates();
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка удаления дубля: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Delete all duplicates in group except the first one
+ */
+async function deleteAllDuplicatesInGroup(groupIndex, direction, month = null) {
+  const modal = document.getElementById('duplicates-modal');
+  const container = document.getElementById('duplicates-container');
+  if (!modal || !container) return;
+  
+  // Find group by index and month
+  const duplicateGroups = Array.from(container.querySelectorAll('.duplicate-group'));
+  let targetGroup = null;
+  let currentIndex = 0;
+  
+  for (const group of duplicateGroups) {
+    const groupMonth = group.closest('[data-month]')?.getAttribute('data-month') || 
+                      Array.from(container.querySelectorAll(`[data-month]`)).find(el => 
+                        el.querySelector('.duplicate-group') === group
+                      )?.getAttribute('data-month');
+    
+    if (month && groupMonth !== String(month)) {
+      continue;
+    }
+    
+    if (currentIndex === groupIndex) {
+      targetGroup = group;
+      break;
+    }
+    currentIndex++;
+  }
+  
+  if (!targetGroup) {
+    // Fallback: use groupIndex directly
+    if (groupIndex < duplicateGroups.length) {
+      targetGroup = duplicateGroups[groupIndex];
+    } else {
+      return;
+    }
+  }
+  
+  const paymentItems = Array.from(targetGroup.querySelectorAll('.duplicate-payment-item'));
+  
+  // Skip first payment (index 0), delete the rest
+  const paymentsToDelete = paymentItems.slice(1);
+  
+  if (paymentsToDelete.length === 0) {
+    alert('Нет дублей для удаления');
+    return;
+  }
+  
+  if (!confirm(`Вы уверены, что хотите удалить ${paymentsToDelete.length} дублей из этой группы? Будет оставлен только первый платеж.`)) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление ${paymentsToDelete.length} дублей из группы ${groupIndex + 1}`);
+    
+    // Extract payment IDs from buttons
+    const deletePromises = paymentsToDelete.map(item => {
+      const button = item.querySelector('button[onclick*="deleteDuplicatePayment"]');
+      if (!button) return null;
+      
+      const onclick = button.getAttribute('onclick');
+      const match = onclick.match(/deleteDuplicatePayment\((\d+),/);
+      if (!match) return null;
+      
+      const paymentId = parseInt(match[1], 10);
+      return deleteDuplicatePayment(paymentId, direction);
+    }).filter(p => p !== null);
+    
+    await Promise.all(deletePromises);
+    
+    addLog('success', `Все дубли из группы удалены`);
+    
+    // Refresh duplicates list
+    await checkDuplicates();
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка удаления дублей: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
 

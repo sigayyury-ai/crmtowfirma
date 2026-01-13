@@ -132,16 +132,8 @@ app.get('/robots.txt', (req, res) => {
 // Все маршруты ниже требуют авторизации через Google
 app.use(requireAuth);
 
-// Статические файлы (frontend) - защищены авторизацией
-// Запрещаем автоматическую отдачу index.html из подпапок, чтобы маршруты типа /vat-margin
-// корректно возвращали основной SPA, а не прототипы из подпапок.
-app.use(
-  express.static(path.join(__dirname, '../frontend'), {
-    index: false
-  })
-);
-
 // Маршруты для основных страниц (чтобы прямые ссылки и refresh работали)
+// ВАЖНО: Эти роуты должны быть ДО express.static, чтобы они обрабатывались первыми
 const sendPage = (filename) => (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend', filename));
 };
@@ -158,11 +150,22 @@ app.get(['/products', '/vat-margin/products'], requireAuth, sendPage('vat-margin
 app.get(['/stripe', '/vat-margin/stripe'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/deleted', '/vat-margin/deleted'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/payments', '/vat-margin/payments'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/vat-margin/receipts'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/vat-margin/diagnostics'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/vat-margin/facebook-ads'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('vat-margin.html'));
+app.get(['/expenses.html', '/vat-margin/expenses.html'], requireAuth, sendPage('expenses.html'));
 app.get(['/cash-journal', '/vat-margin/cash-journal'], requireAuth, sendPage('cash-journal.html'));
 app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html'));
+
+// Статические файлы (frontend) - защищены авторизацией
+// Запрещаем автоматическую отдачу index.html из подпапок, чтобы маршруты типа /vat-margin
+// корректно возвращали основной SPA, а не прототипы из подпапок.
+app.use(
+  express.static(path.join(__dirname, '../frontend'), {
+    index: false
+  })
+);
 app.get(
   ['/stripe-event-report', '/stripe-event-report/'],
   requireAuth,
@@ -194,6 +197,17 @@ app.use((err, req, res, next) => {
 
 // 404 handler
 app.use((req, res) => {
+  logger.warn('404 Not Found', {
+    method: req.method,
+    path: req.path,
+    originalUrl: req.originalUrl,
+    url: req.url,
+    query: req.query,
+    headers: {
+      'user-agent': req.headers['user-agent'],
+      'referer': req.headers['referer']
+    }
+  });
   res.status(404).json({
     success: false,
     error: 'Not found',
