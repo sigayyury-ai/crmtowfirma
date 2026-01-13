@@ -79,6 +79,11 @@ function bindEvents() {
 
   if (elements.yearSelect) {
     elements.yearSelect.addEventListener('change', () => {
+      // Save expanded state of current year before switching
+      const currentYear = elements.yearSelect.value;
+      if (currentYear) {
+        saveExpandedState(currentYear);
+      }
       loadPnlReport();
     });
   }
@@ -176,6 +181,134 @@ async function loadPnlReport() {
 }
 
 /**
+ * Save expanded state of collapsible sections
+ */
+function saveExpandedState(year) {
+  const state = {};
+  const headers = document.querySelectorAll('.collapsible-header');
+  
+  headers.forEach(header => {
+    const rowLabel = header.querySelector('.row-label');
+    if (!rowLabel) return;
+    
+    // Get text without arrow symbols (▼ or ▶) for consistent matching
+    let headerText = rowLabel.textContent?.trim() || '';
+    // Remove arrow symbols for consistent key matching
+    headerText = headerText.replace(/[▼▶]/g, '').trim();
+    if (!headerText) return;
+    
+    // Find content rows for this header
+    const allRows = Array.from(header.parentElement.querySelectorAll('tr'));
+    const headerIndex = allRows.indexOf(header);
+    const contentRows = [];
+    
+    for (let i = headerIndex + 1; i < allRows.length; i++) {
+      const row = allRows[i];
+      if (row.classList.contains('collapsible-header') || 
+          row.classList.contains('profit-loss-row') ||
+          row.classList.contains('balance-row') ||
+          row.classList.contains('roi-row') ||
+          row.classList.contains('ebitda-row')) {
+        break;
+      }
+      if (row.classList.contains('collapsible-content')) {
+        contentRows.push(row);
+      }
+    }
+    
+    if (contentRows.length > 0) {
+      // Check if section is expanded (display is not 'none')
+      // Use computed style to check actual visibility
+      const firstRow = contentRows[0];
+      if (firstRow) {
+        const computedStyle = window.getComputedStyle(firstRow);
+        const isExpanded = computedStyle.display !== 'none';
+        state[headerText] = isExpanded;
+      }
+    }
+  });
+  
+  // Save to localStorage
+  const storageKey = `pnl-report-expanded-${year}`;
+  localStorage.setItem(storageKey, JSON.stringify(state));
+}
+
+/**
+ * Restore expanded state of collapsible sections
+ */
+function restoreExpandedState(year) {
+  const storageKey = `pnl-report-expanded-${year}`;
+  const savedState = localStorage.getItem(storageKey);
+  
+  if (!savedState) {
+    return;
+  }
+  
+  try {
+    const state = JSON.parse(savedState);
+    const headers = document.querySelectorAll('.collapsible-header');
+    
+    headers.forEach(header => {
+      const rowLabel = header.querySelector('.row-label');
+      if (!rowLabel) return;
+      
+      // Get text without arrow symbols (▼ or ▶) for consistent matching
+      let headerText = rowLabel.textContent?.trim() || '';
+      // Remove arrow symbols for consistent key matching
+      headerText = headerText.replace(/[▼▶]/g, '').trim();
+      if (!headerText) return;
+      
+      const shouldBeExpanded = state[headerText];
+      if (shouldBeExpanded === undefined) {
+        return;
+      }
+      
+      if (!shouldBeExpanded) {
+        return; // Already collapsed by default
+      }
+      
+      // Find content rows for this header
+      const allRows = Array.from(header.parentElement.querySelectorAll('tr'));
+      const headerIndex = allRows.indexOf(header);
+      const contentRows = [];
+      
+      for (let i = headerIndex + 1; i < allRows.length; i++) {
+        const row = allRows[i];
+        if (row.classList.contains('collapsible-header') || 
+            row.classList.contains('profit-loss-row') ||
+            row.classList.contains('balance-row') ||
+            row.classList.contains('roi-row') ||
+            row.classList.contains('ebitda-row')) {
+          break;
+        }
+        if (row.classList.contains('collapsible-content')) {
+          contentRows.push(row);
+        }
+      }
+      
+      if (contentRows.length > 0 && shouldBeExpanded) {
+        // Expand the section
+        contentRows.forEach(row => {
+          row.style.display = '';
+        });
+        
+        // Update icon
+        const toggleBtn = header.querySelector('.collapse-toggle');
+        if (toggleBtn) {
+          const icon = toggleBtn.querySelector('.collapse-icon');
+          if (icon) {
+            icon.textContent = '▼';
+          }
+          toggleBtn.setAttribute('title', 'Нажмите для скрытия деталей');
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error restoring expanded state:', error);
+  }
+}
+
+/**
  * Refresh PNL report silently (without showing loading indicator and without page jump)
  */
 async function refreshPnlReportSilently() {
@@ -193,6 +326,9 @@ async function refreshPnlReportSilently() {
     // Save current scroll position
     const scrollPosition = window.pageYOffset || document.documentElement.scrollTop;
     
+    // Save expanded state before refresh
+    saveExpandedState(selectedYear);
+    
     const url = `${API_BASE}/pnl/report?year=${encodeURIComponent(selectedYear)}`;
     const response = await fetch(url);
     const result = await response.json();
@@ -207,6 +343,11 @@ async function refreshPnlReportSilently() {
     
     // Restore scroll position
     window.scrollTo(0, scrollPosition);
+    
+    // Restore expanded state after DOM is fully rendered
+    setTimeout(() => {
+      restoreExpandedState(selectedYear);
+    }, 100);
   } catch (error) {
     // Silent fail - don't show error, just log it
     addLog('error', `Ошибка обновления отчета: ${error.message}`);
@@ -647,6 +788,15 @@ function renderReport(data) {
   
   // Attach click handlers for revenue cells (opens add modal if no data, list modal if data exists)
   attachRevenueCellClickHandlers();
+  
+  // Restore expanded state after all handlers are attached and DOM is ready
+  // Use setTimeout to ensure DOM is fully rendered
+  const selectedYear = elements.yearSelect ? elements.yearSelect.value : new Date().getFullYear().toString();
+  if (selectedYear) {
+    setTimeout(() => {
+      restoreExpandedState(selectedYear);
+    }, 0);
+  }
 }
 
 function attachCollapseHandlers() {
@@ -684,6 +834,7 @@ function attachCollapseHandlers() {
       if (contentRows.length === 0) return;
       
       // Toggle visibility
+      // Check if section is expanded (display is not 'none')
       const isExpanded = contentRows[0]?.style.display !== 'none';
       
       contentRows.forEach(row => {
@@ -697,6 +848,12 @@ function attachCollapseHandlers() {
       
       // Update button title
       toggleBtn.setAttribute('title', isExpanded ? 'Нажмите для просмотра деталей' : 'Нажмите для скрытия деталей');
+      
+      // Save expanded state to localStorage
+      const selectedYear = elements.yearSelect ? elements.yearSelect.value : new Date().getFullYear().toString();
+      if (selectedYear) {
+        saveExpandedState(selectedYear);
+      }
     });
   });
 }
