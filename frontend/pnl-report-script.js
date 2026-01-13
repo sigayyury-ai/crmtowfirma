@@ -175,6 +175,44 @@ async function loadPnlReport() {
   }
 }
 
+/**
+ * Refresh PNL report silently (without showing loading indicator and without page jump)
+ */
+async function refreshPnlReportSilently() {
+  if (!elements.reportContainer) {
+    return;
+  }
+
+  const selectedYear = elements.yearSelect ? elements.yearSelect.value : new Date().getFullYear().toString();
+  
+  if (!selectedYear) {
+    return;
+  }
+
+  try {
+    // Save current scroll position
+    const scrollPosition = window.pageYOffset || document.documentElement.scrollTop;
+    
+    const url = `${API_BASE}/pnl/report?year=${encodeURIComponent(selectedYear)}`;
+    const response = await fetch(url);
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      // Silent fail - don't show error, just log it
+      addLog('error', `Ошибка обновления отчета: ${result.error || result.message}`);
+      return;
+    }
+
+    renderReport(result.data);
+    
+    // Restore scroll position
+    window.scrollTo(0, scrollPosition);
+  } catch (error) {
+    // Silent fail - don't show error, just log it
+    addLog('error', `Ошибка обновления отчета: ${error.message}`);
+  }
+}
+
 function renderReport(data) {
   if (!data || !data.monthly || !Array.isArray(data.monthly)) {
     elements.reportContainer.innerHTML = '<div class="placeholder">Нет данных для отображения</div>';
@@ -260,11 +298,11 @@ function renderReport(data) {
           ${monthly.map(entry => {
             const monthEntry = categoryMonthly.find(m => m.month === entry.month);
             const amount = monthEntry?.amountPln || 0;
-            const amountDisplay = amount > 0 ? formatCurrency(amount) : '—';
+            const hasData = amount > 0;
             
             // Add currency breakdown for this month if available (in one line)
             let monthBreakdownHtml = '';
-            if (monthEntry?.currencyBreakdown && Object.keys(monthEntry.currencyBreakdown).length > 0) {
+            if (hasData && monthEntry?.currencyBreakdown && Object.keys(monthEntry.currencyBreakdown).length > 0) {
               const breakdownItems = Object.keys(monthEntry.currencyBreakdown)
                 .map(curr => `${formatCurrency(monthEntry.currencyBreakdown[curr])} ${curr}`)
                 .join(', ');
@@ -272,8 +310,24 @@ function renderReport(data) {
             }
             
             const editableClass = isManual ? ' editable' : '';
-            const dataAttrs = isManual ? `data-expense-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="expense"` : '';
-            return `<td class="amount-cell${editableClass}" ${dataAttrs}>${amountDisplay}${monthBreakdownHtml}</td>`;
+            const dataAttrs = isManual ? `data-expense-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="expense" data-has-data="${hasData}"` : '';
+            
+            // For manual categories: show plus icon centered if no data, otherwise show amount
+            let cellContent = '';
+            if (isManual) {
+              if (hasData) {
+                cellContent = `${formatCurrency(amount)}${monthBreakdownHtml}`;
+              } else {
+                // Show centered plus icon when no data
+                cellContent = '<span class="add-expense-icon">+</span>';
+              }
+            } else {
+              cellContent = hasData ? formatCurrency(amount) + monthBreakdownHtml : '';
+            }
+            
+            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="position: relative; cursor: ${isManual ? 'pointer' : 'default'};">
+                      ${cellContent}
+                    </td>`;
           }).join('')}
           <td class="amount-cell total-cell"><strong>${formatCurrency(categoryTotal)}</strong></td>
         </tr>
@@ -326,11 +380,11 @@ function renderReport(data) {
           ${monthly.map(entry => {
             const monthEntry = categoryMonthly.find(m => m.month === entry.month);
             const amount = monthEntry?.amountPln || 0;
-            const amountDisplay = amount > 0 ? formatCurrency(amount) : '—';
+            const hasData = amount > 0;
             
             // Add currency breakdown for this month if available (in one line)
             let monthBreakdownHtml = '';
-            if (monthEntry?.currencyBreakdown && Object.keys(monthEntry.currencyBreakdown).length > 0) {
+            if (hasData && monthEntry?.currencyBreakdown && Object.keys(monthEntry.currencyBreakdown).length > 0) {
               const breakdownItems = Object.keys(monthEntry.currencyBreakdown)
                 .map(curr => `${formatCurrency(monthEntry.currencyBreakdown[curr])} ${curr}`)
                 .join(', ');
@@ -338,8 +392,22 @@ function renderReport(data) {
             }
             
             const editableClass = isManual ? ' editable' : '';
-            const dataAttrs = isManual ? `data-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="revenue"` : '';
-            return `<td class="amount-cell${editableClass}" ${dataAttrs}>${amountDisplay}${monthBreakdownHtml}</td>`;
+            const dataAttrs = isManual ? `data-category-id="${category.id}" data-year="${year}" data-month="${entry.month}" data-entry-type="revenue" data-has-data="${hasData}"` : '';
+            
+            // For manual categories: show plus icon centered if no data, otherwise show amount
+            let cellContent = '';
+            if (isManual) {
+              if (hasData) {
+                cellContent = `${formatCurrency(amount)}${monthBreakdownHtml}`;
+              } else {
+                cellContent = '<span class="add-expense-icon">+</span>';
+              }
+            } else {
+              const amountDisplay = amount > 0 ? formatCurrency(amount) : '—';
+              cellContent = `${amountDisplay}${monthBreakdownHtml}`;
+            }
+            
+            return `<td class="amount-cell${editableClass}" ${dataAttrs} style="${isManual ? 'cursor: pointer; position: relative;' : ''}">${cellContent}</td>`;
           }).join('')}
           <td class="amount-cell total-cell"><strong>${formatCurrency(categoryTotal)}</strong></td>
         </tr>
@@ -573,6 +641,12 @@ function renderReport(data) {
   
   // Attach collapse/expand handlers for category sections
   attachCollapseHandlers();
+  
+  // Attach click handlers for expense cells (opens add modal if no data, list modal if data exists)
+  attachExpenseCellClickHandlers();
+  
+  // Attach click handlers for revenue cells (opens add modal if no data, list modal if data exists)
+  attachRevenueCellClickHandlers();
 }
 
 function attachCollapseHandlers() {
@@ -631,7 +705,79 @@ function attachEditableCellListeners() {
   const editableCells = elements.reportContainer.querySelectorAll('.amount-cell.editable');
   
   editableCells.forEach(cell => {
+    // For expense and revenue entries with management_type='manual', use modal instead of inline edit
+    const entryType = cell.getAttribute('data-entry-type');
+    if (entryType === 'expense' || entryType === 'revenue') {
+      // Expense and revenue cells will be handled by attachExpenseCellClickHandlers and attachRevenueCellClickHandlers
+      return;
+    }
     cell.addEventListener('click', handleCellClick);
+  });
+}
+
+/**
+ * Attach click handlers for expense category cells
+ * If no data: open add modal
+ * If data exists: open list modal
+ */
+function attachExpenseCellClickHandlers() {
+  const expenseCells = elements.reportContainer.querySelectorAll('.amount-cell[data-entry-type="expense"]');
+  
+  expenseCells.forEach(cell => {
+    cell.addEventListener('click', (e) => {
+      e.stopPropagation(); // Prevent other handlers from firing
+      
+      const expenseCategoryId = parseInt(cell.getAttribute('data-expense-category-id'), 10);
+      const year = parseInt(cell.getAttribute('data-year'), 10);
+      const month = parseInt(cell.getAttribute('data-month'), 10);
+      const hasData = cell.getAttribute('data-has-data') === 'true';
+      
+      if (!expenseCategoryId || !year || !month) {
+        addLog('error', `Недостаточно данных для открытия модального окна: expenseCategoryId=${expenseCategoryId}, year=${year}, month=${month}`);
+        return;
+      }
+      
+      if (hasData) {
+        // If data exists, show list modal
+        showExpenseListModal(expenseCategoryId, year, month);
+      } else {
+        // If no data, show add modal
+        showAddExpenseModal(expenseCategoryId, year, month);
+      }
+    });
+  });
+}
+
+/**
+ * Attach click handlers for revenue category cells
+ * If no data: open add modal
+ * If data exists: open list modal
+ */
+function attachRevenueCellClickHandlers() {
+  const revenueCells = elements.reportContainer.querySelectorAll('.amount-cell[data-entry-type="revenue"]');
+  
+  revenueCells.forEach(cell => {
+    cell.addEventListener('click', (e) => {
+      e.stopPropagation(); // Prevent other handlers from firing
+      
+      const categoryId = parseInt(cell.getAttribute('data-category-id'), 10);
+      const year = parseInt(cell.getAttribute('data-year'), 10);
+      const month = parseInt(cell.getAttribute('data-month'), 10);
+      const hasData = cell.getAttribute('data-has-data') === 'true';
+      
+      if (!categoryId || !year || !month) {
+        addLog('error', `Недостаточно данных для открытия модального окна: categoryId=${categoryId}, year=${year}, month=${month}`);
+        return;
+      }
+      
+      if (hasData) {
+        // If data exists, show list modal
+        showRevenueListModal(categoryId, year, month);
+      } else {
+        // If no data, show add modal
+        showAddRevenueModal(categoryId, year, month);
+      }
+    });
   });
 }
 
@@ -641,11 +787,16 @@ function handleCellClick(e) {
     return;
   }
   
+  // Don't handle expense entries here - they have their own handler
+  const entryType = cell.getAttribute('data-entry-type');
+  if (entryType === 'expense') {
+    return;
+  }
+  
   const categoryId = parseInt(cell.getAttribute('data-category-id'), 10) || null;
   const expenseCategoryId = parseInt(cell.getAttribute('data-expense-category-id'), 10) || null;
   const year = parseInt(cell.getAttribute('data-year'), 10);
   const month = parseInt(cell.getAttribute('data-month'), 10);
-  const entryType = cell.getAttribute('data-entry-type') || 'revenue';
   
   if ((!categoryId && !expenseCategoryId) || !year || !month) {
     return;
@@ -2172,4 +2323,885 @@ window.assignExpenseCategory = assignExpenseCategory;
 window.showManualCategorySelect = showManualCategorySelect;
 window.closeManualCategoryModal = closeManualCategoryModal;
 window.saveManualCategory = saveManualCategory;
+
+// ==================== Manual Cash Expense Entries ====================
+
+let currentExpenseContext = null; // { expenseCategoryId, year, month }
+let currentExpenseListContext = null; // { expenseCategoryId, year, month }
+let currentEditEntryId = null; // ID of entry being edited
+
+/**
+ * Show modal for adding expense entry
+ */
+function showAddExpenseModal(expenseCategoryId, year, month) {
+  currentExpenseContext = { expenseCategoryId, year, month };
+  const modal = document.getElementById('add-expense-modal');
+  if (modal) {
+    // Update modal title for expense
+    const title = modal.querySelector('.modal-header h3');
+    if (title) title.textContent = 'Добавить расход';
+    modal.style.display = 'block';
+    modal.setAttribute('data-entry-type', 'expense');
+    const amountInput = document.getElementById('expense-amount');
+    if (amountInput) {
+      amountInput.focus();
+    }
+  }
+}
+
+/**
+ * Close add expense modal
+ */
+function closeAddExpenseModal() {
+  const modal = document.getElementById('add-expense-modal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+  const amountInput = document.getElementById('expense-amount');
+  const commentInput = document.getElementById('expense-comment');
+  if (amountInput) amountInput.value = '';
+  if (commentInput) commentInput.value = '';
+  currentExpenseContext = null;
+}
+
+/**
+ * Save expense entry
+ */
+async function saveExpenseEntry() {
+  if (!currentExpenseContext) {
+    addLog('error', 'Контекст расхода не найден');
+    return;
+  }
+
+  const amountInput = document.getElementById('expense-amount');
+  const commentInput = document.getElementById('expense-comment');
+  
+  if (!amountInput) {
+    addLog('error', 'Поле суммы не найдено');
+    return;
+  }
+
+  const amount = parseFloat(amountInput.value);
+  const comment = commentInput ? commentInput.value.trim() : '';
+
+  if (!amount || amount <= 0) {
+    alert('Введите корректную сумму (больше нуля)');
+    return;
+  }
+
+  try {
+    addLog('info', `Сохранение расхода: ${amount} PLN...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expenseCategoryId: currentExpenseContext.expenseCategoryId,
+        entryType: 'expense',
+        year: currentExpenseContext.year,
+        month: currentExpenseContext.month,
+        amountPln: amount,
+        notes: comment || null
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка сохранения');
+    }
+
+    addLog('success', `Расход сохранен: ${amount} PLN`);
+    closeAddExpenseModal();
+    
+    // Refresh report silently (without showing loading indicator and without page jump)
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка сохранения расхода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Show expense list modal
+ */
+async function showExpenseListModal(expenseCategoryId, year, month) {
+  currentExpenseListContext = { expenseCategoryId, year, month };
+  
+  try {
+    // Validate parameters
+    if (!expenseCategoryId || !Number.isFinite(expenseCategoryId) || expenseCategoryId <= 0) {
+      throw new Error(`Некорректный expenseCategoryId: ${expenseCategoryId}`);
+    }
+    if (!year || !Number.isFinite(year) || year < 2020 || year > 2030) {
+      throw new Error(`Некорректный year: ${year}`);
+    }
+    if (!month || !Number.isFinite(month) || month < 1 || month > 12) {
+      throw new Error(`Некорректный month: ${month}`);
+    }
+    
+    addLog('info', `Загрузка списка расходов: expenseCategoryId=${expenseCategoryId}, year=${year}, month=${month}`);
+    
+    const url = `${API_BASE}/pnl/manual-entries?expenseCategoryId=${expenseCategoryId}&year=${year}&month=${month}&entryType=expense`;
+    addLog('info', `Запрос: ${url}`);
+    
+    const response = await fetch(url);
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      const errorMsg = result.error || result.message || `HTTP ${response.status}: ${response.statusText}`;
+      addLog('error', `Ошибка ответа сервера: ${errorMsg}`);
+      throw new Error(errorMsg);
+    }
+
+    const entries = result.data || [];
+    addLog('success', `Загружено записей: ${entries.length}`);
+    renderExpenseList(entries, expenseCategoryId, year, month);
+    
+    const modal = document.getElementById('expense-list-modal');
+    if (modal) {
+      // Update modal title for expense
+      const title = document.getElementById('list-entry-title');
+      if (title) title.textContent = 'Расходы за месяц';
+      // Save context in modal data attributes for later use
+      modal.setAttribute('data-expense-category-id', expenseCategoryId);
+      modal.setAttribute('data-year', year);
+      modal.setAttribute('data-month', month);
+      modal.setAttribute('data-entry-type', 'expense');
+      modal.style.display = 'block';
+    }
+  } catch (error) {
+    addLog('error', `Ошибка загрузки списка расходов: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Render expense list
+ */
+function renderExpenseList(entries, expenseCategoryId, year, month) {
+  const container = document.getElementById('expense-list-container');
+  if (!container) return;
+
+  if (entries.length === 0) {
+    container.innerHTML = '<p style="text-align: center; color: #666; padding: 20px;">Нет расходов за этот месяц</p>';
+    return;
+  }
+
+  const total = entries.reduce((sum, e) => sum + (parseFloat(e.amount_pln) || 0), 0);
+  const monthName = monthNames[month] || `Месяц ${month}`;
+
+  container.innerHTML = `
+    <div class="expense-list-header" style="margin-bottom: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+      <strong>Итого за ${monthName}: ${formatCurrency(total)} PLN</strong>
+      <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Всего записей: ${entries.length}</div>
+    </div>
+    <div class="expense-list" style="max-height: 400px; overflow-y: auto;">
+      ${entries.map(entry => {
+        const createdDate = new Date(entry.created_at).toLocaleDateString('ru-RU', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        const entryType = entry.entry_type || 'expense';
+        const editFunc = entryType === 'revenue' ? 'editRevenueEntry' : 'editExpenseEntry';
+        const deleteFunc = entryType === 'revenue' ? 'deleteRevenueEntry' : 'deleteExpenseEntry';
+        const amountColor = entryType === 'revenue' ? '#28a745' : '#dc3545';
+        return `
+          <div class="expense-entry-item" style="display: flex; justify-content: space-between; align-items: start; padding: 12px; border-bottom: 1px solid #ddd;">
+            <div class="expense-entry-info" style="flex: 1;">
+              <div class="expense-entry-amount" style="font-weight: bold; font-size: 16px; color: ${amountColor};">
+                ${formatCurrency(entry.amount_pln)} PLN
+              </div>
+              <div class="expense-entry-comment" style="color: #666; margin-top: 4px; word-break: break-word;">
+                ${entry.notes ? escapeHtml(entry.notes) : '<span style="color: #999;">(без комментария)</span>'}
+              </div>
+              <div class="expense-entry-date" style="color: #999; font-size: 12px; margin-top: 6px;">
+                ${createdDate}
+              </div>
+            </div>
+            <div class="expense-entry-actions" style="display: flex; gap: 8px; margin-left: 15px;">
+              <button class="btn btn-sm btn-secondary" onclick="${editFunc}(${entry.id})" title="Редактировать">
+                ✏️
+              </button>
+              <button class="btn btn-sm btn-danger" onclick="${deleteFunc}(${entry.id})" title="Удалить">
+                🗑️
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+/**
+ * Close expense list modal
+ */
+function closeExpenseListModal() {
+  const modal = document.getElementById('expense-list-modal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+  currentExpenseListContext = null;
+}
+
+/**
+ * Show add expense modal from list modal
+ */
+function showAddExpenseModalFromList() {
+  const modal = document.getElementById('expense-list-modal');
+  if (!modal) {
+    addLog('error', 'Модальное окно списка расходов не найдено');
+    return;
+  }
+  
+  // Get context from modal data attributes (more reliable than currentExpenseListContext)
+  const expenseCategoryId = parseInt(modal.getAttribute('data-expense-category-id'), 10);
+  const year = parseInt(modal.getAttribute('data-year'), 10);
+  const month = parseInt(modal.getAttribute('data-month'), 10);
+  
+  if (!expenseCategoryId || !year || !month) {
+    // Fallback to currentExpenseListContext if data attributes are missing
+    if (!currentExpenseListContext) {
+      addLog('error', 'Не удалось получить контекст для добавления расхода');
+      return;
+    }
+    showAddExpenseModal(
+      currentExpenseListContext.expenseCategoryId,
+      currentExpenseListContext.year,
+      currentExpenseListContext.month
+    );
+    return;
+  }
+  
+  closeExpenseListModal();
+  showAddExpenseModal(expenseCategoryId, year, month);
+}
+
+/**
+ * Edit expense entry
+ */
+function editExpenseEntry(entryId, amount, notes) {
+  currentEditEntryId = entryId;
+  const modal = document.getElementById('edit-expense-modal');
+  const amountInput = document.getElementById('edit-expense-amount');
+  const commentInput = document.getElementById('edit-expense-comment');
+  
+  if (modal && amountInput && commentInput) {
+    amountInput.value = amount || '';
+    commentInput.value = notes || '';
+    modal.style.display = 'block';
+    amountInput.focus();
+  }
+}
+
+/**
+ * Close edit expense modal
+ */
+function closeEditExpenseModal() {
+  const modal = document.getElementById('edit-expense-modal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+  const amountInput = document.getElementById('edit-expense-amount');
+  const commentInput = document.getElementById('edit-expense-comment');
+  if (amountInput) amountInput.value = '';
+  if (commentInput) commentInput.value = '';
+  currentEditEntryId = null;
+}
+
+/**
+ * Save edited expense entry
+ */
+async function saveEditedExpenseEntry() {
+  if (!currentEditEntryId) {
+    addLog('error', 'ID записи для редактирования не найден');
+    return;
+  }
+
+  const amountInput = document.getElementById('edit-expense-amount');
+  const commentInput = document.getElementById('edit-expense-comment');
+  
+  if (!amountInput) {
+    addLog('error', 'Поле суммы не найдено');
+    return;
+  }
+
+  const amount = parseFloat(amountInput.value);
+  const comment = commentInput ? commentInput.value.trim() : '';
+
+  if (!amount || amount <= 0) {
+    alert('Введите корректную сумму (больше нуля)');
+    return;
+  }
+
+  try {
+    const modal = document.getElementById('edit-expense-modal');
+    const entryType = modal ? modal.getAttribute('data-entry-type') : 'expense';
+    const entryTypeName = entryType === 'revenue' ? 'дохода' : 'расхода';
+    
+    addLog('info', `Обновление ${entryTypeName} ID ${currentEditEntryId}...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries/${currentEditEntryId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amountPln: amount,
+        notes: comment || null
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка обновления');
+    }
+
+    addLog('success', `${entryTypeName === 'дохода' ? 'Доход' : 'Расход'} обновлен: ${amount} PLN`);
+    closeEditExpenseModal();
+    
+    // Refresh list and report silently
+    if (modal && modal.style.display === 'block') {
+      if (entryType === 'revenue' && currentRevenueListContext) {
+        await showRevenueListModal(
+          currentRevenueListContext.categoryId,
+          currentRevenueListContext.year,
+          currentRevenueListContext.month
+        );
+      } else if (entryType === 'expense' && currentExpenseListContext) {
+        await showExpenseListModal(
+          currentExpenseListContext.expenseCategoryId,
+          currentExpenseListContext.year,
+          currentExpenseListContext.month
+        );
+      }
+    }
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка обновления: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Delete expense entry
+ */
+async function deleteExpenseEntry(entryId) {
+  if (!confirm('Удалить этот расход? Это действие нельзя отменить.')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление расхода ID ${entryId}...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries/${entryId}`, {
+      method: 'DELETE'
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка удаления');
+    }
+
+    addLog('success', 'Расход удален');
+    
+    // Refresh list and report silently
+    if (currentExpenseListContext) {
+      await showExpenseListModal(
+        currentExpenseListContext.expenseCategoryId,
+        currentExpenseListContext.year,
+        currentExpenseListContext.month
+      );
+    }
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка удаления расхода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+// ==================== Manual Cash Revenue Entries ====================
+
+let currentRevenueContext = null; // { categoryId, year, month }
+let currentRevenueListContext = null; // { categoryId, year, month }
+
+/**
+ * Show modal for adding revenue entry
+ */
+function showAddRevenueModal(categoryId, year, month) {
+  currentRevenueContext = { categoryId, year, month };
+  const modal = document.getElementById('add-expense-modal');
+  if (modal) {
+    // Update modal title for revenue
+    const title = document.getElementById('add-entry-title');
+    if (title) title.textContent = 'Добавить доход';
+    modal.style.display = 'block';
+    modal.setAttribute('data-entry-type', 'revenue');
+    const amountInput = document.getElementById('expense-amount');
+    if (amountInput) {
+      amountInput.focus();
+    }
+  }
+}
+
+
+/**
+ * Save revenue entry
+ */
+async function saveRevenueEntry() {
+  if (!currentRevenueContext) {
+    addLog('error', 'Контекст дохода не найден');
+    return;
+  }
+
+  const amountInput = document.getElementById('expense-amount');
+  const commentInput = document.getElementById('expense-comment');
+  
+  if (!amountInput) {
+    addLog('error', 'Поле суммы не найдено');
+    return;
+  }
+
+  const amount = parseFloat(amountInput.value);
+  const comment = commentInput ? commentInput.value.trim() : '';
+
+  if (!amount || amount <= 0) {
+    alert('Введите корректную сумму (больше нуля)');
+    return;
+  }
+
+  try {
+    addLog('info', `Сохранение дохода: ${amount} PLN...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        categoryId: currentRevenueContext.categoryId,
+        entryType: 'revenue',
+        year: currentRevenueContext.year,
+        month: currentRevenueContext.month,
+        amountPln: amount,
+        notes: comment || null
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка сохранения');
+    }
+
+    addLog('success', `Доход сохранен: ${amount} PLN`);
+    closeAddRevenueModal();
+    
+    // Refresh report silently
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка сохранения дохода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Close add revenue modal
+ */
+function closeAddRevenueModal() {
+  const modal = document.getElementById('add-expense-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.removeAttribute('data-entry-type');
+  }
+  const amountInput = document.getElementById('expense-amount');
+  const commentInput = document.getElementById('expense-comment');
+  if (amountInput) amountInput.value = '';
+  if (commentInput) commentInput.value = '';
+  currentRevenueContext = null;
+}
+
+/**
+ * Show revenue list modal
+ */
+async function showRevenueListModal(categoryId, year, month) {
+  currentRevenueListContext = { categoryId, year, month };
+  
+  try {
+    if (!categoryId || !Number.isFinite(categoryId) || categoryId <= 0) {
+      throw new Error(`Некорректный categoryId: ${categoryId}`);
+    }
+    if (!year || !Number.isFinite(year) || year < 2020 || year > 2030) {
+      throw new Error(`Некорректный year: ${year}`);
+    }
+    if (!month || !Number.isFinite(month) || month < 1 || month > 12) {
+      throw new Error(`Некорректный month: ${month}`);
+    }
+    
+    addLog('info', `Загрузка списка доходов: categoryId=${categoryId}, year=${year}, month=${month}`);
+    
+    const url = `${API_BASE}/pnl/manual-entries?categoryId=${categoryId}&year=${year}&month=${month}&entryType=revenue`;
+    const response = await fetch(url);
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    const entries = result.data || [];
+    addLog('success', `Загружено записей: ${entries.length}`);
+    renderRevenueList(entries, categoryId, year, month);
+    
+    const modal = document.getElementById('expense-list-modal');
+    if (modal) {
+      // Update modal title for revenue
+      const title = document.getElementById('list-entry-title');
+      if (title) title.textContent = 'Доходы за месяц';
+      modal.setAttribute('data-category-id', categoryId);
+      modal.setAttribute('data-year', year);
+      modal.setAttribute('data-month', month);
+      modal.setAttribute('data-entry-type', 'revenue');
+      modal.style.display = 'block';
+    }
+  } catch (error) {
+    addLog('error', `Ошибка загрузки списка доходов: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Render revenue list (reuses renderExpenseList with revenue-specific handlers)
+ */
+function renderRevenueList(entries, categoryId, year, month) {
+  // Mark entries as revenue type and reuse the same rendering function
+  entries.forEach(entry => {
+    entry.entry_type = 'revenue';
+  });
+  renderExpenseList(entries, categoryId, year, month);
+}
+
+/**
+ * Close revenue list modal
+ */
+function closeRevenueListModal() {
+  const modal = document.getElementById('expense-list-modal');
+  if (modal) {
+    modal.style.display = 'none';
+    modal.removeAttribute('data-category-id');
+    modal.removeAttribute('data-expense-category-id');
+    modal.removeAttribute('data-year');
+    modal.removeAttribute('data-month');
+    modal.removeAttribute('data-entry-type');
+  }
+  currentRevenueListContext = null;
+}
+
+/**
+ * Show add revenue modal from list
+ */
+function showAddRevenueModalFromList() {
+  const modal = document.getElementById('expense-list-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType !== 'revenue') {
+    addLog('error', 'Неверный тип записи');
+    return;
+  }
+  
+  const categoryId = parseInt(modal.getAttribute('data-category-id'), 10);
+  const year = parseInt(modal.getAttribute('data-year'), 10);
+  const month = parseInt(modal.getAttribute('data-month'), 10);
+  
+  if (!categoryId || !year || !month) {
+    // Fallback to context
+    if (currentRevenueListContext) {
+      showAddRevenueModal(
+        currentRevenueListContext.categoryId,
+        currentRevenueListContext.year,
+        currentRevenueListContext.month
+      );
+    } else {
+      addLog('error', 'Не удалось определить контекст для добавления дохода');
+    }
+    return;
+  }
+  
+  closeRevenueListModal();
+  showAddRevenueModal(categoryId, year, month);
+}
+
+/**
+ * Edit revenue entry
+ */
+function editRevenueEntry(entryId) {
+  currentEditEntryId = entryId;
+  
+  // Fetch entry data
+  fetch(`${API_BASE}/pnl/manual-entries/${entryId}`)
+    .then(res => res.json())
+    .then(result => {
+      if (!result.success || !result.data) {
+        throw new Error(result.error || 'Не удалось загрузить запись');
+      }
+      
+      const entry = result.data;
+      const amountInput = document.getElementById('edit-expense-amount');
+      const commentInput = document.getElementById('edit-expense-comment');
+      
+      if (amountInput) amountInput.value = entry.amount_pln || '';
+      if (commentInput) commentInput.value = entry.notes || '';
+      
+      const modal = document.getElementById('edit-expense-modal');
+      if (modal) {
+        // Update modal title based on entry type
+        const title = document.getElementById('edit-entry-title');
+        if (title) {
+          title.textContent = entry.entry_type === 'revenue' ? 'Редактировать доход' : 'Редактировать расход';
+        }
+        modal.setAttribute('data-entry-type', entry.entry_type || 'expense');
+        modal.style.display = 'block';
+      }
+    })
+    .catch(error => {
+      addLog('error', `Ошибка загрузки записи: ${error.message}`);
+      alert('Ошибка: ' + error.message);
+    });
+}
+
+/**
+ * Save edited revenue entry
+ */
+async function saveEditedRevenueEntry() {
+  if (!currentEditEntryId) {
+    addLog('error', 'ID записи для редактирования не найден');
+    return;
+  }
+
+  const amountInput = document.getElementById('edit-expense-amount');
+  const commentInput = document.getElementById('edit-expense-comment');
+  
+  if (!amountInput) {
+    addLog('error', 'Поле суммы не найдено');
+    return;
+  }
+
+  const amount = parseFloat(amountInput.value);
+  const comment = commentInput ? commentInput.value.trim() : '';
+
+  if (!amount || amount <= 0) {
+    alert('Введите корректную сумму (больше нуля)');
+    return;
+  }
+
+  try {
+    addLog('info', `Обновление дохода ID ${currentEditEntryId}...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries/${currentEditEntryId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amountPln: amount,
+        notes: comment || null
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка обновления');
+    }
+
+    addLog('success', `Доход обновлен: ${amount} PLN`);
+    closeEditExpenseModal();
+    
+    // Refresh list and report silently
+    const modal = document.getElementById('expense-list-modal');
+    if (modal && modal.style.display === 'block') {
+      const entryType = modal.getAttribute('data-entry-type');
+      if (entryType === 'revenue' && currentRevenueListContext) {
+        await showRevenueListModal(
+          currentRevenueListContext.categoryId,
+          currentRevenueListContext.year,
+          currentRevenueListContext.month
+        );
+      } else if (entryType === 'expense' && currentExpenseListContext) {
+        await showExpenseListModal(
+          currentExpenseListContext.expenseCategoryId,
+          currentExpenseListContext.year,
+          currentExpenseListContext.month
+        );
+      }
+    }
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка обновления дохода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Delete revenue entry
+ */
+async function deleteRevenueEntry(entryId) {
+  if (!confirm('Вы уверены, что хотите удалить этот доход?')) {
+    return;
+  }
+
+  try {
+    addLog('info', `Удаление дохода ID ${entryId}...`);
+    
+    const response = await fetch(`${API_BASE}/pnl/manual-entries/${entryId}`, {
+      method: 'DELETE'
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Ошибка удаления');
+    }
+
+    addLog('success', 'Доход удален');
+    
+    // Refresh list and report silently
+    const modal = document.getElementById('expense-list-modal');
+    if (modal && modal.style.display === 'block') {
+      const entryType = modal.getAttribute('data-entry-type');
+      if (entryType === 'revenue' && currentRevenueListContext) {
+        await showRevenueListModal(
+          currentRevenueListContext.categoryId,
+          currentRevenueListContext.year,
+          currentRevenueListContext.month
+        );
+      } else if (entryType === 'expense' && currentExpenseListContext) {
+        await showExpenseListModal(
+          currentExpenseListContext.expenseCategoryId,
+          currentExpenseListContext.year,
+          currentExpenseListContext.month
+        );
+      }
+    }
+    await refreshPnlReportSilently();
+  } catch (error) {
+    addLog('error', `Ошибка удаления дохода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+// Make functions available globally
+window.showAddExpenseModal = showAddExpenseModal;
+window.closeAddExpenseModal = closeAddExpenseModal;
+window.saveExpenseEntry = saveExpenseEntry;
+window.showExpenseListModal = showExpenseListModal;
+window.closeExpenseListModal = closeExpenseListModal;
+window.showAddExpenseModalFromList = showAddExpenseModalFromList;
+window.showAddRevenueModal = showAddRevenueModal;
+window.closeAddRevenueModal = closeAddRevenueModal;
+window.saveRevenueEntry = saveRevenueEntry;
+window.showRevenueListModal = showRevenueListModal;
+window.closeRevenueListModal = closeRevenueListModal;
+window.showAddRevenueModalFromList = showAddRevenueModalFromList;
+window.editRevenueEntry = editRevenueEntry;
+window.saveEditedRevenueEntry = saveEditedRevenueEntry;
+window.deleteRevenueEntry = deleteRevenueEntry;
+
+/**
+ * Handle add entry from list (works for both expense and revenue)
+ */
+function handleAddEntryFromList() {
+  const modal = document.getElementById('expense-list-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType === 'revenue') {
+    showAddRevenueModalFromList();
+  } else {
+    showAddExpenseModalFromList();
+  }
+}
+
+window.handleAddEntryFromList = handleAddEntryFromList;
+
+/**
+ * Handle save edited entry (works for both expense and revenue)
+ */
+function handleSaveEditedEntry() {
+  const modal = document.getElementById('edit-expense-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType === 'revenue') {
+    saveEditedRevenueEntry();
+  } else {
+    saveEditedExpenseEntry();
+  }
+}
+
+window.handleSaveEditedEntry = handleSaveEditedEntry;
+
+/**
+ * Handle save entry (works for both expense and revenue)
+ */
+function handleSaveEntry() {
+  const modal = document.getElementById('add-expense-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType === 'revenue') {
+    saveRevenueEntry();
+  } else {
+    saveExpenseEntry();
+  }
+}
+
+window.handleSaveEntry = handleSaveEntry;
+
+/**
+ * Handle close add modal (works for both expense and revenue)
+ */
+function handleCloseAddModal() {
+  const modal = document.getElementById('add-expense-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType === 'revenue') {
+    closeAddRevenueModal();
+  } else {
+    closeAddExpenseModal();
+  }
+}
+
+window.handleCloseAddModal = handleCloseAddModal;
+
+/**
+ * Handle close list modal (works for both expense and revenue)
+ */
+function handleCloseListModal() {
+  const modal = document.getElementById('expense-list-modal');
+  if (!modal) return;
+  
+  const entryType = modal.getAttribute('data-entry-type');
+  if (entryType === 'revenue') {
+    closeRevenueListModal();
+  } else {
+    closeExpenseListModal();
+  }
+}
+
+window.handleCloseListModal = handleCloseListModal;
+
+/**
+ * Handle close edit modal (works for both expense and revenue)
+ */
+function handleCloseEditModal() {
+  closeEditExpenseModal(); // Same function works for both
+}
+
+window.handleCloseEditModal = handleCloseEditModal;
+window.editExpenseEntry = editExpenseEntry;
+window.closeEditExpenseModal = closeEditExpenseModal;
+window.saveEditedExpenseEntry = saveEditedExpenseEntry;
+window.deleteExpenseEntry = deleteExpenseEntry;
 

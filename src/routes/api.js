@@ -3476,15 +3476,19 @@ router.get('/vat-margin/payer-payments', async (req, res) => {
 });
 
 router.get('/vat-margin/payments', async (req, res) => {
-  let direction, limit, uncategorized;
+  let direction, limit, uncategorized, description, amount, date, currency;
   
   try {
-    ({ direction, limit, uncategorized } = req.query);
+    ({ direction, limit, uncategorized, description, amount, date, currency } = req.query);
     
     logger.info('GET /vat-margin/payments', {
       direction,
       limit,
       uncategorized,
+      description,
+      amount,
+      date,
+      currency,
       query: req.query
     });
     
@@ -3543,45 +3547,129 @@ router.get('/vat-margin/payments', async (req, res) => {
     }
     
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    const parsedAmount = amount ? parseFloat(amount) : null;
     
-    logger.info('Calling paymentService.listPayments', {
-      direction,
-      limit: parsedLimit,
-      expenseCategoryId,
-      expenseCategoryIdType: typeof expenseCategoryId,
-      note: expenseCategoryId === undefined ? 'Will show ALL expenses' : expenseCategoryId === null ? 'Will show only uncategorized expenses' : 'Will show expenses with specific category'
-    });
+    // Build search filters for manual search
+    const hasSearchFilters = !!(description || (parsedAmount !== null && !isNaN(parsedAmount)) || date || currency);
     
-    const { payments, history } = await paymentService.listPayments({ 
-      direction, 
-      limit: parsedLimit,
-      expenseCategoryId: expenseCategoryId // Pass undefined to show all, null to show only uncategorized
-    });
+    let payments = [];
+    let history = [];
     
-    logger.info('listPayments returned', {
-      direction,
-      paymentsCount: payments?.length || 0,
-      historyCount: history?.length || 0,
-      samplePayments: payments?.slice(0, 3).map(p => ({
-        id: p?.id,
-        direction: p?.direction,
-        expense_category_id: p?.expense_category_id,
-        description: p?.description?.substring(0, 50)
-      })) || []
-    });
-    
-    // Additional safety: filter out any payments with wrong direction if direction was specified
-    let filteredPayments = payments || [];
-    if (direction) {
-      filteredPayments = (payments || []).filter(p => p && p.direction === direction);
-      logger.info('After direction filter', {
-        originalCount: payments?.length || 0,
-        filteredCount: filteredPayments.length
+    if (hasSearchFilters) {
+      // Manual search mode - query Supabase directly with filters
+      let query = supabase
+        .from('payments')
+        .select('*')
+        .is('deleted_at', null);
+      
+      // Handle description search (text search in description and payer_name)
+      if (description) {
+        query = query.or(`description.ilike.%${description}%,payer_name.ilike.%${description}%`);
+      }
+      
+      // Handle amount search (with 3% tolerance, same as receipt matching)
+      // If we have both description and amount, we'll filter by amount in memory after SQL query
+      // This is because Supabase doesn't easily support AND between OR conditions
+      if (parsedAmount !== null && !isNaN(parsedAmount)) {
+        if (!description) {
+          // Only amount filter - can do in SQL efficiently
+          const tolerance = Math.max(parsedAmount * 0.03, 0.01);
+          const minAmount = parsedAmount - tolerance;
+          const maxAmount = parsedAmount + tolerance;
+          query = query.gte('amount', minAmount).lte('amount', maxAmount);
+        }
+        // If description is also present, we'll filter by amount in memory (see below)
+      }
+      
+      if (date) {
+        query = query.eq('operation_date', date);
+      }
+      
+      if (currency) {
+        query = query.eq('currency', currency);
+      }
+      
+      if (direction) {
+        query = query.eq('direction', direction);
+      }
+      
+      const searchLimit = parsedLimit || 50; // Default limit for search
+      query = query.limit(searchLimit);
+      
+      let { data: searchResults, error: searchError } = await query.order('operation_date', { ascending: false });
+      
+      if (searchError) {
+        logger.error('Error searching payments', { error: searchError });
+        throw new Error(`Ошибка поиска платежей: ${searchError.message}`);
+      }
+      
+      // If we searched by both description and amount, filter by amount in memory
+      // This is needed because Supabase doesn't easily support AND between OR conditions
+      if (description && parsedAmount !== null && !isNaN(parsedAmount)) {
+        const tolerance = Math.max(parsedAmount * 0.03, 0.01);
+        const minAmount = parsedAmount - tolerance;
+        const maxAmount = parsedAmount + tolerance;
+        
+        searchResults = (searchResults || []).filter(payment => {
+          const paymentAmount = parseFloat(payment.amount) || 0;
+          return paymentAmount >= minAmount && paymentAmount <= maxAmount;
+        });
+        
+        logger.info('Filtered search results by amount in memory', {
+          beforeFilter: (searchResults || []).length,
+          afterFilter: searchResults.length,
+          amountRange: `${minAmount.toFixed(2)} - ${maxAmount.toFixed(2)}`
+        });
+      }
+      
+      payments = searchResults || [];
+      logger.info('Manual search results', {
+        filters: { description, amount: parsedAmount, date, currency },
+        paymentsCount: payments.length
       });
+    } else {
+      // Normal mode - use paymentService
+      logger.info('Calling paymentService.listPayments', {
+        direction,
+        limit: parsedLimit,
+        expenseCategoryId,
+        expenseCategoryIdType: typeof expenseCategoryId,
+        note: expenseCategoryId === undefined ? 'Will show ALL expenses' : expenseCategoryId === null ? 'Will show only uncategorized expenses' : 'Will show expenses with specific category'
+      });
+      
+      const result = await paymentService.listPayments({ 
+        direction, 
+        limit: parsedLimit,
+        expenseCategoryId: expenseCategoryId // Pass undefined to show all, null to show only uncategorized
+      });
+      
+      payments = result.payments || [];
+      history = result.history || [];
+      
+      logger.info('listPayments returned', {
+        direction,
+        paymentsCount: payments?.length || 0,
+        historyCount: history?.length || 0,
+        samplePayments: payments?.slice(0, 3).map(p => ({
+          id: p?.id,
+          direction: p?.direction,
+          expense_category_id: p?.expense_category_id,
+          description: p?.description?.substring(0, 50)
+        })) || []
+      });
+      
+      // Additional safety: filter out any payments with wrong direction if direction was specified
+      if (direction) {
+        payments = (payments || []).filter(p => p && p.direction === direction);
+        logger.info('After direction filter', {
+          originalCount: payments?.length || 0,
+          filteredCount: payments.length
+        });
+      }
     }
     
     // Ensure we have valid arrays
-    const safePayments = Array.isArray(filteredPayments) ? filteredPayments : [];
+    const safePayments = Array.isArray(payments) ? payments : [];
     const safeHistory = Array.isArray(history) ? history : [];
     
     logger.info('Sending response', {
@@ -4425,26 +4513,98 @@ router.post('/pnl/categories/:id/reorder', async (req, res) => {
 
 /**
  * GET /api/pnl/manual-entries
- * Get manual entries for a category and year
- * Query params: categoryId (required), year (required), entryType (optional, default: 'revenue')
+ * Get manual entries for a category and year, or for a category/month
+ * Query params: 
+ *   - categoryId or expenseCategoryId (required)
+ *   - year (required)
+ *   - month (optional) - if provided, returns entries for specific month
+ *   - entryType (optional, default: 'revenue')
  */
 router.get('/pnl/manual-entries', async (req, res) => {
   try {
-    const categoryId = parseInt(req.query.categoryId, 10);
-    const year = parseInt(req.query.year, 10);
-    const entryType = req.query.entryType || 'revenue';
+    logger.info('GET /pnl/manual-entries', {
+      query: req.query,
+      expenseCategoryId: req.query.expenseCategoryId,
+      categoryId: req.query.categoryId,
+      year: req.query.year,
+      month: req.query.month,
+      entryType: req.query.entryType
+    });
 
-    if (Number.isNaN(categoryId) || categoryId <= 0) {
+    const categoryId = req.query.categoryId ? parseInt(req.query.categoryId, 10) : null;
+    const expenseCategoryId = req.query.expenseCategoryId ? parseInt(req.query.expenseCategoryId, 10) : null;
+    const year = req.query.year ? parseInt(req.query.year, 10) : NaN;
+    const month = req.query.month ? parseInt(req.query.month, 10) : null;
+    // Parse entryType - handle both string and undefined
+    const entryTypeRaw = req.query.entryType;
+    const entryType = entryTypeRaw ? String(entryTypeRaw).toLowerCase().trim() : 'revenue';
+
+    logger.info('GET /pnl/manual-entries - Raw query params', {
+      rawQuery: req.query,
+      entryTypeRaw: req.query.entryType,
+      entryTypeParsed: entryType,
+      expenseCategoryIdRaw: req.query.expenseCategoryId,
+      expenseCategoryIdParsed: expenseCategoryId
+    });
+
+    // Validate entryType first
+    if (entryType !== 'revenue' && entryType !== 'expense') {
+      logger.warn('Invalid entryType', {
+        entryType,
+        entryTypeRaw: req.query.entryType
+      });
       return res.status(400).json({
         success: false,
-        error: 'categoryId is required and must be a positive number'
+        error: 'entryType must be either "revenue" or "expense"'
       });
     }
 
-    if (Number.isNaN(year) || year < 2020 || year > 2030) {
+    // Validate based on entry type - check expense FIRST
+    if (entryType === 'expense') {
+      logger.info('Processing as EXPENSE entry', { expenseCategoryId, entryType });
+      if (!expenseCategoryId || Number.isNaN(expenseCategoryId) || expenseCategoryId <= 0) {
+        logger.warn('Invalid expenseCategoryId for expense entry', {
+          expenseCategoryId: req.query.expenseCategoryId,
+          parsed: expenseCategoryId,
+          entryType
+        });
+        return res.status(400).json({
+          success: false,
+          error: 'expenseCategoryId is required for expense entries and must be a positive number'
+        });
+      }
+    } else if (entryType === 'revenue') {
+      logger.info('Processing as REVENUE entry', { categoryId, entryType });
+      if (!categoryId || Number.isNaN(categoryId) || categoryId <= 0) {
+        logger.warn('Invalid categoryId for revenue entry', {
+          categoryId: req.query.categoryId,
+          parsed: categoryId,
+          entryType
+        });
+        return res.status(400).json({
+          success: false,
+          error: 'categoryId is required for revenue entries and must be a positive number'
+        });
+      }
+    }
+
+    const finalCategoryId = entryType === 'expense' ? expenseCategoryId : categoryId;
+
+    if (!req.query.year || Number.isNaN(year) || year < 2020 || year > 2030) {
+      logger.warn('Invalid year', {
+        year: req.query.year,
+        parsed: year
+      });
       return res.status(400).json({
         success: false,
         error: 'year is required and must be between 2020 and 2030'
+      });
+    }
+
+    if (month !== null && (Number.isNaN(month) || month < 1 || month > 12)) {
+      return res.status(400).json({
+        success: false,
+        error: 'month must be between 1 and 12 if provided'
       });
     }
 
@@ -4455,7 +4615,12 @@ router.get('/pnl/manual-entries', async (req, res) => {
       });
     }
 
-    const entries = await manualEntryService.getEntriesByCategoryAndYear(categoryId, year, entryType);
+    // If month is provided, get entries for specific category/month
+    // Otherwise, get entries for category/year
+    const entries = month !== null
+      ? await manualEntryService.getEntriesByCategoryMonth(finalCategoryId, year, month, entryType)
+      : await manualEntryService.getEntriesByCategoryAndYear(finalCategoryId, year, entryType);
+
     res.json({
       success: true,
       data: entries
@@ -4477,7 +4642,17 @@ router.get('/pnl/manual-entries', async (req, res) => {
  */
 router.post('/pnl/manual-entries', async (req, res) => {
   try {
-    const { categoryId, expenseCategoryId, entryType = 'revenue', year, month, amountPln, currencyBreakdown, notes } = req.body;
+    let { categoryId, expenseCategoryId, entryType = 'revenue', year, month, amountPln, currencyBreakdown, notes } = req.body;
+
+    // Normalize entryType to lowercase
+    entryType = entryType?.toLowerCase().trim() || 'revenue';
+
+    // Convert string numbers to actual numbers
+    if (categoryId !== undefined) categoryId = Number(categoryId);
+    if (expenseCategoryId !== undefined) expenseCategoryId = Number(expenseCategoryId);
+    if (year !== undefined) year = Number(year);
+    if (month !== undefined) month = Number(month);
+    if (amountPln !== undefined) amountPln = Number(amountPln);
 
     if (entryType !== 'revenue' && entryType !== 'expense') {
       return res.status(400).json({
@@ -4514,37 +4689,69 @@ router.post('/pnl/manual-entries', async (req, res) => {
       });
     }
 
-    if (!Number.isFinite(amountPln) || amountPln < 0) {
+    // For expense entries, amount must be > 0 (positive)
+    // For revenue entries, amount must be >= 0 (non-negative)
+    if (entryType === 'expense' && (!Number.isFinite(amountPln) || amountPln <= 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'amountPln is required and must be a positive number (greater than zero)'
+      });
+    }
+    if (entryType === 'revenue' && (!Number.isFinite(amountPln) || amountPln < 0)) {
       return res.status(400).json({
         success: false,
         error: 'amountPln is required and must be a non-negative number'
       });
     }
 
-    const entry = await manualEntryService.upsertEntry({
-      categoryId,
-      expenseCategoryId,
-      entryType,
-      year,
-      month,
-      amountPln,
-      currencyBreakdown,
-      notes
-    });
+    // For expense entries, use createEntry() to allow multiple entries per category/month
+    // For revenue entries, use upsertEntry() to maintain single entry per category/month
+    const entry = entryType === 'expense'
+      ? await manualEntryService.createEntry({
+          categoryId,
+          expenseCategoryId,
+          entryType,
+          year,
+          month,
+          amountPln,
+          currencyBreakdown,
+          notes
+        })
+      : await manualEntryService.upsertEntry({
+          categoryId,
+          expenseCategoryId,
+          entryType,
+          year,
+          month,
+          amountPln,
+          currencyBreakdown,
+          notes
+        });
 
     res.json({
       success: true,
       data: entry
     });
   } catch (error) {
-    logger.error('Error upserting manual entry:', error);
+    logger.error('Error upserting manual entry:', {
+      error: error.message,
+      stack: error.stack,
+      body: req.body,
+      entryType: req.body?.entryType,
+      errorCode: error.code,
+      errorDetails: error.details,
+      errorHint: error.hint
+    });
     const statusCode = error.message.includes('not found') ? 404
       : error.message.includes('management_type') ? 400
+      : error.code === '23505' ? 409 // Unique constraint violation
+      : error.code === '23503' ? 400 // Foreign key violation
       : 500;
     res.status(statusCode).json({
       success: false,
       error: 'Failed to upsert manual entry',
-      message: error.message
+      message: error.message,
+      code: error.code
     });
   }
 });
@@ -4597,6 +4804,120 @@ router.delete('/pnl/manual-entries', async (req, res) => {
   } catch (error) {
     logger.error('Error deleting manual entry:', error);
     res.status(500).json({
+      success: false,
+      error: 'Failed to delete manual entry',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/manual-entries/:id
+ * Get a single manual entry by ID
+ */
+router.get('/pnl/manual-entries/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Entry ID must be a positive number'
+      });
+    }
+
+    const entry = await manualEntryService.getEntryById(id);
+
+    if (!entry) {
+      return res.status(404).json({
+        success: false,
+        error: 'Entry not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: entry
+    });
+  } catch (error) {
+    logger.error('Error getting manual entry by ID:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get manual entry',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/pnl/manual-entries/:id
+ * Update a manual entry by ID
+ * Body: { amountPln?: number, notes?: string }
+ */
+router.put('/pnl/manual-entries/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { amountPln, notes } = req.body;
+
+    if (Number.isNaN(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Entry ID must be a positive number'
+      });
+    }
+
+    // Validate amountPln if provided
+    if (amountPln !== undefined) {
+      if (!Number.isFinite(amountPln) || amountPln <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'amountPln must be a positive number (greater than zero)'
+        });
+      }
+    }
+
+    const entry = await manualEntryService.updateEntryById(id, { amountPln, notes });
+
+    res.json({
+      success: true,
+      data: entry
+    });
+  } catch (error) {
+    logger.error('Error updating manual entry:', error);
+    const statusCode = error.message.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({
+      success: false,
+      error: 'Failed to update manual entry',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * DELETE /api/pnl/manual-entries/:id
+ * Delete a manual entry by ID
+ */
+router.delete('/pnl/manual-entries/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    if (Number.isNaN(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Entry ID must be a positive number'
+      });
+    }
+
+    const result = await manualEntryService.deleteEntryById(id);
+
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    logger.error('Error deleting manual entry by ID:', error);
+    const statusCode = error.message.includes('not found') ? 404 : 500;
+    res.status(statusCode).json({
       success: false,
       error: 'Failed to delete manual entry',
       message: error.message
