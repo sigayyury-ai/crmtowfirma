@@ -4704,20 +4704,39 @@ router.post('/pnl/manual-entries', async (req, res) => {
       });
     }
 
-    // For expense entries, use createEntry() to allow multiple entries per category/month
-    // For revenue entries, use upsertEntry() to maintain single entry per category/month
-    const entry = entryType === 'expense'
-      ? await manualEntryService.createEntry({
-          categoryId,
-          expenseCategoryId,
-          entryType,
-          year,
-          month,
-          amountPln,
-          currencyBreakdown,
-          notes
-        })
-      : await manualEntryService.upsertEntry({
+    // For expense entries, always use createEntry() to allow multiple entries per category/month
+    // For revenue entries, check if category is manual - if yes, use createEntry(), otherwise use upsertEntry()
+    let entry;
+    if (entryType === 'expense') {
+      entry = await manualEntryService.createEntry({
+        categoryId,
+        expenseCategoryId,
+        entryType,
+        year,
+        month,
+        amountPln,
+        currencyBreakdown,
+        notes
+      });
+    } else {
+      // Check if revenue category is manual type
+      const IncomeCategoryService = require('../services/pnl/incomeCategoryService');
+      const incomeCategoryService = new IncomeCategoryService();
+      let category;
+      try {
+        category = await incomeCategoryService.getCategoryById(categoryId);
+      } catch (error) {
+        logger.error('Error fetching revenue category:', error);
+        return res.status(400).json({
+          success: false,
+          error: 'Category not found'
+        });
+      }
+
+      // If category is manual, use createEntry() to allow multiple entries
+      // Otherwise, use upsertEntry() to maintain single entry per category/month
+      if (category && category.management_type === 'manual') {
+        entry = await manualEntryService.createEntry({
           categoryId,
           expenseCategoryId,
           entryType,
@@ -4727,6 +4746,19 @@ router.post('/pnl/manual-entries', async (req, res) => {
           currencyBreakdown,
           notes
         });
+      } else {
+        entry = await manualEntryService.upsertEntry({
+          categoryId,
+          expenseCategoryId,
+          entryType,
+          year,
+          month,
+          amountPln,
+          currencyBreakdown,
+          notes
+        });
+      }
+    }
 
     res.json({
       success: true,
