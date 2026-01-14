@@ -100,6 +100,25 @@ function cacheDom() {
     if (elements.insightsYearSelect) elements.insightsYearSelect.appendChild(opt.cloneNode(true));
   }
   
+  // Sort year options in ascending order (2024, 2025, 2026, ...)
+  function sortYearOptions(select) {
+    if (!select) return;
+    const options = Array.from(select.options);
+    const sortedOptions = options.sort((a, b) => {
+      const yearA = Number(a.value);
+      const yearB = Number(b.value);
+      return yearA - yearB;
+    });
+    
+    // Clear and re-add sorted options
+    select.innerHTML = '';
+    sortedOptions.forEach(opt => select.appendChild(opt));
+  }
+  
+  // Sort both year selectors
+  sortYearOptions(elements.yearSelect);
+  sortYearOptions(elements.insightsYearSelect);
+  
   if (elements.yearSelect) {
     elements.yearSelect.value = currentYear.toString();
   }
