@@ -309,6 +309,10 @@
             <button class="btn btn-secondary" onclick="loadExpenses()">🔄 Обновить</button>
             <button class="btn btn-primary" id="autoCategorizeBtn">🤖 Автокатегоризация</button>
             <label style="display: flex; align-items: center; gap: 10px;">
+                🔍 Поиск:
+                <input type="text" id="paymentSearchInput" class="form-control" placeholder="Поиск по описанию, плательщику, сумме..." style="min-width: 250px;" oninput="filterExpenses()" autocomplete="off" data-lpignore="true">
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px;">
                 Фильтр по категории:
                 <select id="categoryFilter" class="form-control" style="min-width: 200px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
                     <option value="">Все категории</option>

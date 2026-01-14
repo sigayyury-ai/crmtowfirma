@@ -19,6 +19,29 @@ class PaymentService {
       options.crmStatusAutomationService || new CrmStatusAutomationService();
   }
 
+  /**
+   * Check if payment is an internal transfer (PRZELEW WŁASNY)
+   * Internal transfers should be excluded from processing and matching
+   * @param {Object} payment - Payment record with description and payer_name
+   * @returns {boolean} - True if payment is an internal transfer
+   */
+  isInternalTransfer(payment) {
+    const description = (payment.description || '').toUpperCase();
+    const payerName = (payment.payer_name || payment.payer || '').toUpperCase();
+    
+    // Check for "PRZELEW WŁASNY" (own transfer) in description
+    if (description.includes('PRZELEW WŁASNY') || description.includes('PRZELEW WLASNY')) {
+      return true;
+    }
+    
+    // Check if payer is our own company (internal transfer/conversion)
+    if (payerName.includes('COMOON SPÓŁKA') || payerName.includes('COMOON SPOLKA')) {
+      return true;
+    }
+    
+    return false;
+  }
+
   async updateProformaPaymentAggregates(proformaId) {
     if (!supabase || !proformaId) {
       return;
@@ -289,12 +312,15 @@ class PaymentService {
       throw historyError;
     }
 
+    // Filter out internal transfers (PRZELEW WŁASNY)
+    const paymentsWithoutInternal = (paymentsData || []).filter(p => !this.isInternalTransfer(p));
+    
     // For expenses (direction='out'), show ALL payments regardless of manual_status
     // For income (direction='in'), filter out approved payments (they are matched to proformas)
     // Note: Refunds are already filtered out in the SQL query above
     const pendingPayments = direction === 'out'
-      ? (paymentsData || []) // Show all expenses
-      : (paymentsData || []).filter((item) => item.manual_status !== MANUAL_STATUS_APPROVED); // Filter approved income payments
+      ? paymentsWithoutInternal // Show all expenses (excluding internal transfers)
+      : paymentsWithoutInternal.filter((item) => item.manual_status !== MANUAL_STATUS_APPROVED); // Filter approved income payments (excluding internal transfers)
 
     // Resolve payment records with error handling
     const payments = [];
@@ -485,17 +511,34 @@ class PaymentService {
 
     // Separate records by type
     // Direction is automatically determined by amount sign (negative = out, positive = in)
-    const expenses = records.filter(r => r.direction === 'out');
-    const income = records.filter(r => r.direction === 'in');
+    // Filter out internal transfers (PRZELEW WŁASNY - transfers between own accounts)
+    const internalTransfers = records.filter(r => this.isInternalTransfer(r));
+    if (internalTransfers.length > 0) {
+      logger.info('Filtering out internal transfers (PRZELEW WŁASNY)', {
+        count: internalTransfers.length,
+        sample: internalTransfers.slice(0, 3).map(t => ({
+          date: t.operation_date,
+          amount: t.amount,
+          currency: t.currency,
+          payer: t.payer_name
+        }))
+      });
+    }
+    
+    const nonInternalRecords = records.filter(r => !isInternalTransfer(r));
+    const expenses = nonInternalRecords.filter(r => r.direction === 'out');
+    const income = nonInternalRecords.filter(r => r.direction === 'in');
     
     // All income payments will be matched to proformas
     // Refunds can be manually marked via UI button "Отправить в PNL"
     const regularIncome = income;
 
     logger.info('CSV records separated', {
+      totalRecords: records.length,
+      internalTransfers: internalTransfers.length,
       expenses: expenses.length,
       income: regularIncome.length,
-      total: records.length
+      processed: expenses.length + regularIncome.length
     });
 
     // Create import record

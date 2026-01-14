@@ -702,14 +702,18 @@ async function handleQuickCategoryChange(event, paymentId, categoryType = 'expen
   }
 }
 
-// Filter expenses by category (we always show outgoing payments)
+// Filter expenses by category and search (we always show outgoing payments)
 function filterExpenses() {
   const categoryFilter = document.getElementById('categoryFilter');
+  const searchInput = document.getElementById('paymentSearchInput');
   if (!categoryFilter) return;
   
   const categoryFilterValue = categoryFilter.value;
+  const searchQuery = searchInput ? searchInput.value.trim().toLowerCase() : '';
+  
   let filteredPayments = expensesState.items.filter((payment) => payment.direction === 'out');
 
+  // Apply category filter
   if (categoryFilterValue === 'null') {
     filteredPayments = filteredPayments.filter((payment) => !payment.expense_category_id);
   } else if (categoryFilterValue) {
@@ -717,6 +721,23 @@ function filterExpenses() {
     if (!Number.isNaN(categoryId)) {
       filteredPayments = filteredPayments.filter((payment) => payment.expense_category_id === categoryId);
     }
+  }
+
+  // Apply search filter
+  if (searchQuery) {
+    filteredPayments = filteredPayments.filter((payment) => {
+      const description = (payment.description || '').toLowerCase();
+      const payerName = (payment.payer_name || '').toLowerCase();
+      const amount = String(payment.amount || '');
+      const currency = (payment.currency || '').toLowerCase();
+      const id = String(payment.id || '');
+      
+      return description.includes(searchQuery) ||
+             payerName.includes(searchQuery) ||
+             amount.includes(searchQuery) ||
+             currency.includes(searchQuery) ||
+             id.includes(searchQuery);
+    });
   }
 
   expensesState.filteredItems = filteredPayments;
