@@ -1312,14 +1312,28 @@ class SecondPaymentSchedulerService {
           }
 
           // ИСКЛЮЧАЕМ сделки в статусе "lost" - не нужно пересоздавать сессии для потерянных сделок
-          if (deal.status === 'lost') {
-            this.logger.debug('Skipping lost deal in expired sessions', {
+          if (deal.status === 'lost' || deal.status === 'deleted' || deal.deleted === true) {
+            this.logger.debug('Skipping lost/deleted deal in expired sessions', {
               dealId: deal.id,
               dealTitle: deal.title,
               status: deal.status,
               lostReason: deal.lost_reason || 'не указан'
             });
             continue;
+          }
+
+          // ИСКЛЮЧАЕМ сделки с invoice_type = "Delete" (74) - не нужно пересоздавать сессии для удаленных сделок
+          const invoiceTypeFieldKey = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+          if (deal[invoiceTypeFieldKey]) {
+            const invoiceType = String(deal[invoiceTypeFieldKey]).trim();
+            if (invoiceType === '74' || invoiceType.toLowerCase() === 'delete') {
+              this.logger.debug('Skipping deal with invoice_type = Delete in expired sessions', {
+                dealId: deal.id,
+                dealTitle: deal.title,
+                invoiceType
+              });
+              continue;
+            }
           }
 
           // Получаем платежи для проверки активных сессий

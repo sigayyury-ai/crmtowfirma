@@ -2725,13 +2725,26 @@ class StripeProcessorService {
       for (const deal of dealsToProcess) {
         try {
           // Check if deal is closed - skip closed deals
-          if (deal.status === 'won' || deal.status === 'lost') {
-            this.logger.info('Deal is closed, skipping Checkout Session creation', {
+          if (deal.status === 'won' || deal.status === 'lost' || deal.status === 'deleted' || deal.deleted === true) {
+            this.logger.info('Deal is closed or deleted, skipping Checkout Session creation', {
               dealId: deal.id,
               status: deal.status
             });
             summary.skipped++;
             continue;
+          }
+
+          // Check if invoice_type = "Delete" (74) - skip deleted deals
+          if (this.invoiceTypeFieldKey && deal[this.invoiceTypeFieldKey]) {
+            const invoiceType = String(deal[this.invoiceTypeFieldKey]).trim();
+            if (invoiceType === '74' || invoiceType.toLowerCase() === 'delete') {
+              this.logger.info('Deal has invoice_type = Delete, skipping Checkout Session creation', {
+                dealId: deal.id,
+                invoiceType
+              });
+              summary.skipped++;
+              continue;
+            }
           }
           
           // Check if Checkout Sessions already exist for this deal to avoid duplicates
@@ -3159,6 +3172,37 @@ class StripeProcessorService {
       }
 
       const fullDeal = fullDealResult.deal;
+      
+      // КРИТИЧНО: Проверяем статус сделки перед созданием сессии
+      // Не создаем сессии для потерянных или удаленных сделок
+      const dealStatus = fullDeal.status;
+      if (dealStatus === 'lost' || dealStatus === 'deleted' || fullDeal.deleted === true) {
+        this.logger.warn(`⚠️  [Deal #${dealId}] Сделка закрыта или удалена, создание сессии отменено`, {
+          dealId,
+          status: dealStatus,
+          deleted: fullDeal.deleted
+        });
+        return {
+          success: false,
+          error: `Deal is ${dealStatus === 'lost' ? 'lost' : 'deleted'}, cannot create checkout session`
+        };
+      }
+      
+      // Проверяем invoice_type - если "Delete" (74), не создаем сессию
+      const invoiceTypeFieldKey = this.invoiceTypeFieldKey;
+      if (invoiceTypeFieldKey && fullDeal[invoiceTypeFieldKey]) {
+        const invoiceType = String(fullDeal[invoiceTypeFieldKey]).trim();
+        if (invoiceType === '74' || invoiceType.toLowerCase() === 'delete') {
+          this.logger.warn(`⚠️  [Deal #${dealId}] invoice_type = Delete, создание сессии отменено`, {
+            dealId,
+            invoiceType
+          });
+          return {
+            success: false,
+            error: 'Deal has invoice_type = Delete, cannot create checkout session'
+          };
+        }
+      }
       
       // Мержим данные из переданного deal (из webhook'а) в fullDeal
       // ВАЖНО: Приоритет отдаем данным из API, так как они более полные и актуальные
@@ -4412,16 +4456,42 @@ class StripeProcessorService {
     }
 
     // 2. Также ищем сессии в Stripe по metadata.deal_id (важно для случаев, когда сессии не сохранены в БД)
+    // Ищем за последние 30 дней, чтобы найти все возможные сессии
     try {
-      const sessions = await this.stripe.checkout.sessions.list({
-        limit: 100
-      });
+      const thirtyDaysAgo = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      let hasMore = true;
+      let startingAfter = null;
+      const dealSessions = [];
       
-      const dealSessions = sessions.data.filter(s => 
-        s.metadata && s.metadata.deal_id === String(dealId) &&
-        s.status === 'open' && // Только активные сессии
-        s.payment_status !== 'paid' // Не оплаченные
-      );
+      // Используем пагинацию для поиска всех сессий
+      while (hasMore) {
+        const params = {
+          limit: 100,
+          created: { gte: thirtyDaysAgo }
+        };
+        
+        if (startingAfter) {
+          params.starting_after = startingAfter;
+        }
+        
+        const sessions = await this.stripe.checkout.sessions.list(params);
+        
+        // Фильтруем сессии для этой сделки
+        const filteredSessions = sessions.data.filter(s => 
+          s.metadata && s.metadata.deal_id === String(dealId) &&
+          (s.status === 'open' || s.status === 'complete') && // Активные или завершенные, но не оплаченные
+          s.payment_status !== 'paid' // Не оплаченные
+        );
+        
+        dealSessions.push(...filteredSessions);
+        
+        hasMore = sessions.has_more;
+        if (sessions.data.length > 0) {
+          startingAfter = sessions.data[sessions.data.length - 1].id;
+        } else {
+          hasMore = false;
+        }
+      }
       
       for (const session of dealSessions) {
         sessionIdsToCancel.add(session.id);
