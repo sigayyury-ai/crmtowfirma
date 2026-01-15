@@ -394,6 +394,100 @@ async function syncCashExpectationFromDeal({ dealId, currentDeal, previousDeal }
   }
 }
 
+/**
+ * Автоматически подтверждает cash payments при переходе сделки в статус "Won"
+ * Согласно спецификации: когда сделка становится Won, автоматически проставляется
+ * cash_payment.status = received, cash_amount_received = cash_amount_expected
+ */
+async function autoConfirmCashPaymentsOnWon(dealId, currentDeal, previousDeal) {
+  if (!cashPaymentsRepository.isEnabled() || !dealId || !currentDeal) {
+    return;
+  }
+
+  // Проверяем, что сделка перешла в статус "Won"
+  const currentStatus = currentDeal.status || currentDeal['Deal status'] || currentDeal['Deal_status'] || currentDeal['deal_status'];
+  const previousStatus = previousDeal?.status || previousDeal?.['Deal status'] || previousDeal?.['Deal_status'] || previousDeal?.['deal_status'];
+  
+  const isWon = currentStatus === 'won';
+  const wasWon = previousStatus === 'won';
+  
+  if (!isWon || wasWon) {
+    // Не перешла в Won или уже была Won - ничего не делаем
+    return;
+  }
+
+  logger.info(`✅ Сделка перешла в статус Won, проверяем cash payments для автоматического подтверждения | Deal: ${dealId}`);
+
+  try {
+    const normalizedDealId = typeof dealId === 'string' ? Number(dealId) : dealId;
+    
+    // Находим все pending cash payments для этой сделки
+    const { data: cashPayments, error: listError } = await cashPaymentsRepository.supabase
+      .from('cash_payments')
+      .select('*')
+      .eq('deal_id', normalizedDealId)
+      .in('status', ['pending', 'pending_confirmation'])
+      .order('created_at', { ascending: false });
+
+    if (listError) {
+      logger.error('Failed to fetch cash payments for auto-confirmation', {
+        dealId: normalizedDealId,
+        error: listError.message
+      });
+      return;
+    }
+
+    if (!cashPayments || cashPayments.length === 0) {
+      logger.debug(`No pending cash payments found for deal ${normalizedDealId}`);
+      return;
+    }
+
+    logger.info(`Найдено ${cashPayments.length} pending cash payment(s) для автоматического подтверждения | Deal: ${normalizedDealId}`);
+
+    const cashPnlSyncService = require('../services/cash/cashPnlSyncService');
+    
+    // Подтверждаем каждый pending cash payment
+    for (const payment of cashPayments) {
+      try {
+        const confirmedPayment = await cashPaymentsRepository.confirmPayment(payment.id, {
+          amount: payment.cash_expected_amount,
+          currency: payment.currency,
+          confirmedAt: new Date().toISOString(),
+          confirmedBy: 'automation_won_status',
+          note: 'Автоматически подтверждено при переходе сделки в статус Won'
+        });
+        
+        if (confirmedPayment) {
+          logger.info(`✅ Cash payment автоматически подтвержден | Deal: ${normalizedDealId} | Cash Payment ID: ${payment.id} | Amount: ${confirmedPayment.cash_received_amount} ${confirmedPayment.currency}`);
+          
+          // Синхронизируем с PNL
+          await cashPnlSyncService.upsertEntryFromPayment(confirmedPayment);
+          
+          // Обновляем статус в CRM
+          await ensureCashStatus({
+            pipedriveClient: invoiceProcessing.pipedriveClient,
+            dealId: normalizedDealId,
+            currentStatus: null,
+            targetStatus: 'RECEIVED'
+          });
+        }
+      } catch (confirmError) {
+        logger.error('Failed to auto-confirm cash payment', {
+          dealId: normalizedDealId,
+          cashPaymentId: payment.id,
+          error: confirmError.message
+        });
+        // Продолжаем обработку остальных платежей даже при ошибке
+      }
+    }
+  } catch (error) {
+    logger.error('Exception while auto-confirming cash payments on Won', {
+      dealId,
+      error: error.message
+    });
+  }
+}
+
 // Хранилище последних webhook событий для отладки (в памяти, последние 50)
 const webhookHistory = [];
 const MAX_HISTORY_SIZE = 50;
@@ -876,6 +970,16 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
       logger.warn('Failed to sync cash expectation from deal', {
         dealId,
         error: cashSyncError.message
+      });
+    }
+
+    // Автоматическое подтверждение cash payments при переходе в статус "Won"
+    try {
+      await autoConfirmCashPaymentsOnWon(dealId, currentDeal, previousDeal);
+    } catch (autoConfirmError) {
+      logger.warn('Failed to auto-confirm cash payments on Won', {
+        dealId,
+        error: autoConfirmError.message
       });
     }
 
