@@ -2823,7 +2823,11 @@ class StripeProcessorService {
             logger: this.logger
           });
           
-          const paymentState = await stateAnalyzer.analyzePaymentState(deal.id, schedule);
+          // ВАЖНО: Проверяем Stripe API для обнаружения истекших сессий
+          // Это нужно для правильного определения needsSingle, когда сессия истекла в Stripe, но не в БД
+          const paymentState = await stateAnalyzer.analyzePaymentState(deal.id, schedule, {
+            checkStripeSessions: true
+          });
           
           this.logger.debug('Payment state analysis', {
             dealId: deal.id,

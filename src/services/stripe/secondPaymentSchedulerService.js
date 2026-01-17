@@ -1350,14 +1350,21 @@ class SecondPaymentSchedulerService {
           // Также в Stripe может быть активная сессия, которой нет в БД
           let hasActiveSessionInStripe = false;
           try {
-            // Сначала проверяем сессии с deal_id в metadata (быстрее)
-            const stripeSessionsWithDealId = await this.stripeProcessor.stripe.checkout.sessions.list({
+            // Получаем все открытые сессии за последние 7 дней и фильтруем по deal_id
+            const sevenDaysAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+            const allOpenSessions = await this.stripeProcessor.stripe.checkout.sessions.list({
               limit: 100,
-              metadata: { deal_id: String(dealId) }
+              status: 'open',
+              created: { gte: sevenDaysAgo }
             });
             
+            // Фильтруем по deal_id в metadata
+            const stripeSessionsWithDealId = allOpenSessions.data.filter(s => 
+              s.metadata?.deal_id === String(dealId)
+            );
+            
             // Проверяем статус каждой сессии
-            for (const stripeSession of stripeSessionsWithDealId.data) {
+            for (const stripeSession of stripeSessionsWithDealId) {
               const isTestSession = stripeSession.id.startsWith('cs_test_');
               if (isTestSession) continue;
               
@@ -1557,6 +1564,7 @@ class SecondPaymentSchedulerService {
             const isRest = expiredSession.paymentType === 'rest' || 
                           expiredSession.paymentType === 'second' || 
                           expiredSession.paymentType === 'final';
+            const isSingle = expiredSession.paymentType === 'single';
 
             // Для первого платежа (deposit) - проверяем, нет ли активной deposit сессии
             if (isDeposit) {
@@ -1564,14 +1572,21 @@ class SecondPaymentSchedulerService {
               let hasActiveDepositSession = false;
               
               try {
-                // Проверяем сессии с deal_id в metadata
-                const stripeSessionsWithDealId = await this.stripeProcessor.stripe.checkout.sessions.list({
+                // Получаем все открытые сессии за последние 7 дней и фильтруем по deal_id
+                const sevenDaysAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+                const allOpenSessions = await this.stripeProcessor.stripe.checkout.sessions.list({
                   limit: 100,
-                  metadata: { deal_id: String(dealId) }
+                  status: 'open',
+                  created: { gte: sevenDaysAgo }
                 });
                 
+                // Фильтруем по deal_id в metadata
+                const stripeSessionsWithDealId = allOpenSessions.data.filter(s => 
+                  s.metadata?.deal_id === String(dealId)
+                );
+                
                 // Ищем активные deposit сессии
-                for (const stripeSession of stripeSessionsWithDealId.data) {
+                for (const stripeSession of stripeSessionsWithDealId) {
                   const isTestSession = stripeSession.id.startsWith('cs_test_');
                   if (isTestSession) continue;
                   
@@ -1699,6 +1714,105 @@ class SecondPaymentSchedulerService {
                   continue; // Пропускаем эту сессию
                 }
               }
+            } 
+            // Для единого платежа (single) - проверяем, нет ли активной single сессии
+            else if (isSingle) {
+              // ВАЖНО: Проверяем активные single сессии напрямую в Stripe API
+              let hasActiveSingleSession = false;
+              
+              try {
+                // Получаем все открытые сессии за последние 7 дней и фильтруем по deal_id
+                const sevenDaysAgo = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+                const allOpenSessions = await this.stripeProcessor.stripe.checkout.sessions.list({
+                  limit: 100,
+                  status: 'open',
+                  created: { gte: sevenDaysAgo }
+                });
+                
+                // Фильтруем по deal_id в metadata
+                const stripeSessionsWithDealId = allOpenSessions.data.filter(s => 
+                  s.metadata?.deal_id === String(dealId)
+                );
+                
+                // Ищем активные single сессии
+                for (const stripeSession of stripeSessionsWithDealId) {
+                  const isTestSession = stripeSession.id.startsWith('cs_test_');
+                  if (isTestSession) continue;
+                  
+                  const paymentType = stripeSession.metadata?.payment_type;
+                  if (paymentType === 'single' && stripeSession.status === 'open') {
+                    // Есть активная открытая single сессия
+                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                    const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
+                    
+                    if (expiredDate < activeCreated) {
+                      // Истекшая сессия старше активной - пропускаем
+                      this.logger.info('Skipping expired single session, active single session exists', {
+                        dealId,
+                        expiredSessionId: expiredSession.sessionId,
+                        activeSessionId: stripeSession.id,
+                        expiredDate: expiredDate.toISOString(),
+                        activeCreated: activeCreated.toISOString()
+                      });
+                      hasActiveSingleSession = true;
+                      break;
+                    }
+                  }
+                }
+                
+                // Если не нашли через metadata, проверяем сессии из БД
+                if (!hasActiveSingleSession) {
+                  const activeSinglePayments = payments.filter(p => {
+                    if (!p.session_id || p.payment_type !== 'single') return false;
+                    return p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid');
+                  });
+                  
+                  for (const activeSinglePayment of activeSinglePayments) {
+                    try {
+                      const sessionId = activeSinglePayment.session_id;
+                      const isTestSession = sessionId.startsWith('cs_test_');
+                      if (isTestSession) continue;
+                      
+                      const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
+                      if (stripeSession.status === 'open') {
+                        // Есть активная открытая single сессия
+                        const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
+                        const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
+                        
+                        if (expiredDate < activeCreated) {
+                          // Истекшая сессия старше активной - пропускаем
+                          this.logger.info('Skipping expired single session, active single session exists', {
+                            dealId,
+                            expiredSessionId: expiredSession.sessionId,
+                            activeSessionId: activeSinglePayment.session_id,
+                            expiredDate: expiredDate.toISOString(),
+                            activeCreated: activeCreated.toISOString()
+                          });
+                          hasActiveSingleSession = true;
+                          break;
+                        }
+                      }
+                    } catch (error) {
+                      this.logger.warn('Failed to check active single session status', {
+                        dealId,
+                        sessionId: activeSinglePayment.session_id,
+                        error: error.message
+                      });
+                    }
+                  }
+                }
+              } catch (error) {
+                this.logger.warn('Failed to check active single sessions in Stripe', {
+                  dealId,
+                  error: error.message
+                });
+                // Продолжаем обработку в случае ошибки
+              }
+              
+              if (hasActiveSingleSession) {
+                continue; // Есть активная single сессия, не пересоздаем
+              }
+              // Если нет активной single сессии, можно пересоздавать
             } else {
               continue; // Неизвестный тип платежа
             }
@@ -1725,7 +1839,10 @@ class SecondPaymentSchedulerService {
 
             // Для deposit используем сумму из сессии или половину от deal value
             // Для rest используем половину от deal value
-            const paymentAmount = expiredSession.amount || (isDeposit ? dealValue / 2 : dealValue / 2);
+            // Для single используем полную сумму сделки
+            const paymentAmount = expiredSession.amount || 
+                                 (isSingle ? dealValue : 
+                                  (isDeposit ? dealValue / 2 : dealValue / 2));
             
             const task = {
               deal,
@@ -1819,8 +1936,8 @@ class SecondPaymentSchedulerService {
             }
 
             const paymentType = session.metadata?.payment_type || '';
-            // Нас интересуют все типы платежей (deposit, rest, second, final)
-            if (paymentType === 'deposit' || paymentType === 'rest' || paymentType === 'second' || paymentType === 'final') {
+            // Нас интересуют все типы платежей (deposit, rest, second, final, single)
+            if (paymentType === 'deposit' || paymentType === 'rest' || paymentType === 'second' || paymentType === 'final' || paymentType === 'single') {
               expiredSessions.push({
                 sessionId: session.id,
                 dealId: session.metadata.deal_id,

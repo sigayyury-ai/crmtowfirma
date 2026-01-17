@@ -39,11 +39,29 @@ class PaymentStateAnalyzer {
     let stripeSessions = [];
     if (checkStripeSessions) {
       try {
-        const sessions = await this.stripe.checkout.sessions.list({
+        // ВАЖНО: Stripe API не поддерживает фильтрацию по metadata напрямую
+        // Получаем все открытые и истекшие сессии за последние 30 дней и фильтруем вручную
+        const thirtyDaysAgo = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+        
+        // Получаем открытые сессии
+        const openSessions = await this.stripe.checkout.sessions.list({
           limit: 100,
-          metadata: { deal_id: String(dealId) }
+          status: 'open',
+          created: { gte: thirtyDaysAgo }
         });
-        stripeSessions = sessions.data || [];
+        
+        // Получаем истекшие сессии
+        const expiredSessions = await this.stripe.checkout.sessions.list({
+          limit: 100,
+          status: 'expired',
+          created: { gte: thirtyDaysAgo }
+        });
+        
+        // Объединяем и фильтруем по deal_id
+        const allSessions = [...(openSessions.data || []), ...(expiredSessions.data || [])];
+        stripeSessions = allSessions.filter(s => 
+          s.metadata?.deal_id === String(dealId)
+        );
       } catch (error) {
         this.logger.warn('Failed to fetch Stripe sessions for analysis', {
           dealId,
@@ -239,10 +257,14 @@ class PaymentStateAnalyzer {
       // Single нужен, если:
       // 1. Single не существует или истек
       // 2. ИЛИ есть deposit, но нет rest (график изменился)
+      // ВАЖНО: single.expired может быть false, если checkStripeSessions = false
+      // Поэтому проверяем также, что single не оплачен
       const singleMissing = !single.exists || single.expired;
+      const singleNotPaid = !single.paid;
       const hasDepositButNoRest = deposit.exists && !rest.exists;
 
-      return singleMissing || hasDepositButNoRest;
+      // Single нужен, если его нет/истек И он не оплачен
+      return (singleMissing && singleNotPaid) || hasDepositButNoRest;
     }
 
     return false;
