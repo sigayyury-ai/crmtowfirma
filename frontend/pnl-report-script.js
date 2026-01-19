@@ -3634,28 +3634,39 @@ function renderExpensePaymentList(expenses, expenseCategoryId, year, month) {
       <div style="font-size: 0.9em; color: #666; margin-top: 5px;">Всего расходов: ${expenses.length}</div>
     </div>
     <div class="expense-payment-list">
-      <div class="expense-payment-list-header" style="display: grid; grid-template-columns: 1fr 120px 150px 80px; gap: 10px; padding: 10px; background: #f5f5f5; font-weight: bold; border-bottom: 2px solid #ddd;">
+      <div class="expense-payment-list-header" style="display: grid; grid-template-columns: 1fr 120px 150px 150px; gap: 10px; padding: 10px; background: #f5f5f5; font-weight: bold; border-bottom: 2px solid #ddd;">
         <div>Плательщик / Описание</div>
         <div>Дата</div>
         <div>Сумма</div>
         <div>Действия</div>
       </div>
       ${expenses.map(expense => `
-        <div class="expense-payment-item" style="display: grid; grid-template-columns: 1fr 120px 150px 80px; gap: 10px; padding: 10px; border-bottom: 1px solid #eee; align-items: center;">
+        <div class="expense-payment-item" style="display: grid; grid-template-columns: 1fr 120px 150px 150px; gap: 10px; padding: 10px; border-bottom: 1px solid #eee; align-items: center;">
           <div>
             <div style="font-weight: 500;">${escapeHtml(expense.payer || 'Не указан')}</div>
             ${expense.description ? `<div style="font-size: 0.9em; color: #666; margin-top: 4px;">${escapeHtml(expense.description)}</div>` : ''}
           </div>
           <div style="font-size: 0.9em;">${formatDate(expense.date)}</div>
           <div style="font-weight: 600; color: #dc3545;">${formatCurrency(expense.amount, expense.currency)}</div>
-          <div>
+          <div style="display: flex; gap: 5px; flex-direction: column;">
             ${expenseCategoryId !== null && expenseCategoryId !== undefined ? `
               <button class="btn btn-link btn-sm" onclick="unlinkExpense(${expense.id}, ${expenseCategoryId}, ${year}, ${month})" 
                       style="color: #dc3545; padding: 4px 8px; font-size: 0.85em;" 
                       title="Отвязать от категории">
                 Отвязать
               </button>
-            ` : '<span style="color: #999; font-size: 0.85em;">—</span>'}
+            ` : `
+              <button class="btn btn-primary btn-sm" onclick="linkExpenseToCategory(${expense.id}, ${year}, ${month})" 
+                      style="padding: 4px 8px; font-size: 0.85em;" 
+                      title="Назначить категорию">
+                Связать
+              </button>
+            `}
+            <button class="btn btn-link btn-sm" onclick="deleteExpense(${expense.id}, ${expenseCategoryId || null}, ${year}, ${month})" 
+                    style="color: #999; padding: 4px 8px; font-size: 0.85em;" 
+                    title="Пометить как дубль и удалить">
+              Удалить дубль
+            </button>
           </div>
         </div>
       `).join('')}
@@ -3739,6 +3750,132 @@ async function unlinkExpense(expenseId, expenseCategoryId, year, month) {
     
   } catch (error) {
     addLog('error', `Ошибка отвязки расхода: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Link expense to category - show category selector modal
+ */
+async function linkExpenseToCategory(expenseId, year, month) {
+  // Load expense categories for selection
+  try {
+    const response = await fetch(`${API_BASE}/pnl/expense-categories`);
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Не удалось загрузить категории');
+    }
+
+    const categories = result.data || [];
+    
+    if (categories.length === 0) {
+      alert('Нет доступных категорий расходов. Сначала создайте категорию в настройках.');
+      return;
+    }
+
+    // Create category selection HTML
+    const categoryOptions = categories.map(cat => 
+      `<option value="${cat.id}">${escapeHtml(cat.name)}</option>`
+    ).join('');
+
+    const modalHtml = `
+      <div id="link-expense-category-modal" class="modal" style="display: block;">
+        <div class="modal-content" style="max-width: 500px;">
+          <div class="modal-header">
+            <h3>Назначить категорию расходу</h3>
+            <button class="modal-close" onclick="closeLinkExpenseCategoryModal()">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p>Выберите категорию для этого расхода:</p>
+            <select id="link-expense-category-select" class="form-control" style="width: 100%; margin-bottom: 15px;">
+              <option value="">Выберите категорию...</option>
+              ${categoryOptions}
+            </select>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="closeLinkExpenseCategoryModal()">Отмена</button>
+              <button class="btn btn-primary" onclick="confirmLinkExpenseToCategory(${expenseId}, ${year}, ${month})">Назначить</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Remove existing modal if any
+    const existingModal = document.getElementById('link-expense-category-modal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    // Add modal to body
+    const modalDiv = document.createElement('div');
+    modalDiv.innerHTML = modalHtml;
+    document.body.appendChild(modalDiv.firstElementChild);
+
+  } catch (error) {
+    addLog('error', `Ошибка загрузки категорий: ${error.message}`);
+    alert('Ошибка: ' + error.message);
+  }
+}
+
+/**
+ * Close link expense category modal
+ */
+function closeLinkExpenseCategoryModal() {
+  const modal = document.getElementById('link-expense-category-modal');
+  if (modal) {
+    modal.remove();
+  }
+}
+
+/**
+ * Confirm linking expense to selected category
+ */
+async function confirmLinkExpenseToCategory(expenseId, year, month) {
+  const select = document.getElementById('link-expense-category-select');
+  if (!select) {
+    alert('Селектор категорий не найден');
+    return;
+  }
+
+  const expenseCategoryId = parseInt(select.value, 10);
+  if (!expenseCategoryId || expenseCategoryId <= 0) {
+    alert('Пожалуйста, выберите категорию');
+    return;
+  }
+
+  try {
+    addLog('info', `Назначение категории расходу: expenseId=${expenseId}, categoryId=${expenseCategoryId}`);
+    
+    const response = await fetch(`${API_BASE}/payments/${expenseId}/expense-category`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        expenseCategoryId: expenseCategoryId
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+
+    addLog('success', `Категория успешно назначена расходу`);
+    
+    // Close modal
+    closeLinkExpenseCategoryModal();
+    
+    // Refresh expense list (null category to show uncategorized)
+    await showExpensePaymentListModal(null, year, month);
+    
+    // Refresh PNL report totals
+    await refreshPnlReportSilently();
+    
+  } catch (error) {
+    addLog('error', `Ошибка назначения категории: ${error.message}`);
     alert('Ошибка: ' + error.message);
   }
 }
@@ -3843,6 +3980,9 @@ window.unlinkPayment = unlinkPayment;
 window.showExpensePaymentListModal = showExpensePaymentListModal;
 window.unlinkExpense = unlinkExpense;
 window.deleteExpense = deleteExpense;
+window.linkExpenseToCategory = linkExpenseToCategory;
+window.closeLinkExpenseCategoryModal = closeLinkExpenseCategoryModal;
+window.confirmLinkExpenseToCategory = confirmLinkExpenseToCategory;
 window.deletePayment = deletePayment;
 
 /**
