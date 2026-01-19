@@ -57,7 +57,9 @@ class MqlSyncService {
   }
 
   /**
-   * Обновляет только текущий месяц, сохраняя данные остальных месяцев из существующих snapshots
+   * Обновляет только текущий месяц, сохраняя данные остальных месяцев из существующих snapshots.
+   * ВАЖНО: Для других месяцев обновляются счетчики won_deals и closed_deals из новых данных Pipedrive,
+   * так как сделки могут обновляться (меняться статус) даже после того, как месяц прошел.
    */
   async runCurrentMonthOnly(year, month) {
     logger.info('Running MQL sync for current month only', { year, month });
@@ -74,6 +76,7 @@ class MqlSyncService {
     });
 
     // Загружаем существующие данные в dataset для других месяцев, чтобы они не потерялись
+    // НО: счетчики won_deals и closed_deals будут обновлены из новых данных Pipedrive
     for (const monthKeyIter of dataset.months) {
       if (monthKeyIter !== monthKey) {
         const existing = snapshotMap.get(monthKeyIter);
@@ -82,9 +85,10 @@ class MqlSyncService {
           dataset.sources[monthKeyIter].sendpulse.mql = existing.sendpulse_mql || 0;
           dataset.sources[monthKeyIter].pipedrive.mql = existing.pipedrive_mql || 0;
           dataset.sources[monthKeyIter].combined.mql = existing.combined_mql || 0;
-          dataset.sources[monthKeyIter].combined.won = existing.won_deals || 0;
-          dataset.sources[monthKeyIter].combined.repeat = existing.repeat_deals || 0;
-          dataset.sources[monthKeyIter].combined.closed = existing.closed_deals || 0;
+          // НЕ восстанавливаем won/closed/repeat - они будут обновлены из новых данных Pipedrive
+          dataset.sources[monthKeyIter].combined.won = 0;
+          dataset.sources[monthKeyIter].combined.repeat = 0;
+          dataset.sources[monthKeyIter].combined.closed = 0;
           dataset.metrics[monthKeyIter].budget = existing.marketing_expense || 0;
           dataset.metrics[monthKeyIter].subscribers = existing.subscribers || 0;
           dataset.metrics[monthKeyIter].newSubscribers = existing.new_subscribers || 0;
@@ -96,9 +100,12 @@ class MqlSyncService {
       }
     }
 
-    // Собираем новые данные (они попадут только в текущий месяц, так как фильтруются по дате)
+    // Собираем новые данные из Pipedrive для ВСЕХ месяцев (чтобы обновить won_deals и closed_deals)
+    // Это важно, так как сделки могут обновляться (меняться статус) даже после того, как месяц прошел
     await this.collectSendpulse(dataset, year);
     if (!this.skipPipedrive) {
+      // Для обновления won_deals и closed_deals нужно собирать данные для всех месяцев
+      // Но для текущего месяца также обновим pipedrive_mql
       await this.collectPipedrive(dataset, year);
     }
     await this.collectMarketingExpenses(dataset, year);
@@ -106,34 +113,65 @@ class MqlSyncService {
     this.updateConversion(dataset);
     this.updateCostMetrics(dataset);
 
-    // Обновляем все snapshots, но для текущего месяца используем новые данные
+    // Обновляем все snapshots
     for (const monthKeyIter of dataset.months) {
       const [yearStr, monthStr] = monthKeyIter.split('-');
       const row = dataset.sources[monthKeyIter];
+      const existing = snapshotMap.get(monthKeyIter);
+      
+      // Для текущего месяца используем все новые данные
+      // Для других месяцев сохраняем старые значения pipedrive_mql и sendpulse_mql,
+      // но обновляем won_deals, closed_deals, repeat_deals из новых данных Pipedrive
+      const isCurrentMonth = monthKeyIter === monthKey;
+      
+      // Для других месяцев используем старые значения MQL, но обновленные won/closed/repeat
+      const finalSendpulseMql = isCurrentMonth ? row.sendpulse.mql : (existing?.sendpulse_mql || 0);
+      const finalPipedriveMql = isCurrentMonth ? row.pipedrive.mql : (existing?.pipedrive_mql || 0);
+      const finalCombinedMql = finalSendpulseMql + finalPipedriveMql;
+      
+      // Пересчитываем метрики стоимости с учетом обновленных данных
+      const budget = dataset.metrics[monthKeyIter].budget;
+      const finalCostPerMql = budget > 0 && finalCombinedMql > 0 ? budget / finalCombinedMql : null;
+      const finalCostPerDeal = budget > 0 && row.combined.won > 0 ? budget / row.combined.won : null;
+      const finalCostPerSubscriber = budget > 0 && dataset.metrics[monthKeyIter].newSubscribers > 0
+        ? budget / dataset.metrics[monthKeyIter].newSubscribers
+        : null;
       
       await mqlRepository.upsertSnapshot(Number(yearStr), Number(monthStr), {
-        sendpulseMql: row.sendpulse.mql,
-        pipedriveMql: row.pipedrive.mql,
-        combinedMql: row.combined.mql,
+        sendpulseMql: finalSendpulseMql,
+        pipedriveMql: finalPipedriveMql,
+        combinedMql: finalCombinedMql,
+        // ВСЕГДА обновляем из новых данных Pipedrive (сделки могут обновляться)
         wonDeals: row.combined.won,
         repeatDeals: row.combined.repeat,
         closedDeals: row.combined.closed,
-        marketingExpense: dataset.metrics[monthKeyIter].budget,
+        marketingExpense: budget,
         subscribers: dataset.metrics[monthKeyIter].subscribers,
         newSubscribers: dataset.metrics[monthKeyIter].newSubscribers,
-        costPerSubscriber: dataset.metrics[monthKeyIter].costPerSubscriber,
-        costPerMql: dataset.metrics[monthKeyIter].costPerMql,
-        costPerDeal: dataset.metrics[monthKeyIter].costPerDeal,
+        costPerSubscriber: finalCostPerSubscriber,
+        costPerMql: finalCostPerMql,
+        costPerDeal: finalCostPerDeal,
         retentionRate: row.combined.retention ?? null,
-        channelBreakdown: dataset.channels[monthKeyIter],
+        channelBreakdown: isCurrentMonth 
+          ? dataset.channels[monthKeyIter] 
+          : (existing?.channel_breakdown || {}),
         // Обновляем даты синхронизации только для текущего месяца
-        pipedriveSyncAt: monthKeyIter === monthKey ? dataset.sync.pipedrive : snapshotMap.get(monthKeyIter)?.pipedrive_sync_at,
-        sendpulseSyncAt: monthKeyIter === monthKey ? dataset.sync.sendpulse : snapshotMap.get(monthKeyIter)?.sendpulse_sync_at,
-        pnlSyncAt: monthKeyIter === monthKey ? dataset.sync.pnl : snapshotMap.get(monthKeyIter)?.pnl_sync_at
+        pipedriveSyncAt: isCurrentMonth ? dataset.sync.pipedrive : existing?.pipedrive_sync_at,
+        sendpulseSyncAt: isCurrentMonth ? dataset.sync.sendpulse : existing?.sendpulse_sync_at,
+        pnlSyncAt: isCurrentMonth ? dataset.sync.pnl : existing?.pnl_sync_at
       });
       
-      if (monthKeyIter === monthKey) {
+      if (isCurrentMonth) {
         logger.info('Updated current month snapshot', { monthKey: monthKeyIter });
+      } else if (row.combined.won > 0 || row.combined.closed > 0 || row.combined.repeat > 0) {
+        logger.info('Updated won/closed/repeat deals for past month', { 
+          monthKey: monthKeyIter,
+          won: row.combined.won,
+          closed: row.combined.closed,
+          repeat: row.combined.repeat,
+          previousWon: existing?.won_deals || 0,
+          previousClosed: existing?.closed_deals || 0
+        });
       }
     }
 
@@ -261,6 +299,11 @@ class MqlSyncService {
   }
 
   async collectPipedrive(dataset, year) {
+    // При обновлении только текущего месяца, cutoff date может пропустить обновленные сделки
+    // из других месяцев (например, если сделка была выиграна). Поэтому для обновления
+    // won_deals и closed_deals мы должны собирать все сделки, но cutoff date все равно
+    // используется для оптимизации (сделки с update_time старше cutoff не попадут в выборку,
+    // но если сделка была обновлена недавно, она попадет, даже если была создана давно)
     const cutoffDate = await this.determinePipedriveCutoffDate();
     if (cutoffDate) {
       logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
@@ -272,6 +315,12 @@ class MqlSyncService {
     });
     const deals = result.deals || [];
     dataset.sync.pipedrive = result.fetchedAt || new Date().toISOString();
+    
+    logger.info('Collected Pipedrive deals', { 
+      count: deals.length, 
+      year,
+      cutoffUsed: !!cutoffDate 
+    });
 
     deals.forEach((deal) => {
       const monthKey = deal.firstSeenMonth ? deal.firstSeenMonth.slice(0, 7) : null;
