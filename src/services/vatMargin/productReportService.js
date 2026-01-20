@@ -249,7 +249,9 @@ class ProductReportService {
           buyerZip: detail.buyerZip || null,
           buyerCity: detail.buyerCity || null,
           buyerCountry: detail.buyerCountry || null,
-          paymentCount: Number(detail.paymentCount) || 0
+          paymentCount: Number(detail.paymentCount) || 0,
+          pipedrive_deal_id: detail.dealId || null,
+          payments_total_cash_pln: detail.paymentsTotalCashPln || detail.payments_total_cash_pln || null
         };
       })
       .sort((a, b) => {
@@ -353,6 +355,22 @@ class ProductReportService {
       }
     }
 
+    // Load cash payments for product
+    let cashTotalPln = 0;
+    let cashDealsCount = 0;
+    if (entry.productId) {
+      try {
+        const cashData = await this.loadCashPaymentsTotal(entry.productId, proformas);
+        cashTotalPln = cashData.totalPln || 0;
+        cashDealsCount = cashData.dealsCount || 0;
+      } catch (error) {
+        logger.warn('Failed to load cash payments for product detail', {
+          productId: entry.productId,
+          error: error.message
+        });
+      }
+    }
+
     const proformaGrossPln = Number(entry.totals.grossPln.toFixed(2));
     const stripeGrossPln = entry.stripeTotals?.grossRevenuePln || 0;
     const grossPln = Number((proformaGrossPln + stripeGrossPln).toFixed(2)); // Включаем и проформы, и Stripe платежи
@@ -360,6 +378,19 @@ class ProductReportService {
     const marginPln = netPln; // margin = net для проформ
     const proformaCount = entry.proformaIds.size;
     const averageDealSize = proformaCount > 0 ? Number((proformaGrossPln / proformaCount).toFixed(2)) : 0;
+
+    // Рассчитываем месячную сводку платежей
+    // Используем linkedPayments для получения реальных дат платежей
+    // Передаем расходы на участника для расчета фактуры маржи
+    const totalExpenses = this.calculateExpenseTotals(linkedPayments).totalPln;
+    const totalParticipants = this.calculateParticipantsCount(proformas, stripePayments);
+    const expensesPerParticipant = totalParticipants > 0 ? totalExpenses / totalParticipants : 0;
+    const monthlyBreakdown = this.calculateMonthlyBreakdown(
+      proformas, 
+      stripePayments, 
+      linkedPayments,
+      expensesPerParticipant
+    );
 
     return {
       productId: entry.productId,
@@ -384,7 +415,10 @@ class ProductReportService {
       stripePayments,
       linkedPayments,
       expenseTotals: this.calculateExpenseTotals(linkedPayments),
-      participantsCount: this.calculateParticipantsCount(proformas, stripePayments)
+      participantsCount: this.calculateParticipantsCount(proformas, stripePayments),
+      monthlyBreakdown,
+      cashTotalPln: Number(cashTotalPln.toFixed(2)),
+      cashDealsCount: cashDealsCount
     };
   }
 
@@ -524,13 +558,17 @@ class ProductReportService {
       const normalized = normalizeProductName(event.event_label || event.event_key || '');
       const matchedProduct = normalized ? productLookup.get(normalized) : null;
       const slug = matchedProduct ? `id-${matchedProduct.id}` : `stripe-event-${event.event_key}`;
-      const mapKey = matchedProduct ? `id:${matchedProduct.id}` : slug;
+      // Используем тот же формат ключа, что и в aggregateRows: id:${productId} или slug для Stripe events
+      const mapKey = matchedProduct ? `id:${matchedProduct.id}` : `stripe-event:${event.event_key}`;
 
-      const entry = createEmptyEntry({
+      // Проверяем, есть ли уже продукт с таким ключом в Map
+      const existingEntry = productsMap.get(mapKey);
+      
+      const entry = existingEntry || createEmptyEntry({
         mapKey,
         productId: matchedProduct ? matchedProduct.id : null,
         productName: matchedProduct?.name || `Stripe Event: ${event.event_label}`,
-        productKey: matchedProduct?.normalized_name || slug,
+        productKey: matchedProduct?.normalized_name || normalizeProductName(event.event_label || event.event_key || ''),
         slug,
         source: 'stripe_event',
         eventKey: event.event_key || null
@@ -558,7 +596,10 @@ class ProductReportService {
       };
       entry.source = 'stripe_event';
 
-      productsMap.set(slug, entry);
+      // Добавляем/обновляем продукт только если его еще нет
+      if (!existingEntry) {
+        productsMap.set(mapKey, entry);
+      }
       totalEventsPln += entry.totals.grossPln;
     });
 
@@ -657,6 +698,8 @@ class ProductReportService {
           currency_exchange,
           payments_total,
           payments_total_pln,
+          payments_total_cash,
+          payments_total_cash_pln,
           payments_currency_exchange,
           pipedrive_deal_id,
           buyer_name,
@@ -686,6 +729,8 @@ class ProductReportService {
           currency_exchange,
           payments_total,
           payments_total_pln,
+          payments_total_cash,
+          payments_total_cash_pln,
           payments_currency_exchange,
           pipedrive_deal_id,
           buyer_name,
@@ -1056,7 +1101,8 @@ class ProductReportService {
             buyerZip: proforma.buyer_zip || null,
             buyerCity: proforma.buyer_city || null,
             buyerCountry: proforma.buyer_country || null,
-            paymentCount: Number(proforma.payments_count) || 0
+            paymentCount: Number(proforma.payments_count) || 0,
+            paymentsTotalCashPln: proforma.payments_total_cash_pln || null
           });
         }
         const detail = entry.proformaDetails.get(proformaId);
@@ -1158,6 +1204,123 @@ class ProductReportService {
 
     const fallbackKey = `key:${normalizeProductName(normalized)}`;
     return products.get(fallbackKey) || null;
+  }
+
+  async loadCashPaymentsTotal(productId, proformas = []) {
+    if (!supabase || !productId) {
+      return { totalPln: 0, dealsCount: 0 };
+    }
+
+    try {
+      // Load cash payments directly linked to product or through proformas
+      const { data: directCash, error: directError } = await supabase
+        .from('cash_payments')
+        .select('amount_pln, cash_received_amount, cash_expected_amount, currency, status, product_id, deal_id')
+        .eq('product_id', productId)
+        .eq('status', 'received');
+
+      if (directError) {
+        logger.warn('Failed to load direct cash payments', {
+          productId,
+          error: directError.message
+        });
+      }
+
+      // Load cash payments through proformas
+      const { data: proformaProducts, error: proformaError } = await supabase
+        .from('proforma_products')
+        .select('proforma_id')
+        .eq('product_id', productId);
+
+      let proformaCash = [];
+      if (!proformaError && proformaProducts && proformaProducts.length > 0) {
+        const proformaIds = proformaProducts.map(pp => pp.proforma_id);
+        
+        const { data: cashViaProformas, error: cashError } = await supabase
+          .from('cash_payments')
+          .select('amount_pln, cash_received_amount, cash_expected_amount, currency, status, proforma_id, deal_id')
+          .in('proforma_id', proformaIds)
+          .eq('status', 'received')
+          .is('product_id', null); // Only get cash payments not directly linked to product
+
+        if (!cashError && cashViaProformas) {
+          proformaCash = cashViaProformas;
+        }
+      }
+
+      // Calculate total: use amount_pln if available, otherwise convert
+      let total = 0;
+      const uniqueDealIds = new Set();
+      
+      [...(directCash || []), ...proformaCash].forEach(cash => {
+        // Count unique deals
+        if (cash.deal_id) {
+          uniqueDealIds.add(cash.deal_id);
+        }
+
+        // Calculate total amount
+        if (cash.amount_pln != null) {
+          total += Number(cash.amount_pln) || 0;
+        } else if (cash.cash_received_amount != null) {
+          // If currency is PLN, use as is; otherwise would need exchange rate
+          const amount = Number(cash.cash_received_amount) || 0;
+          total += (cash.currency === 'PLN' ? amount : amount); // Simplified: assume 1:1 if no conversion
+        } else if (cash.cash_expected_amount != null && cash.currency === 'PLN') {
+          total += Number(cash.cash_expected_amount) || 0;
+        }
+      });
+
+      // Also check cash payments from proforma aggregates (payments_total_cash_pln)
+      // This covers cases where cash was recorded in proforma aggregates but not in cash_payments table
+      if (Array.isArray(proformas) && proformas.length > 0) {
+        proformas.forEach(proforma => {
+          const cashPln = proforma.payments_total_cash_pln;
+          if (cashPln != null && cashPln !== undefined) {
+            const proformaCashAmount = Number(cashPln) || 0;
+            if (proformaCashAmount > 0) {
+              total += proformaCashAmount;
+              // Count deal if proforma has deal_id
+              if (proforma.pipedrive_deal_id) {
+                uniqueDealIds.add(proforma.pipedrive_deal_id);
+              }
+            }
+          }
+        });
+      } else if (!proformaError && proformaProducts && proformaProducts.length > 0) {
+        // If proformas not passed, load them from proforma_products
+        const proformaIds = proformaProducts.map(pp => pp.proforma_id);
+        const { data: proformasData, error: proformasLoadError } = await supabase
+          .from('proformas')
+          .select('id, pipedrive_deal_id, payments_total_cash_pln')
+          .in('id', proformaIds);
+
+        if (!proformasLoadError && proformasData && proformasData.length > 0) {
+          proformasData.forEach(proforma => {
+            const cashPln = proforma.payments_total_cash_pln;
+            if (cashPln != null && cashPln !== undefined) {
+              const proformaCashAmount = Number(cashPln) || 0;
+              if (proformaCashAmount > 0) {
+                total += proformaCashAmount;
+                if (proforma.pipedrive_deal_id) {
+                  uniqueDealIds.add(proforma.pipedrive_deal_id);
+                }
+              }
+            }
+          });
+        }
+      }
+
+      return {
+        totalPln: total,
+        dealsCount: uniqueDealIds.size
+      };
+    } catch (error) {
+      logger.error('Error loading cash payments total', {
+        productId,
+        error: error.message
+      });
+      return { totalPln: 0, dealsCount: 0 };
+    }
   }
 
   async loadLinkedPayments(productId) {
@@ -1344,6 +1507,191 @@ class ProductReportService {
     const proformaCount = Array.isArray(proformas) ? proformas.length : 0;
     const stripeCount = Array.isArray(stripePayments) ? stripePayments.length : 0;
     return proformaCount + stripeCount;
+  }
+
+  calculateMonthlyBreakdown(proformas, stripePayments, linkedPayments = { incoming: [] }, expensesPerParticipant = 0) {
+    const monthlyMap = new Map();
+    const MARGIN_RATE = 0.35; // 35% маржа
+    const VAT_RATE = 0.23; // 23% НДС
+
+    // ПРИОРИТЕТ 1: Обрабатываем входящие платежи из linkedPayments (реальные даты поступления денег)
+    // Это самые точные данные - реальные платежи с реальными датами
+    if (Array.isArray(linkedPayments.incoming)) {
+      linkedPayments.incoming.forEach((payment) => {
+        // Учитываем только реальные платежи (direction === 'in' и есть дата операции)
+        if (!payment.operationDate || payment.direction !== 'in') return;
+        
+        const date = new Date(payment.operationDate);
+        if (isNaN(date.getTime())) return;
+        
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        const amount = toNumber(payment.amount) || 0;
+        
+        // Пропускаем нулевые или отрицательные суммы
+        if (amount <= 0) return;
+        
+        // Конвертируем в PLN, если валюта не PLN
+        let amountPln = amount;
+        if (payment.currency && payment.currency.toUpperCase() !== 'PLN') {
+          // Для не-PLN валют используем сумму как есть (предполагаем, что уже конвертировано)
+          amountPln = amount;
+        }
+        
+        if (!monthlyMap.has(monthKey)) {
+          monthlyMap.set(monthKey, {
+            month: monthKey,
+            amount: 0,
+            count: 0
+          });
+        }
+        
+        const entry = monthlyMap.get(monthKey);
+        entry.amount += amountPln;
+        entry.count += 1;
+      });
+    }
+
+    // ПРИОРИТЕТ 2: Обрабатываем Stripe платежи (используем дату создания платежа)
+    // Stripe платежи - это реальные оплаченные платежи
+    if (Array.isArray(stripePayments)) {
+      stripePayments.forEach((payment) => {
+        const dateStr = payment.createdAt || payment.processedAt;
+        if (!dateStr) return;
+        
+        const date = new Date(dateStr);
+        if (isNaN(date.getTime())) return;
+        
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        const amount = toNumber(payment.amountPln) || toNumber(payment.amount) || 0;
+        
+        // Пропускаем нулевые или отрицательные суммы
+        if (amount <= 0) return;
+        
+        // Проверяем, есть ли уже платежи за этот месяц из linkedPayments
+        // Если есть, не добавляем Stripe платеж, чтобы не дублировать
+        const hasLinkedPaymentsForMonth = Array.isArray(linkedPayments.incoming) &&
+          linkedPayments.incoming.some((p) => {
+            if (!p.operationDate || p.direction !== 'in') return false;
+            const pDate = new Date(p.operationDate);
+            if (isNaN(pDate.getTime())) return false;
+            const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
+            return pMonthKey === monthKey;
+          });
+        
+        if (hasLinkedPaymentsForMonth) {
+          return;
+        }
+        
+        if (!monthlyMap.has(monthKey)) {
+          monthlyMap.set(monthKey, {
+            month: monthKey,
+            amount: 0,
+            count: 0
+          });
+        }
+        
+        const entry = monthlyMap.get(monthKey);
+        entry.amount += amount;
+        entry.count += 1;
+      });
+    }
+
+    // ПРИОРИТЕТ 3: Обрабатываем проформы (только если нет реальных платежей за месяц)
+    // Используем только оплаченные проформы (paidPln > 0)
+    // ВАЖНО: Используем дату проформы, но только если нет реальных платежей за этот месяц
+    if (Array.isArray(proformas)) {
+      proformas.forEach((proforma) => {
+        // Используем только оплаченные проформы
+        if (!proforma.date || !proforma.paidPln || proforma.paidPln <= 0) return;
+        
+        const date = new Date(proforma.date);
+        if (isNaN(date.getTime())) return;
+        
+        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        const amount = toNumber(proforma.paidPln) || 0;
+        
+        // Проверяем, есть ли уже реальные платежи за этот месяц из linkedPayments или Stripe
+        const hasRealPaymentsForMonth = 
+          (Array.isArray(linkedPayments.incoming) &&
+            linkedPayments.incoming.some((p) => {
+              if (!p.operationDate || p.direction !== 'in') return false;
+              const pDate = new Date(p.operationDate);
+              if (isNaN(pDate.getTime())) return false;
+              const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
+              return pMonthKey === monthKey;
+            })) ||
+          (Array.isArray(stripePayments) &&
+            stripePayments.some((p) => {
+              const dateStr = p.createdAt || p.processedAt;
+              if (!dateStr) return false;
+              const pDate = new Date(dateStr);
+              if (isNaN(pDate.getTime())) return false;
+              const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
+              return pMonthKey === monthKey;
+            }));
+        
+        // Используем проформу только если нет реальных платежей за этот месяц
+        if (hasRealPaymentsForMonth) {
+          return;
+        }
+        
+        if (!monthlyMap.has(monthKey)) {
+          monthlyMap.set(monthKey, {
+            month: monthKey,
+            amount: 0,
+            count: 0
+          });
+        }
+        
+        const entry = monthlyMap.get(monthKey);
+        entry.amount += amount;
+        entry.count += 1;
+      });
+    }
+
+    // Преобразуем в массив и рассчитываем поля для фактуры маржи
+    // Формула: Razem (брутто) = Cena zakupu + Marża netto
+    // При маржинальности 35%: Marża netto = 35% от Razem, значит Cena zakupu = 65% от Razem
+    // Или: Razem = Cena zakupu / 0.65, или Marża netto = Razem * 0.35
+    const breakdown = Array.from(monthlyMap.values())
+      .map((entry) => {
+        // amount - это реально оплаченная сумма (Razem / brutto)
+        const razemBrutto = Number(entry.amount.toFixed(2));
+        const count = entry.count || 0;
+        
+        // Расчет полей для фактуры маржи
+        // Количество (Ilość) - количество участников/платежей
+        const quantity = count;
+        
+        // Наши расходы - 35% от Razem (брутто)
+        const expenses = Number((razemBrutto * MARGIN_RATE).toFixed(2));
+        
+        // Чистая маржа (Marża netto) - Razem - Расходы = 65% от Razem
+        const netMargin = Number((razemBrutto - expenses).toFixed(2));
+        
+        // Ставка НДС (Stawka) - 23%
+        const vatRate = VAT_RATE;
+        
+        // НДС к оплате - 23% от маржи
+        const vatAmount = Number((netMargin * VAT_RATE).toFixed(2));
+        
+        // Итого с НДС - Razem + НДС
+        const totalWithVat = Number((razemBrutto + vatAmount).toFixed(2));
+        
+        return {
+          month: entry.month,
+          razemBrutto: razemBrutto, // Итого (Razem / brutto) = Расходы + Marża netto
+          quantity: quantity,
+          expenses: expenses, // Наши расходы - 35% от Razem
+          netMargin: netMargin,
+          vatRate: vatRate,
+          vatAmount: vatAmount,
+          totalWithVat: totalWithVat
+        };
+      })
+      .sort((a, b) => b.month.localeCompare(a.month));
+
+    return breakdown;
   }
 }
 

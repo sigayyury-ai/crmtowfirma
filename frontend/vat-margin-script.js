@@ -1182,7 +1182,57 @@ function renderProductSummaryTable(products) {
     return;
   }
 
-  const rows = products
+  // Убираем дубликаты по productId или productSlug
+  const seenProducts = new Map();
+  const uniqueProducts = [];
+  
+  products.forEach((product) => {
+    // Создаем ключ для дедупликации
+    let key = null;
+    
+    // Приоритет 1: productId (самый надежный)
+    if (product.productId) {
+      key = `id:${product.productId}`;
+    } 
+    // Приоритет 2: productSlug
+    else if (product.productSlug) {
+      key = `slug:${product.productSlug}`;
+    }
+    // Приоритет 3: productKey
+    else if (product.productKey) {
+      key = `key:${product.productKey}`;
+    }
+    // Приоритет 4: нормализованное название
+    else {
+      const normalizedName = normalizeProductKey(product.productName || '');
+      key = `name:${normalizedName}`;
+    }
+    
+    // Проверяем, не встречался ли уже этот продукт
+    if (seenProducts.has(key)) {
+      const existing = seenProducts.get(key);
+      console.warn('Duplicate product found:', {
+        key,
+        existingId: existing.productId,
+        existingSlug: existing.productSlug,
+        existingName: existing.productName,
+        duplicateId: product.productId,
+        duplicateSlug: product.productSlug,
+        duplicateName: product.productName
+      });
+      return; // Пропускаем дубликат
+    }
+    
+    // Сохраняем продукт
+    seenProducts.set(key, product);
+    uniqueProducts.push(product);
+  });
+
+  if (products.length !== uniqueProducts.length) {
+    console.log(`Filtered products: ${products.length} → ${uniqueProducts.length} (removed ${products.length - uniqueProducts.length} duplicates)`);
+  }
+
+  const rows = uniqueProducts
     .map((product) => {
       const details = [];
       if (typeof product.proformaCount === 'number') {
@@ -3995,7 +4045,7 @@ async function handleReceiptUpload(event) {
   const files = Array.from(event.target.files || []);
   if (files.length === 0) return;
 
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/heic', 'image/heif', 'application/pdf'];
+  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/heic', 'image/heif', 'application/pdf'];
   const maxSize = 10 * 1024 * 1024; // 10MB
 
   // Validate all files

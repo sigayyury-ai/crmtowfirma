@@ -10,6 +10,20 @@ function buildCsvValue(value) {
   return stringValue;
 }
 
+function normalizeProductName(name) {
+  if (!name) return null;
+  const trimmed = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!trimmed) return null;
+
+  return trimmed
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}\s.\-_/]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 class StripeEventReportService {
   constructor(options = {}) {
     this.supabase = options.supabase || supabase;
@@ -32,17 +46,20 @@ class StripeEventReportService {
     return data?.finished_at || null;
   }
 
-  async listEvents({ limit = 50, from = null, to = null } = {}) {
+  async listEvents({ limit = 50, from = null, to = null, cabinetOnly = true } = {}) {
     if (!this.supabase) {
       throw new Error('StripeEventReportService: Supabase client is not configured');
     }
+
+    // При cabinetOnly=true фильтруем события, оставляя только те, которые соответствуют продуктам из кабинета
+    // Логика фильтрации ниже, после загрузки событий
 
     const boundedLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
     let query = this.supabase
       .from('stripe_event_summary')
       .select('*')
       .order('last_payment_at', { ascending: false })
-      .limit(boundedLimit);
+      .limit(boundedLimit * 2); // Загружаем больше, чтобы после фильтрации осталось достаточно
 
     if (from) {
       query = query.gte('last_payment_at', from);
@@ -56,10 +73,85 @@ class StripeEventReportService {
       throw new Error(`Failed to load event summary: ${error.message}`);
     }
 
+    // Фильтруем события: оставляем только те, которые связаны с продуктами из кабинета
+    // Используем тот же подход, что и в productReportService.addStripeEventEntries:
+    // сначала получаем нормализованные имена событий, затем находим соответствующие продукты
+    let filteredData = data || [];
+    if (cabinetOnly) {
+      // Нормализуем имена всех событий
+      const normalizedEventNames = (data || [])
+        .map((event) => normalizeProductName(event.event_label || event.event_key || ''))
+        .filter(Boolean);
+
+      if (normalizedEventNames.length === 0) {
+        // Если нет нормализованных имен событий, не показываем никакие события
+        filteredData = [];
+      } else {
+        // Находим продукты, которые соответствуют нормализованным именам событий
+        const { data: matchedProducts, error: productsError } = await this.supabase
+          .from('products')
+          .select('normalized_name')
+          .in('normalized_name', normalizedEventNames);
+
+        if (productsError) {
+          this.logger.warn('Failed to load matched products for filtering', { error: productsError.message });
+        }
+
+        // Создаем Set нормализованных имен продуктов, которые соответствуют событиям
+        const matchedProductNames = new Set();
+        if (Array.isArray(matchedProducts)) {
+          matchedProducts.forEach((product) => {
+            if (product.normalized_name) {
+              matchedProductNames.add(product.normalized_name);
+            }
+          });
+        }
+
+        // Фильтруем события: оставляем только те, чье нормализованное имя есть в matchedProductNames
+        this.logger.info('Filtering Stripe events by cabinet products', {
+          totalEvents: (data || []).length,
+          normalizedEventNamesCount: normalizedEventNames.length,
+          matchedProductsCount: matchedProductNames.size,
+          matchedProductNames: Array.from(matchedProductNames).slice(0, 10) // Первые 10 для логов
+        });
+
+        filteredData = (data || []).filter((event) => {
+          const eventLabel = event.event_label || event.event_key || '';
+          const normalizedLabel = normalizeProductName(eventLabel);
+          const isMatched = normalizedLabel && matchedProductNames.has(normalizedLabel);
+          
+          if (!isMatched && normalizedLabel) {
+            this.logger.debug('Filtering out event (no product match)', {
+              eventKey: event.event_key,
+              eventLabel: event.event_label,
+              normalizedLabel
+            });
+          } else if (isMatched) {
+            this.logger.debug('Keeping event (has product match)', {
+              eventKey: event.event_key,
+              eventLabel: event.event_label,
+              normalizedLabel
+            });
+          }
+          
+          return isMatched;
+        });
+
+        this.logger.info('Filtered Stripe events result', {
+          beforeFilter: (data || []).length,
+          afterFilter: filteredData.length,
+          filteredOut: (data || []).length - filteredData.length
+        });
+      }
+    }
+
+    // Ограничиваем результат до запрошенного лимита
+    filteredData = filteredData.slice(0, boundedLimit);
+
     const lastUpdated = await this.getLastAggregationTimestamp();
 
     return {
-      items: data || [],
+      items: filteredData,
       pageInfo: {
         limit: boundedLimit,
         hasMore: false,
