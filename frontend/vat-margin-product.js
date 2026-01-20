@@ -24,6 +24,13 @@ let productSlug = null;
 let productDetail = null;
 let isSaving = false;
 
+// State for payment search and linking
+const productPaymentSearchState = {
+  searchResults: [],
+  isLoading: false,
+  currentProductId: null
+};
+
 const productPayerPaymentsModalState = {
   context: null,
   payments: [],
@@ -442,6 +449,34 @@ function renderSummaryCards(detail) {
   const totals = detail.totals || {};
   const expenseTotals = detail.expenseTotals?.currencyTotals
     || calculateExpenseTotals(detail.linkedPayments).currencyTotals;
+  
+  // Получаем сумму расходов в PLN
+  const expenseTotalsPln = detail.expenseTotals?.totalPln;
+  const fallbackExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
+  const totalExpensesPln = Number.isFinite(expenseTotalsPln) ? expenseTotalsPln : fallbackExpenses || 0;
+  
+  // Вычисляем PIT: 9% от разницы между "Оплачено" и "Расходы"
+  const paidPln = totals.paidPln || 0;
+  const profit = paidPln - totalExpensesPln; // Прибыль до налогов
+  const pit = profit > 0 ? profit * 0.09 : 0; // PIT = 9% от прибыли
+  
+  // Вычисляем НДС: сумма НДС из месячной сводки + НДС финальной фактуры
+  const monthlyBreakdown = detail.monthlyBreakdown || [];
+  const totalPreviousReports = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
+  const totalPreviousExpenses = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
+  
+  // НДС из месячной сводки (итоговая строка в tfoot)
+  const vatFromMonthlyBreakdown = monthlyBreakdown.reduce((sum, item) => sum + (item.vatAmount || 0), 0);
+  
+  // НДС финальной фактуры (из второй таблицы)
+  const finalInvoiceBrutto = Math.max(0, paidPln - totalPreviousReports);
+  const finalInvoiceExpenses = Math.max(0, totalExpensesPln - totalPreviousExpenses);
+  const finalInvoiceMargin = finalInvoiceBrutto - finalInvoiceExpenses;
+  const vatFromFinalInvoice = finalInvoiceMargin * 0.23; // 23% от маржи финальной фактуры
+  
+  // Общая сумма НДС (может быть отрицательной, если финальная фактура отрицательная)
+  const totalVat = vatFromMonthlyBreakdown + vatFromFinalInvoice;
+  
   const summaryItems = [
     {
       label: 'Суммарная выручка (PLN)',
@@ -449,7 +484,7 @@ function renderSummaryCards(detail) {
     },
     {
       label: 'Оплачено (PLN)',
-      value: formatCurrency(totals.paidPln || 0, 'PLN')
+      value: formatCurrency(paidPln, 'PLN')
     },
     {
       label: 'Проформ',
@@ -462,16 +497,34 @@ function renderSummaryCards(detail) {
     {
       label: 'Расходы (привязанные)',
       value: Object.keys(expenseTotals).length ? formatCurrencyMap(expenseTotals) : '0 PLN'
+    },
+    {
+      label: 'PIT (налог)',
+      value: formatCurrency(pit, 'PLN')
+    },
+    {
+      label: 'НДС (налог)',
+      value: formatCurrency(totalVat, 'PLN')
+    },
+    {
+      label: 'Реальный заработок',
+      value: formatCurrency(paidPln - totalExpensesPln - pit - totalVat, 'PLN')
     }
   ];
 
   elements.summaryContainer.innerHTML = summaryItems
-    .map((card) => `
-      <div class="summary-card">
+    .map((card) => {
+      // Добавляем tooltip для "Суммарная выручка"
+      const tooltip = card.label === 'Суммарная выручка (PLN)' 
+        ? ' title="Включает: сумма всех проформ (line_total) + сумма всех Stripe платежей (amountPln), конвертированные в PLN"'
+        : '';
+      return `
+      <div class="summary-card"${tooltip}>
         <span class="summary-label">${escapeHtml(card.label)}</span>
         <span class="summary-value">${escapeHtml(card.value)}</span>
       </div>
-    `)
+    `;
+    })
     .join('');
 }
 
@@ -569,22 +622,40 @@ function renderLinkedPaymentsTables(linkedPayments) {
   const incoming = linkedPayments?.incoming || [];
   const outgoing = linkedPayments?.outgoing || [];
 
-  if (incoming.length === 0 && outgoing.length === 0) {
-    elements.linkedPaymentsContainer.innerHTML = '<div class="placeholder">Связанных платежей пока нет</div>';
-    return;
+  // Получаем product_id из productDetail или productSlug
+  let productId = null;
+  if (productDetail && (productDetail.productId || productDetail.id)) {
+    productId = productDetail.productId || productDetail.id;
+  } else if (productSlug && !isNaN(parseInt(productSlug))) {
+    productId = parseInt(productSlug);
   }
+  productPaymentSearchState.currentProductId = productId;
+
+  // Формируем HTML с поиском и результатами
+  const searchPanelHTML = renderPaymentSearchPanel(productId);
+  const linkedPaymentsHTML = incoming.length === 0 && outgoing.length === 0
+    ? '<div class="placeholder">Связанных платежей пока нет</div>'
+    : '';
 
   const sections = [];
-
   if (incoming.length) {
     sections.push(createLinkedPaymentsSection('Входящие платежи', incoming, { showHeader: true }));
   }
-
   if (outgoing.length) {
     sections.push(createLinkedPaymentsSection('Исходящие платежи', outgoing, { showHeader: false }));
   }
 
-  elements.linkedPaymentsContainer.innerHTML = sections.join('');
+  const searchResultsHTML = renderPaymentSearchResults();
+
+  elements.linkedPaymentsContainer.innerHTML = `
+    ${searchPanelHTML}
+    ${searchResultsHTML}
+    ${linkedPaymentsHTML}
+    ${sections.join('')}
+  `;
+
+  // Настраиваем обработчики поиска (обработчики устанавливаются в setupPaymentSearchHandlers)
+  setupPaymentSearchHandlers(productId);
 }
 
 function renderVatMarginTable(detail) {
@@ -612,46 +683,107 @@ function renderVatMarginTable(detail) {
       </tr>
     `).join('');
 
+  // Получаем месячную сводку из detail
+  const monthlyBreakdown = detail.monthlyBreakdown || [];
+  
+  // Рассчитываем сумму всех предыдущих месячных отчетов для финальной фактуры
+  const totalPreviousReports = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
+  const totalPreviousExpenses = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
+  
+  // Финальная фактура: Итого (брутто) = Все оплаченные поступления - Уже поданные в предыдущих месяцах
+  const finalInvoiceBrutto = Math.max(0, (detail.totals?.paidPln || 0) - totalPreviousReports);
+  
+  // Финальная фактура: Наши расходы = Все расходы - Уже поданные расходы в предыдущих месяцах
+  const finalInvoiceExpenses = Math.max(0, (context.totalExpenses || 0) - totalPreviousExpenses);
+  
+  const monthlyBreakdownHtml = monthlyBreakdown.length > 0
+    ? `
+      <div class="monthly-breakdown" style="margin: 20px 0; padding: 15px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 6px;">
+        <h3 style="margin: 0 0 15px 0; font-size: 1.1em; font-weight: 600; color: #333;">Поступления по месяцам (для фактуры маржи)</h3>
+        <div style="overflow-x: auto;">
+          <table class="detail-table monthly-breakdown-table" style="width: 100%; min-width: 800px; font-size: 0.9em;">
+            <thead>
+              <tr>
+                <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Месяц</th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; font-weight: 600;">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Ставка НДС<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Stawka</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">НДС к оплате<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">(PLN)</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${monthlyBreakdown.map((item) => `
+                <tr>
+                  <td style="padding: 8px; border-bottom: 1px solid #eee; white-space: nowrap;">${formatMonthLabel(item.month)}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee; font-weight: 600; background: #f0f8ff;">${formatCurrency(item.razemBrutto || item.amount || 0, 'PLN')}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee;">${formatCurrency(item.expenses || item.purchasePrice || 0, 'PLN')}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee; color: #0066cc; font-weight: 500;">${formatCurrency(item.netMargin || 0, 'PLN')}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee;">${item.vatRate ? `${(item.vatRate * 100).toFixed(0)}%` : '—'}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee; color: #d9534f; font-weight: 500;">${formatCurrency(item.vatAmount || 0, 'PLN')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+            <tfoot>
+              <tr style="background: #f5f5f5; font-weight: 600;">
+                <td style="padding: 10px 8px; border-top: 2px solid #ddd;">Итого</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; background: #e0f0ff;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0), 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0), 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; color: #0066cc;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.netMargin || 0), 0), 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd;">—</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; color: #d9534f;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.vatAmount || 0), 0), 'PLN')}</td>
+              </tr>
+            </tfoot>
+          </table>
+          <table class="detail-table monthly-breakdown-table" style="width: 100%; min-width: 800px; font-size: 0.9em; margin-top: 20px;">
+            <thead>
+              <tr>
+                <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Финальная фактура</th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; font-weight: 600; background: #e8f4f8;">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Ставка НДС<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Stawka</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">НДС к оплате<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">(PLN)</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr style="background: #f0f8ff; font-weight: 600;">
+                <td style="padding: 10px 8px; border-bottom: 1px solid #ddd;">Данные для корректирующей фактуры</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; font-weight: 600; background: #e0f0ff;">${formatCurrency(finalInvoiceBrutto, 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; font-weight: 600;">${formatCurrency(finalInvoiceExpenses, 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; color: #0066cc; font-weight: 600;">${formatCurrency(finalInvoiceBrutto - finalInvoiceExpenses, 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd;">23%</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; color: #d9534f; font-weight: 600;">${formatCurrency((finalInvoiceBrutto - finalInvoiceExpenses) * 0.23, 'PLN')}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="margin-top: 10px; padding: 15px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; font-size: 0.85em; color: #856404;">
+          <div style="margin-bottom: 10px;">
+            <strong>Формулы расчета:</strong> Итого (Razem / brutto) = Наши расходы + Чистая маржа (Marża netto). Расходы рассчитываются как 35% от Итого (брутто). Маржа = Итого - Расходы (65%). НДС рассчитывается как 23% от маржи.
+          </div>
+          <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #ffc107;">
+            <strong>Расшифровка полей:</strong>
+            <ul style="margin: 8px 0 0 0; padding-left: 20px;">
+              <li style="margin-bottom: 6px;"><strong>Итого (брутто) / Razem / brutto</strong> — сумма всех реально оплаченных поступлений от клиентов за месяц. Это базовая сумма для расчета фактуры маржи.</li>
+              <li style="margin-bottom: 6px;"><strong>Наши расходы</strong> — реальные расходы, связанные с продуктом (35% от Итого брутто). Используются для расчета себестоимости в фактуре маржи.</li>
+              <li style="margin-bottom: 6px;"><strong>Чистая маржа / Marża netto</strong> — разница между Итого (брутто) и Нашими расходами (65% от Итого брутто). Это прибыль до уплаты НДС.</li>
+              <li style="margin-bottom: 6px;"><strong>НДС к оплате</strong> — налог на добавленную стоимость, рассчитываемый как 23% от чистой маржи. Это сумма НДС, которую необходимо уплатить в налоговую службу.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    `
+    : '';
+
   elements.vatMarginTable.innerHTML = `
     <div class="vat-summary">
       <div class="vat-summary-card">
         <span class="label">Всего расходов</span>
         <span class="value">${formatCurrency(context.totalExpenses, 'PLN')}</span>
       </div>
-      <div class="vat-summary-card">
-        <span class="label">Расход на участника</span>
-        <span class="value">${formatCurrency(context.expensesPerParticipant, 'PLN')}</span>
-      </div>
-      <div class="vat-summary-card">
-        <span class="label">Количество участников</span>
-        <span class="value">${context.participantsCount}</span>
-      </div>
     </div>
-    <table class="detail-table vat-margin-table">
-      <thead>
-        <tr>
-          <th>Имя участника</th>
-          <th>Сумма</th>
-          <th>Расходы</th>
-          <th>Маржа</th>
-          <th>VAT</th>
-          <th>VAT к оплате</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-      <tfoot>
-        <tr>
-          <td>Итого</td>
-          <td class="numeric">${formatCurrency(context.totalAmount, 'PLN')}</td>
-          <td class="numeric">${formatCurrency(context.totalExpenses, 'PLN')}</td>
-          <td class="numeric">${formatCurrency(context.totalMargin, 'PLN')}</td>
-          <td class="numeric">${(context.vatRate * 100).toFixed(0)}%</td>
-          <td class="numeric">${formatCurrency(context.totalVat, 'PLN')}</td>
-        </tr>
-      </tfoot>
-    </table>
+    ${monthlyBreakdownHtml}
   `;
 }
 
@@ -748,8 +880,13 @@ function calculateExpenseTotals(linkedPayments) {
 
 function createLinkedPaymentsSection(title, items, options = {}) {
   const showHeader = options.showHeader !== false && Boolean(title);
+  const INITIAL_LIMIT = 10;
+  const hasMore = items.length > INITIAL_LIMIT;
+  const remainingCount = items.length - INITIAL_LIMIT;
+  
+  // Генерируем все строки сразу, но помечаем те, что должны быть скрыты
   const rows = items
-    .map((item) => {
+    .map((item, index) => {
       const description = item.description || '—';
       const counterparty = item.payerName || '—';
       const operationDate = item.operationDate ? formatDate(item.operationDate) : '—';
@@ -757,9 +894,12 @@ function createLinkedPaymentsSection(title, items, options = {}) {
       const linkedBy = item.linkedBy || '—';
       const amount = formatCurrency(item.amount || 0, item.currency || 'PLN');
       const source = item.source || '—';
+      const isHidden = index >= INITIAL_LIMIT;
+      const hiddenStyle = isHidden ? 'style="display: none;"' : '';
+      const hiddenAttr = isHidden ? 'data-hidden-row="true"' : '';
 
       return `
-        <tr>
+        <tr ${hiddenAttr} ${hiddenStyle}>
           <td>${escapeHtml(operationDate)}</td>
           <td>${escapeHtml(description)}</td>
           <td>${escapeHtml(counterparty)}</td>
@@ -772,9 +912,12 @@ function createLinkedPaymentsSection(title, items, options = {}) {
     })
     .join('');
 
+  const sectionId = `linked-payments-${title.toLowerCase().replace(/\s+/g, '-')}`;
+  const buttonId = `show-more-${sectionId}`;
+
   return `
-    <div class="linked-payments-group">
-      ${showHeader ? `<h3>${escapeHtml(title)}</h3>` : ''}
+    <div class="linked-payments-group" data-section-id="${sectionId}">
+      ${showHeader ? `<h3>${escapeHtml(title)} <span style="font-weight: normal; font-size: 0.9em; color: #666;">(${items.length})</span></h3>` : ''}
       <table class="data-table">
         <thead>
           <tr>
@@ -791,6 +934,13 @@ function createLinkedPaymentsSection(title, items, options = {}) {
           ${rows}
         </tbody>
       </table>
+      ${hasMore ? `
+        <div style="text-align: center; margin-top: 15px;">
+          <button id="${buttonId}" class="btn btn-secondary" style="padding: 8px 20px; font-size: 0.9em;">
+            Показать еще ${remainingCount} ${remainingCount === 1 ? 'запись' : remainingCount < 5 ? 'записи' : 'записей'}
+          </button>
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -1457,5 +1607,366 @@ function setButtonLoading(button, loading, loadingText = 'Загрузка...') 
     button.disabled = false;
     button.innerHTML = button.dataset.originalText || button.innerHTML;
     delete button.dataset.originalText;
+  }
+}
+
+// Render payment search panel
+function renderPaymentSearchPanel(productId) {
+  if (!productId) return '';
+  
+  return `
+    <div class="payment-search-panel" style="margin-bottom: 30px; padding: 20px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 6px;">
+      <h3 style="margin: 0 0 15px 0; font-size: 1.1em; font-weight: 600;">Поиск платежей для связывания</h3>
+      <div style="display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 250px;">
+          <label for="product-payment-search-input" style="display: block; margin-bottom: 5px; font-weight: 500;">Поиск по названию или сумме</label>
+          <input
+            type="text"
+            id="product-payment-search-input"
+            class="form-control"
+            placeholder="Введите название, сумму или ID платежа..."
+            style="width: 100%; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95em;"
+          />
+        </div>
+        <button
+          id="product-payment-search-btn"
+          class="btn btn-primary"
+          style="padding: 8px 20px; height: fit-content;"
+        >
+          🔍 Найти
+        </button>
+      </div>
+      <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+        Поиск работает по описанию платежа, контрагенту, сумме и ID
+      </div>
+    </div>
+  `;
+}
+
+// Render payment search results
+function renderPaymentSearchResults() {
+  const results = productPaymentSearchState.searchResults || [];
+  const isLoading = productPaymentSearchState.isLoading;
+
+  if (isLoading) {
+    return `
+      <div class="payment-search-results" style="margin-bottom: 30px;">
+        <div style="text-align: center; padding: 40px;">
+          <div class="loading"></div>
+          <div style="margin-top: 10px; color: #666;">Поиск платежей...</div>
+        </div>
+      </div>
+    `;
+  }
+
+  if (results.length === 0 && !isLoading) {
+    return `
+      <div class="payment-search-results" style="margin-bottom: 30px; display: none;">
+        <div style="padding: 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;">
+          <div style="text-align: center; color: #666;">Начните поиск для отображения результатов</div>
+        </div>
+      </div>
+    `;
+  }
+
+  const rows = results.map((payment) => {
+    const isLinked = payment.linked_product_id === productPaymentSearchState.currentProductId;
+    const date = payment.operation_date || payment.date || '—';
+    const formattedDate = date !== '—' ? formatDate(date) : '—';
+    const amount = formatCurrency(payment.amount || 0, payment.currency || 'PLN');
+    const description = payment.description || '—';
+    const payerName = payment.payer_name || payment.payer || '—';
+    const direction = payment.direction === 'in' ? '💰 Доход' : '💸 Расход';
+    const directionClass = payment.direction === 'in' ? 'status-complete' : 'status-error';
+
+    return `
+      <tr ${isLinked ? 'style="background: #e8f5e9;"' : ''}>
+        <td>${escapeHtml(formattedDate)}</td>
+        <td>${escapeHtml(description)}</td>
+        <td>${escapeHtml(payerName)}</td>
+        <td class="numeric">${escapeHtml(amount)}</td>
+        <td><span class="status-badge ${directionClass}">${escapeHtml(direction)}</span></td>
+        <td style="text-align: center;">
+          ${isLinked 
+            ? '<span style="color: #10b981; font-weight: 600;">✓ Связан</span>'
+            : `<button 
+                 class="btn btn-secondary btn-sm" 
+                 data-action="link-payment" 
+                 data-payment-id="${escapeHtml(String(payment.id))}"
+                 style="padding: 4px 12px; font-size: 0.85em;"
+               >
+                 🔗 Связать
+               </button>`
+          }
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="payment-search-results" style="margin-bottom: 30px;">
+      <div style="padding: 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;">
+        <h4 style="margin: 0 0 15px 0; font-size: 1em; font-weight: 600;">
+          Результаты поиска: ${results.length} ${results.length === 1 ? 'платеж' : results.length < 5 ? 'платежа' : 'платежей'}
+        </h4>
+        <div style="overflow-x: auto;">
+          <table class="data-table" style="width: 100%;">
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Описание</th>
+                <th>Контрагент</th>
+                <th class="numeric">Сумма</th>
+                <th>Направление</th>
+                <th style="text-align: center;">Действие</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Setup payment search handlers
+function setupPaymentSearchHandlers(productId) {
+  const searchInput = document.getElementById('product-payment-search-input');
+  const searchButton = document.getElementById('product-payment-search-btn');
+
+  if (!searchInput || !searchButton) return;
+
+  // Удаляем старые обработчики, если они есть
+  const newSearchButton = searchButton.cloneNode(true);
+  searchButton.parentNode.replaceChild(newSearchButton, searchButton);
+  const newSearchInput = searchInput.cloneNode(true);
+  searchInput.parentNode.replaceChild(newSearchInput, searchInput);
+
+  const performSearch = async () => {
+    const query = newSearchInput.value.trim();
+    if (!query) {
+      showAlert('info', 'Введите запрос для поиска');
+      return;
+    }
+
+    await searchPayments(query, productId);
+  };
+
+  newSearchButton.addEventListener('click', performSearch);
+  newSearchInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      performSearch();
+    }
+  });
+
+  // Используем делегирование событий для всех действий в контейнере
+  if (!elements.linkedPaymentsContainer.dataset.handlersSetup) {
+    elements.linkedPaymentsContainer.addEventListener('click', async (event) => {
+      // Обработка кнопок "Показать больше"
+      const showMoreButton = event.target.closest('[id^="show-more-linked-payments-"]');
+      if (showMoreButton) {
+        const sectionId = showMoreButton.id.replace('show-more-', '');
+        const section = elements.linkedPaymentsContainer.querySelector(`[data-section-id="${sectionId}"]`);
+        if (section) {
+          const hiddenRows = section.querySelectorAll('tbody tr[data-hidden-row="true"]');
+          hiddenRows.forEach((row) => {
+            row.style.display = '';
+            row.removeAttribute('data-hidden-row');
+          });
+          showMoreButton.style.display = 'none';
+        }
+        return;
+      }
+
+      // Обработка кнопок связывания платежей
+      const linkButton = event.target.closest('[data-action="link-payment"]');
+      if (linkButton && productId) {
+        event.preventDefault();
+        const paymentId = linkButton.dataset.paymentId;
+        if (paymentId) {
+          await linkPaymentToProduct(paymentId, productId, linkButton);
+        }
+        return;
+      }
+    });
+    elements.linkedPaymentsContainer.dataset.handlersSetup = 'true';
+  }
+}
+
+// Search payments by query
+async function searchPayments(query, productId) {
+  if (!elements.linkedPaymentsContainer) return;
+
+  productPaymentSearchState.isLoading = true;
+  
+  // Обновляем отображение результатов
+  const resultsContainer = elements.linkedPaymentsContainer.querySelector('.payment-search-results');
+  if (resultsContainer) {
+    resultsContainer.style.display = 'block';
+  }
+  elements.linkedPaymentsContainer.innerHTML = elements.linkedPaymentsContainer.innerHTML.replace(
+    /<div class="payment-search-results[^>]*>[\s\S]*?<\/div>/,
+    renderPaymentSearchResults()
+  );
+
+  try {
+    // Поиск платежей через API (без фильтра по направлению, чтобы найти все)
+    const response = await apiCall(`/vat-margin/payments?limit=500`);
+    
+    if (!response?.success) {
+      throw new Error(response?.error || 'Не удалось найти платежи');
+    }
+
+    const allPayments = response.data || response.payments || [];
+    
+    // Фильтруем платежи по запросу (похоже на filterExpenses)
+    const searchQueryLower = query.toLowerCase().trim();
+    const searchQueryNum = parseFloat(searchQueryLower.replace(/[^\d.,-]/g, '').replace(',', '.'));
+    const isNumericSearch = !Number.isNaN(searchQueryNum);
+
+    const filteredPayments = allPayments.filter((payment) => {
+      const description = (payment.description || '').toLowerCase();
+      const payerName = (payment.payer_name || payment.payer || '').toLowerCase();
+      const currency = (payment.currency || '').toLowerCase();
+      const id = String(payment.id || '');
+
+      // Проверка текстовых полей
+      if (description.includes(searchQueryLower) ||
+          payerName.includes(searchQueryLower) ||
+          currency.includes(searchQueryLower) ||
+          id.includes(searchQueryLower)) {
+        return true;
+      }
+
+      // Проверка суммы как строки
+      const amountStr = String(payment.amount || '');
+      if (amountStr.includes(searchQueryLower)) {
+        return true;
+      }
+
+      // Проверка amount_raw
+      if (payment.amount_raw) {
+        const amountRawLower = String(payment.amount_raw).toLowerCase();
+        if (amountRawLower.includes(searchQueryLower)) {
+          return true;
+        }
+      }
+
+      // Числовая проверка суммы
+      if (isNumericSearch && payment.amount != null) {
+        const paymentAmount = parseFloat(payment.amount);
+        if (!Number.isNaN(paymentAmount)) {
+          if (Math.abs(paymentAmount - searchQueryNum) < 0.01) {
+            return true;
+          }
+          const paymentAmountStr = paymentAmount.toFixed(2);
+          if (paymentAmountStr.includes(searchQueryLower.replace(/[^\d.,-]/g, ''))) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    });
+
+    // Загружаем информацию о связях с продуктами
+    const paymentsWithLinks = await Promise.all(
+      filteredPayments.map(async (payment) => {
+        try {
+          const linkResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(payment.id)}/link-product`);
+          if (linkResponse.ok) {
+            const linkPayload = await linkResponse.json();
+            if (linkPayload.success && linkPayload.data) {
+              return {
+                ...payment,
+                linked_product_id: linkPayload.data.product_id
+              };
+            }
+          }
+        } catch (error) {
+          // Игнорируем ошибки при загрузке связей
+        }
+        return payment;
+      })
+    );
+
+    productPaymentSearchState.searchResults = paymentsWithLinks;
+    productPaymentSearchState.isLoading = false;
+
+    // Обновляем отображение
+    const currentHTML = elements.linkedPaymentsContainer.innerHTML;
+    const searchPanelMatch = currentHTML.match(/<div class="payment-search-panel[^>]*>[\s\S]*?<\/div>/);
+    const searchPanelHTML = searchPanelMatch ? searchPanelMatch[0] : renderPaymentSearchPanel(productId);
+    
+    // Получаем HTML связанных платежей
+    const linkedPayments = productDetail?.linkedPayments || {};
+    const incoming = linkedPayments?.incoming || [];
+    const outgoing = linkedPayments?.outgoing || [];
+    const sections = [];
+    if (incoming.length) {
+      sections.push(createLinkedPaymentsSection('Входящие платежи', incoming, { showHeader: true }));
+    }
+    if (outgoing.length) {
+      sections.push(createLinkedPaymentsSection('Исходящие платежи', outgoing, { showHeader: false }));
+    }
+
+    elements.linkedPaymentsContainer.innerHTML = `
+      ${searchPanelHTML}
+      ${renderPaymentSearchResults()}
+      ${incoming.length === 0 && outgoing.length === 0 ? '<div class="placeholder">Связанных платежей пока нет</div>' : ''}
+      ${sections.join('')}
+    `;
+
+    // Переустанавливаем обработчики
+    setupPaymentSearchHandlers(productId);
+
+  } catch (error) {
+    productPaymentSearchState.isLoading = false;
+    showAlert('error', `Ошибка поиска: ${error.message}`);
+    console.error('Payment search error:', error);
+  }
+}
+
+// Link payment to product
+async function linkPaymentToProduct(paymentId, productId, button) {
+  if (!paymentId || !productId) {
+    showAlert('error', 'Не указаны платеж или продукт');
+    return;
+  }
+
+  try {
+    setButtonLoading(button, true, 'Связываю...');
+    
+    const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(paymentId)}/link-product`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: productId })
+    });
+
+    const payload = await response.json();
+    
+    if (!response.ok || !payload.success) {
+      throw new Error(payload?.error || payload?.message || 'Не удалось связать платеж');
+    }
+
+    showAlert('success', `Платеж #${paymentId} успешно связан с продуктом`);
+    
+    // Обновляем состояние
+    const payment = productPaymentSearchState.searchResults.find(p => String(p.id) === String(paymentId));
+    if (payment) {
+      payment.linked_product_id = productId;
+    }
+
+    // Перезагружаем данные продукта
+    await loadProductDetail();
+    
+  } catch (error) {
+    showAlert('error', `Не удалось связать платеж: ${error.message}`);
+    console.error('Link payment error:', error);
+  } finally {
+    setButtonLoading(button, false, '🔗 Связать');
   }
 }

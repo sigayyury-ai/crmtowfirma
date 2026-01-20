@@ -725,18 +725,57 @@ function filterExpenses() {
 
   // Apply search filter
   if (searchQuery) {
+    // Try to parse search query as a number for amount matching
+    const searchQueryNum = parseFloat(searchQuery.replace(/[^\d.,-]/g, '').replace(',', '.'));
+    const isNumericSearch = !Number.isNaN(searchQueryNum);
+    
     filteredPayments = filteredPayments.filter((payment) => {
       const description = (payment.description || '').toLowerCase();
       const payerName = (payment.payer_name || '').toLowerCase();
-      const amount = String(payment.amount || '');
       const currency = (payment.currency || '').toLowerCase();
       const id = String(payment.id || '');
       
-      return description.includes(searchQuery) ||
-             payerName.includes(searchQuery) ||
-             amount.includes(searchQuery) ||
-             currency.includes(searchQuery) ||
-             id.includes(searchQuery);
+      // Check text fields
+      if (description.includes(searchQuery) ||
+          payerName.includes(searchQuery) ||
+          currency.includes(searchQuery) ||
+          id.includes(searchQuery)) {
+        return true;
+      }
+      
+      // Check amount as string (for partial matches like "510")
+      const amountStr = String(payment.amount || '');
+      if (amountStr.includes(searchQuery)) {
+        return true;
+      }
+      
+      // Check amount_raw (formatted amount with currency)
+      if (payment.amount_raw) {
+        const amountRawLower = String(payment.amount_raw).toLowerCase();
+        if (amountRawLower.includes(searchQuery)) {
+          return true;
+        }
+      }
+      
+      // Check numeric amount (for exact or partial numeric matches)
+      if (isNumericSearch && payment.amount != null) {
+        const paymentAmount = parseFloat(payment.amount);
+        if (!Number.isNaN(paymentAmount)) {
+          // Match exact amount
+          if (Math.abs(paymentAmount - searchQueryNum) < 0.01) {
+            return true;
+          }
+          // Match amount as string (e.g., "510" matches "510.00")
+          const paymentAmountStr = paymentAmount.toFixed(2);
+          const searchQueryStr = searchQueryNum.toFixed(2);
+          if (paymentAmountStr.includes(searchQuery.replace(/[^\d.,-]/g, '')) ||
+              searchQueryStr.includes(String(paymentAmount).replace(/[^\d.,-]/g, ''))) {
+            return true;
+          }
+        }
+      }
+      
+      return false;
     });
   }
 
