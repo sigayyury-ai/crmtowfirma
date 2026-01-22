@@ -579,6 +579,45 @@ class PaymentRevenueReportService {
         productId = proformaInfo.product.id || null;
       }
 
+      // CRITICAL: Deduplicate products by productId
+      // If we have a productId, check if there's already a group with this ID
+      // This prevents the same product from appearing multiple times with different keys
+      if (productId !== null && productId !== undefined && productId !== '') {
+        // Check if there's already a group with this productId
+        for (const [existingKey, existingProduct] of productMap.entries()) {
+          if (existingProduct.product_id === productId) {
+            // Use the existing key to merge with the existing group
+            productKey = existingKey;
+            // Use the existing product name to maintain consistency
+            if (existingProduct.name && existingProduct.name !== 'Без названия') {
+              productName = existingProduct.name;
+            }
+            break;
+          }
+        }
+        // If we have productId but no existing group, ensure we use id:${productId} format
+        if (productKey === 'unmatched' || (!productKey.startsWith('id:') && productId)) {
+          productKey = `id:${productId}`;
+        }
+      } else if (productKey !== 'unmatched' && productName !== 'Без привязки') {
+        // If we don't have productId but have a productName, check if there's already a group with the same normalized name
+        const normalizedName = normalizeProductKey(productName);
+        if (normalizedName && normalizedName !== 'без названия') {
+          for (const [existingKey, existingProduct] of productMap.entries()) {
+            const existingNormalizedName = normalizeProductKey(existingProduct.name);
+            if (existingNormalizedName === normalizedName && existingProduct.product_id) {
+              // Merge with existing product that has the same name and has an ID
+              productKey = existingKey;
+              productId = existingProduct.product_id;
+              if (existingProduct.name && existingProduct.name !== 'Без названия') {
+                productName = existingProduct.name;
+              }
+              break;
+            }
+          }
+        }
+      }
+
       if (productKey === 'unmatched' && paymentEntry.status.code === 'unmatched') {
         summary.unmatched_count += 1;
       }
