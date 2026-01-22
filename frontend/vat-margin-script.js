@@ -74,7 +74,8 @@ const cashStatusLabels = {
   cancelled: 'Отменено'
 };
 
-const APPROX_MARGIN_RATE = 0.35;
+const EXPENSE_RATE = 0.65; // Расходы составляют 65% от общей суммы
+const MARGIN_RATE = 0.35; // Маржа составляет 35% от общей суммы
 
 function saveSelectedPeriod() {
   if (!elements.monthSelect || !elements.yearSelect) return;
@@ -1534,8 +1535,8 @@ function renderPaymentReportSummary(summary) {
   }
 
   const totalPln = Number(summary.total_pln || 0);
-  const approxExpenses = totalPln * APPROX_MARGIN_RATE;
-  const approxMargin = totalPln - approxExpenses;
+  const approxExpenses = totalPln * EXPENSE_RATE; // Расходы = 65% от общей суммы
+  const approxMargin = totalPln * MARGIN_RATE; // Маржа = 35% от общей суммы
 
   const cardsHtml = `
     <div class="summary-card">
@@ -1582,8 +1583,8 @@ function renderPaymentReport(groups) {
 
     const totalPln = Number(group.totals?.pln_total || 0);
     const plnTotal = formatCurrency(totalPln, 'PLN');
-    const approxExpenses = formatCurrency(totalPln * APPROX_MARGIN_RATE, 'PLN');
-    const approxMargin = formatCurrency(totalPln - (totalPln * APPROX_MARGIN_RATE), 'PLN');
+    const approxExpenses = formatCurrency(totalPln * EXPENSE_RATE, 'PLN'); // Расходы = 65% от общей суммы
+    const approxMargin = formatCurrency(totalPln * MARGIN_RATE, 'PLN'); // Маржа = 35% от общей суммы
     const proformaCount = group.totals?.proforma_count || 0;
     const paymentsCount = group.totals?.payments_count || 0;
 
