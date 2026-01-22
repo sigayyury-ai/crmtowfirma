@@ -1560,6 +1560,14 @@ function renderPaymentReportSummary(summary) {
       <span class="summary-value">${formatCurrency(approxMargin, 'PLN')}</span>
     </div>
     <div class="summary-card">
+      <span class="summary-label">Налог PIT<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">9% от маржи</span></span>
+      <span class="summary-value">${formatCurrency(approxMargin * 0.09, 'PLN')}</span>
+    </div>
+    <div class="summary-card">
+      <span class="summary-label">НДС (налог)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">23% от маржи</span></span>
+      <span class="summary-value">${formatCurrency(approxMargin * 0.23, 'PLN')}</span>
+    </div>
+    <div class="summary-card">
       <span class="summary-label">Без привязки</span>
       <span class="summary-value">${(summary.unmatched_count || 0).toLocaleString('ru-RU')}</span>
     </div>
