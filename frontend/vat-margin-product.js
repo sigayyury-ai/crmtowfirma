@@ -28,8 +28,12 @@ let isSaving = false;
 const productPaymentSearchState = {
   searchResults: [],
   isLoading: false,
-  currentProductId: null
+  currentProductId: null,
+  hasSearched: false
 };
+
+// State for expense categories
+let expenseCategoriesMap = {};
 
 const productPayerPaymentsModalState = {
   context: null,
@@ -62,7 +66,11 @@ function cacheDom() {
     payerModal: document.getElementById('product-payer-modal'),
     payerModalTitle: document.getElementById('product-payer-title'),
     payerModalBody: document.getElementById('product-payer-body'),
-    payerModalClose: document.getElementById('product-payer-close')
+    payerModalClose: document.getElementById('product-payer-close'),
+    createPaymentModal: document.getElementById('product-create-payment-modal'),
+    createPaymentClose: document.getElementById('product-create-payment-close'),
+    createPaymentCancel: document.getElementById('product-create-payment-cancel-btn'),
+    createPaymentSubmit: document.getElementById('product-create-payment-submit-btn')
   };
 }
 
@@ -140,6 +148,35 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && isProductPayerModalOpen()) {
       closeProductPayerPaymentsModal();
+    }
+  });
+
+  // Create payment from receipt modal handlers
+  elements.createPaymentClose?.addEventListener('click', closeCreatePaymentModal);
+  elements.createPaymentCancel?.addEventListener('click', closeCreatePaymentModal);
+  elements.createPaymentModal?.addEventListener('click', (event) => {
+    if (event.target === elements.createPaymentModal) {
+      closeCreatePaymentModal();
+    }
+  });
+  elements.createPaymentSubmit?.addEventListener('click', async () => {
+    await handleCreatePaymentFromReceipt();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isCreatePaymentModalOpen()) {
+      closeCreatePaymentModal();
+    }
+  });
+
+  // Open create payment modal button (delegated event)
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('#product-create-payment-from-receipt-btn');
+    if (button) {
+      event.preventDefault();
+      openCreatePaymentModal().catch(error => {
+        console.error('Error opening create payment modal:', error);
+        showAlert('error', `Не удалось открыть форму: ${error.message}`);
+      });
     }
   });
 
@@ -477,6 +514,10 @@ function renderSummaryCards(detail) {
   // Общая сумма НДС (может быть отрицательной, если финальная фактура отрицательная)
   const totalVat = vatFromMonthlyBreakdown + vatFromFinalInvoice;
   
+  // Получаем сумму наличных платежей и количество сделок с наличкой
+  const cashTotalPln = detail.cashTotalPln || 0;
+  const cashDealsCount = detail.cashDealsCount || 0;
+  
   const summaryItems = [
     {
       label: 'Суммарная выручка (PLN)',
@@ -499,6 +540,10 @@ function renderSummaryCards(detail) {
       value: Object.keys(expenseTotals).length ? formatCurrencyMap(expenseTotals) : '0 PLN'
     },
     {
+      label: 'Наличка',
+      value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '')
+    },
+    {
       label: 'PIT (налог)',
       value: formatCurrency(pit, 'PLN')
     },
@@ -511,6 +556,15 @@ function renderSummaryCards(detail) {
       value: formatCurrency(paidPln - totalExpensesPln - pit - totalVat, 'PLN')
     }
   ];
+
+  // Вычисляем процент реальной маржи (от оплаченной суммы)
+  const realEarnings = paidPln - totalExpensesPln - pit - totalVat;
+  const marginPercent = paidPln > 0 ? ((realEarnings / paidPln) * 100) : 0;
+  
+  summaryItems.push({
+    label: 'Реальная маржа (%)',
+    value: `${marginPercent >= 0 ? '+' : ''}${marginPercent.toFixed(2)}%`
+  });
 
   elements.summaryContainer.innerHTML = summaryItems
     .map((card) => {
@@ -632,7 +686,8 @@ function renderLinkedPaymentsTables(linkedPayments) {
   productPaymentSearchState.currentProductId = productId;
 
   // Формируем HTML с поиском и результатами
-  const searchPanelHTML = renderPaymentSearchPanel(productId);
+  const showCreateButton = productPaymentSearchState.searchResults.length === 0 && !productPaymentSearchState.isLoading;
+  const searchPanelHTML = renderPaymentSearchPanel(productId, showCreateButton);
   const linkedPaymentsHTML = incoming.length === 0 && outgoing.length === 0
     ? '<div class="placeholder">Связанных платежей пока нет</div>'
     : '';
@@ -1610,8 +1665,359 @@ function setButtonLoading(button, loading, loadingText = 'Загрузка...') 
   }
 }
 
+// Create payment from receipt modal functions
+async function openCreatePaymentModal() {
+  if (!elements.createPaymentModal) return;
+  
+  // Set default date to today
+  const dateInput = document.getElementById('product-payment-date');
+  if (dateInput) {
+    const today = new Date().toISOString().split('T')[0];
+    dateInput.value = today;
+  }
+  
+  // Clear form
+  const fileInput = document.getElementById('product-receipt-file');
+  const amountInput = document.getElementById('product-payment-amount');
+  const descriptionInput = document.getElementById('product-payment-description');
+  const directionSelect = document.getElementById('product-payment-direction');
+  const categorySelect = document.getElementById('product-payment-expense-category');
+  const categoryWrapper = document.getElementById('product-payment-expense-category-wrapper');
+  const statusDiv = document.getElementById('product-create-payment-status');
+  const filesPreview = document.getElementById('product-receipt-files-preview');
+  
+  if (fileInput) fileInput.value = '';
+  if (amountInput) amountInput.value = '';
+  if (descriptionInput) descriptionInput.value = '';
+  if (directionSelect) directionSelect.value = 'out';
+  if (categorySelect) categorySelect.value = '';
+  if (statusDiv) statusDiv.innerHTML = '';
+  if (filesPreview) filesPreview.innerHTML = '';
+  
+  // Load expense categories
+  await loadExpenseCategoriesForModal();
+  
+  // Setup direction change handler to show/hide category field
+  if (directionSelect && categoryWrapper) {
+    const updateCategoryVisibility = () => {
+      categoryWrapper.style.display = directionSelect.value === 'out' ? 'block' : 'none';
+      if (directionSelect.value !== 'out' && categorySelect) {
+        categorySelect.value = '';
+      }
+    };
+    
+    // Remove old handlers
+    directionSelect.onchange = null;
+    directionSelect.addEventListener('change', updateCategoryVisibility);
+    updateCategoryVisibility(); // Initial state
+  }
+
+  // Setup file input change handler to show preview
+  if (fileInput) {
+    fileInput.addEventListener('change', (e) => {
+      const files = Array.from(e.target.files || []);
+      const filesPreview = document.getElementById('product-receipt-files-preview');
+      if (filesPreview) {
+        if (files.length === 0) {
+          filesPreview.innerHTML = '';
+        } else {
+          const fileList = files.map((file, index) => {
+            const size = (file.size / 1024 / 1024).toFixed(2);
+            return `${index + 1}. ${escapeHtml(file.name)} (${size} MB)`;
+          }).join('<br>');
+          filesPreview.innerHTML = `<div style="color: #666; margin-top: 5px;">Выбрано файлов: ${files.length}<br>${fileList}</div>`;
+        }
+      }
+    });
+  }
+  
+  elements.createPaymentModal.style.display = 'block';
+  document.body.classList.add('modal-open');
+}
+
+// Load expense categories for modal
+async function loadExpenseCategoriesForModal() {
+  const categorySelect = document.getElementById('product-payment-expense-category');
+  if (!categorySelect) return;
+
+  // If already loaded, just populate select
+  if (Object.keys(expenseCategoriesMap).length > 0) {
+    populateExpenseCategorySelect(categorySelect);
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/pnl/expense-categories`);
+    const result = await response.json();
+
+    if (result.success && result.data) {
+      result.data.forEach(cat => {
+        expenseCategoriesMap[cat.id] = cat;
+      });
+      populateExpenseCategorySelect(categorySelect);
+    }
+  } catch (error) {
+    console.error('Failed to load expense categories:', error);
+  }
+}
+
+// Populate expense category select
+function populateExpenseCategorySelect(selectElement) {
+  if (!selectElement) return;
+  
+  const categories = Object.values(expenseCategoriesMap).sort((a, b) => {
+    const nameA = (a.name || '').toLowerCase();
+    const nameB = (b.name || '').toLowerCase();
+    return nameA.localeCompare(nameB);
+  });
+
+  selectElement.innerHTML = '<option value="">Выберите категорию...</option>' +
+    categories.map(cat => 
+      `<option value="${cat.id}">${escapeHtml(cat.name || 'Без названия')}</option>`
+    ).join('');
+}
+
+function closeCreatePaymentModal() {
+  if (elements.createPaymentModal) {
+    elements.createPaymentModal.style.display = 'none';
+  }
+  document.body.classList.remove('modal-open');
+}
+
+function isCreatePaymentModalOpen() {
+  return Boolean(elements.createPaymentModal && elements.createPaymentModal.style.display === 'block');
+}
+
+async function handleCreatePaymentFromReceipt() {
+  const fileInput = document.getElementById('product-receipt-file');
+  const amountInput = document.getElementById('product-payment-amount');
+  const currencySelect = document.getElementById('product-payment-currency');
+  const dateInput = document.getElementById('product-payment-date');
+  const descriptionInput = document.getElementById('product-payment-description');
+  const directionSelect = document.getElementById('product-payment-direction');
+  const statusDiv = document.getElementById('product-create-payment-status');
+  const submitButton = elements.createPaymentSubmit;
+
+  if (!fileInput || !amountInput || !dateInput || !currencySelect || !directionSelect) {
+    showAlert('error', 'Не найдены поля формы');
+    return;
+  }
+
+  const files = Array.from(fileInput.files || []);
+  const amount = parseFloat(amountInput.value);
+  const currency = currencySelect.value || 'PLN';
+  const operationDate = dateInput.value;
+  const description = descriptionInput?.value?.trim() || '';
+  const direction = directionSelect.value || 'out';
+
+  // Validation
+  if (!files || files.length === 0) {
+    if (statusDiv) {
+      statusDiv.innerHTML = '<div style="color: #d9534f; padding: 10px; background: #f8d7da; border-radius: 4px;">Пожалуйста, выберите файл(ы) чека</div>';
+    }
+    return;
+  }
+
+  if (!amount || amount <= 0) {
+    if (statusDiv) {
+      statusDiv.innerHTML = '<div style="color: #d9534f; padding: 10px; background: #f8d7da; border-radius: 4px;">Пожалуйста, укажите корректную сумму</div>';
+    }
+    return;
+  }
+
+  if (!operationDate) {
+    if (statusDiv) {
+      statusDiv.innerHTML = '<div style="color: #d9534f; padding: 10px; background: #f8d7da; border-radius: 4px;">Пожалуйста, укажите дату оплаты</div>';
+    }
+    return;
+  }
+
+  try {
+    setButtonLoading(submitButton, true, `Загружаю чек${files.length > 1 ? 'и' : ''} (${files.length})...`);
+    if (statusDiv) statusDiv.innerHTML = '';
+
+    // Step 1: Upload all receipt files
+    const receiptIds = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setButtonLoading(submitButton, true, `Загружаю чек ${i + 1} из ${files.length}...`);
+      
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const uploadResponse = await fetch(`${API_BASE}/receipts/upload`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const uploadResult = await uploadResponse.json();
+      
+      if (!uploadResponse.ok || !uploadResult.success) {
+        throw new Error(uploadResult?.error || `Не удалось загрузить чек ${i + 1}: ${file.name}`);
+      }
+
+      const receiptId = uploadResult.data?.receiptId;
+      if (!receiptId) {
+        throw new Error(`Не получен ID чека после загрузки ${i + 1}: ${file.name}`);
+      }
+
+      receiptIds.push(receiptId);
+    }
+
+    // Use the first receipt ID for payment creation (main receipt)
+    const receiptId = receiptIds[0];
+    if (!receiptId) {
+      throw new Error('Не получен ID чека после загрузки');
+    }
+
+    // Step 2: Get product ID - try multiple sources
+    let productId = productPaymentSearchState.currentProductId;
+    if (!productId && productDetail) {
+      productId = productDetail.productId || productDetail.id;
+    }
+    if (!productId && productSlug && !isNaN(parseInt(productSlug))) {
+      productId = parseInt(productSlug);
+    }
+    // Try to extract from URL if still not found
+    if (!productId) {
+      const urlMatch = window.location.pathname.match(/\/vat-margin\/products\/([^\/]+)/);
+      if (urlMatch) {
+        const slugFromUrl = urlMatch[1];
+        if (slugFromUrl.startsWith('id-')) {
+          const idFromUrl = parseInt(slugFromUrl.replace('id-', ''));
+          if (!isNaN(idFromUrl)) {
+            productId = idFromUrl;
+          }
+        }
+      }
+    }
+
+    console.log('Creating payment from receipt', {
+      productId,
+      productSlug,
+      productDetailId: productDetail?.productId || productDetail?.id,
+      currentProductId: productPaymentSearchState.currentProductId,
+      urlPath: window.location.pathname
+    });
+
+    // Warn if productId is still not found
+    if (!productId) {
+      console.warn('⚠️  Product ID not found! Payment will be created without product link.');
+      if (statusDiv) {
+        statusDiv.innerHTML = '<div style="color: #856404; padding: 10px; background: #fff3cd; border-radius: 4px; margin-bottom: 10px;">⚠️ Внимание: Продукт не определен. Платеж будет создан без связи с продуктом. Вы сможете связать его позже.</div>';
+      }
+    }
+
+    // Step 3: Get expense category if direction is 'out'
+    const categorySelect = document.getElementById('product-payment-expense-category');
+    const expenseCategoryId = (direction === 'out' && categorySelect?.value) 
+      ? parseInt(categorySelect.value, 10) 
+      : null;
+
+    // Step 4: Create payment from receipt (using first receipt as primary)
+    setButtonLoading(submitButton, true, 'Создаю платеж...');
+
+    const createResponse = await fetch(`${API_BASE}/receipts/${encodeURIComponent(receiptId)}/create-payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        amount,
+        currency,
+        operationDate,
+        description,
+        direction,
+        productId,
+        expenseCategoryId
+      })
+    });
+
+    const createResult = await createResponse.json();
+
+    if (!createResponse.ok || !createResult.success) {
+      throw new Error(createResult?.error || 'Не удалось создать платеж');
+    }
+
+    const paymentId = createResult.data.id;
+
+    // Step 5: Link additional receipts to the payment (if any)
+    if (receiptIds.length > 1) {
+      setButtonLoading(submitButton, true, `Связываю дополнительные чеки (${receiptIds.length - 1})...`);
+      
+      for (let i = 1; i < receiptIds.length; i++) {
+        const additionalReceiptId = receiptIds[i];
+        try {
+          // Link additional receipt to the same payment
+          const linkResponse = await fetch(`${API_BASE}/receipts/${encodeURIComponent(additionalReceiptId)}/link-payment`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              paymentId: paymentId.toString()
+            })
+          });
+
+          const linkResult = await linkResponse.json();
+          if (!linkResponse.ok || !linkResult.success) {
+            console.warn(`Не удалось связать чек ${i + 1} с платежом:`, linkResult?.error);
+          }
+        } catch (linkError) {
+          console.warn(`Ошибка при связывании чека ${i + 1} с платежом:`, linkError);
+        }
+      }
+    }
+
+    const receiptCountText = receiptIds.length > 1 ? ` (${receiptIds.length} файл${receiptIds.length > 4 ? 'ов' : receiptIds.length > 1 ? 'а' : ''})` : '';
+    showAlert('success', `Платеж #${paymentId} успешно создан из чека${receiptCountText}`);
+    closeCreatePaymentModal();
+
+    // Reload product detail to show new payment
+    // Add delay to ensure database is updated and indexes are refreshed
+    console.log('Payment created, reloading product detail', {
+      paymentId,
+      productId
+    });
+    
+    // Wait a bit longer for database to process the link
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    await loadProductDetail();
+    
+    // Check if payment appears in linked payments after reload
+    setTimeout(() => {
+      if (productDetail?.linkedPayments) {
+        const foundPayment = 
+          (productDetail.linkedPayments.incoming || []).find(p => p.paymentId === paymentId) ||
+          (productDetail.linkedPayments.outgoing || []).find(p => p.paymentId === paymentId);
+        
+        if (!foundPayment) {
+          console.warn('Payment not found in linked payments after reload', {
+            paymentId,
+            productId,
+            incomingCount: (productDetail.linkedPayments.incoming || []).length,
+            outgoingCount: (productDetail.linkedPayments.outgoing || []).length
+          });
+        } else {
+          console.log('Payment successfully appears in linked payments', {
+            paymentId,
+            productId,
+            direction: foundPayment.direction
+          });
+        }
+      }
+    }, 500);
+
+  } catch (error) {
+    console.error('Error creating payment from receipt:', error);
+    if (statusDiv) {
+      statusDiv.innerHTML = `<div style="color: #d9534f; padding: 10px; background: #f8d7da; border-radius: 4px;">Ошибка: ${escapeHtml(error.message)}</div>`;
+    }
+    showAlert('error', `Не удалось создать платеж: ${error.message}`);
+  } finally {
+    setButtonLoading(submitButton, false, '💾 Создать платеж');
+  }
+}
+
 // Render payment search panel
-function renderPaymentSearchPanel(productId) {
+function renderPaymentSearchPanel(productId, showCreateButton = false) {
   if (!productId) return '';
   
   return `
@@ -1635,9 +2041,16 @@ function renderPaymentSearchPanel(productId) {
         >
           🔍 Найти
         </button>
+        <button
+          id="product-create-payment-from-receipt-btn"
+          class="btn btn-secondary"
+          style="padding: 8px 20px; height: fit-content; ${showCreateButton ? '' : 'display: none;'}"
+        >
+          📄 Создать платеж из чека
+        </button>
       </div>
-      <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
-        Поиск работает по описанию платежа, контрагенту, сумме и ID
+      <div class="payment-search-hint" style="margin-top: 10px; font-size: 0.85em; color: #666;">
+        Поиск работает по описанию платежа, контрагенту, сумме и ID. ${showCreateButton ? 'Если платежа нет в базе (оплата другой картой), можно создать его на основе чека.' : ''}
       </div>
     </div>
   `;
@@ -1659,18 +2072,34 @@ function renderPaymentSearchResults() {
     `;
   }
 
-  if (results.length === 0 && !isLoading) {
+  if (results.length === 0) {
+    // Если поиск выполнен, но результатов нет - показываем сообщение
+    const hasSearched = productPaymentSearchState.hasSearched || false;
+    if (!hasSearched) {
+      return `
+        <div class="payment-search-results" style="margin-bottom: 30px; display: none;">
+          <div style="padding: 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;">
+            <div style="text-align: center; color: #666;">Начните поиск для отображения результатов</div>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Поиск выполнен, но результатов нет - показываем сообщение
     return `
-      <div class="payment-search-results" style="margin-bottom: 30px; display: none;">
-        <div style="padding: 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 6px;">
-          <div style="text-align: center; color: #666;">Начните поиск для отображения результатов</div>
+      <div class="payment-search-results" style="margin-bottom: 30px;">
+        <div style="padding: 20px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px;">
+          <div style="text-align: center; color: #856404; font-weight: 500;">
+            Платежи не найдены. Если оплата была произведена другой картой, создайте платеж из чека.
+          </div>
         </div>
       </div>
     `;
   }
 
   const rows = results.map((payment) => {
-    const isLinked = payment.linked_product_id === productPaymentSearchState.currentProductId;
+    const isLinkedToCurrentProduct = payment.linked_product_id === productPaymentSearchState.currentProductId;
+    const isLinkedToOtherProduct = payment.linked_product_id && payment.linked_product_id !== productPaymentSearchState.currentProductId;
     const date = payment.operation_date || payment.date || '—';
     const formattedDate = date !== '—' ? formatDate(date) : '—';
     const amount = formatCurrency(payment.amount || 0, payment.currency || 'PLN');
@@ -1679,25 +2108,39 @@ function renderPaymentSearchResults() {
     const direction = payment.direction === 'in' ? '💰 Доход' : '💸 Расход';
     const directionClass = payment.direction === 'in' ? 'status-complete' : 'status-error';
 
+    let actionCell = '';
+    if (isLinkedToCurrentProduct) {
+      actionCell = '<span style="color: #10b981; font-weight: 600;">✓ Связан</span>';
+    } else {
+      // Для всех остальных случаев (не связан или связан с другим продуктом) показываем кнопку "Связать"
+      // Она автоматически отвяжет от предыдущего продукта при необходимости
+      const buttonText = isLinkedToOtherProduct ? '🔄 Пересвязать' : '🔗 Связать';
+      const buttonStyle = isLinkedToOtherProduct 
+        ? 'padding: 4px 12px; font-size: 0.85em; background: #f59e0b; color: white;'
+        : 'padding: 4px 12px; font-size: 0.85em;';
+      
+      actionCell = `
+        <button 
+          class="btn btn-secondary btn-sm" 
+          data-action="link-payment" 
+          data-payment-id="${escapeHtml(String(payment.id))}"
+          style="${buttonStyle}"
+          ${isLinkedToOtherProduct ? `title="Отвязать от продукта ${payment.linked_product_id} и связать с текущим"` : ''}
+        >
+          ${buttonText}
+        </button>
+      `;
+    }
+
     return `
-      <tr ${isLinked ? 'style="background: #e8f5e9;"' : ''}>
+      <tr ${isLinkedToCurrentProduct ? 'style="background: #e8f5e9;"' : isLinkedToOtherProduct ? 'style="background: #fff7ed;"' : ''}>
         <td>${escapeHtml(formattedDate)}</td>
         <td>${escapeHtml(description)}</td>
         <td>${escapeHtml(payerName)}</td>
         <td class="numeric">${escapeHtml(amount)}</td>
         <td><span class="status-badge ${directionClass}">${escapeHtml(direction)}</span></td>
         <td style="text-align: center;">
-          ${isLinked 
-            ? '<span style="color: #10b981; font-weight: 600;">✓ Связан</span>'
-            : `<button 
-                 class="btn btn-secondary btn-sm" 
-                 data-action="link-payment" 
-                 data-payment-id="${escapeHtml(String(payment.id))}"
-                 style="padding: 4px 12px; font-size: 0.85em;"
-               >
-                 🔗 Связать
-               </button>`
-          }
+          ${actionCell}
         </td>
       </tr>
     `;
@@ -1781,13 +2224,35 @@ function setupPaymentSearchHandlers(productId) {
         return;
       }
 
-      // Обработка кнопок связывания платежей
+      // Обработка кнопок связывания платежей (работает для всех случаев, включая пересвязывание)
       const linkButton = event.target.closest('[data-action="link-payment"]');
-      if (linkButton && productId) {
+      if (linkButton) {
         event.preventDefault();
+        // Получаем актуальный productId из состояния или productDetail
+        let currentProductId = productPaymentSearchState.currentProductId;
+        if (!currentProductId && productDetail) {
+          currentProductId = productDetail.productId || productDetail.id;
+        }
+        if (!currentProductId && productSlug && !isNaN(parseInt(productSlug))) {
+          currentProductId = parseInt(productSlug);
+        }
+        
         const paymentId = linkButton.dataset.paymentId;
-        if (paymentId) {
-          await linkPaymentToProduct(paymentId, productId, linkButton);
+        if (paymentId && currentProductId) {
+          // Проверяем, связан ли платеж с другим продуктом
+          const payment = productPaymentSearchState.searchResults.find(p => String(p.id) === String(paymentId));
+          const isLinkedToOther = payment && payment.linked_product_id && payment.linked_product_id !== currentProductId;
+          
+          if (isLinkedToOther) {
+            const confirmMessage = `Платеж #${paymentId} уже связан с другим продуктом (ID: ${payment.linked_product_id}). Отвязать от него и связать с текущим продуктом (ID: ${currentProductId})?`;
+            if (!confirm(confirmMessage)) {
+              return;
+            }
+          }
+          
+          await linkPaymentToProduct(paymentId, currentProductId, linkButton);
+        } else {
+          showAlert('error', 'Не удалось определить идентификатор продукта');
         }
         return;
       }
@@ -1801,16 +2266,26 @@ async function searchPayments(query, productId) {
   if (!elements.linkedPaymentsContainer) return;
 
   productPaymentSearchState.isLoading = true;
+  productPaymentSearchState.hasSearched = true;
   
-  // Обновляем отображение результатов
+  // Обновляем только отображение результатов поиска, сохраняя панель поиска
   const resultsContainer = elements.linkedPaymentsContainer.querySelector('.payment-search-results');
   if (resultsContainer) {
     resultsContainer.style.display = 'block';
+    resultsContainer.outerHTML = renderPaymentSearchResults();
+  } else {
+    // Если контейнера результатов еще нет, создаем его после панели поиска
+    const searchPanel = elements.linkedPaymentsContainer.querySelector('.payment-search-panel');
+    if (searchPanel) {
+      searchPanel.insertAdjacentHTML('afterend', renderPaymentSearchResults());
+    }
   }
-  elements.linkedPaymentsContainer.innerHTML = elements.linkedPaymentsContainer.innerHTML.replace(
-    /<div class="payment-search-results[^>]*>[\s\S]*?<\/div>/,
-    renderPaymentSearchResults()
-  );
+  
+  // Скрываем кнопку "Создать платеж" во время поиска
+  const createButton = elements.linkedPaymentsContainer.querySelector('#product-create-payment-from-receipt-btn');
+  if (createButton) {
+    createButton.style.display = 'none';
+  }
 
   try {
     // Поиск платежей через API (без фильтра по направлению, чтобы найти все)
@@ -1876,7 +2351,7 @@ async function searchPayments(query, productId) {
     const paymentsWithLinks = await Promise.all(
       filteredPayments.map(async (payment) => {
         try {
-          const linkResponse = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(payment.id)}/link-product`);
+          const linkResponse = await fetch(`${API_BASE}/payments/${encodeURIComponent(payment.id)}/link-product`);
           if (linkResponse.ok) {
             const linkPayload = await linkResponse.json();
             if (linkPayload.success && linkPayload.data) {
@@ -1896,32 +2371,37 @@ async function searchPayments(query, productId) {
     productPaymentSearchState.searchResults = paymentsWithLinks;
     productPaymentSearchState.isLoading = false;
 
-    // Обновляем отображение
-    const currentHTML = elements.linkedPaymentsContainer.innerHTML;
-    const searchPanelMatch = currentHTML.match(/<div class="payment-search-panel[^>]*>[\s\S]*?<\/div>/);
-    const searchPanelHTML = searchPanelMatch ? searchPanelMatch[0] : renderPaymentSearchPanel(productId);
+    // Обновляем только результаты поиска, сохраняя панель поиска
+    const resultsContainer = elements.linkedPaymentsContainer.querySelector('.payment-search-results');
+    if (resultsContainer) {
+      resultsContainer.outerHTML = renderPaymentSearchResults();
+    } else {
+      // Если контейнера результатов еще нет, создаем его
+      const searchPanel = elements.linkedPaymentsContainer.querySelector('.payment-search-panel');
+      if (searchPanel) {
+        searchPanel.insertAdjacentHTML('afterend', renderPaymentSearchResults());
+      }
+    }
+
+    // Показываем/скрываем кнопку "Создать платеж из чека" в зависимости от результатов
+    const createButton = elements.linkedPaymentsContainer.querySelector('#product-create-payment-from-receipt-btn');
+    if (createButton) {
+      const hasResults = paymentsWithLinks.length > 0;
+      createButton.style.display = hasResults ? 'none' : '';
+    }
     
-    // Получаем HTML связанных платежей
-    const linkedPayments = productDetail?.linkedPayments || {};
-    const incoming = linkedPayments?.incoming || [];
-    const outgoing = linkedPayments?.outgoing || [];
-    const sections = [];
-    if (incoming.length) {
-      sections.push(createLinkedPaymentsSection('Входящие платежи', incoming, { showHeader: true }));
+    // Обновляем подсказку в панели поиска
+    const searchPanel = elements.linkedPaymentsContainer.querySelector('.payment-search-panel');
+    if (searchPanel) {
+      const hintDivs = searchPanel.querySelectorAll('.payment-search-hint');
+      const hintDiv = Array.from(hintDivs).find(div => div.textContent.includes('Поиск работает'));
+      if (hintDiv) {
+        const hasResults = paymentsWithLinks.length > 0;
+        hintDiv.innerHTML = hasResults 
+          ? 'Поиск работает по описанию платежа, контрагенту, сумме и ID'
+          : 'Поиск работает по описанию платежа, контрагенту, сумме и ID. Если платежа нет в базе (оплата другой картой), можно создать его на основе чека.';
+      }
     }
-    if (outgoing.length) {
-      sections.push(createLinkedPaymentsSection('Исходящие платежи', outgoing, { showHeader: false }));
-    }
-
-    elements.linkedPaymentsContainer.innerHTML = `
-      ${searchPanelHTML}
-      ${renderPaymentSearchResults()}
-      ${incoming.length === 0 && outgoing.length === 0 ? '<div class="placeholder">Связанных платежей пока нет</div>' : ''}
-      ${sections.join('')}
-    `;
-
-    // Переустанавливаем обработчики
-    setupPaymentSearchHandlers(productId);
 
   } catch (error) {
     productPaymentSearchState.isLoading = false;
@@ -1940,10 +2420,16 @@ async function linkPaymentToProduct(paymentId, productId, button) {
   try {
     setButtonLoading(button, true, 'Связываю...');
     
-    const response = await fetch(`${API_BASE}/api/payments/${encodeURIComponent(paymentId)}/link-product`, {
+    // Убеждаемся, что productId - это число
+    const numericProductId = Number(productId);
+    if (!Number.isInteger(numericProductId)) {
+      throw new Error('Некорректный идентификатор продукта');
+    }
+    
+    const response = await fetch(`${API_BASE}/payments/${encodeURIComponent(paymentId)}/link-product`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id: productId })
+      body: JSON.stringify({ productId: numericProductId })
     });
 
     const payload = await response.json();
@@ -1952,10 +2438,16 @@ async function linkPaymentToProduct(paymentId, productId, button) {
       throw new Error(payload?.error || payload?.message || 'Не удалось связать платеж');
     }
 
-    showAlert('success', `Платеж #${paymentId} успешно связан с продуктом`);
+    // Проверяем, был ли это пересвязывание или новая связь, и обновляем состояние
+    const payment = productPaymentSearchState.searchResults.find(p => String(p.id) === String(paymentId));
+    const wasRelinked = payment && payment.linked_product_id && payment.linked_product_id !== productId;
+    
+    const successMessage = wasRelinked 
+      ? `Платеж #${paymentId} успешно пересвязан с продуктом`
+      : `Платеж #${paymentId} успешно связан с продуктом`;
+    showAlert('success', successMessage);
     
     // Обновляем состояние
-    const payment = productPaymentSearchState.searchResults.find(p => String(p.id) === String(paymentId));
     if (payment) {
       payment.linked_product_id = productId;
     }
@@ -1970,3 +2462,4 @@ async function linkPaymentToProduct(paymentId, productId, button) {
     setButtonLoading(button, false, '🔗 Связать');
   }
 }
+
