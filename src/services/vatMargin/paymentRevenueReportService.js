@@ -588,15 +588,14 @@ class PaymentRevenueReportService {
         productId = proformaInfo.product.id || null;
       }
 
-      // CRITICAL: Deduplicate products by productId
-      // If we have a productId, check if there's already a group with this ID
-      // This prevents the same product from appearing multiple times with different keys
+      // CRITICAL: Deduplicate products by productId BEFORE creating/accessing the group
+      // This must happen AFTER all productId determination logic but BEFORE productMap.has() check
       if (productId !== null && productId !== undefined && productId !== '') {
-        // Check if there's already a group with this productId
+        // First, check if there's already a group with this productId (by iterating through all entries)
+        let foundExistingKey = null;
         for (const [existingKey, existingProduct] of productMap.entries()) {
           if (existingProduct.product_id === productId) {
-            // Use the existing key to merge with the existing group
-            productKey = existingKey;
+            foundExistingKey = existingKey;
             // Use the existing product name to maintain consistency
             if (existingProduct.name && existingProduct.name !== 'Без названия') {
               productName = existingProduct.name;
@@ -604,8 +603,13 @@ class PaymentRevenueReportService {
             break;
           }
         }
-        // If we have productId but no existing group, ensure we use id:${productId} format
-        if (productKey === 'unmatched' || (!productKey.startsWith('id:') && productId)) {
+        
+        // If we found an existing group with this productId, use its key
+        if (foundExistingKey) {
+          productKey = foundExistingKey;
+        } else {
+          // If no existing group found, ensure we use id:${productId} format
+          // This ensures all products with the same ID use the same key
           productKey = `id:${productId}`;
         }
       } else if (productKey !== 'unmatched' && productName !== 'Без привязки') {
@@ -614,14 +618,16 @@ class PaymentRevenueReportService {
         if (normalizedName && normalizedName !== 'без названия') {
           for (const [existingKey, existingProduct] of productMap.entries()) {
             const existingNormalizedName = normalizeProductKey(existingProduct.name);
-            if (existingNormalizedName === normalizedName && existingProduct.product_id) {
-              // Merge with existing product that has the same name and has an ID
-              productKey = existingKey;
-              productId = existingProduct.product_id;
-              if (existingProduct.name && existingProduct.name !== 'Без названия') {
-                productName = existingProduct.name;
+            if (existingNormalizedName === normalizedName) {
+              // If existing product has an ID, use it and merge
+              if (existingProduct.product_id) {
+                productKey = existingKey;
+                productId = existingProduct.product_id;
+                if (existingProduct.name && existingProduct.name !== 'Без названия') {
+                  productName = existingProduct.name;
+                }
+                break;
               }
-              break;
             }
           }
         }
@@ -641,6 +647,7 @@ class PaymentRevenueReportService {
         return 'product';
       };
 
+      // Now check if group exists (after deduplication logic)
       if (!productMap.has(productKey)) {
         productMap.set(productKey, {
           key: productKey,
