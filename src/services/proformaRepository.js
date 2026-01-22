@@ -490,8 +490,7 @@ class ProformaRepository {
         message: entry.message || null,
         deleted_by: entry.deletedBy || 'crm-delete-trigger',
         proforma_number: snapshot.proformaNumber || snapshot.fullnumber || null,
-        buyer_name: buyerSnapshot.name || snapshot.buyerName || null,
-        buyer_email: buyerSnapshot.email || snapshot.buyerEmail || null,
+        // buyer_name, buyer_email removed - columns don't exist in table schema
         buyer_country: buyerSnapshot.country || snapshot.buyerCountry || null,
         buyer_city: buyerSnapshot.city || snapshot.buyerCity || null,
         currency: snapshot.currency || null,
