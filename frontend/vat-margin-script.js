@@ -1547,15 +1547,15 @@ function renderPaymentReportSummary(summary) {
       <span class="summary-value">${(summary.products_count || 0).toLocaleString('ru-RU')}</span>
     </div>
     <div class="summary-card">
-      <span class="summary-label">Всего (PLN)</span>
+      <span class="summary-label">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto</span></span>
       <span class="summary-value">${formatCurrency(summary.total_pln || 0, 'PLN')}</span>
     </div>
     <div class="summary-card">
-      <span class="summary-label">Расходы</span>
+      <span class="summary-label">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu</span></span>
       <span class="summary-value">${formatCurrency(approxExpenses, 'PLN')}</span>
     </div>
     <div class="summary-card">
-      <span class="summary-label">Маржа</span>
+      <span class="summary-label">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto</span></span>
       <span class="summary-value">${formatCurrency(approxMargin, 'PLN')}</span>
     </div>
     <div class="summary-card">
@@ -1737,15 +1737,15 @@ function renderPaymentReport(groups) {
           </div>
         <div class="product-summary">
           <div class="metric">
-            <span class="metric-label">Всего приходов</span>
+            <span class="metric-label">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto (PLN)</span></span>
             <span class="metric-value">${plnTotal}</span>
           </div>
           <div class="metric">
-            <span class="metric-label">Расходы</span>
+            <span class="metric-label">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu (PLN)</span></span>
             <span class="metric-value">${approxExpenses}</span>
           </div>
           <div class="metric">
-            <span class="metric-label">Маржа</span>
+            <span class="metric-label">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto (PLN)</span></span>
             <span class="metric-value">${approxMargin}</span>
           </div>
           <div class="currency-breakdown">${currencyTotals}</div>
