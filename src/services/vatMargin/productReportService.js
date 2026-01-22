@@ -580,8 +580,17 @@ class ProductReportService {
         entry.eventKey = entry.eventKey || event.event_key || null;
       }
 
-      entry.totals.grossPln = Number(event.gross_revenue_pln || 0);
-      entry.totals.paidPln = Number(event.gross_revenue_pln || 0);
+      // Don't overwrite existing grossPln from proformas - only set if entry is new (grossPln = 0)
+      // This preserves proforma totals when Stripe events are added to existing products
+      const eventGrossPln = Number(event.gross_revenue_pln || 0);
+      if (entry.totals.grossPln === 0 || !existingEntry) {
+        entry.totals.grossPln = eventGrossPln;
+        entry.totals.paidPln = eventGrossPln;
+      } else {
+        // If entry already has proforma data, add Stripe event amount to it
+        entry.totals.grossPln += eventGrossPln;
+        entry.totals.paidPln += eventGrossPln;
+      }
       entry.totals.originalTotals = {
         [event.currency || 'PLN']: Number(event.gross_revenue || 0)
       };
@@ -838,17 +847,36 @@ class ProductReportService {
         mapKey = this.resolveStripeMapKey(payment);
         if (!mapKey) return;
 
-        if (!products.has(mapKey)) {
+        // Before creating new entry, check if we can match by productId
+        // This handles cases where campProductId doesn't match but we have the same productId
+        // Try both campProductId and crmProductId to find existing entry from proformas
+        if (payment.campProductId) {
+          const checkMapKey = `id:${Number(payment.campProductId)}`;
+          if (products.has(checkMapKey)) {
+            mapKey = checkMapKey;
+            matchedEntry = products.get(mapKey);
+          }
+        }
+        if (!matchedEntry && payment.crmProductId) {
+          const checkMapKey = `id:${Number(payment.crmProductId)}`;
+          if (products.has(checkMapKey)) {
+            mapKey = checkMapKey;
+            matchedEntry = products.get(mapKey);
+          }
+        }
+
+        // Only create new entry if we really can't find an existing one
+        if (!matchedEntry && !products.has(mapKey)) {
           const entry = createEmptyEntry({
             mapKey,
-            productId: payment.campProductId || null,
+            productId: payment.campProductId || payment.crmProductId || null,
             productName: payment.productName || payment.crmProductId || 'Без названия',
             productKey: normalizeProductName(payment.productName || payment.crmProductId || ''),
             slug: this.buildStripeSlug(payment)
           });
           products.set(mapKey, entry);
           matchedEntry = entry;
-        } else {
+        } else if (!matchedEntry) {
           matchedEntry = products.get(mapKey);
         }
       } else {
