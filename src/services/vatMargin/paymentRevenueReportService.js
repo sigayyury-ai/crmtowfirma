@@ -540,16 +540,25 @@ class PaymentRevenueReportService {
       }
 
       if (productKey === 'unmatched' && payment.source === 'stripe_event') {
-        let catalogEntry = resolveCatalogEntryById(payment.stripe_crm_product_id);
-        if (!catalogEntry) {
-          const candidates = [
-            payment.stripe_product_name,
-            payment.stripe_event_key
-          ];
-          for (const candidate of candidates) {
-            catalogEntry = resolveCatalogEntryByName(candidate);
-            if (catalogEntry) break;
-          }
+        // Priority 1: Check payment.product_id (set in loadStripeEventItems from catalog)
+        let catalogEntry = null;
+        if (payment.product_id) {
+          catalogEntry = resolveCatalogEntryById(payment.product_id);
+        }
+        
+        // Priority 2: Check payment.stripe_crm_product_id (legacy field)
+        if (!catalogEntry && payment.stripe_crm_product_id) {
+          catalogEntry = resolveCatalogEntryById(payment.stripe_crm_product_id);
+        }
+        
+        // Priority 3: Try to find by event_key (e.g., 'NY2026' -> 'ny2026')
+        if (!catalogEntry && payment.stripe_event_key) {
+          catalogEntry = resolveCatalogEntryByName(payment.stripe_event_key);
+        }
+        
+        // Priority 4: Try to find by stripe_product_name as fallback
+        if (!catalogEntry && payment.stripe_product_name) {
+          catalogEntry = resolveCatalogEntryByName(payment.stripe_product_name);
         }
 
         if (catalogEntry) {
@@ -1060,13 +1069,26 @@ class PaymentRevenueReportService {
 
     return (data || [])
       .map((item) => {
-        const normalizedLabel = normalizeProductKey(item.event_label || item.event_key);
+        // Priority 1: Check if item has product_id (if field exists in table)
         let catalogEntry = null;
-        if (normalizedLabel && catalogByName.has(normalizedLabel)) {
-          catalogEntry = catalogByName.get(normalizedLabel);
-        }
-        if (!catalogEntry && item.product_id && catalogById.has(String(item.product_id))) {
+        if (item.product_id && catalogById.has(String(item.product_id))) {
           catalogEntry = catalogById.get(String(item.product_id));
+        }
+        
+        // Priority 2: Try to find by normalized event_key (e.g., 'NY2026' -> 'ny2026')
+        if (!catalogEntry) {
+          const normalizedEventKey = normalizeProductKey(item.event_key);
+          if (normalizedEventKey && catalogByName.has(normalizedEventKey)) {
+            catalogEntry = catalogByName.get(normalizedEventKey);
+          }
+        }
+        
+        // Priority 3: Try to find by normalized event_label as fallback
+        if (!catalogEntry) {
+          const normalizedLabel = normalizeProductKey(item.event_label);
+          if (normalizedLabel && catalogByName.has(normalizedLabel)) {
+            catalogEntry = catalogByName.get(normalizedLabel);
+          }
         }
 
         const resolvedProductId = catalogEntry?.id ?? null;
