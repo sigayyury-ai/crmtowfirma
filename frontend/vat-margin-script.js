@@ -1595,6 +1595,16 @@ function renderPaymentReport(groups) {
     const approxMargin = formatCurrency(totalPln * MARGIN_RATE, 'PLN'); // Маржа = 35% от общей суммы
     const proformaCount = group.totals?.proforma_count || 0;
     const paymentsCount = group.totals?.payments_count || 0;
+    
+    // Формируем ссылку на детальный отчет продукта
+    let productSlug = null;
+    if (group.product_id) {
+      productSlug = String(group.product_id);
+    } else if (group.key) {
+      // Убираем префикс 'id:' или 'key:' из ключа
+      productSlug = group.key.replace(/^(id|key):/, '');
+    }
+    const productDetailUrl = productSlug ? `/vat-margin-product.html?product=${encodeURIComponent(productSlug)}` : null;
 
     // Объединяем entries: если у одного плательщика несколько платежей по одной проформе,
     // добавляем их к одной строке вместо показа отдельными строками
@@ -1741,7 +1751,12 @@ function renderPaymentReport(groups) {
       <div class="product-group">
         <div class="product-group-header">
           <div class="product-title">
-            <div class="product-name">${escapeHtml(group.name || 'Без названия')}</div>
+            ${productDetailUrl 
+              ? `<a href="${productDetailUrl}" class="product-name-link" style="text-decoration: none; color: inherit; cursor: pointer;" title="Открыть детальный отчет по продукту">
+                  <div class="product-name" style="color: #0066cc; text-decoration: underline;">${escapeHtml(group.name || 'Без названия')}</div>
+                </a>`
+              : `<div class="product-name">${escapeHtml(group.name || 'Без названия')}</div>`
+            }
             <div class="product-meta">${proformaCount.toLocaleString('ru-RU')} проф., ${paymentsCount.toLocaleString('ru-RU')} платеж(ей)</div>
           </div>
         <div class="product-summary">
