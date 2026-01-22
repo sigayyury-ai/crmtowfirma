@@ -541,6 +541,7 @@ class PaymentRevenueReportService {
 
       if (productKey === 'unmatched' && payment.source === 'stripe_event') {
         // Priority 1: Check payment.product_id (set in loadStripeEventItems from catalog)
+        // This is the most reliable source
         let catalogEntry = null;
         if (payment.product_id) {
           catalogEntry = resolveCatalogEntryById(payment.product_id);
@@ -551,14 +552,34 @@ class PaymentRevenueReportService {
           catalogEntry = resolveCatalogEntryById(payment.stripe_crm_product_id);
         }
         
-        // Priority 3: Try to find by event_key (e.g., 'NY2026' -> 'ny2026')
+        // Priority 3: Try to find by event_key with strict matching
+        // Only use if product_id was not set (meaning loadStripeEventItems didn't find a match)
         if (!catalogEntry && payment.stripe_event_key) {
-          catalogEntry = resolveCatalogEntryByName(payment.stripe_event_key);
+          const foundEntry = resolveCatalogEntryByName(payment.stripe_event_key);
+          if (foundEntry) {
+            // Double-check: make sure the found product name actually contains the event_key
+            // This prevents false matches (e.g., 'ny2026' matching 'czarna stodola')
+            const eventKeyUpper = payment.stripe_event_key.toUpperCase();
+            const foundNameUpper = (foundEntry.name || '').toUpperCase();
+            if (foundNameUpper.includes(eventKeyUpper) || 
+                normalizeProductKey(foundEntry.name || '') === normalizeProductKey(payment.stripe_event_key)) {
+              catalogEntry = foundEntry;
+            }
+          }
         }
         
-        // Priority 4: Try to find by stripe_product_name as fallback
+        // Priority 4: Try to find by stripe_product_name as fallback (with strict matching)
         if (!catalogEntry && payment.stripe_product_name) {
-          catalogEntry = resolveCatalogEntryByName(payment.stripe_product_name);
+          const foundEntry = resolveCatalogEntryByName(payment.stripe_product_name);
+          if (foundEntry) {
+            // Double-check: make sure the found product name actually contains the stripe_product_name
+            const productNameUpper = payment.stripe_product_name.toUpperCase();
+            const foundNameUpper = (foundEntry.name || '').toUpperCase();
+            if (foundNameUpper.includes(productNameUpper) ||
+                normalizeProductKey(foundEntry.name || '') === normalizeProductKey(payment.stripe_product_name)) {
+              catalogEntry = foundEntry;
+            }
+          }
         }
 
         if (catalogEntry) {
@@ -570,6 +591,8 @@ class PaymentRevenueReportService {
             productKey = `key:${catalogEntry.normalizedName}`;
           }
         } else {
+          // Only create fallback key if we really couldn't find a product
+          // This prevents creating groups with wrong names
           const fallbackName = payment.stripe_product_name || payment.stripe_event_key || 'Stripe Event';
           const normalizedFallback = fallbackName ? normalizeProductKey(fallbackName) : null;
           if (normalizedFallback && normalizedFallback !== 'без названия') {
@@ -1082,19 +1105,33 @@ class PaymentRevenueReportService {
           catalogEntry = catalogById.get(String(item.product_id));
         }
         
-        // Priority 2: Try to find by normalized event_key (e.g., 'NY2026' -> 'ny2026')
-        if (!catalogEntry) {
+        // Priority 2: Try to find by exact event_key match first (e.g., 'NY2026')
+        // This is more reliable than normalized name matching
+        if (!catalogEntry && item.event_key) {
           const normalizedEventKey = normalizeProductKey(item.event_key);
           if (normalizedEventKey && catalogByName.has(normalizedEventKey)) {
-            catalogEntry = catalogByName.get(normalizedEventKey);
+            const foundEntry = catalogByName.get(normalizedEventKey);
+            // Double-check: make sure the found product name actually contains the event_key
+            // This prevents false matches (e.g., 'ny2026' matching 'czarna stodola' if normalized names somehow collide)
+            const foundNameNormalized = normalizeProductKey(foundEntry.name || '');
+            if (foundNameNormalized === normalizedEventKey || 
+                (foundEntry.name && foundEntry.name.toUpperCase().includes(item.event_key.toUpperCase()))) {
+              catalogEntry = foundEntry;
+            }
           }
         }
         
         // Priority 3: Try to find by normalized event_label as fallback
-        if (!catalogEntry) {
+        if (!catalogEntry && item.event_label) {
           const normalizedLabel = normalizeProductKey(item.event_label);
           if (normalizedLabel && catalogByName.has(normalizedLabel)) {
-            catalogEntry = catalogByName.get(normalizedLabel);
+            const foundEntry = catalogByName.get(normalizedLabel);
+            // Double-check: make sure the found product name actually contains the event_label
+            const foundNameNormalized = normalizeProductKey(foundEntry.name || '');
+            if (foundNameNormalized === normalizedLabel ||
+                (foundEntry.name && foundEntry.name.toUpperCase().includes(item.event_label.toUpperCase()))) {
+              catalogEntry = foundEntry;
+            }
           }
         }
 
