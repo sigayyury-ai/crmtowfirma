@@ -525,7 +525,7 @@ class PaymentService {
       });
     }
     
-    const nonInternalRecords = records.filter(r => !isInternalTransfer(r));
+    const nonInternalRecords = records.filter(r => !this.isInternalTransfer(r));
     const expenses = nonInternalRecords.filter(r => r.direction === 'out');
     const income = nonInternalRecords.filter(r => r.direction === 'in');
     

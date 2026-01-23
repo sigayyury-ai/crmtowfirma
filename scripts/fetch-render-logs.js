@@ -12,6 +12,9 @@
  *   --lines N       Количество последних строк логов (по умолчанию: 200)
  *   --service-id ID  ID сервиса Render (переопределяет RENDER_SERVICE_ID из .env)
  *   --output FILE   Сохранить логи в файл
+ *   --start TIME   Начало периода (Render logs --start)
+ *   --end TIME     Конец периода (Render logs --end)
+ *   --text QUERY   Текстовый фильтр (Render logs --text)
  */
 
 require('dotenv').config();
@@ -45,7 +48,10 @@ const options = {
   tail: args.includes('--tail'),
   lines: parseInt(args.find(arg => arg.startsWith('--lines='))?.split('=')[1] || '200'),
   serviceId: args.find(arg => arg.startsWith('--service-id='))?.split('=')[1] || RENDER_SERVICE_ID,
-  output: args.find(arg => arg.startsWith('--output='))?.split('=')[1] || null
+  output: args.find(arg => arg.startsWith('--output='))?.split('=')[1] || null,
+  start: args.find(arg => arg.startsWith('--start='))?.split('=')[1] || null,
+  end: args.find(arg => arg.startsWith('--end='))?.split('=')[1] || null,
+  text: args.find(arg => arg.startsWith('--text='))?.split('=')[1] || null
 };
 
 // Проверка обязательных параметров
@@ -120,7 +126,7 @@ function findRenderCli() {
 /**
  * Получить логи сервиса через render CLI
  */
-async function fetchLogs(serviceId, lines = 200) {
+async function fetchLogs(serviceId, lines = 200, { start, end, text } = {}) {
   const cliPath = findRenderCli();
   if (!cliPath) {
     throw new Error('render CLI не найден. Установите его: pip3 install render-cli');
@@ -155,9 +161,29 @@ async function fetchLogs(serviceId, lines = 200) {
       throw new Error('RENDER_TOKEN не найден или слишком короткий. Проверьте .env файл.');
     }
     
+    const logArgs = [
+      'logs',
+      '--resources',
+      serviceId,
+      '--limit',
+      String(lines),
+      '--output',
+      'text'
+    ];
+
+    if (start) {
+      logArgs.push('--start', start);
+    }
+    if (end) {
+      logArgs.push('--end', end);
+    }
+    if (text) {
+      logArgs.push('--text', text);
+    }
+
     const result = execSync(
-      `"${cliPath}" logs --resources ${serviceId} --limit ${lines} --output text`,
-      { 
+      `"${cliPath}" ${logArgs.map(arg => `"${arg.replace(/"/g, '\\"')}"`).join(' ')}`,
+      {
         encoding: 'utf8',
         maxBuffer: 10 * 1024 * 1024, // 10MB
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -291,7 +317,11 @@ async function main() {
     if (options.tail) {
       await streamLogs(options.serviceId);
     } else {
-      const logs = await fetchLogs(options.serviceId, options.lines);
+      const logs = await fetchLogs(options.serviceId, options.lines, {
+        start: options.start,
+        end: options.end,
+        text: options.text
+      });
       formatAndOutputLogs(logs, options.output);
     }
   } catch (error) {
@@ -340,6 +370,9 @@ if (args.includes('--help') || args.includes('-h')) {
   --lines=N           Количество последних строк логов (по умолчанию: 200)
   --service-id=ID      ID сервиса Render (переопределяет RENDER_SERVICE_ID из .env)
   --output=FILE        Сохранить логи в файл
+  --start=TIME         Начало периода (Render logs --start)
+  --end=TIME           Конец периода (Render logs --end)
+  --text=QUERY         Текстовый фильтр (Render logs --text)
   --help, -h          Показать эту справку
 
 Переменные окружения (.env):
@@ -350,6 +383,8 @@ if (args.includes('--help') || args.includes('-h')) {
   node scripts/fetch-render-logs.js
   node scripts/fetch-render-logs.js --tail
   node scripts/fetch-render-logs.js --lines=500
+  node scripts/fetch-render-logs.js --start=2026-01-22T00:00:00Z --end=2026-01-22T23:59:59Z
+  node scripts/fetch-render-logs.js --start=2026-01-22T00:00:00Z --end=2026-01-22T23:59:59Z --text=csv
   node scripts/fetch-render-logs.js --output=logs/render-logs.txt
 `);
   process.exit(0);
