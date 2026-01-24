@@ -446,7 +446,7 @@ class PaymentRevenueReportService {
       }
 
       let productKey = 'unmatched';
-      let productName = 'Без привязки';
+      let productName = 'Без категории';
       let productId = null;
 
       if (productKey === 'unmatched' && payment.product_id) {
@@ -635,7 +635,7 @@ class PaymentRevenueReportService {
           // This ensures all products with the same ID use the same key
           productKey = `id:${productId}`;
         }
-      } else if (productKey !== 'unmatched' && productName !== 'Без привязки') {
+      } else if (productKey !== 'unmatched' && productName !== 'Без категории') {
         // If we don't have productId but have a productName, check if there's already a group with the same normalized name
         const normalizedName = normalizeProductKey(productName);
         if (normalizedName && normalizedName !== 'без названия') {

@@ -5,6 +5,7 @@ const ProformaRepository = require('../proformaRepository');
 const { normalizeName, normalizeWhitespace } = require('../../utils/normalize');
 const ExpenseCategoryMappingService = require('../pnl/expenseCategoryMappingService');
 const CrmStatusAutomationService = require('../crm/statusAutomationService');
+const paymentBackupService = require('./paymentBackupService');
 
 const AMOUNT_TOLERANCE = 5; // PLN/EUR tolerance
 const MANUAL_STATUS_APPROVED = 'approved';
@@ -562,6 +563,27 @@ class PaymentService {
     const importId = insertImportResult.data?.id || null;
     const enrichedPayments = [];
 
+    // БЭКАП: Создаем snapshot существующих платежей перед импортом
+    // Бэкап автоматически удаляется через 24 часа
+    const allOperationDates = records.map(r => r.operation_date).filter(Boolean);
+    let backupInfo = null;
+    try {
+      backupInfo = await paymentBackupService.createPreImportBackup(importId, allOperationDates);
+      if (backupInfo) {
+        logger.info('PRE-IMPORT BACKUP CREATED', {
+          backupId: backupInfo.id,
+          paymentsCount: backupInfo.payments_count,
+          expiresAt: backupInfo.expires_at,
+          importId,
+          note: 'Backup will be auto-deleted after 24 hours. Use backupService.restoreFromBackup(backupId) to restore if needed.'
+        });
+      }
+    } catch (backupError) {
+      logger.warn('Failed to create pre-import backup, continuing with import', { 
+        error: backupError.message 
+      });
+    }
+
     // Process expenses (direction='out') - categorize
     // For now, use existing ingestExpensesCsv logic but filter only expenses
     let expenseStats = { processed: 0, categorized: 0, uncategorized: 0 };
@@ -586,15 +608,17 @@ class PaymentService {
 
     // Save all payments to database
     // ВАЖНО: Не восстанавливаем удаленные платежи при повторной загрузке CSV
+    // ЗАЩИТА: Проверяем дубли по дате+сумме+direction если hash не совпал (банк может менять описания)
     if (enrichedPayments.length > 0) {
       // Проверяем, какие платежи уже существуют и были ли они удалены
       const allOperationHashes = enrichedPayments.map(p => p.operation_hash).filter(Boolean);
       const deletedPaymentsMap = new Map();
+      const existingByDateAmountMap = new Map(); // Дополнительная проверка по дате+сумме
       
       if (allOperationHashes.length > 0) {
         const { data: existingPayments, error: fetchError } = await supabase
           .from('payments')
-          .select('operation_hash, deleted_at')
+          .select('id, operation_hash, deleted_at, operation_date, amount, direction, expense_category_id, income_category_id, proforma_id, match_status')
           .in('operation_hash', allOperationHashes);
         
         if (!fetchError && existingPayments) {
@@ -607,14 +631,63 @@ class PaymentService {
         }
       }
       
-      // Фильтруем платежи, которые были удалены - не восстанавливаем их
+      // ЗАЩИТА: Получаем ВСЕ существующие платежи по дате+сумме+direction для проверки дублей
+      // Это защищает от случая когда банк меняет описание (и hash меняется)
+      const uniqueDates = [...new Set(enrichedPayments.map(p => p.operation_date).filter(Boolean))];
+      if (uniqueDates.length > 0) {
+        const { data: existingByDate, error: dateError } = await supabase
+          .from('payments')
+          .select('id, operation_date, amount, direction, expense_category_id, income_category_id, proforma_id, match_status, deleted_at')
+          .in('operation_date', uniqueDates)
+          .is('deleted_at', null);
+        
+        if (!dateError && existingByDate) {
+          existingByDate.forEach(p => {
+            const key = `${p.operation_date}_${p.amount}_${p.direction}`;
+            if (!existingByDateAmountMap.has(key)) {
+              existingByDateAmountMap.set(key, p);
+            }
+          });
+          logger.info(`Built date+amount lookup with ${existingByDateAmountMap.size} entries for duplicate protection`);
+        }
+      }
+      
+      // Фильтруем платежи, которые были удалены или являются дублями
       const paymentsToUpsert = enrichedPayments.filter(p => {
         if (!p.operation_hash) return true; // Если нет hash, создаем новый
+        
+        // Проверка 1: был ли удален по hash
         const wasDeleted = deletedPaymentsMap.get(p.operation_hash);
         if (wasDeleted) {
           logger.info(`Skipping deleted payment with operation_hash: ${p.operation_hash?.substring(0, 8)}...`);
           return false; // Не восстанавливаем удаленные платежи
         }
+        
+        // Проверка 2: есть ли дубль по дате+сумме+direction (защита от изменения описания банком)
+        const dateAmountKey = `${p.operation_date}_${p.amount}_${p.direction}`;
+        const existingByDateAmount = existingByDateAmountMap.get(dateAmountKey);
+        if (existingByDateAmount && !deletedPaymentsMap.has(p.operation_hash)) {
+          // Есть существующий платеж с такой же датой+суммой+direction
+          // Сохраняем категории и связи из существующего
+          if (existingByDateAmount.expense_category_id && !p.expense_category_id) {
+            p.expense_category_id = existingByDateAmount.expense_category_id;
+            logger.debug(`Preserved expense_category_id ${existingByDateAmount.expense_category_id} from existing payment`);
+          }
+          if (existingByDateAmount.income_category_id && !p.income_category_id) {
+            p.income_category_id = existingByDateAmount.income_category_id;
+          }
+          if (existingByDateAmount.proforma_id && !p.proforma_id) {
+            p.proforma_id = existingByDateAmount.proforma_id;
+            p.match_status = existingByDateAmount.match_status || p.match_status;
+            logger.debug(`Preserved proforma_id ${existingByDateAmount.proforma_id} from existing payment`);
+          }
+          
+          // Если hash разный но дата+сумма совпадает - это дубль с измененным описанием
+          // Пропускаем его, чтобы не создавать дубликат
+          logger.info(`Skipping potential duplicate (same date+amount+direction): ${p.operation_date} ${p.amount} ${p.direction}`);
+          return false;
+        }
+        
         return true;
       });
 
@@ -1198,20 +1271,21 @@ class PaymentService {
 
     // Save expenses to database
     // ВАЖНО: Не восстанавливаем удаленные платежи при повторной загрузке CSV
+    // ЗАЩИТА: Проверяем дубли по дате+сумме если hash не совпал (банк может менять описания)
     logger.info('Upserting expenses to database', {
       totalToUpsert: enriched.length,
       sampleHashes: enriched.slice(0, 5).map(e => e.operation_hash?.substring(0, 8) + '...')
     });
     
     // Проверяем, какие платежи уже существуют и были ли они удалены
-    // Используем другое имя переменной, чтобы избежать конфликта с operationHashes выше
     const enrichedOperationHashes = enriched.map(e => e.operation_hash).filter(Boolean);
     const deletedPaymentsMap = new Map();
+    const existingByDateAmountMap = new Map(); // Дополнительная проверка по дате+сумме
     
     if (enrichedOperationHashes.length > 0) {
       const { data: existingPayments, error: fetchError } = await supabase
         .from('payments')
-        .select('operation_hash, deleted_at')
+        .select('id, operation_hash, deleted_at, operation_date, amount, expense_category_id')
         .in('operation_hash', enrichedOperationHashes);
       
       if (!fetchError && existingPayments) {
@@ -1224,16 +1298,61 @@ class PaymentService {
       }
     }
     
-    // Фильтруем платежи, которые были удалены - не восстанавливаем их
+    // ЗАЩИТА: Получаем существующие расходы по дате+сумме для проверки дублей
+    const uniqueDates = [...new Set(enriched.map(e => e.operation_date).filter(Boolean))];
+    if (uniqueDates.length > 0) {
+      const { data: existingByDate, error: dateError } = await supabase
+        .from('payments')
+        .select('id, operation_date, amount, expense_category_id, deleted_at')
+        .eq('direction', 'out')
+        .in('operation_date', uniqueDates)
+        .is('deleted_at', null);
+      
+      if (!dateError && existingByDate) {
+        existingByDate.forEach(p => {
+          const key = `${p.operation_date}_${p.amount}`;
+          if (!existingByDateAmountMap.has(key)) {
+            existingByDateAmountMap.set(key, p);
+          }
+        });
+        logger.info(`Built date+amount lookup with ${existingByDateAmountMap.size} entries for expense duplicate protection`);
+      }
+    }
+    
+    // Фильтруем платежи, которые были удалены или являются дублями
+    let skippedDuplicates = 0;
     const expensesToUpsert = enriched.filter(e => {
       if (!e.operation_hash) return true; // Если нет hash, создаем новый
+      
+      // Проверка 1: был ли удален по hash
       const wasDeleted = deletedPaymentsMap.get(e.operation_hash);
       if (wasDeleted) {
         logger.info(`Skipping deleted expense payment with operation_hash: ${e.operation_hash?.substring(0, 8)}...`);
         return false; // Не восстанавливаем удаленные платежи
       }
+      
+      // Проверка 2: есть ли дубль по дате+сумме (защита от изменения описания банком)
+      const dateAmountKey = `${e.operation_date}_${e.amount}`;
+      const existingByDateAmount = existingByDateAmountMap.get(dateAmountKey);
+      if (existingByDateAmount && !deletedPaymentsMap.has(e.operation_hash)) {
+        // Сохраняем категорию из существующего платежа
+        if (existingByDateAmount.expense_category_id && !e.expense_category_id) {
+          e.expense_category_id = existingByDateAmount.expense_category_id;
+          logger.debug(`Preserved expense_category_id ${existingByDateAmount.expense_category_id} from existing payment`);
+        }
+        
+        // Пропускаем дубль
+        skippedDuplicates++;
+        logger.debug(`Skipping expense duplicate (same date+amount): ${e.operation_date} ${e.amount}`);
+        return false;
+      }
+      
       return true;
     });
+    
+    if (skippedDuplicates > 0) {
+      logger.info(`Skipped ${skippedDuplicates} expense duplicates (same date+amount, different hash)`);
+    }
     
     if (expensesToUpsert.length === 0) {
       logger.info('All expense payments were deleted, skipping upsert');

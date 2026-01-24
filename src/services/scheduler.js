@@ -9,6 +9,7 @@ const EventsCabinetMonitorService = require('./stripe/eventsCabinetMonitorServic
 const GoogleMeetReminderService = require('./googleCalendar/googleMeetReminderService');
 const MqlSyncService = require('./analytics/mqlSyncService');
 const StripePaymentTestRunner = require('../../tests/integration/stripe-payment/testRunner');
+const paymentBackupService = require('./payments/paymentBackupService');
 const logger = require('../utils/logger');
 const { getMonitor } = require('./pipedriveRateLimitMonitor');
 const PipedriveClient = require('./pipedrive');
@@ -26,6 +27,7 @@ const GOOGLE_MEET_REMINDER_PROCESS_CRON_EXPRESSION = '*/5 * * * *'; // Кажд�
 const MQL_SYNC_CRON_EXPRESSION = '0 10 * * 1'; // Еженедельно в понедельник в 10:00 утра для обновления MQL аналитики
 const STRIPE_PAYMENT_TESTS_CRON_EXPRESSION = '0 3 * * *'; // Ежедневно в 3:00 ночи для запуска автотестов Stripe платежей
 const EVENTS_CABINET_MONITOR_CRON_EXPRESSION = '*/30 * * * *'; // Каждые 30 минут для проверки сессий в Events кабинете
+const PAYMENT_BACKUP_CLEANUP_CRON_EXPRESSION = '0 4 * * *'; // Ежедневно в 4:00 ночи для очистки старых бэкапов
 const HISTORY_LIMIT = 48; // >= 24 записей (48 = ~2 суток)
 const RETRY_DELAY_MINUTES = 15;
 
@@ -398,6 +400,29 @@ class SchedulerService {
       timezone: this.timezone
     });
 
+    // Cron для очистки старых бэкапов платежей (ежедневно в 4:00 ночи)
+    logger.info('Configuring daily cron job for payment backup cleanup', {
+      cronExpression: PAYMENT_BACKUP_CLEANUP_CRON_EXPRESSION,
+      timezone: this.timezone,
+      note: 'Cleans up payment backups older than 24 hours'
+    });
+    this.paymentBackupCleanupCronJob = cron.schedule(
+      PAYMENT_BACKUP_CLEANUP_CRON_EXPRESSION,
+      () => {
+        this.runPaymentBackupCleanup({ trigger: 'cron_payment_backup_cleanup' }).catch((error) => {
+          logger.error('Unexpected error in payment backup cleanup:', error);
+        });
+      },
+      {
+        scheduled: true,
+        timezone: this.timezone
+      }
+    );
+    logger.info('Payment backup cleanup cron job registered successfully', {
+      cronExpression: PAYMENT_BACKUP_CLEANUP_CRON_EXPRESSION,
+      timezone: this.timezone
+    });
+
     // Немедленный запуск при старте, чтобы компенсировать возможные пропуски
     setImmediate(() => {
       this.runCycle({ trigger: 'startup', retryAttempt: 0 }).catch((error) => {
@@ -551,6 +576,27 @@ class SchedulerService {
       return result;
     } catch (error) {
       logger.error('Events Cabinet monitor failed', {
+        trigger,
+        error: error.message
+      });
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  async runPaymentBackupCleanup({ trigger = 'manual' } = {}) {
+    try {
+      logger.info('Payment backup cleanup started', { trigger });
+      const result = await paymentBackupService.cleanupExpiredBackups();
+      logger.info('Payment backup cleanup finished', {
+        trigger,
+        deletedCount: result.deleted || 0
+      });
+      return result;
+    } catch (error) {
+      logger.error('Payment backup cleanup failed', {
         trigger,
         error: error.message
       });
