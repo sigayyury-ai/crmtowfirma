@@ -39,3 +39,4 @@ ON public.stripe_reminder_logs(sent_at);
 CREATE INDEX IF NOT EXISTS idx_stripe_reminder_logs_session_id 
 ON public.stripe_reminder_logs(session_id);
 
+

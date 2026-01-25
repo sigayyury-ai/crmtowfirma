@@ -1,0 +1,84 @@
+{
+  "deal_id": 1112,
+  "exported_at": "2026-01-12T15:10:28.635Z",
+  "payments_count": 4,
+  "payments": [
+    {
+      "id": "ce191c24-e2f3-4e1b-8aec-98843418eb26",
+      "session_id": "cs_live_a1MBd3q0fzbkaYhNMJZtmMjJb59j3Ym1gh13B83WOfGjVFnX7X3WndU4ET",
+      "payment_type": "rest",
+      "payment_status": "paid",
+      "currency": "EUR",
+      "amount": null,
+      "original_amount": 191.25,
+      "amount_pln": 805.24,
+      "payment_schedule": "50/50",
+      "created_at": "2026-01-07T05:33:23+00:00",
+      "processed_at": "2026-01-07T09:01:28.496+00:00",
+      "status": "processed",
+      "deal_id": "1112",
+      "product_id": "2ab5ec95-ec6c-4905-88c7-4086a523ebc4",
+      "invoice_number": null
+    },
+    {
+      "id": "4cc55212-fb8c-4809-8ed6-43bccc90cf32",
+      "session_id": "cs_live_a11It5xudp0BqogOQAK7xekv4nzoxNAZOk2Ggzmux1WP0TsYJnO1WWGb2h",
+      "payment_type": "single",
+      "payment_status": "unpaid",
+      "currency": "EUR",
+      "amount": null,
+      "original_amount": 382.5,
+      "amount_pln": 1610.31,
+      "payment_schedule": "100%",
+      "created_at": "2026-01-06T08:00:44+00:00",
+      "processed_at": "2026-01-08T07:40:10.491+00:00",
+      "status": "pending_metadata",
+      "deal_id": "1112",
+      "product_id": null,
+      "invoice_number": null
+    },
+    {
+      "id": "4e7dbd08-1e36-44a1-83a9-408c74fc9642",
+      "session_id": "cs_live_a1pzBkXFo9jLgZ7WqD6h0ZApx6lBzkwOoNFiMzZU3VBmknF9sxp6m8drnv",
+      "payment_type": "rest",
+      "payment_status": "unpaid",
+      "currency": "EUR",
+      "amount": null,
+      "original_amount": 191.25,
+      "amount_pln": 805.16,
+      "payment_schedule": "50/50",
+      "created_at": "2026-01-06T08:00:35+00:00",
+      "processed_at": "2026-01-08T07:40:11.103+00:00",
+      "status": "pending_metadata",
+      "deal_id": "1112",
+      "product_id": null,
+      "invoice_number": null
+    },
+    {
+      "id": "d6862a61-7df8-4db5-b219-3513e8d23018",
+      "session_id": "cs_live_a1AThNwZv42Uzwg8O0jzMZS6BfISXpi2r0GRDA9AIxXA5ppinBFyYpphGa",
+      "payment_type": "deposit",
+      "payment_status": "paid",
+      "currency": "EUR",
+      "amount": null,
+      "original_amount": 191.25,
+      "amount_pln": 806.22,
+      "payment_schedule": "50/50",
+      "created_at": "2025-12-26T19:32:57+00:00",
+      "processed_at": "2025-12-26T21:13:37.686+00:00",
+      "status": "processed",
+      "deal_id": "1112",
+      "product_id": "2ab5ec95-ec6c-4905-88c7-4086a523ebc4",
+      "invoice_number": null
+    }
+  ],
+  "summary": {
+    "totals_by_currency_amount": {},
+    "totals_by_currency_original_amount": {
+      "EUR": 382.5
+    },
+    "totals_pln_by_currency": {
+      "EUR": 1611.46
+    }
+  }
+}

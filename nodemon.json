@@ -1,0 +1,19 @@
+{
+  "watch": [
+    "src",
+    "frontend"
+  ],
+  "ext": "js,html,css,json",
+  "ignore": [
+    "node_modules",
+    "tests",
+    "scripts",
+    "tmp",
+    "*.test.js",
+    "*.spec.js"
+  ],
+  "exec": "node src/index.js",
+  "env": {
+    "NODE_ENV": "development"
+  }
+}

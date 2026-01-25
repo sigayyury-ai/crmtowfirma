@@ -6894,7 +6894,7 @@ router.get('/facebook-ads/import-batches', async (req, res) => {
 
 /**
  * POST /api/receipts/upload
- * Upload receipt document (HEIC/JPG/PDF)
+ * Upload receipt document (JPG/PNG/HEIC/PDF)
  */
 router.post('/receipts/upload', upload.single('file'), async (req, res) => {
   try {
@@ -6914,6 +6914,7 @@ router.post('/receipts/upload', upload.single('file'), async (req, res) => {
     const allowedTypes = [
       'image/jpeg',
       'image/jpg',
+      'image/png',
       'image/heic',
       'image/heif',
       'application/pdf'
@@ -6922,7 +6923,7 @@ router.post('/receipts/upload', upload.single('file'), async (req, res) => {
     if (!allowedTypes.includes(mimeType)) {
       return res.status(400).json({
         success: false,
-        error: `Неподдерживаемый тип файла: ${mimeType}. Поддерживаются: HEIC, JPG, PDF`
+        error: `Неподдерживаемый тип файла: ${mimeType}. Поддерживаются: JPG, PNG, HEIC, PDF`
       });
     }
 
@@ -7113,6 +7114,53 @@ router.get('/receipts', async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Не удалось получить список чеков'
+    });
+  }
+});
+
+/**
+ * POST /api/receipts/:id/create-payment
+ * Create payment from receipt with manual amount and date
+ */
+router.post('/receipts/:id/create-payment', async (req, res) => {
+  try {
+    const receiptId = req.params.id;
+    const { amount, currency = 'PLN', operationDate, description, direction = 'out', productId = null, expenseCategoryId = null } = req.body;
+
+    if (!amount || !operationDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'Amount and operationDate are required'
+      });
+    }
+
+    const createdBy = req.user?.email || req.user?.id || null;
+
+    const payment = await receiptService.createPaymentFromReceipt(receiptId, {
+      amount,
+      currency,
+      operationDate,
+      description,
+      direction,
+      productId: productId ? parseInt(productId, 10) : null,
+      expenseCategoryId: expenseCategoryId ? parseInt(expenseCategoryId, 10) : null,
+      createdBy
+    });
+
+    res.json({
+      success: true,
+      data: payment
+    });
+
+  } catch (error) {
+    logger.error('Error creating payment from receipt', {
+      receiptId: req.params.id,
+      error: error.message,
+      stack: error.stack
+    });
+    res.status(400).json({
+      success: false,
+      error: error.message || 'Не удалось создать платеж из чека'
     });
   }
 });

@@ -2,6 +2,7 @@ const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
 const receiptExtractionService = require('./receiptExtractionService');
 const receiptMatchingService = require('./receiptMatchingService');
+const paymentProductLinkService = require('../payments/paymentProductLinkService');
 
 /**
  * Main service for receipt uploads and management
@@ -493,6 +494,182 @@ class ReceiptService {
     } catch (error) {
       logger.error('Error listing receipts', {
         error: error.message
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Create payment from receipt with manual amount and date
+   * @param {string} receiptId - Receipt ID
+   * @param {number} amount - Payment amount
+   * @param {string} currency - Currency (default: PLN)
+   * @param {string} operationDate - Operation date (YYYY-MM-DD)
+   * @param {string} description - Payment description
+   * @param {string} direction - Payment direction ('in' or 'out', default: 'out')
+   * @param {number|null} productId - Optional product ID to link
+   * @param {number|null} expenseCategoryId - Optional expense category ID (for direction='out')
+   * @param {string|null} createdBy - User identifier (currently not stored in payments table)
+   * @returns {Promise<Object>} Created payment record
+   */
+  async createPaymentFromReceipt(receiptId, { amount, currency = 'PLN', operationDate, description, direction = 'out', productId = null, expenseCategoryId = null, createdBy = null }) {
+    try {
+      // Validate receipt exists
+      const { data: receipt, error: receiptError } = await supabase
+        .from('receipt_uploads')
+        .select('id, storage_path, original_filename')
+        .eq('id', receiptId)
+        .single();
+
+      if (receiptError || !receipt) {
+        throw new Error(`Receipt not found: ${receiptError?.message || 'unknown error'}`);
+      }
+
+      // Validate amount
+      const numericAmount = parseFloat(amount);
+      if (isNaN(numericAmount) || numericAmount <= 0) {
+        throw new Error('Amount must be a positive number');
+      }
+
+      // Validate date
+      if (!operationDate) {
+        throw new Error('Operation date is required');
+      }
+      const date = new Date(operationDate);
+      if (isNaN(date.getTime())) {
+        throw new Error('Invalid operation date format');
+      }
+
+      // Validate direction
+      if (direction !== 'in' && direction !== 'out') {
+        throw new Error("Direction must be 'in' or 'out'");
+      }
+
+      // Convert amount to PLN if needed
+      let amountPln = numericAmount;
+      if (currency.toUpperCase() !== 'PLN') {
+        // For now, use 1:1 conversion if no exchange rate provided
+        // In the future, could add exchange rate service
+        amountPln = numericAmount;
+        logger.warn('Currency conversion not implemented, using 1:1', { currency, amount });
+      }
+
+      // Create payment record (manual payment created from receipt)
+      // Note: payments table structure follows paymentService.js pattern
+      const paymentData = {
+        operation_date: operationDate,
+        payment_date: operationDate, // Required field - use operation_date
+        amount: numericAmount,
+        currency: currency.toUpperCase(),
+        description: description || `Платеж по чеку: ${receipt.original_filename || receiptId}`,
+        payer_name: description || 'Не указан',
+        direction: direction,
+        manual_status: 'approved',
+        match_status: 'matched',
+        source: 'manual', // Manual payment created from receipt
+        // Note: payments table doesn't have created_by column
+        // Generate operation_hash for uniqueness
+        operation_hash: `receipt-${receiptId}-${Date.now()}`
+      };
+
+      // Add expense category if provided and direction is 'out'
+      if (direction === 'out' && expenseCategoryId) {
+        const numericCategoryId = Number(expenseCategoryId);
+        if (Number.isInteger(numericCategoryId) && numericCategoryId > 0) {
+          paymentData.expense_category_id = numericCategoryId;
+        }
+      }
+
+      const { data: payment, error: paymentError } = await supabase
+        .from('payments')
+        .insert(paymentData)
+        .select()
+        .single();
+
+      if (paymentError) {
+        logger.error('Error creating payment from receipt', {
+          receiptId,
+          error: paymentError.message
+        });
+        throw new Error(`Failed to create payment: ${paymentError.message}`);
+      }
+
+      // Link receipt to payment via receipt_payment_links table
+      try {
+        const { error: linkError } = await supabase
+          .from('receipt_payment_links')
+          .insert({
+            receipt_id: receiptId,
+            payment_id: payment.id,
+            linked_by: createdBy
+          });
+
+        if (linkError) {
+          logger.warn('Failed to link receipt to payment', {
+            receiptId,
+            paymentId: payment.id,
+            error: linkError.message
+          });
+          // Don't throw - payment is created, linking receipt is optional
+        }
+      } catch (linkError) {
+        logger.warn('Error creating receipt-payment link', {
+          receiptId,
+          paymentId: payment.id,
+          error: linkError.message
+        });
+      }
+
+      // Link payment to product if productId provided
+      if (productId && payment) {
+        try {
+          const numericProductId = Number(productId);
+          if (!Number.isInteger(numericProductId) || numericProductId <= 0) {
+            throw new Error(`Invalid productId: ${productId}`);
+          }
+
+          await paymentProductLinkService.createLink({
+            paymentId: payment.id,
+            productId: numericProductId,
+            linkedBy: createdBy
+          });
+
+          logger.info('Payment linked to product successfully', {
+            paymentId: payment.id,
+            productId: numericProductId
+          });
+        } catch (linkError) {
+          logger.error('Failed to link payment to product', {
+            paymentId: payment.id,
+            productId,
+            error: linkError.message,
+            stack: linkError.stack
+          });
+          // Don't throw - payment is created, linking is optional but log error
+        }
+      } else {
+        logger.warn('Payment created without product link', {
+          paymentId: payment.id,
+          productId: productId || null
+        });
+      }
+
+      logger.info('Payment created from receipt', {
+        receiptId,
+        paymentId: payment.id,
+        amount,
+        currency,
+        direction,
+        productId
+      });
+
+      return payment;
+
+    } catch (error) {
+      logger.error('Error creating payment from receipt', {
+        receiptId,
+        error: error.message,
+        stack: error.stack
       });
       throw error;
     }

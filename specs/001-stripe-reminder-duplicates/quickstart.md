@@ -157,3 +157,4 @@ Use diagnostic scripts to verify:
 **Check**: History check logic, payment status calculation  
 **Solution**: Verify payment status calculation (>=90% threshold), check history query logic
 
+

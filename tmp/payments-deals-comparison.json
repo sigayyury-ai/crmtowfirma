@@ -1,0 +1,106 @@
+{
+  "exported_at": "2026-01-12T14:58:57.583Z",
+  "total_deals_checked": 143,
+  "issues_count": 3,
+  "issue_types": {
+    "overpaid": 1,
+    "amount_mismatch": 2
+  },
+  "deals_with_issues": [
+    {
+      "deal_id": "1685",
+      "deal_title": "Заявка от Anna Zinczenko-Lebiedź",
+      "deal_value": 3272,
+      "deal_currency": "PLN",
+      "total_paid_in_deal_currency": 4908,
+      "total_paid_pln": 4908,
+      "payments_count": 2,
+      "total_payments_count": 4,
+      "issues": [
+        {
+          "type": "overpaid",
+          "message": "Оплачено больше суммы сделки: 4908.00 PLN > 3272 PLN",
+          "deal_value": 3272,
+          "paid_in_deal_currency": 4908,
+          "difference": 1636
+        }
+      ],
+      "payment_details": [
+        {
+          "payment_id": "0c99072d-25e5-4be4-9680-1c7f9094a4f4",
+          "payment_type": "single",
+          "currency": "PLN",
+          "original_amount": 3272,
+          "amount_pln": 3272,
+          "payment_status": "paid"
+        },
+        {
+          "payment_id": "b1d70664-1241-4d77-9b18-db2c7a8709ba",
+          "payment_type": "deposit",
+          "currency": "PLN",
+          "original_amount": 1636,
+          "amount_pln": 1636,
+          "payment_status": "paid"
+        }
+      ]
+    },
+    {
+      "deal_id": "1291",
+      "deal_title": "Заявка от Ирина",
+      "deal_value": 820,
+      "deal_currency": "EUR",
+      "total_paid_in_deal_currency": 395,
+      "total_paid_pln": 1663.66,
+      "payments_count": 1,
+      "total_payments_count": 1,
+      "issues": [
+        {
+          "type": "amount_mismatch",
+          "message": "Сумма платежей сильно отличается от суммы сделки: 395.00 EUR vs 820 EUR (коэффициент: 0.48)",
+          "deal_value": 820,
+          "paid_in_deal_currency": 395,
+          "ratio": 0.4817073170731707
+        }
+      ],
+      "payment_details": [
+        {
+          "payment_id": "9d2d1ef9-0ee5-4250-8641-668fdb114c2f",
+          "payment_type": "single",
+          "currency": "EUR",
+          "original_amount": 395,
+          "amount_pln": 1663.66,
+          "payment_status": "paid"
+        }
+      ]
+    },
+    {
+      "deal_id": "1117",
+      "deal_title": "Заявка от Павло",
+      "deal_value": 720,
+      "deal_currency": "EUR",
+      "total_paid_in_deal_currency": 260,
+      "total_paid_pln": 1096,
+      "payments_count": 1,
+      "total_payments_count": 1,
+      "issues": [
+        {
+          "type": "amount_mismatch",
+          "message": "Сумма платежей сильно отличается от суммы сделки: 260.00 EUR vs 720 EUR (коэффициент: 0.36)",
+          "deal_value": 720,
+          "paid_in_deal_currency": 260,
+          "ratio": 0.3611111111111111
+        }
+      ],
+      "payment_details": [
+        {
+          "payment_id": "182ccdc6-b354-4984-8b72-bfc97a639fc7",
+          "payment_type": "single",
+          "currency": "EUR",
+          "original_amount": 260,
+          "amount_pln": 1096,
+          "payment_status": "paid"
+        }
+      ]
+    }
+  ]
+}

@@ -71,3 +71,4 @@ Represents a record of a successfully sent reminder notification for a Stripe pa
 - No automatic deletion
 - Can be archived manually if needed for compliance
 
+

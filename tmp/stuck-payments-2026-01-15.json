@@ -1,0 +1,66 @@
+{
+  "total": 12,
+  "withStripePayments": 2,
+  "withProformas": 2,
+  "withActiveSessions": 0,
+  "withExpiredSessions": 0,
+  "withoutPayments": 8,
+  "needsReminder": 0,
+  "needsNewSession": 0,
+  "stuck": [
+    {
+      "dealId": 1257,
+      "title": "Заявка от Anton France",
+      "stageId": 32,
+      "stageName": "Second Payment",
+      "value": 870,
+      "currency": "EUR",
+      "personName": "Anton Makevich",
+      "personEmail": "maktoxa@gmail.com",
+      "expectedCloseDate": "2026-01-26",
+      "daysUntilClose": 11,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1686,
+      "title": "Anna",
+      "stageId": 18,
+      "stageName": "First Payment",
+      "value": 600,
+      "currency": "EUR",
+      "personName": "ANNA ZINCZENKO-LEBIEDŹ",
+      "personEmail": "a.zinczenko@gmail.com",
+      "expectedCloseDate": null,
+      "daysUntilClose": null,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    },
+    {
+      "dealId": 1762,
+      "title": "Katsiaryna Kartashevich",
+      "stageId": 18,
+      "stageName": "First Payment",
+      "value": 700,
+      "currency": "EUR",
+      "personName": "Katsiaryna Kartashevich",
+      "personEmail": "k.kartashevich@gmail.com",
+      "expectedCloseDate": "2025-12-30",
+      "daysUntilClose": -16,
+      "issues": [
+        "Нет ни Stripe платежей, ни проформ"
+      ],
+      "recommendations": [
+        "Создать Stripe сессию или проформу"
+      ]
+    }
+  ]
+}

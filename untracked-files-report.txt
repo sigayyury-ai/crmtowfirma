@@ -1,0 +1,121 @@
+НЕОТСЛЕЖИВАЕМЫЕ ФАЙЛЫ (не игнорируются через .gitignore)
+============================================================
+
+Всего найдено: 89 файлов/папок
+
+ФРОНТЕНД:
+---------
+frontend/pnl-report-script-duplicates.js
+
+СКРИПТЫ (scripts/):
+-------------------
+scripts/analyzePnl2024Excel.js
+scripts/apply_migration_019.js
+scripts/approve-september-refunds.js
+scripts/backupPnlManualEntries.js
+scripts/checkPayment2921.js
+scripts/check_and_fix_expense_unique_index.js
+scripts/compare-payments-with-deals.js
+scripts/createReceiptsBucket.js
+scripts/debug-csv-header.js
+scripts/debug-deal-2049-session-issue.js
+scripts/debug-ny2026-product-name.js
+scripts/debug-portugal-duplicates.js
+scripts/delete-test-auto-deals-by-ids.js
+scripts/delete-test-auto-deals-from-db.js
+scripts/delete-test-auto-deals.js
+scripts/delete-test-payment-yury-sihai.js
+scripts/delete-test-products-and-payments.js
+scripts/delete-yury-test-payments.js
+scripts/deleteReceipt.js
+scripts/diagnose-deal.js
+scripts/dry-run-automation-notifications.js
+scripts/export-deal-1769-from-db.js
+scripts/export-deals-from-crm.js
+scripts/final-verification-report.js
+scripts/find-and-fix-product-links-for-deals.js
+scripts/find-deal-for-proforma-96.js
+scripts/find-incorrect-amount-pln.js
+scripts/find-payment-2927.js
+scripts/find-payment-by-email.js
+scripts/find-proforma-yuliia-korytko.js
+scripts/find-specific-test-payments.js
+scripts/find-test-payment-yury-sihai.js
+scripts/find-test-products-and-payments.js
+scripts/fix-all-deals-products.js
+scripts/fix-coprof-149-deal-1606.js
+scripts/fix-deal-1585-payment-product.js
+scripts/fix-deal-1585-product-correct.js
+scripts/fix-deal-1849-amount-pln.js
+scripts/fix-deal-1849-product-41-metadata.js
+scripts/fix-deal-1849-product-41.js
+scripts/fix-deals-1714-1775-products.js
+scripts/fix-january-7-payments-dates.js
+scripts/fix-product-link-camp-product-id.js
+scripts/fix-proforma-143-product.js
+scripts/fix-wrong-product-links.js
+scripts/importPnl2024DirectToDb.js
+scripts/importPnl2024FromExcel.js
+scripts/importPnl2024FromExcelSafe.js
+scripts/list-all-products-and-link-payments.js
+scripts/list-september-refunds.js
+scripts/mark-deal-1112-single-as-paid.js
+scripts/migrations/018_enable_rls_on_public_tables.sql
+scripts/move-september-refunds-to-services.js
+scripts/move-stripe-payments-from-product-28-to-2.js
+scripts/remove-deal-1438-from-single-lankowa.js
+scripts/remove-deal-1443-from-single-lankowa.js
+scripts/remove-proforma-129-from-single-lankowa.js
+scripts/remove-proforma-79-from-product.js
+scripts/rename-expense-category.js
+scripts/research-single-lankowa-proformas.js
+scripts/setupPnl2024Categories.js
+scripts/showCategoryMapping.js
+scripts/stripe-list-events.js
+scripts/stripe-webhook-correlation.js
+scripts/testReceiptUpload.js
+scripts/trace-product-name-debug.js
+scripts/trace-product-name-issue.js
+scripts/verify-all-proforma-links.js
+scripts/verify-fixed-deals-in-report.js
+scripts/verify-rls-status.sql
+scripts/verify-september-refunds-category.js
+scripts/verify-stripe-payments-in-report.js
+scripts/verify-test-data-cleanup.js
+scripts/verifyPnl2024Import.js
+scripts/watch-stripe-webhooks.js
+
+СПЕЦИФИКАЦИИ (specs/):
+----------------------
+specs/016-pnl-date-filter/
+specs/019-manual-cash-expenses/
+specs/020-pnl-payment-details/
+
+ВРЕМЕННЫЕ ФАЙЛЫ (tmp/):
+------------------------
+tmp/PNL_2024_CATEGORY_MAPPING.md
+tmp/PNL_2024_IMPORT_INSTRUCTIONS.md
+tmp/PNL_2024_VERIFICATION_REPORT.md
+tmp/deal-1769-from-db.json
+tmp/deals-from-crm.json
+tmp/incorrect-amount-pln.json
+tmp/mql-sync-fix-summary.md
+tmp/payments-deals-comparison.json
+tmp/stuck-payments-2026-01-15.json
+tmp/webhook-analysis-2048.md
+tmp/year-selector-check.md
+tmp/P&L 2.xlsx (файл с пробелами в имени)
+tmp/Общие расходы/ (папка с кириллицей)
+tmp/Расходы-для-выгрузки.csv (файл с кириллицей)
+
+РЕКОМЕНДАЦИИ:
+-------------
+1. Добавить в .gitignore:
+   - scripts/*.js (все скрипты, кроме критичных)
+   - tmp/* (все временные файлы)
+   - specs/* (спецификации, если они не нужны в репозитории)
+   - frontend/*-duplicates.js (дубликаты файлов)
+
+2. Или добавить эти файлы в git, если они нужны в репозитории
+
+3. Проверить файлы с кириллицей в именах - возможно, их нужно переименовать

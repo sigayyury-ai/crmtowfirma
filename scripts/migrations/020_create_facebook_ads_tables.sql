@@ -114,3 +114,4 @@ ALTER TABLE facebook_ads_expenses
   REFERENCES facebook_ads_import_batches(id)
   ON DELETE SET NULL;
 
+

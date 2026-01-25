@@ -1,0 +1,427 @@
+openapi: 3.0.0
+info:
+  title: Manual Cash Expense Entries API
+  description: API endpoints for managing multiple manual cash expense entries per category/month in PNL report
+  version: 1.0.0
+
+paths:
+  /api/pnl/manual-entries:
+    post:
+      summary: Create a new manual expense entry
+      description: Creates a new expense entry. For expense entries, always creates a new record (no upsert). Multiple entries per category/month are allowed.
+      operationId: createManualExpenseEntry
+      tags:
+        - Manual Expense Entries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateExpenseEntryRequest'
+            example:
+              expenseCategoryId: 5
+              entryType: "expense"
+              year: 2025
+              month: 1
+              amountPln: 1000.50
+              notes: "Обед для команды"
+      responses:
+        '201':
+          description: Entry created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseEntryResponse'
+        '400':
+          description: Validation error or invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidAmount:
+                  value:
+                    success: false
+                    error: "amountPln is required and must be a positive number"
+                invalidCategory:
+                  value:
+                    success: false
+                    error: "Category not found or not manual type"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      summary: Get all manual expense entries for a category/month
+      description: Returns all expense entries for the specified category, year, and month. Returns empty array if no entries exist.
+      operationId: getManualExpenseEntries
+      tags:
+        - Manual Expense Entries
+      parameters:
+        - name: expenseCategoryId
+          in: query
+          required: true
+          description: Expense category ID
+          schema:
+            type: integer
+            minimum: 1
+            example: 5
+        - name: year
+          in: query
+          required: true
+          description: Year (2020-2030)
+          schema:
+            type: integer
+            minimum: 2020
+            maximum: 2030
+            example: 2025
+        - name: month
+          in: query
+          required: true
+          description: Month (1-12)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+            example: 1
+        - name: entryType
+          in: query
+          required: false
+          description: Entry type (must be 'expense' for this feature)
+          schema:
+            type: string
+            enum: [expense]
+            default: expense
+      responses:
+        '200':
+          description: List of expense entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseEntryListResponse'
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/pnl/manual-entries/{id}:
+    get:
+      summary: Get a single manual expense entry by ID
+      description: Returns a single expense entry by its unique ID
+      operationId: getManualExpenseEntryById
+      tags:
+        - Manual Expense Entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Entry ID
+          schema:
+            type: integer
+            minimum: 1
+            example: 101
+      responses:
+        '200':
+          description: Entry found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseEntryResponse'
+        '404':
+          description: Entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      summary: Update a manual expense entry
+      description: Updates an existing expense entry by ID. Only amount and notes can be updated.
+      operationId: updateManualExpenseEntry
+      tags:
+        - Manual Expense Entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Entry ID
+          schema:
+            type: integer
+            minimum: 1
+            example: 101
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateExpenseEntryRequest'
+            example:
+              amountPln: 1200.00
+              notes: "Обед для команды (обновлено)"
+      responses:
+        '200':
+          description: Entry updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseEntryResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      summary: Delete a manual expense entry
+      description: Permanently deletes an expense entry by ID. Entry is removed from database immediately.
+      operationId: deleteManualExpenseEntry
+      tags:
+        - Manual Expense Entries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Entry ID
+          schema:
+            type: integer
+            minimum: 1
+            example: 101
+      responses:
+        '200':
+          description: Entry deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResponse'
+        '404':
+          description: Entry not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    CreateExpenseEntryRequest:
+      type: object
+      required:
+        - expenseCategoryId
+        - entryType
+        - year
+        - month
+        - amountPln
+      properties:
+        expenseCategoryId:
+          type: integer
+          description: Expense category ID (must have management_type='manual')
+          minimum: 1
+          example: 5
+        entryType:
+          type: string
+          description: Entry type (must be 'expense')
+          enum: [expense]
+          example: expense
+        year:
+          type: integer
+          description: Year (2020-2030)
+          minimum: 2020
+          maximum: 2030
+          example: 2025
+        month:
+          type: integer
+          description: Month (1-12)
+          minimum: 1
+          maximum: 12
+          example: 1
+        amountPln:
+          type: number
+          description: Amount in PLN (must be positive)
+          minimum: 0.01
+          format: float
+          example: 1000.50
+        notes:
+          type: string
+          description: Optional comment/description
+          maxLength: 5000
+          example: "Обед для команды"
+
+    UpdateExpenseEntryRequest:
+      type: object
+      required:
+        - amountPln
+      properties:
+        amountPln:
+          type: number
+          description: Updated amount in PLN (must be positive)
+          minimum: 0.01
+          format: float
+          example: 1200.00
+        notes:
+          type: string
+          description: Updated comment/description
+          maxLength: 5000
+          example: "Обед для команды (обновлено)"
+
+    ExpenseEntryResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          $ref: '#/components/schemas/ExpenseEntry'
+
+    ExpenseEntryListResponse:
+      type: object
+      required:
+        - success
+        - data
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: array
+          description: Array of expense entries (empty if none exist)
+          items:
+            $ref: '#/components/schemas/ExpenseEntry'
+
+    ExpenseEntry:
+      type: object
+      required:
+        - id
+        - expense_category_id
+        - entry_type
+        - year
+        - month
+        - amount_pln
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          description: Unique entry identifier
+          example: 101
+        expense_category_id:
+          type: integer
+          description: Expense category ID
+          example: 5
+        category_id:
+          type: "null"
+          description: Always null for expense entries
+          example: null
+        entry_type:
+          type: string
+          description: Entry type
+          enum: [expense]
+          example: expense
+        year:
+          type: integer
+          description: Year
+          minimum: 2020
+          maximum: 2030
+          example: 2025
+        month:
+          type: integer
+          description: Month (1-12)
+          minimum: 1
+          maximum: 12
+          example: 1
+        amount_pln:
+          type: number
+          description: Amount in PLN
+          minimum: 0
+          format: float
+          example: 1000.50
+        notes:
+          type: string
+          nullable: true
+          description: Optional comment/description
+          example: "Обед для команды"
+        currency_breakdown:
+          type: object
+          nullable: true
+          description: Optional currency breakdown (not used for cash expenses)
+          example: null
+        created_at:
+          type: string
+          format: date-time
+          description: Creation timestamp
+          example: "2025-01-27T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          description: Last update timestamp
+          example: "2025-01-27T10:30:00Z"
+
+    DeleteResponse:
+      type: object
+      required:
+        - success
+        - message
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Manual entry deleted successfully"
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+          example: "amountPln is required and must be a positive number"
+        message:
+          type: string
+          description: Additional error details (optional)
+          example: "Category not found"
+
+

@@ -111,8 +111,36 @@ class PaymentProductLinkService {
     await this.ensureProduct(productId);
 
     const existingLink = await this.getLinkByPayment(paymentId);
+    
+    // Если связь уже существует, обновляем её (пересвязываем с новым продуктом)
     if (existingLink) {
-      throw new Error('Платеж уже связан с продуктом');
+      const { error: updateError } = await supabase
+        .from('payment_product_links')
+        .update({
+          product_id: productId,
+          direction: payment.direction,
+          linked_by: linkedBy || existingLink.linked_by,
+          linked_at: new Date().toISOString()
+        })
+        .eq('payment_id', paymentId);
+
+      if (updateError) {
+        logger.error('Failed to update payment-product link', {
+          paymentId,
+          productId,
+          error: updateError.message
+        });
+        throw new Error(`Не удалось обновить связь: ${updateError.message}`);
+      }
+
+      // Получаем обновленную связь
+      const updatedLink = await this.getLinkByPayment(paymentId);
+      logger.info('Payment-product link updated', {
+        paymentId,
+        oldProductId: existingLink.product_id,
+        newProductId: productId
+      });
+      return updatedLink;
     }
 
     const payload = {

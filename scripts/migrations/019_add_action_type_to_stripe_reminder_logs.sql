@@ -23,3 +23,4 @@ ON public.stripe_reminder_logs(deal_id, second_payment_date, action_type);
 
 COMMENT ON COLUMN public.stripe_reminder_logs.action_type IS 'Тип действия: session_created (создание сессии) или reminder_sent (отправка напоминания)';
 
+

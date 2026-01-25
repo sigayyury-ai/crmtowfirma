@@ -152,3 +152,4 @@ testBackwardCompatibility().then(() => {
   process.exit(1);
 });
 
+

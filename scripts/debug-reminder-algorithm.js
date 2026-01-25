@@ -304,3 +304,4 @@ if (!dealId) {
 
 debugAlgorithm(parseInt(dealId, 10));
 
+

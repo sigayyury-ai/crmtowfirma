@@ -92,6 +92,113 @@
         </div>
     </div>
 
+    <div id="product-create-payment-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h3>Создать платеж из чека</h3>
+                <button class="modal-close" id="product-create-payment-close" aria-label="Закрыть">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="product-create-payment-form">
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-receipt-file" style="display: block; margin-bottom: 5px; font-weight: 500;">Фотографии чека</label>
+                        <input
+                            type="file"
+                            id="product-receipt-file"
+                            accept="image/jpeg,image/jpg,image/png,image/heic,image/heif,application/pdf"
+                            multiple
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                        />
+                        <div style="margin-top: 5px; font-size: 0.85em; color: #666;">
+                            Поддерживаются: JPG, PNG, HEIC, PDF (макс. 10MB). Можно выбрать несколько файлов
+                        </div>
+                        <div id="product-receipt-files-preview" style="margin-top: 8px; font-size: 0.9em; color: #666;"></div>
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-payment-amount" style="display: block; margin-bottom: 5px; font-weight: 500;">Сумма *</label>
+                        <input
+                            type="number"
+                            id="product-payment-amount"
+                            step="0.01"
+                            min="0.01"
+                            required
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                            placeholder="0.00"
+                        />
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-payment-currency" style="display: block; margin-bottom: 5px; font-weight: 500;">Валюта</label>
+                        <select
+                            id="product-payment-currency"
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                        >
+                            <option value="PLN">PLN</option>
+                            <option value="EUR">EUR</option>
+                            <option value="USD">USD</option>
+                        </select>
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-payment-date" style="display: block; margin-bottom: 5px; font-weight: 500;">Дата оплаты *</label>
+                        <input
+                            type="date"
+                            id="product-payment-date"
+                            required
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                        />
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-payment-description" style="display: block; margin-bottom: 5px; font-weight: 500;">Описание</label>
+                        <input
+                            type="text"
+                            id="product-payment-description"
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                            placeholder="Описание платежа (необязательно)"
+                        />
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <label for="product-payment-direction" style="display: block; margin-bottom: 5px; font-weight: 500;">Направление</label>
+                        <select
+                            id="product-payment-direction"
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                        >
+                            <option value="out">Расход (out)</option>
+                            <option value="in">Доход (in)</option>
+                        </select>
+                    </div>
+                    <div id="product-payment-expense-category-wrapper" style="margin-bottom: 15px; display: none;">
+                        <label for="product-payment-expense-category" style="display: block; margin-bottom: 5px; font-weight: 500;">Категория расходов</label>
+                        <select
+                            id="product-payment-expense-category"
+                            style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"
+                        >
+                            <option value="">Выберите категорию...</option>
+                        </select>
+                        <div style="margin-top: 5px; font-size: 0.85em; color: #666;">
+                            Необязательно, можно выбрать позже
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+                        <button
+                            id="product-create-payment-cancel-btn"
+                            class="btn btn-secondary"
+                            style="padding: 8px 20px;"
+                        >
+                            Отмена
+                        </button>
+                        <button
+                            id="product-create-payment-submit-btn"
+                            class="btn btn-primary"
+                            style="padding: 8px 20px;"
+                        >
+                            💾 Создать платеж
+                        </button>
+                    </div>
+                    <div id="product-create-payment-status" style="margin-top: 15px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="/vat-margin-product.js?v=20260120"></script>
 </body>
 </html>

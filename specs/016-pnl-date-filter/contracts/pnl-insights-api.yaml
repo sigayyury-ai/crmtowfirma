@@ -1,0 +1,585 @@
+openapi: 3.0.0
+info:
+  title: PNL Insights API
+  description: API endpoints for PNL yearly report analytical insights
+  version: 1.0.0
+
+paths:
+  /api/pnl/insights:
+    get:
+      summary: Get yearly PNL analytical insights
+      description: Returns comprehensive analytical insights and strategic conclusions for a selected year, including revenue metrics, expenses statistics, break-even analysis, YoY comparisons, profitability metrics, quarterly analysis, operational efficiency, trend analysis, stability metrics, cash runway, expense efficiency, predictive insights, performance benchmarks, month-by-month insights, and AI-generated strategic recommendations.
+      operationId: getPnlInsights
+      tags:
+        - PNL Insights
+      parameters:
+        - name: year
+          in: query
+          required: true
+          description: Year for the insights report (2020-2030)
+          schema:
+            type: integer
+            minimum: 2020
+            maximum: 2030
+            example: 2025
+        - name: asOfDate
+          in: query
+          required: false
+          description: Historical date (ISO 8601 format) for viewing data as it existed at that point in time. If provided, excludes payments and expenses created/updated after this date.
+          schema:
+            type: string
+            format: date
+            example: "2025-06-15"
+        - name: regenerateAI
+          in: query
+          required: false
+          description: Force regeneration of AI insights, bypassing cache
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Successful response with analytical insights
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/YearlyPnlInsights'
+        '400':
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "Year parameter is required. Expected year between 2020 and 2030."
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: "Failed to get PNL insights"
+                  message:
+                    type: string
+
+components:
+  schemas:
+    YearlyPnlInsights:
+      type: object
+      required:
+        - year
+        - revenueMetrics
+        - expensesStatistics
+        - breakEvenAnalysis
+        - profitabilityMetrics
+        - quarterlyAnalysis
+        - operationalEfficiency
+        - stabilityVolatility
+        - cashRunway
+        - expenseEfficiency
+        - predictiveInsights
+        - trendAnalysis
+        - monthByMonth
+        - strategicInsights
+      properties:
+        year:
+          type: integer
+          minimum: 2020
+          maximum: 2030
+          example: 2025
+        asOfDate:
+          type: string
+          format: date
+          nullable: true
+          example: "2025-06-15"
+        revenueMetrics:
+          $ref: '#/components/schemas/RevenueMetrics'
+        expensesStatistics:
+          $ref: '#/components/schemas/ExpensesStatistics'
+        breakEvenAnalysis:
+          $ref: '#/components/schemas/BreakEvenAnalysis'
+        yearOverYear:
+          $ref: '#/components/schemas/YearOverYear'
+          nullable: true
+        profitabilityMetrics:
+          $ref: '#/components/schemas/ProfitabilityMetrics'
+        quarterlyAnalysis:
+          $ref: '#/components/schemas/QuarterlyAnalysis'
+        operationalEfficiency:
+          $ref: '#/components/schemas/OperationalEfficiency'
+        stabilityVolatility:
+          $ref: '#/components/schemas/StabilityVolatility'
+        cashRunway:
+          $ref: '#/components/schemas/CashRunway'
+        expenseEfficiency:
+          $ref: '#/components/schemas/ExpenseEfficiency'
+        predictiveInsights:
+          $ref: '#/components/schemas/PredictiveInsights'
+        performanceBenchmarks:
+          $ref: '#/components/schemas/PerformanceBenchmarks'
+          nullable: true
+        trendAnalysis:
+          $ref: '#/components/schemas/TrendAnalysis'
+        monthByMonth:
+          $ref: '#/components/schemas/MonthByMonth'
+        strategicInsights:
+          $ref: '#/components/schemas/StrategicInsights'
+
+    RevenueMetrics:
+      type: object
+      required:
+        - totalAnnual
+        - averageMonthly
+        - bestMonth
+        - worstMonth
+        - totalPayments
+      properties:
+        totalAnnual:
+          type: number
+          format: float
+          example: 150000.50
+        averageMonthly:
+          type: number
+          format: float
+          example: 12500.04
+        bestMonth:
+          type: object
+          properties:
+            month:
+              type: integer
+              minimum: 1
+              maximum: 12
+            monthName:
+              type: string
+              example: "Июль"
+            amount:
+              type: number
+              format: float
+        worstMonth:
+          type: object
+          properties:
+            month:
+              type: integer
+              minimum: 1
+              maximum: 12
+            monthName:
+              type: string
+            amount:
+              type: number
+              format: float
+        totalPayments:
+          type: integer
+          minimum: 0
+          example: 180
+
+    ExpensesStatistics:
+      type: object
+      required:
+        - totalAnnual
+        - averageMonthly
+        - expensesToRevenueRatio
+      properties:
+        totalAnnual:
+          type: number
+          format: float
+        averageMonthly:
+          type: number
+          format: float
+        topCategories:
+          type: array
+          items:
+            type: object
+            properties:
+              categoryId:
+                type: integer
+              categoryName:
+                type: string
+              amount:
+                type: number
+                format: float
+              percentage:
+                type: number
+                format: float
+        expensesToRevenueRatio:
+          type: number
+          format: float
+          example: 75.5
+
+    BreakEvenAnalysis:
+      type: object
+      required:
+        - monthlyBreakEven
+        - annualBreakEven
+        - monthsToBreakEven
+        - profitLoss
+        - profitMargin
+      properties:
+        monthlyBreakEven:
+          type: number
+          format: float
+        annualBreakEven:
+          type: number
+          format: float
+        monthsToBreakEven:
+          type: number
+          format: float
+          nullable: true
+        profitLoss:
+          type: number
+          format: float
+        profitMargin:
+          type: number
+          format: float
+
+    YearOverYear:
+      type: object
+      properties:
+        revenueGrowthRate:
+          type: number
+          format: float
+        expensesGrowthRate:
+          type: number
+          format: float
+        profitChange:
+          type: number
+          format: float
+        profitChangePercent:
+          type: number
+          format: float
+
+    ProfitabilityMetrics:
+      type: object
+      required:
+        - operatingMargin
+        - netProfitMargin
+        - returnOnRevenue
+      properties:
+        operatingMargin:
+          type: number
+          format: float
+        netProfitMargin:
+          type: number
+          format: float
+        returnOnRevenue:
+          type: number
+          format: float
+
+    QuarterlyAnalysis:
+      type: object
+      required:
+        - q1
+        - q2
+        - q3
+        - q4
+        - bestQuarter
+        - worstQuarter
+      properties:
+        q1:
+          type: object
+          properties:
+            revenue:
+              type: number
+              format: float
+            profitLoss:
+              type: number
+              format: float
+        q2:
+          type: object
+        q3:
+          type: object
+        q4:
+          type: object
+        bestQuarter:
+          type: integer
+          minimum: 1
+          maximum: 4
+        worstQuarter:
+          type: integer
+          minimum: 1
+          maximum: 4
+        quarterlyTrends:
+          type: array
+          items:
+            type: object
+            properties:
+              from:
+                type: integer
+              to:
+                type: integer
+              growthRate:
+                type: number
+                format: float
+
+    OperationalEfficiency:
+      type: object
+      required:
+        - averageTransactionValue
+        - revenuePerMonth
+        - expensesPerMonth
+        - efficiencyRatio
+      properties:
+        averageTransactionValue:
+          type: number
+          format: float
+        revenuePerMonth:
+          type: number
+          format: float
+        expensesPerMonth:
+          type: number
+          format: float
+        efficiencyRatio:
+          type: number
+          format: float
+
+    StabilityVolatility:
+      type: object
+      required:
+        - coefficientOfVariation
+        - stabilityScore
+        - consistencyIndicator
+      properties:
+        coefficientOfVariation:
+          type: number
+          format: float
+        stabilityScore:
+          type: string
+          enum: ["very_stable", "stable", "moderate", "high_volatility"]
+        outlierMonths:
+          type: array
+          items:
+            type: object
+            properties:
+              month:
+                type: integer
+              deviation:
+                type: number
+                format: float
+        consistencyIndicator:
+          type: number
+          format: float
+
+    CashRunway:
+      type: object
+      required:
+        - monthsOfRunway
+        - monthsUntilBreakEven
+        - requiredGrowthRate
+        - burnRate
+      properties:
+        monthsOfRunway:
+          type: number
+          format: float
+          nullable: true
+        monthsUntilBreakEven:
+          type: number
+          format: float
+          nullable: true
+        requiredGrowthRate:
+          type: number
+          format: float
+          nullable: true
+        burnRate:
+          type: number
+          format: float
+          nullable: true
+
+    ExpenseEfficiency:
+      type: object
+      required:
+        - topCategories
+        - optimizationOpportunities
+      properties:
+        topCategories:
+          type: array
+          items:
+            type: object
+        categoryGrowthRates:
+          type: array
+          items:
+            type: object
+        optimizationOpportunities:
+          type: array
+          items:
+            type: string
+
+    PredictiveInsights:
+      type: object
+      required:
+        - projectedAnnualRevenue
+        - projectedBreakEvenTimeline
+        - forecastedBestMonth
+        - forecastedWorstMonth
+        - riskIndicators
+      properties:
+        projectedAnnualRevenue:
+          type: number
+          format: float
+          nullable: true
+        projectedBreakEvenTimeline:
+          type: number
+          format: float
+          nullable: true
+        forecastedBestMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+          nullable: true
+        forecastedWorstMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+          nullable: true
+        riskIndicators:
+          type: array
+          items:
+            type: string
+
+    PerformanceBenchmarks:
+      type: object
+      properties:
+        overallPerformance:
+          type: string
+          enum: ["better", "worse", "same"]
+        breakEvenMilestone:
+          type: object
+          properties:
+            achieved:
+              type: boolean
+            month:
+              type: integer
+              nullable: true
+        growthRateComparison:
+          type: number
+          format: float
+        profitabilityImprovement:
+          type: number
+          format: float
+
+    TrendAnalysis:
+      type: object
+      required:
+        - firstHalfVsSecondHalf
+        - peakPeriod
+        - lowPeriod
+        - monthOverMonthGrowthRates
+        - seasonalityDetected
+      properties:
+        firstHalfVsSecondHalf:
+          type: number
+          format: float
+        peakPeriod:
+          type: object
+          properties:
+            startMonth:
+              type: integer
+            endMonth:
+              type: integer
+            totalRevenue:
+              type: number
+              format: float
+        lowPeriod:
+          type: object
+        monthOverMonthGrowthRates:
+          type: array
+          items:
+            type: number
+            format: float
+        seasonalityDetected:
+          type: boolean
+
+    MonthByMonth:
+      type: object
+      required:
+        - monthsAboveBreakEven
+        - monthsBelowBreakEven
+        - longestProfitableStreak
+        - longestLossStreak
+        - recoveryMonths
+      properties:
+        monthsAboveBreakEven:
+          type: object
+          properties:
+            count:
+              type: integer
+            months:
+              type: array
+              items:
+                type: integer
+        monthsBelowBreakEven:
+          type: object
+        longestProfitableStreak:
+          type: integer
+        longestLossStreak:
+          type: integer
+        recoveryMonths:
+          type: array
+          items:
+            type: integer
+
+    StrategicInsights:
+      type: object
+      required:
+        - overallSummary
+        - breakEvenStatus
+        - growthTrajectory
+        - stabilityAssessment
+        - cashRunwayStatus
+        - expenseOptimization
+        - keyObservations
+        - strategicRecommendations
+        - generatedAt
+        - generatedBy
+      properties:
+        overallSummary:
+          type: string
+        breakEvenStatus:
+          type: string
+        growthTrajectory:
+          type: string
+        seasonalPatterns:
+          type: string
+          nullable: true
+        stabilityAssessment:
+          type: string
+        cashRunwayStatus:
+          type: string
+        expenseOptimization:
+          type: array
+          items:
+            type: string
+        keyObservations:
+          type: array
+          items:
+            type: string
+        strategicRecommendations:
+          type: array
+          items:
+            type: string
+        generatedAt:
+          type: string
+          format: date-time
+        generatedBy:
+          type: string
+          enum: ["ai", "rule-based"]
+        cacheKey:
+          type: string
+          nullable: true
+
+

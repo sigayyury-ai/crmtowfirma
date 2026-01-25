@@ -101,3 +101,4 @@ WHERE direction = 'out'
 - `specs/011-pnl-report/spec.md` - спецификация PNL отчета
 - `src/services/pnl/pnlReportService.js` - сервис PNL отчета (нужно обновить)
 
+

@@ -1,6 +1,6 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
-const openAIService = require('../ai/openAIService');
+const OpenAIService = require('../ai/openAIService');
 const ExpenseCategoryService = require('./expenseCategoryService');
 
 // Create instance
@@ -13,6 +13,7 @@ const expenseCategoryService = new ExpenseCategoryService();
 class ExpenseCategoryMappingService {
   constructor() {
     this.tableName = 'expense_category_mappings';
+    this.openAIService = new OpenAIService();
   }
 
   /**
@@ -479,7 +480,7 @@ class ExpenseCategoryMappingService {
       }
 
       // If no suggestions found from rules, try OpenAI (if enabled)
-      if (uniqueSuggestions.length === 0 && openAIService.enabled) {
+      if (uniqueSuggestions.length === 0 && this.openAIService.enabled) {
         try {
           // Get categories - handle errors gracefully
           let categories = [];
@@ -500,7 +501,7 @@ class ExpenseCategoryMappingService {
 
           const validCategoryIds = new Set(categories.map(cat => cat.id));
           
-          const aiResult = await openAIService.categorizeExpense(
+          const aiResult = await this.openAIService.categorizeExpense(
             {
               id: paymentRecord.id || null,
               description,

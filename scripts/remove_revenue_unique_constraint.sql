@@ -22,3 +22,4 @@ COMMENT ON INDEX idx_pnl_manual_entries_revenue_category_year_month IS
 COMMENT ON INDEX idx_pnl_manual_entries_revenue_category_year IS 
     'Index for querying all revenue entries for a category across a year (for aggregation)';
 
+

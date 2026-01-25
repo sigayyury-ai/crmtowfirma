@@ -194,3 +194,4 @@ Campaign Name,Amount Spent,Currency,Date Range,Impressions,Clicks
    - Проверить накопительную логику
    - Проверить определение остановленных кампаний
 
+

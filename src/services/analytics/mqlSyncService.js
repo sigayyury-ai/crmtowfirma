@@ -41,10 +41,13 @@ class MqlSyncService {
     if (this.skipPipedrive) {
       logger.warn('Skipping Pipedrive collection (MQL_SKIP_PIPEDRIVE enabled)');
     } else {
-      await this.collectPipedrive(dataset, targetYear);
+      // Для полной синхронизации не используем cutoffDate, чтобы получить все сделки
+      await this.collectPipedrive(dataset, targetYear, { useCutoffDate: false });
     }
     await this.collectMarketingExpenses(dataset, targetYear);
     this.applySendpulseBaseline(dataset, targetYear);
+    // Пересчитываем повторные продажи на основе всех выигранных сделок
+    this.recalculateRepeatSales(dataset);
     this.updateConversion(dataset);
     this.updateCostMetrics(dataset);
     await this.persistSnapshots(dataset);
@@ -110,6 +113,8 @@ class MqlSyncService {
     }
     await this.collectMarketingExpenses(dataset, year);
     this.applySendpulseBaseline(dataset, year);
+    // Пересчитываем повторные продажи на основе всех выигранных сделок
+    this.recalculateRepeatSales(dataset);
     this.updateConversion(dataset);
     this.updateCostMetrics(dataset);
 
@@ -298,15 +303,19 @@ class MqlSyncService {
     dataset.sync.sendpulse = fetchedAt || new Date().toISOString();
   }
 
-  async collectPipedrive(dataset, year) {
-    // При обновлении только текущего месяца, cutoff date может пропустить обновленные сделки
-    // из других месяцев (например, если сделка была выиграна). Поэтому для обновления
-    // won_deals и closed_deals мы должны собирать все сделки, но cutoff date все равно
-    // используется для оптимизации (сделки с update_time старше cutoff не попадут в выборку,
-    // но если сделка была обновлена недавно, она попадет, даже если была создана давно)
-    const cutoffDate = await this.determinePipedriveCutoffDate();
-    if (cutoffDate) {
-      logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
+  async collectPipedrive(dataset, year, options = {}) {
+    // Для полной синхронизации (useCutoffDate: false) не используем cutoffDate,
+    // чтобы получить все сделки независимо от даты последнего обновления.
+    // Для инкрементального обновления (useCutoffDate: true) используем cutoffDate
+    // для оптимизации, но он может пропустить обновленные сделки из других месяцев.
+    let cutoffDate = null;
+    if (options.useCutoffDate !== false) {
+      cutoffDate = await this.determinePipedriveCutoffDate();
+      if (cutoffDate) {
+        logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
+      }
+    } else {
+      logger.info('Full Pipedrive sync - no cutoff date', { year });
     }
 
     const result = await this.pipedriveClient.fetchMqlDeals({
@@ -360,7 +369,18 @@ class MqlSyncService {
         username: deal.username,
         firstSeenMonth: deal.firstSeenMonth ? `${deal.firstSeenMonth.slice(0, 7)}-01` : null,
         channelBucket: deal.channelBucket,
-        payload: deal
+        payload: {
+          ...deal,
+          // Сохраняем все необходимые поля для пересчета повторных продаж
+          id: deal.id,
+          dealId: deal.id,
+          personId: deal.personId,
+          person_id: deal.personId,
+          wonTime: deal.wonTime,
+          won_time: deal.wonTime,
+          closeTime: deal.closeTime,
+          close_time: deal.closeTime
+        }
       });
     });
   }
@@ -391,6 +411,8 @@ class MqlSyncService {
   }
 
   incrementRepeatSales(dataset, deal) {
+    // Старая логика на основе метки - оставляем для обратной совместимости,
+    // но основной пересчет будет в recalculateRepeatSales
     if (!deal.isRepeatCustomer) {
       return;
     }
@@ -408,6 +430,87 @@ class MqlSyncService {
     if (row?.combined) {
       row.combined.repeat += 1;
     }
+  }
+
+  /**
+   * Пересчитывает повторные продажи на основе всех выигранных сделок для каждого клиента.
+   * Повторной считается любая выигранная сделка клиента, у которого уже была хотя бы одна выигранная сделка ранее.
+   */
+  recalculateRepeatSales(dataset) {
+    logger.info('Recalculating repeat sales based on all won deals', { year: dataset.year });
+    
+    // Сбрасываем счетчики повторных продаж
+    dataset.months.forEach((monthKey) => {
+      if (dataset.sources[monthKey]?.combined) {
+        dataset.sources[monthKey].combined.repeat = 0;
+      }
+    });
+
+    // Собираем все выигранные сделки из dataset.leads
+    const wonDealsByPerson = new Map();
+    let totalWonDeals = 0;
+    
+    dataset.leads.forEach((lead) => {
+      if (lead.source !== 'pipedrive') return;
+      
+      const deal = lead.payload || {};
+      if (!deal.wonTime && !deal.won_time) return;
+      
+      const personId = deal.personId || deal.person_id;
+      if (!personId) return;
+      
+      const wonTime = deal.wonTime || deal.won_time;
+      const wonMonth = getMonthKey(wonTime);
+      if (!wonMonth || !wonMonth.startsWith(`${dataset.year}-`)) return;
+      
+      totalWonDeals++;
+      
+      if (!wonDealsByPerson.has(personId)) {
+        wonDealsByPerson.set(personId, []);
+      }
+      
+      wonDealsByPerson.get(personId).push({
+        dealId: deal.id || deal.dealId,
+        wonTime,
+        wonMonth
+      });
+    });
+
+    // Для каждого клиента определяем повторные продажи
+    let totalRepeatDeals = 0;
+    const repeatDealsByMonth = {};
+    
+    wonDealsByPerson.forEach((deals, personId) => {
+      if (deals.length <= 1) {
+        return; // Если только одна сделка, повторных нет
+      }
+      
+      // Сортируем по дате выигрыша
+      deals.sort((a, b) => {
+        const ta = new Date(a.wonTime).getTime();
+        const tb = new Date(b.wonTime).getTime();
+        return ta - tb;
+      });
+      
+      // Первая сделка - не повторная, все остальные - повторные
+      deals.slice(1).forEach((deal) => {
+        const monthKey = deal.wonMonth;
+        const row = dataset.sources[monthKey];
+        if (row?.combined) {
+          row.combined.repeat += 1;
+          totalRepeatDeals++;
+          repeatDealsByMonth[monthKey] = (repeatDealsByMonth[monthKey] || 0) + 1;
+        }
+      });
+    });
+    
+    logger.info('Repeat sales recalculation completed', {
+      year: dataset.year,
+      totalWonDeals,
+      customersWithMultipleDeals: wonDealsByPerson.size - Array.from(wonDealsByPerson.values()).filter(d => d.length <= 1).length,
+      totalRepeatDeals,
+      repeatDealsByMonth
+    });
   }
 
   registerPipedriveSendpulse(dataset, deal, monthKey) {

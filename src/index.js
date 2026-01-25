@@ -161,9 +161,17 @@ app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html
 // Статические файлы (frontend) - защищены авторизацией
 // Запрещаем автоматическую отдачу index.html из подпапок, чтобы маршруты типа /vat-margin
 // корректно возвращали основной SPA, а не прототипы из подпапок.
+// В development режиме отключаем кэширование для автоматической перезагрузки изменений
 app.use(
   express.static(path.join(__dirname, '../frontend'), {
-    index: false
+    index: false,
+    setHeaders: (res, path) => {
+      if (process.env.NODE_ENV === 'development') {
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+      }
+    }
   })
 );
 app.get(

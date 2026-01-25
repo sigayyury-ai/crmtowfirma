@@ -1,0 +1,2889 @@
+{
+  "exported_at": "2026-01-12T14:49:35.299Z",
+  "total_deals": 80,
+  "deals": [
+    {
+      "id": 1105,
+      "title": "Maryna Talchuk Lead",
+      "value": 11400,
+      "currency": "EUR",
+      "expected_close_date": "2025-10-23",
+      "close_date": null,
+      "stage_id": 24,
+      "status": "open",
+      "pipeline_id": 4,
+      "person_id": {
+        "active_flag": true,
+        "name": "Maryna Talchuk",
+        "email": [
+          {
+            "label": "work",
+            "value": "M.talchuk@e100.eu",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "value": "",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1428
+      },
+      "org_id": {
+        "name": "E100",
+        "people_count": 1,
+        "owner_id": 20141095,
+        "address": null,
+        "label_ids": [],
+        "active_flag": true,
+        "cc_email": "comoon@pipedrivemail.com",
+        "owner_name": "Happy manager",
+        "value": 121
+      },
+      "created_at": "2025-05-13 10:24:13",
+      "updated_at": "2025-09-30 20:43:49"
+    },
+    {
+      "id": 1112,
+      "title": "Заявка от Vera Vein",
+      "value": 765,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Vera Vein",
+        "email": [
+          {
+            "label": "work",
+            "value": "vevavera1984@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48510571091",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 684
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 10:35:19",
+      "updated_at": "2026-01-08 17:43:36"
+    },
+    {
+      "id": 1117,
+      "title": "Заявка от Павло",
+      "value": 720,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Pavlo Drahunov",
+        "email": [
+          {
+            "label": "work",
+            "value": "error404@mailfence.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "+380962562514",
+            "primary": true
+          },
+          {
+            "label": "",
+            "value": "491723960098",
+            "primary": false
+          },
+          {
+            "label": "",
+            "value": "49172396009",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1057
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 18:22:07",
+      "updated_at": "2026-01-05 18:03:41"
+    },
+    {
+      "id": 1118,
+      "title": "Заявка от Daria Zaplatina",
+      "value": 520,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Даша Zaplatina",
+        "email": [
+          {
+            "label": "work",
+            "value": "daria.zaplatina28@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+420608456251",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 659
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 18:27:06",
+      "updated_at": "2025-12-22 21:09:08"
+    },
+    {
+      "id": 1119,
+      "title": "Заявка от Александр",
+      "value": 920,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "ALIAKSANDR IVANOU",
+        "email": [
+          {
+            "label": "work",
+            "value": "daos.ais@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48690341676",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1136
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 18:28:34",
+      "updated_at": "2026-01-05 18:07:49"
+    },
+    {
+      "id": 1120,
+      "title": "Заявка от Mariam Tagirova",
+      "value": 765,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Mariam Tagirova",
+        "email": [
+          {
+            "label": "work",
+            "value": "mtagirova77@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4915751100750",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1110
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 18:31:34",
+      "updated_at": "2026-01-01 13:56:34"
+    },
+    {
+      "id": 1121,
+      "title": "Заявка от Даша",
+      "value": 870,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Darya Zaseka",
+        "email": [
+          {
+            "label": "work",
+            "value": "darya.zaseka@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "789930827",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "+48789930827",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1051
+      },
+      "org_id": null,
+      "created_at": "2025-05-22 19:07:26",
+      "updated_at": "2026-01-08 17:44:25"
+    },
+    {
+      "id": 1257,
+      "title": "Заявка от Anton France",
+      "value": 870,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 32,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anton Makevich",
+        "email": [
+          {
+            "label": "work",
+            "value": "maktoxa@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+34664322624",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1063
+      },
+      "org_id": null,
+      "created_at": "2025-07-22 23:37:55",
+      "updated_at": "2025-12-24 09:43:52"
+    },
+    {
+      "id": 1260,
+      "title": "Заявка от Kostiantyn Dutkovskyi",
+      "value": 720,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Dutkovskyi Kostiantyn",
+        "email": [
+          {
+            "label": "work",
+            "value": "dutkot9@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+34624360825",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 897
+      },
+      "org_id": null,
+      "created_at": "2025-07-23 12:08:02",
+      "updated_at": "2026-01-05 18:27:59"
+    },
+    {
+      "id": 1263,
+      "title": "Заявка от Вадим",
+      "value": 720,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "VADZIM MAKEVICH",
+        "email": [
+          {
+            "label": "work",
+            "value": "bono.ex@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+375259302059",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1096
+      },
+      "org_id": null,
+      "created_at": "2025-07-24 15:00:33",
+      "updated_at": "2025-12-25 21:29:25"
+    },
+    {
+      "id": 1291,
+      "title": "Заявка от Ирина",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Irina Bondarenko",
+        "email": [
+          {
+            "label": "work",
+            "value": "i.makhinova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+353873744079",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1463
+      },
+      "org_id": null,
+      "created_at": "2025-08-08 13:41:04",
+      "updated_at": "2026-01-05 18:13:26"
+    },
+    {
+      "id": 1299,
+      "title": "Заявка от Галина",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Plavunova Galina",
+        "email": [
+          {
+            "label": "work",
+            "value": "galinka9660@yandex.ru",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+491602689846",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1567
+      },
+      "org_id": null,
+      "created_at": "2025-08-15 20:09:48",
+      "updated_at": "2025-11-06 10:32:46"
+    },
+    {
+      "id": 1311,
+      "title": "Заявка от Татьяна",
+      "value": 0,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 40,
+      "status": "open",
+      "pipeline_id": 4,
+      "person_id": {
+        "active_flag": true,
+        "name": "Tanya Tagaeva",
+        "email": [
+          {
+            "label": "work",
+            "value": "tagaevatata@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+380992425309",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1568
+      },
+      "org_id": null,
+      "created_at": "2025-08-21 16:13:18",
+      "updated_at": "2025-09-04 10:47:36"
+    },
+    {
+      "id": 1316,
+      "title": "Заявка от Pavlo",
+      "value": 670,
+      "currency": "EUR",
+      "expected_close_date": "2026-07-04",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Pavlo Drahunov",
+        "email": [
+          {
+            "label": "work",
+            "value": "error404@mailfence.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "+380962562514",
+            "primary": true
+          },
+          {
+            "label": "",
+            "value": "491723960098",
+            "primary": false
+          },
+          {
+            "label": "",
+            "value": "49172396009",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1057
+      },
+      "org_id": null,
+      "created_at": "2025-08-23 19:40:39",
+      "updated_at": "2025-11-28 13:22:21"
+    },
+    {
+      "id": 1321,
+      "title": "Заявка от Natalia Gschwander",
+      "value": 920,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Natalia Gschwander",
+        "email": [
+          {
+            "label": "work",
+            "value": "nicherepova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "+49 176 57625529",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1107
+      },
+      "org_id": null,
+      "created_at": "2025-08-28 08:37:38",
+      "updated_at": "2026-01-05 17:32:23"
+    },
+    {
+      "id": 1327,
+      "title": "Заявка от Elizaveta  Petrova",
+      "value": 1700,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Elizaveta Petrova",
+        "email": [
+          {
+            "label": "work",
+            "value": "lizaveta.petr@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+79299496240",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1585
+      },
+      "org_id": null,
+      "created_at": "2025-08-30 19:43:20",
+      "updated_at": "2026-01-03 19:07:16"
+    },
+    {
+      "id": 1335,
+      "title": "Заявка от Владимир",
+      "value": 920,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-26",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "ULADZIMIR STASEVICH",
+        "email": [
+          {
+            "label": "work",
+            "value": "svan.by@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "value": "",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 877
+      },
+      "org_id": null,
+      "created_at": "2025-09-02 12:27:46",
+      "updated_at": "2026-01-07 19:26:32"
+    },
+    {
+      "id": 1436,
+      "title": "Заявка от Ана",
+      "value": 925,
+      "currency": "EUR",
+      "expected_close_date": "2026-07-07",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anna",
+        "email": [
+          {
+            "label": "work",
+            "value": "anna.lazareva.18@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+79811089593",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1635
+      },
+      "org_id": null,
+      "created_at": "2025-09-24 12:57:51",
+      "updated_at": "2026-01-05 09:17:04"
+    },
+    {
+      "id": 1564,
+      "title": "Заявка от Наташа",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 32,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "NATALLIA NEROVNYA",
+        "email": [
+          {
+            "label": "work",
+            "value": "natanerovnja@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+37066043994",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1369
+      },
+      "org_id": null,
+      "created_at": "2025-10-21 06:49:31",
+      "updated_at": "2025-10-29 19:39:31"
+    },
+    {
+      "id": 1585,
+      "title": "Заявка от Сергей",
+      "value": 2848,
+      "currency": "PLN",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Siergiej Żarkiewicz",
+        "email": [
+          {
+            "label": "work",
+            "value": "siergiej.zarkiewicz@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "530346647",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1540
+      },
+      "org_id": null,
+      "created_at": "2025-10-27 09:51:57",
+      "updated_at": "2026-01-05 17:49:56"
+    },
+    {
+      "id": 1590,
+      "title": "Заявка от Владимир+жена",
+      "value": 5525,
+      "currency": "PLN",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Volodymyr Vashurkin",
+        "email": [
+          {
+            "label": "work",
+            "value": "wl9pa2@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+48789633517",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1757
+      },
+      "org_id": null,
+      "created_at": "2025-10-29 18:03:21",
+      "updated_at": "2025-11-19 18:03:00"
+    },
+    {
+      "id": 1606,
+      "title": "Заявка от Тати Трифонова",
+      "value": 1500,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anton Komissarov",
+        "email": [
+          {
+            "label": "work",
+            "value": "tati.trifonova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4917645673745",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1774
+      },
+      "org_id": null,
+      "created_at": "2025-11-09 11:52:05",
+      "updated_at": "2025-12-05 14:18:29"
+    },
+    {
+      "id": 1607,
+      "title": "Заявка от Jamilya Kamalova",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 16,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Dzhamilia Kamalova",
+        "email": [
+          {
+            "label": "work",
+            "value": "dmkamalova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+33612975358",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1464
+      },
+      "org_id": null,
+      "created_at": "2025-11-10 18:06:11",
+      "updated_at": "2026-01-08 08:34:55"
+    },
+    {
+      "id": 1616,
+      "title": "Заявка от Александра Долинская",
+      "value": 1200,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Alexandra Dolinskaya",
+        "email": [
+          {
+            "label": "work",
+            "value": "adolinskaya@protonmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+37126343610",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1780
+      },
+      "org_id": null,
+      "created_at": "2025-11-15 23:55:51",
+      "updated_at": "2026-01-07 19:20:36"
+    },
+    {
+      "id": 1617,
+      "title": "Заявка от Виктория Усова",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Viktoriia Usova",
+        "email": [
+          {
+            "label": "work",
+            "value": "victoriusova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+4915146321341",
+            "primary": true
+          },
+          {
+            "label": "",
+            "value": "+79811945734",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1342
+      },
+      "org_id": null,
+      "created_at": "2025-11-16 00:03:00",
+      "updated_at": "2025-11-25 14:28:06"
+    },
+    {
+      "id": 1623,
+      "title": "Anastasiia",
+      "value": 3605,
+      "currency": "PLN",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 32,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anastasiia Hniedash",
+        "email": [
+          {
+            "label": "work",
+            "value": "anastasiia.gnedash@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48504151305",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "504151305",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1787
+      },
+      "org_id": null,
+      "created_at": "2025-11-19 09:03:42",
+      "updated_at": "2025-12-11 18:11:36"
+    },
+    {
+      "id": 1641,
+      "title": "Заявка от Алексей",
+      "value": 30,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Алексей",
+        "email": [
+          {
+            "label": "work",
+            "value": "aliakseiwrc@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48536291312",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1643
+      },
+      "org_id": null,
+      "created_at": "2025-11-21 07:28:27",
+      "updated_at": "2026-01-04 09:46:51"
+    },
+    {
+      "id": 1649,
+      "title": "Заявка от Oleksandra",
+      "value": 720,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Oleksandra Myrovytska",
+        "email": [
+          {
+            "label": "work",
+            "value": "A.mirovitska@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "727833033",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1673
+      },
+      "org_id": null,
+      "created_at": "2025-11-23 10:19:48",
+      "updated_at": "2025-12-10 11:00:14"
+    },
+    {
+      "id": 1650,
+      "title": "Заявка от Igor123",
+      "value": 700,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 16,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Igor",
+        "email": [
+          {
+            "label": "work",
+            "value": "shadal490@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+37256233249",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1798
+      },
+      "org_id": null,
+      "created_at": "2025-11-23 17:18:37",
+      "updated_at": "2025-12-25 10:39:09"
+    },
+    {
+      "id": 1651,
+      "title": "Заявка от Ксюша",
+      "value": 3455,
+      "currency": "PLN",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Kseniia Zemlianaia",
+        "email": [
+          {
+            "label": "work",
+            "value": "zemlyanayaksenia@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48789780482",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "789780482",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 747
+      },
+      "org_id": null,
+      "created_at": "2025-11-23 18:28:34",
+      "updated_at": "2026-01-12 12:15:32"
+    },
+    {
+      "id": 1678,
+      "title": "Заявка от vera samasionak",
+      "value": 5173,
+      "currency": "PLN",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Vera Samasionak",
+        "email": [
+          {
+            "label": "work",
+            "value": "vera.samasionak@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48572643488",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "572643488",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 920
+      },
+      "org_id": null,
+      "created_at": "2025-11-30 22:27:10",
+      "updated_at": "2026-01-10 13:23:27"
+    },
+    {
+      "id": 1685,
+      "title": "Заявка от Anna Zinczenko-Lebiedź",
+      "value": 3272,
+      "currency": "PLN",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "ANNA ZINCZENKO-LEBIEDŹ",
+        "email": [
+          {
+            "label": "work",
+            "value": "a.zinczenko@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "502596646",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1646
+      },
+      "org_id": null,
+      "created_at": "2025-12-07 09:53:54",
+      "updated_at": "2026-01-12 12:47:25"
+    },
+    {
+      "id": 1686,
+      "title": "Anna",
+      "value": 600,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "ANNA ZINCZENKO-LEBIEDŹ",
+        "email": [
+          {
+            "label": "work",
+            "value": "a.zinczenko@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "502596646",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1646
+      },
+      "org_id": null,
+      "created_at": "2025-12-08 08:38:22",
+      "updated_at": "2026-01-04 17:09:41"
+    },
+    {
+      "id": 1688,
+      "title": "Anna Denisova",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anna Degtyareva",
+        "email": [
+          {
+            "label": "work",
+            "value": "anna_denisova@mail.ru",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+79262314022",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1825
+      },
+      "org_id": null,
+      "created_at": "2025-12-08 12:35:51",
+      "updated_at": "2026-01-08 17:41:10"
+    },
+    {
+      "id": 1694,
+      "title": "Заявка от Anna Leonova",
+      "value": 300,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anna",
+        "email": [
+          {
+            "label": "work",
+            "value": "anna.leonova.vl@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "789 672 259",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1637
+      },
+      "org_id": null,
+      "created_at": "2025-12-10 09:38:28",
+      "updated_at": "2026-01-01 15:07:10"
+    },
+    {
+      "id": 1696,
+      "title": "Заявка от Sergey",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Sergejs Čerņecovs",
+        "email": [
+          {
+            "label": "work",
+            "value": "sergey@chernecov.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+37120074251",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1829
+      },
+      "org_id": null,
+      "created_at": "2025-12-10 18:41:40",
+      "updated_at": "2026-01-07 11:00:07"
+    },
+    {
+      "id": 1697,
+      "title": "Заявка от Никита",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "MIKITA PASKAL",
+        "email": [
+          {
+            "label": "work",
+            "value": "paskalnikita@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48576203687",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1831
+      },
+      "org_id": null,
+      "created_at": "2025-12-10 21:14:28",
+      "updated_at": "2026-01-08 06:44:06"
+    },
+    {
+      "id": 1699,
+      "title": "Заявка от Maria Rikhter",
+      "value": 300,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Maria Rikhter",
+        "email": [
+          {
+            "label": "work",
+            "value": "maria.a.rikhter@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4917636069806",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1834
+      },
+      "org_id": null,
+      "created_at": "2025-12-12 10:16:04",
+      "updated_at": "2026-01-01 15:02:48"
+    },
+    {
+      "id": 1700,
+      "title": "Jekaterina Kolomojec",
+      "value": 295,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 32,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Jekaterina Kolomojec",
+        "email": [
+          {
+            "label": "work",
+            "value": "katerina.ko13@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "49017673809585",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "+49 176 73809585",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1370
+      },
+      "org_id": null,
+      "created_at": "2025-12-12 13:17:28",
+      "updated_at": "2026-01-08 08:33:39"
+    },
+    {
+      "id": 1706,
+      "title": "Заявка от Саша",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Alexandra Galaktionova",
+        "email": [
+          {
+            "label": "work",
+            "value": "asya.galaktionova@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+351911050672",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1841
+      },
+      "org_id": null,
+      "created_at": "2025-12-14 13:44:32",
+      "updated_at": "2026-01-08 06:43:54"
+    },
+    {
+      "id": 1707,
+      "title": "Заявка от Nina",
+      "value": 2975,
+      "currency": "PLN",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Nina Santalova",
+        "email": [
+          {
+            "label": "work",
+            "value": "ninnely@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48608709208",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1842
+      },
+      "org_id": null,
+      "created_at": "2025-12-14 23:20:23",
+      "updated_at": "2026-01-12 12:09:54"
+    },
+    {
+      "id": 1709,
+      "title": "Заявка от Sofia",
+      "value": 950,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-24",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Sofia Lutsinina",
+        "email": [
+          {
+            "label": "work",
+            "value": "sonya.scotch@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+3725520917",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1845
+      },
+      "org_id": null,
+      "created_at": "2025-12-15 17:41:59",
+      "updated_at": "2026-01-08 06:30:27"
+    },
+    {
+      "id": 1714,
+      "title": "Заявка от Ольга",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Nechasna Olga",
+        "email": [
+          {
+            "label": "work",
+            "value": "easyjobfor@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+34622870484",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1805
+      },
+      "org_id": null,
+      "created_at": "2025-12-16 20:52:26",
+      "updated_at": "2026-01-08 06:43:37"
+    },
+    {
+      "id": 1718,
+      "title": "Sofia",
+      "value": 1220,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Sofia Lutsinina",
+        "email": [
+          {
+            "label": "work",
+            "value": "sonya.scotch@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+3725520917",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1845
+      },
+      "org_id": null,
+      "created_at": "2025-12-17 09:29:09",
+      "updated_at": "2026-01-08 06:37:10"
+    },
+    {
+      "id": 1720,
+      "title": "Заявка от Demid",
+      "value": 850,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 16,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Demid",
+        "email": [
+          {
+            "label": "work",
+            "value": "demostapenko@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+37258187845",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1849
+      },
+      "org_id": null,
+      "created_at": "2025-12-17 10:17:14",
+      "updated_at": "2026-01-08 11:21:19"
+    },
+    {
+      "id": 1727,
+      "title": "Заявка от Nikita",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Nikita Smirnov",
+        "email": [
+          {
+            "label": "work",
+            "value": "detectivecolombo@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4915782474258",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1853
+      },
+      "org_id": null,
+      "created_at": "2025-12-18 22:09:10",
+      "updated_at": "2025-12-26 19:19:44"
+    },
+    {
+      "id": 1732,
+      "title": "Заявка от Игорь",
+      "value": 1300,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 39,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Igor Kovach",
+        "email": [
+          {
+            "label": "work",
+            "value": "thekovach@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48667840297",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1858
+      },
+      "org_id": null,
+      "created_at": "2025-12-22 13:42:39",
+      "updated_at": "2026-01-12 12:47:25"
+    },
+    {
+      "id": 1734,
+      "title": "Заявка от Nick",
+      "value": 1670,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 39,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "MIKITA SHAPAVALAU",
+        "email": [
+          {
+            "label": "work",
+            "value": "the.only.shepa@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48571024069",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1860
+      },
+      "org_id": null,
+      "created_at": "2025-12-22 18:03:23",
+      "updated_at": "2026-01-11 21:11:56"
+    },
+    {
+      "id": 1735,
+      "title": "Заявка от Ольга",
+      "value": 1820,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 39,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Volha Budzko",
+        "email": [
+          {
+            "label": "work",
+            "value": "budkoolga95@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48571352329",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1613
+      },
+      "org_id": null,
+      "created_at": "2025-12-22 18:34:13",
+      "updated_at": "2026-01-11 13:04:43"
+    },
+    {
+      "id": 1740,
+      "title": "Заявка от Светлана",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 16,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Светлана",
+        "email": [
+          {
+            "label": "work",
+            "value": "svetlanamanyuk@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48452203062",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1862
+      },
+      "org_id": null,
+      "created_at": "2025-12-23 21:28:40",
+      "updated_at": "2026-01-10 15:35:31"
+    },
+    {
+      "id": 1762,
+      "title": "Katsiaryna Kartashevich",
+      "value": 700,
+      "currency": "EUR",
+      "expected_close_date": "2025-12-30",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Katsiaryna Kartashevich",
+        "email": [
+          {
+            "label": "work",
+            "value": "k.kartashevich@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+48571365377",
+            "primary": true
+          },
+          {
+            "label": "",
+            "value": "571365377",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1730
+      },
+      "org_id": null,
+      "created_at": "2025-12-25 10:59:15",
+      "updated_at": "2026-01-10 11:11:16"
+    },
+    {
+      "id": 1769,
+      "title": "Роман",
+      "value": 600,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 32,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Gokhman Roman",
+        "email": [
+          {
+            "label": "work",
+            "value": "gohmanra@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+79217720058",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1867
+      },
+      "org_id": null,
+      "created_at": "2025-12-25 15:43:33",
+      "updated_at": "2026-01-11 13:14:06"
+    },
+    {
+      "id": 1775,
+      "title": "Aliaksandr",
+      "value": 950,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 38,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Aliaksandr Turchyniak",
+        "email": [
+          {
+            "label": "work",
+            "value": "tur150690@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48 573-499-757",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1869
+      },
+      "org_id": null,
+      "created_at": "2025-12-26 09:18:01",
+      "updated_at": "2026-01-10 15:15:00"
+    },
+    {
+      "id": 1777,
+      "title": "Karina12345",
+      "value": 900,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 36,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Karina",
+        "email": [
+          {
+            "label": "work",
+            "value": "karina.polivoda23@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48513805961",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "513805961",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1870
+      },
+      "org_id": null,
+      "created_at": "2025-12-26 15:45:58",
+      "updated_at": "2026-01-08 08:34:23"
+    },
+    {
+      "id": 1779,
+      "title": "Денис",
+      "value": 750,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Denis Korolev",
+        "email": [
+          {
+            "label": "work",
+            "value": "korolevdb@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+34698997622",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1871
+      },
+      "org_id": null,
+      "created_at": "2025-12-26 16:32:49",
+      "updated_at": "2026-01-12 13:28:59"
+    },
+    {
+      "id": 1788,
+      "title": "Elena Dikareva",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-31",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Elena Dikareva",
+        "email": [
+          {
+            "label": "work",
+            "value": "dikareva1209@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+35795956263",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1872
+      },
+      "org_id": null,
+      "created_at": "2025-12-28 08:52:58",
+      "updated_at": "2026-01-08 06:58:02"
+    },
+    {
+      "id": 1789,
+      "title": "Angelina Kraft",
+      "value": 700,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Angelina Kraft",
+        "email": [
+          {
+            "label": "work",
+            "value": "linakraft@gmx.de",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+49 152 04961712",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1876
+      },
+      "org_id": null,
+      "created_at": "2025-12-28 08:58:21",
+      "updated_at": "2026-01-01 13:37:15"
+    },
+    {
+      "id": 1801,
+      "title": "Svetlana Ormashova",
+      "value": 950,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Света Ормашова",
+        "email": [
+          {
+            "label": "work",
+            "value": "ormashova92@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+79879513505",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "+351910605308",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 933
+      },
+      "org_id": null,
+      "created_at": "2025-12-28 11:16:29",
+      "updated_at": "2026-01-07 09:41:22"
+    },
+    {
+      "id": 1808,
+      "title": "Дарья 123",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 2,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Дарья",
+        "email": [
+          {
+            "label": "work",
+            "value": "dariagrishechkina@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "",
+            "value": "+37062690682",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1793
+      },
+      "org_id": null,
+      "created_at": "2025-12-28 12:02:46",
+      "updated_at": "2026-01-11 09:42:54"
+    },
+    {
+      "id": 1811,
+      "title": "Julie Lavrova",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 2,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Julie Lavrova",
+        "email": [
+          {
+            "label": "work",
+            "value": "prettyscammer@bk.ru",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48453477312",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1880
+      },
+      "org_id": null,
+      "created_at": "2025-12-29 06:55:21",
+      "updated_at": "2026-01-04 09:36:39"
+    },
+    {
+      "id": 1818,
+      "title": "Юлия",
+      "value": 950,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-24",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Yuliia Yatsiuk",
+        "email": [
+          {
+            "label": "work",
+            "value": "jaaygooo@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+380632635771",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1887
+      },
+      "org_id": null,
+      "created_at": "2025-12-31 17:33:02",
+      "updated_at": "2026-01-10 13:10:23"
+    },
+    {
+      "id": 1819,
+      "title": "Александра",
+      "value": 820,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Aleksandra Grishechko",
+        "email": [
+          {
+            "label": "work",
+            "value": "alexandra.grishechko@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4917670813803",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1888
+      },
+      "org_id": null,
+      "created_at": "2025-12-31 19:06:29",
+      "updated_at": "2026-01-10 15:27:31"
+    },
+    {
+      "id": 1824,
+      "title": "Nick",
+      "value": 370,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "MIKITA SHAPAVALAU",
+        "email": [
+          {
+            "label": "work",
+            "value": "the.only.shepa@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48571024069",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1860
+      },
+      "org_id": null,
+      "created_at": "2026-01-01 13:38:24",
+      "updated_at": "2026-01-01 13:57:23"
+    },
+    {
+      "id": 1837,
+      "title": "Нелли",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-01",
+      "close_date": null,
+      "stage_id": 35,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Нелли",
+        "email": [
+          {
+            "label": "work",
+            "value": "thea.rikke@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4915256251710",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1893
+      },
+      "org_id": null,
+      "created_at": "2026-01-03 02:05:39",
+      "updated_at": "2026-01-11 21:58:29"
+    },
+    {
+      "id": 1838,
+      "title": "Полина",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-01",
+      "close_date": null,
+      "stage_id": 35,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Полина",
+        "email": [
+          {
+            "label": "work",
+            "value": "polinasol.com@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48453319198",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1894
+      },
+      "org_id": null,
+      "created_at": "2026-01-03 08:36:49",
+      "updated_at": "2026-01-04 09:30:44"
+    },
+    {
+      "id": 1844,
+      "title": "Arina",
+      "value": 850,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 2,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Arina",
+        "email": [
+          {
+            "label": "work",
+            "value": "hrista466@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48505732675",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1898
+      },
+      "org_id": null,
+      "created_at": "2026-01-03 18:46:33",
+      "updated_at": "2026-01-04 09:30:05"
+    },
+    {
+      "id": 1845,
+      "title": "Анна",
+      "value": 850,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 18,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Анна",
+        "email": [
+          {
+            "label": "work",
+            "value": "hannashy@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+37068932630",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1899
+      },
+      "org_id": null,
+      "created_at": "2026-01-04 11:04:17",
+      "updated_at": "2026-01-09 09:18:11"
+    },
+    {
+      "id": 1848,
+      "title": "Михаил",
+      "value": 1770,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-01",
+      "close_date": null,
+      "stage_id": 37,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Mikhail Chuprynski",
+        "email": [
+          {
+            "label": "work",
+            "value": "onemtut@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48884814036",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1738
+      },
+      "org_id": null,
+      "created_at": "2026-01-05 12:49:50",
+      "updated_at": "2026-01-05 13:08:10"
+    },
+    {
+      "id": 1849,
+      "title": "Гор Давлятшин",
+      "value": 0,
+      "currency": "EUR",
+      "expected_close_date": "2026-01-24",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Gor Davliatshin",
+        "email": [
+          {
+            "label": "work",
+            "value": "onegomer@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+351912498205",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1903
+      },
+      "org_id": null,
+      "created_at": "2026-01-05 13:04:38",
+      "updated_at": "2026-01-08 17:37:12"
+    },
+    {
+      "id": 1968,
+      "title": "Нинель",
+      "value": 1270,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 37,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Ninel Nuretdinova",
+        "email": [
+          {
+            "label": "work",
+            "value": "myltiii@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+995555904735",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "+99555904735",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 995
+      },
+      "org_id": null,
+      "created_at": "2026-01-06 09:59:20",
+      "updated_at": "2026-01-12 13:39:52"
+    },
+    {
+      "id": 2041,
+      "title": "Yury Sihai",
+      "value": 1,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 16,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Yury Sihai",
+        "email": [
+          {
+            "label": "work",
+            "value": "sigayyury@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "+48519019155",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 863
+      },
+      "org_id": null,
+      "created_at": "2026-01-07 15:23:06",
+      "updated_at": "2026-01-11 17:00:09"
+    },
+    {
+      "id": 2042,
+      "title": "Darya Milavanava",
+      "value": 750,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 27,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Darya Milavanava",
+        "email": [
+          {
+            "label": "work",
+            "value": "daryamilavanava@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48571939852",
+            "primary": true
+          },
+          {
+            "label": "other",
+            "value": "571939852",
+            "primary": false
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1873
+      },
+      "org_id": null,
+      "created_at": "2026-01-08 13:25:20",
+      "updated_at": "2026-01-12 12:03:53"
+    },
+    {
+      "id": 2043,
+      "title": "Арина",
+      "value": 800,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 3,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Арина",
+        "email": [
+          {
+            "label": "work",
+            "value": "chertkovaarina@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48571425025",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 2077
+      },
+      "org_id": null,
+      "created_at": "2026-01-09 10:34:16",
+      "updated_at": "2026-01-09 10:45:41"
+    },
+    {
+      "id": 2044,
+      "title": "Юра",
+      "value": 0,
+      "currency": "EUR",
+      "expected_close_date": null,
+      "close_date": null,
+      "stage_id": 1,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Yury Sihai",
+        "email": [
+          {
+            "label": "work",
+            "value": "sigayyury@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "work",
+            "value": "+48519019155",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 863
+      },
+      "org_id": null,
+      "created_at": "2026-01-09 14:55:12",
+      "updated_at": "2026-01-09 14:55:13"
+    },
+    {
+      "id": 2045,
+      "title": "Илья Сметанин",
+      "value": 850,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-28",
+      "close_date": null,
+      "stage_id": 3,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Илья",
+        "email": [
+          {
+            "label": "work",
+            "value": "cuprum19930@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+34600465626",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 2078
+      },
+      "org_id": null,
+      "created_at": "2026-01-10 10:01:55",
+      "updated_at": "2026-01-10 10:37:45"
+    },
+    {
+      "id": 2046,
+      "title": "Елена",
+      "value": 1300,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 34,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Елена",
+        "email": [
+          {
+            "label": "work",
+            "value": "elenahristolubova213@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+79528458015",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 2080
+      },
+      "org_id": null,
+      "created_at": "2026-01-10 12:00:35",
+      "updated_at": "2026-01-11 09:40:58"
+    },
+    {
+      "id": 2047,
+      "title": "Katja",
+      "value": 1250,
+      "currency": "EUR",
+      "expected_close_date": "2026-03-01",
+      "close_date": null,
+      "stage_id": 35,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Kateryna Chernysh",
+        "email": [
+          {
+            "label": "work",
+            "value": "kathichernysh@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4915122943473",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1497
+      },
+      "org_id": null,
+      "created_at": "2026-01-10 12:41:09",
+      "updated_at": "2026-01-11 09:39:37"
+    },
+    {
+      "id": 2048,
+      "title": "Александра",
+      "value": 700,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-07",
+      "close_date": null,
+      "stage_id": 37,
+      "status": "open",
+      "pipeline_id": 5,
+      "person_id": {
+        "active_flag": true,
+        "name": "Aleksandra Grishechko",
+        "email": [
+          {
+            "label": "work",
+            "value": "alexandra.grishechko@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+4917670813803",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1888
+      },
+      "org_id": null,
+      "created_at": "2026-01-10 15:23:17",
+      "updated_at": "2026-01-11 21:15:21"
+    },
+    {
+      "id": 2049,
+      "title": "Anna Tumanova",
+      "value": 1300,
+      "currency": "EUR",
+      "expected_close_date": "2026-02-04",
+      "close_date": null,
+      "stage_id": 1,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Anna Tumanova",
+        "email": [
+          {
+            "label": "work",
+            "value": "anna.tumanova7991@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+48508536459",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 1752
+      },
+      "org_id": null,
+      "created_at": "2026-01-12 11:07:59",
+      "updated_at": "2026-01-12 11:19:35"
+    },
+    {
+      "id": 2050,
+      "title": "Mariya Podushko",
+      "value": 1450,
+      "currency": "EUR",
+      "expected_close_date": "2026-07-03",
+      "close_date": null,
+      "stage_id": 1,
+      "status": "open",
+      "pipeline_id": 1,
+      "person_id": {
+        "active_flag": true,
+        "name": "Mariya Podushko",
+        "email": [
+          {
+            "label": "work",
+            "value": "podushkomariya@gmail.com",
+            "primary": true
+          }
+        ],
+        "phone": [
+          {
+            "label": "other",
+            "value": "+380502325513",
+            "primary": true
+          }
+        ],
+        "owner_id": 20141095,
+        "company_id": 12929531,
+        "value": 2081
+      },
+      "org_id": null,
+      "created_at": "2026-01-12 12:18:17",
+      "updated_at": "2026-01-12 12:23:35"
+    }
+  ]
+}
