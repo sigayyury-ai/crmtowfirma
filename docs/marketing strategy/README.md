@@ -13,6 +13,11 @@
 | 5 | [Контент и бренд](./05-content-brand.md) | Marty Neumeier |
 | 6 | [Экономика маркетинга](./06-marketing-economics.md) | Y Combinator Unit Economics |
 | 7 | [Ограничения](./07-constraints.md) | GTM Planning Frameworks |
+| 8 | [Growth-программы](./08-growth-programs.md) | Influencer/Ambassador/Referral playbooks |
+| 9 | [Оптимизация каналов](./09-channel-optimization.md) | Conversion/CRO, channel efficiency |
+| 10 | [Контент-стратегия (вижен)](./10-content-strategy-vision.md) | COMOON content system |
+| 11 | [Соцсети: приоритеты](./11-social-media-priorities.md) | Focus + tests per platform |
+| 12 | [Каналы: резюме и план](./12-channels-summary-plan.md) | Single-page channel plan |
 
 ## Источники данных
 
@@ -23,10 +28,15 @@
 
 ## Статус
 
-- [ ] 01-business-goals.md
-- [ ] 02-product-matrix.md
-- [ ] 03-target-audience.md
-- [ ] 04-funnel-channels.md
-- [ ] 05-content-brand.md
-- [ ] 06-marketing-economics.md
-- [ ] 07-constraints.md
+- [x] 01-business-goals.md
+- [x] 02-product-matrix.md
+- [x] 03-target-audience.md
+- [x] 04-funnel-channels.md
+- [x] 05-content-brand.md
+- [x] 06-marketing-economics.md
+- [x] 07-constraints.md
+- [x] 08-growth-programs.md
+- [x] 09-channel-optimization.md
+- [x] 10-content-strategy-vision.md
+- [x] 11-social-media-priorities.md
+- [x] 12-channels-summary-plan.md
