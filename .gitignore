@@ -28,8 +28,9 @@ coverage/
 .specify/scripts/bash/*.log
 reports/
 
-# Documentation
-docs/
+# Documentation (ignore all except marketing strategy)
+docs/*
+!docs/marketing strategy/
 
 # Test scripts
 test-*.js
@@ -64,6 +65,7 @@ RESEARCH-*.md
 # Backup files
 .env.backup
 .env.bak
+tmp/pnl-backups/
 
 # Temporary/debug scripts (not tracked)
 scripts/find-payments-deal-*.js
