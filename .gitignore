@@ -31,6 +31,7 @@ reports/
 # Documentation (ignore all except marketing strategy)
 docs/*
 !docs/marketing strategy/
+!docs/camps-monthly-payments-report-how-it-works.md
 
 # Test scripts
 test-*.js

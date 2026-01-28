@@ -358,6 +358,7 @@ class ProductReportService {
     // Load cash payments for product
     let cashTotalPln = 0;
     let cashDealsCount = 0;
+    let cashMonthly = [];
     if (entry.productId) {
       try {
         const cashData = await this.loadCashPaymentsTotal(entry.productId, proformas);
@@ -365,6 +366,18 @@ class ProductReportService {
         cashDealsCount = cashData.dealsCount || 0;
       } catch (error) {
         logger.warn('Failed to load cash payments for product detail', {
+          productId: entry.productId,
+          error: error.message
+        });
+      }
+    }
+
+    // Monthly cash breakdown (to align with PNL month aggregation)
+    if (entry.productId) {
+      try {
+        cashMonthly = await this.loadCashPaymentsMonthly(entry.productId, proformas);
+      } catch (error) {
+        logger.warn('Failed to load monthly cash payments for product detail', {
           productId: entry.productId,
           error: error.message
         });
@@ -389,7 +402,8 @@ class ProductReportService {
       proformas, 
       stripePayments, 
       linkedPayments,
-      expensesPerParticipant
+      expensesPerParticipant,
+      cashMonthly
     );
 
     return {
@@ -1537,142 +1551,152 @@ class ProductReportService {
     return proformaCount + stripeCount;
   }
 
-  calculateMonthlyBreakdown(proformas, stripePayments, linkedPayments = { incoming: [] }, expensesPerParticipant = 0) {
+  toMonthKeyUtc(value) {
+    if (!value) return null;
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    return `${year}-${month}`;
+  }
+
+  async loadCashPaymentsMonthly(productId, proformas = []) {
+    if (!supabase || !productId) {
+      return [];
+    }
+
+    // Collect proforma ids to include cash payments that are linked via proforma_id
+    const proformaIds = Array.isArray(proformas)
+      ? proformas.map((p) => p?.proformaId).filter(Boolean)
+      : [];
+
+    let query = supabase
+      .from('cash_payments')
+      .select('id, product_id, proforma_id, currency, cash_received_amount, amount_pln, confirmed_at, expected_date, created_at, status')
+      .eq('status', 'received');
+
+    // Include both: directly linked to product AND linked via proforma_id
+    if (proformaIds.length > 0) {
+      query = query.or(`product_id.eq.${productId},proforma_id.in.(${proformaIds.join(',')})`);
+    } else {
+      query = query.eq('product_id', productId);
+    }
+
+    const { data, error } = await query.limit(5000);
+    if (error) {
+      throw new Error(`Failed to load cash_payments monthly: ${error.message}`);
+    }
+
+    const items = Array.isArray(data) ? data : [];
+    return items
+      .map((row) => {
+        const dateToUse = row.confirmed_at || row.expected_date || row.created_at || null;
+        const monthKey = this.toMonthKeyUtc(dateToUse);
+        if (!monthKey) return null;
+
+        let amountPln = toNumber(row.amount_pln);
+        if (!Number.isFinite(amountPln)) {
+          const currency = (row.currency || 'PLN').toUpperCase();
+          const raw = toNumber(row.cash_received_amount);
+          if (currency === 'PLN' && Number.isFinite(raw)) {
+            amountPln = raw;
+          }
+        }
+
+        if (!Number.isFinite(amountPln) || amountPln <= 0) {
+          return null;
+        }
+
+        return { monthKey, amountPln };
+      })
+      .filter(Boolean);
+  }
+
+  calculateMonthlyBreakdown(
+    proformas,
+    stripePayments,
+    linkedPayments = { incoming: [] },
+    expensesPerParticipant = 0,
+    cashMonthly = []
+  ) {
     const monthlyMap = new Map();
     const MARGIN_RATE = 0.35; // 35% маржа
     const VAT_RATE = 0.23; // 23% НДС
 
-    // ПРИОРИТЕТ 1: Обрабатываем входящие платежи из linkedPayments (реальные даты поступления денег)
-    // Это самые точные данные - реальные платежи с реальными датами
+    const ensureMonth = (monthKey) => {
+      if (!monthKey) return null;
+      if (!monthlyMap.has(monthKey)) {
+        monthlyMap.set(monthKey, {
+          month: monthKey,
+          amount: 0,
+          count: 0
+        });
+      }
+      return monthlyMap.get(monthKey);
+    };
+
+    // 1) Входящие платежи из linkedPayments (реальные даты поступления денег)
+    // ВАЖНО: НЕ делаем "месячную дедупликацию" со Stripe — это приводит к недосчёту.
     if (Array.isArray(linkedPayments.incoming)) {
       linkedPayments.incoming.forEach((payment) => {
         // Учитываем только реальные платежи (direction === 'in' и есть дата операции)
         if (!payment.operationDate || payment.direction !== 'in') return;
-        
-        const date = new Date(payment.operationDate);
-        if (isNaN(date.getTime())) return;
-        
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        const amount = toNumber(payment.amount) || 0;
-        
-        // Пропускаем нулевые или отрицательные суммы
-        if (amount <= 0) return;
-        
-        // Конвертируем в PLN, если валюта не PLN
-        let amountPln = amount;
-        if (payment.currency && payment.currency.toUpperCase() !== 'PLN') {
-          // Для не-PLN валют используем сумму как есть (предполагаем, что уже конвертировано)
-          amountPln = amount;
+
+        // Align with PNL: exclude non-real sources
+        if (payment.source === 'facebook_ads') return;
+
+        // Align with PNL: exclude unapproved bank payments (linked payments can include drafts)
+        if (payment.manualStatus && payment.manualStatus !== 'approved') return;
+
+        const monthKey = this.toMonthKeyUtc(payment.operationDate);
+        if (!monthKey) return;
+
+        // IMPORTANT: if currency != PLN and we don't have explicit PLN amount, don't assume it's PLN
+        const currency = (payment.currency || 'PLN').toUpperCase();
+        const rawAmount = toNumber(payment.amount) || 0;
+        if (rawAmount <= 0) return;
+
+        const amountPln = currency === 'PLN' ? rawAmount : null;
+        if (!Number.isFinite(amountPln) || amountPln <= 0) {
+          return;
         }
-        
-        if (!monthlyMap.has(monthKey)) {
-          monthlyMap.set(monthKey, {
-            month: monthKey,
-            amount: 0,
-            count: 0
-          });
-        }
-        
-        const entry = monthlyMap.get(monthKey);
+
+        const entry = ensureMonth(monthKey);
+        if (!entry) return;
         entry.amount += amountPln;
         entry.count += 1;
       });
     }
 
-    // ПРИОРИТЕТ 2: Обрабатываем Stripe платежи (используем дату создания платежа)
-    // Stripe платежи - это реальные оплаченные платежи
+    // 2) Stripe платежи (используем дату фактической оплаты — createdAt; fallback processedAt)
+    // Align with PNL: Stripe grouping should be by real payment date, not sync date.
     if (Array.isArray(stripePayments)) {
       stripePayments.forEach((payment) => {
         const dateStr = payment.createdAt || payment.processedAt;
         if (!dateStr) return;
-        
-        const date = new Date(dateStr);
-        if (isNaN(date.getTime())) return;
-        
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        const amount = toNumber(payment.amountPln) || toNumber(payment.amount) || 0;
-        
-        // Пропускаем нулевые или отрицательные суммы
+
+        const monthKey = this.toMonthKeyUtc(dateStr);
+        if (!monthKey) return;
+
+        const amount = toNumber(payment.amountPln) || 0;
         if (amount <= 0) return;
-        
-        // Проверяем, есть ли уже платежи за этот месяц из linkedPayments
-        // Если есть, не добавляем Stripe платеж, чтобы не дублировать
-        const hasLinkedPaymentsForMonth = Array.isArray(linkedPayments.incoming) &&
-          linkedPayments.incoming.some((p) => {
-            if (!p.operationDate || p.direction !== 'in') return false;
-            const pDate = new Date(p.operationDate);
-            if (isNaN(pDate.getTime())) return false;
-            const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
-            return pMonthKey === monthKey;
-          });
-        
-        if (hasLinkedPaymentsForMonth) {
-          return;
-        }
-        
-        if (!monthlyMap.has(monthKey)) {
-          monthlyMap.set(monthKey, {
-            month: monthKey,
-            amount: 0,
-            count: 0
-          });
-        }
-        
-        const entry = monthlyMap.get(monthKey);
+
+        const entry = ensureMonth(monthKey);
+        if (!entry) return;
         entry.amount += amount;
         entry.count += 1;
       });
     }
 
-    // ПРИОРИТЕТ 3: Обрабатываем проформы (только если нет реальных платежей за месяц)
-    // Используем только оплаченные проформы (paidPln > 0)
-    // ВАЖНО: Используем дату проформы, но только если нет реальных платежей за этот месяц
-    if (Array.isArray(proformas)) {
-      proformas.forEach((proforma) => {
-        // Используем только оплаченные проформы
-        if (!proforma.date || !proforma.paidPln || proforma.paidPln <= 0) return;
-        
-        const date = new Date(proforma.date);
-        if (isNaN(date.getTime())) return;
-        
-        const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-        const amount = toNumber(proforma.paidPln) || 0;
-        
-        // Проверяем, есть ли уже реальные платежи за этот месяц из linkedPayments или Stripe
-        const hasRealPaymentsForMonth = 
-          (Array.isArray(linkedPayments.incoming) &&
-            linkedPayments.incoming.some((p) => {
-              if (!p.operationDate || p.direction !== 'in') return false;
-              const pDate = new Date(p.operationDate);
-              if (isNaN(pDate.getTime())) return false;
-              const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
-              return pMonthKey === monthKey;
-            })) ||
-          (Array.isArray(stripePayments) &&
-            stripePayments.some((p) => {
-              const dateStr = p.createdAt || p.processedAt;
-              if (!dateStr) return false;
-              const pDate = new Date(dateStr);
-              if (isNaN(pDate.getTime())) return false;
-              const pMonthKey = `${pDate.getFullYear()}-${String(pDate.getMonth() + 1).padStart(2, '0')}`;
-              return pMonthKey === monthKey;
-            }));
-        
-        // Используем проформу только если нет реальных платежей за этот месяц
-        if (hasRealPaymentsForMonth) {
-          return;
-        }
-        
-        if (!monthlyMap.has(monthKey)) {
-          monthlyMap.set(monthKey, {
-            month: monthKey,
-            amount: 0,
-            count: 0
-          });
-        }
-        
-        const entry = monthlyMap.get(monthKey);
-        entry.amount += amount;
+    // 3) Cash payments monthly (if available)
+    if (Array.isArray(cashMonthly)) {
+      cashMonthly.forEach((row) => {
+        const monthKey = row?.monthKey;
+        const amountPln = toNumber(row?.amountPln) || 0;
+        if (!monthKey || amountPln <= 0) return;
+        const entry = ensureMonth(monthKey);
+        if (!entry) return;
+        entry.amount += amountPln;
         entry.count += 1;
       });
     }
