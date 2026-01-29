@@ -951,7 +951,7 @@ router.get('/pipedrive/deals/:id/payments', async (req, res) => {
               amount: payment.original_amount || payment.amount,
               currency: payment.currency || 'PLN',
               sessionId: payment.session_id,
-              sessionUrl: payment.session_id ? `https://dashboard.stripe.com/checkout_sessions/${payment.session_id}` : null,
+              sessionUrl: payment.session_id ? require('../utils/urlHelper').getStripeCheckoutSessionUrl(payment.session_id) : null,
               createdAt: payment.created_at,
               updatedAt: payment.updated_at,
               paymentSchedule: payment.payment_schedule || null
@@ -1482,6 +1482,77 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/send-payment-notification'
     }
   } catch (error) {
     logger.error('Error sending payment notification via diagnostics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/sync-stripe-session
+ * Подтянуть Stripe сессию из API и сохранить запись в БД (фикс для сессий, созданных до сохранения в БД).
+ *
+ * Body параметры:
+ *   - sessionIds: массив session_id (обязательно). Сессии запрашиваются из Stripe, проверяется metadata.deal_id.
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/sync-stripe-session', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+
+    if (isNaN(dealId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid deal ID'
+      });
+    }
+
+    const { sessionIds } = req.body;
+    if (!sessionIds || !Array.isArray(sessionIds) || sessionIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'sessionIds is required (array of Stripe checkout session IDs, e.g. from Stripe Dashboard)'
+      });
+    }
+
+    const StripeProcessorService = require('../services/stripe/processor');
+    const stripeProcessor = new StripeProcessorService();
+
+    const dealResult = await stripeProcessor.pipedriveClient.getDealWithRelatedData(dealId);
+    if (!dealResult.success || !dealResult.deal) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found'
+      });
+    }
+
+    const results = [];
+    for (const sessionId of sessionIds) {
+      if (!sessionId || typeof sessionId !== 'string') continue;
+      try {
+        const session = await stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
+        if (!session || session.metadata?.deal_id !== String(dealId)) {
+          results.push({ sessionId, saved: false, error: 'Session not found or deal_id mismatch' });
+          continue;
+        }
+        await stripeProcessor.persistSession(session);
+        results.push({ sessionId, saved: true });
+      } catch (err) {
+        logger.warn('Failed to sync Stripe session to DB', { dealId, sessionId, error: err.message });
+        results.push({ sessionId, saved: false, error: err.message });
+      }
+    }
+
+    const synced = results.filter(r => r.saved).length;
+    res.json({
+      success: synced > 0,
+      synced,
+      total: results.length,
+      results
+    });
+  } catch (error) {
+    logger.error('Error syncing Stripe session via diagnostics:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error',

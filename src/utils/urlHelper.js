@@ -45,8 +45,25 @@ function getFullUrl(path, req = null) {
   return `${baseUrl}${normalizedPath}`;
 }
 
+/**
+ * Ссылка на Stripe Dashboard.
+ * Путь /checkout_sessions/ в Stripe не открывает сессию (редирект на логин/ошибка).
+ * Используем /payments/{sessionId} — как в фронте (vat-margin); если не откроет сессию,
+ * пользователь остаётся на Payments и может искать по metadata:deal_id=N или по Session ID.
+ * @param {string} sessionId - ID сессии (cs_live_... или cs_test_...)
+ * @returns {string} URL Dashboard (payments + session id)
+ */
+function getStripeCheckoutSessionUrl(sessionId) {
+  if (!sessionId || typeof sessionId !== 'string') return '';
+  const base = 'https://dashboard.stripe.com';
+  const isTest = sessionId.startsWith('cs_test_');
+  const prefix = isTest ? 'test/' : '';
+  return `${base}/${prefix}payments/${encodeURIComponent(sessionId)}`;
+}
+
 module.exports = {
   getBaseUrl,
-  getFullUrl
+  getFullUrl,
+  getStripeCheckoutSessionUrl
 };
 

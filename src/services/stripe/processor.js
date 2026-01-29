@@ -114,8 +114,8 @@ class StripeProcessorService {
     this.addressTaskCache = new Set();
     // Кэш для защиты от дублирования уведомлений: dealId -> timestamp последней отправки
     this.notificationCache = new Map();
-    // Время жизни кэша уведомлений (10 минут)
-    this.notificationCacheTTL = parseInt(process.env.STRIPE_NOTIFICATION_CACHE_TTL_MS || '600000', 10);
+    // Время жизни кэша уведомлений (24 часа) — чтобы ретраи webhook / повторные вызовы API не слали дубликаты
+    this.notificationCacheTTL = parseInt(process.env.STRIPE_NOTIFICATION_CACHE_TTL_MS || '86400000', 10);
     this.invoiceTypeFieldKey = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
     this.stripeTriggerValue = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75');
     this.invoiceDoneValue = String(process.env.PIPEDRIVE_INVOICE_DONE_VALUE || '73');
@@ -2621,8 +2621,8 @@ class StripeProcessorService {
         return;
       }
 
-      const dashboardBase = 'https://dashboard.stripe.com';
-      const sessionLink = `${dashboardBase}/checkout_sessions/${sessionId}`;
+      const urlHelper = require('../../utils/urlHelper');
+      const sessionLink = urlHelper.getStripeCheckoutSessionUrl(sessionId);
 
       const today = new Date().toISOString().slice(0, 10);
       const taskResult = await this.pipedriveClient.createTask({
@@ -2924,9 +2924,10 @@ class StripeProcessorService {
             } else {
               // Find existing deposit session for notification (Phase 0: Code Review Fixes)
               if (paymentState.deposit.payment) {
+                const urlHelperDep = require('../../utils/urlHelper');
                 sessionsToNotify.push({
                   id: paymentState.deposit.payment.session_id,
-                  url: `https://dashboard.stripe.com/checkout/sessions/${paymentState.deposit.payment.session_id}`,
+                  url: urlHelperDep.getStripeCheckoutSessionUrl(paymentState.deposit.payment.session_id),
                   type: 'deposit',
                   amount: paymentState.deposit.payment.original_amount
                 });
@@ -2995,9 +2996,10 @@ class StripeProcessorService {
             } else {
               // Find existing rest session for notification (Phase 0: Code Review Fixes)
               if (paymentState.rest.payment) {
+                const urlHelperRest = require('../../utils/urlHelper');
                 sessionsToNotify.push({
                   id: paymentState.rest.payment.session_id,
-                  url: `https://dashboard.stripe.com/checkout/sessions/${paymentState.rest.payment.session_id}`,
+                  url: urlHelperRest.getStripeCheckoutSessionUrl(paymentState.rest.payment.session_id),
                   type: 'rest',
                   amount: paymentState.rest.payment.original_amount
                 });
@@ -3829,6 +3831,22 @@ class StripeProcessorService {
         duration: `${finalDuration}s`
       });
 
+      // Сохраняем платёж в БД сразу после создания сессии (unpaid), чтобы:
+      // - диагностика и «отправить уведомление» видели сессию по deal_id;
+      // - при оплате checkout.session.completed сделает upsert по session_id и обновит статус.
+      if (this.repository.isEnabled()) {
+        try {
+          await this.persistSession(session);
+          this.logger.debug(`💾 [Deal #${dealId}] Payment record saved to DB (session_id: ${session.id})`);
+        } catch (persistError) {
+          this.logger.warn('Failed to save payment to DB after creating session (session exists in Stripe)', {
+            dealId,
+            sessionId: session.id,
+            error: persistError.message
+          });
+        }
+      }
+
       // Output session URL to console for easy access
       // eslint-disable-next-line no-console
       console.log('\n✅ Stripe Checkout Session created successfully!');
@@ -4647,12 +4665,8 @@ class StripeProcessorService {
       const formatAmount = (amt) => parseFloat(amt).toFixed(2);
       const paymentTypeLabel = paymentType === 'deposit' ? 'Предоплата' : paymentType === 'rest' ? 'Остаток' : 'Платеж';
       
-      // Build Stripe Dashboard link for Checkout Session
-      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
-      const stripeDashboardLink = `${dashboardBaseUrl}/${sessionId}`;
-      
-      // Build our dashboard link for diagnostics
       const urlHelper = require('../../utils/urlHelper');
+      const stripeDashboardLink = urlHelper.getStripeCheckoutSessionUrl(sessionId);
       const baseUrl = urlHelper.getBaseUrl();
       const diagnosticsUrl = `${baseUrl}/api/pipedrive/deals/${dealId}/diagnostics`;
 
@@ -4752,9 +4766,8 @@ class StripeProcessorService {
       const formatAmount = (amt) => parseFloat(amt).toFixed(2);
       const paymentTypeLabel = paymentType === 'deposit' ? 'Предоплата' : paymentType === 'rest' ? 'Остаток' : 'Платеж';
 
-      // Build Stripe Dashboard link for Checkout Session
-      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
-      const stripeDashboardLink = `${dashboardBaseUrl}/${sessionId}`;
+      const urlHelperStripe = require('../../utils/urlHelper');
+      const stripeDashboardLink = urlHelperStripe.getStripeCheckoutSessionUrl(sessionId);
 
       let noteContent = `💳 ${paymentTypeLabel} получена через Stripe\n\n`;
       noteContent += `Сумма: ${formatAmount(amount)} ${currency}`;
@@ -4852,8 +4865,8 @@ class StripeProcessorService {
       const totalAmountPln = depositAmountPln + restAmountPln;
       const currency = depositCurrency; // Используем валюту первого платежа
       
-      // Строим ссылки на Stripe Dashboard
-      const dashboardBaseUrl = 'https://dashboard.stripe.com/checkout_sessions';
+      const urlHelperStripe2 = require('../../utils/urlHelper');
+      const getStripeSessionUrl = urlHelperStripe2.getStripeCheckoutSessionUrl;
       
       let noteContent = `✅ Все платежи оплачены!\n\n`;
       noteContent += `💰 Общая сумма: ${formatAmount(totalAmount)} ${currency}`;
@@ -4869,7 +4882,7 @@ class StripeProcessorService {
         noteContent += ` (${formatAmount(depositAmountPln)} PLN)`;
       }
       if (depositSessionId) {
-        noteContent += `\n   Ссылка: ${dashboardBaseUrl}/${depositSessionId}`;
+        noteContent += `\n   Ссылка: ${getStripeSessionUrl(depositSessionId)}`;
       }
       
       noteContent += `\n\n`;
@@ -4878,7 +4891,7 @@ class StripeProcessorService {
         noteContent += ` (${formatAmount(restAmountPln)} PLN)`;
       }
       if (restSessionId) {
-        noteContent += `\n   Ссылка: ${dashboardBaseUrl}/${restSessionId}`;
+        noteContent += `\n   Ссылка: ${getStripeSessionUrl(restSessionId)}`;
       }
       
       noteContent += `\n\nДата: ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Warsaw' })}`;
@@ -5457,10 +5470,9 @@ class StripeProcessorService {
           limit: 100
         });
 
-        const paidPayments = allPayments.filter(p => 
-          p.payment_status === 'paid' || p.status === 'processed'
-        );
-        
+        // Только реально оплаченные: payment_status === 'paid'. status === 'processed' не значит оплату.
+        const paidPayments = allPayments.filter(p => p.payment_status === 'paid');
+
         // ВАЖНО: Считаем оплаченную сумму в валюте сделки, а не в PLN
         // Сравнивать нужно суммы в одной валюте
         const dealCurrency = deal.currency || 'PLN';
@@ -5752,9 +5764,8 @@ class StripeProcessorService {
           dealId: String(dealId),
           limit: 10
         });
-        hasPaidDeposit = existingPayments.some(p => 
-          p.payment_type === 'deposit' && 
-          (p.payment_status === 'paid' || p.status === 'processed')
+        hasPaidDeposit = existingPayments.some(p =>
+          p.payment_type === 'deposit' && p.payment_status === 'paid'
         );
       } catch (error) {
         this.logger.warn('Failed to check existing payments for notification', {
@@ -6174,11 +6185,9 @@ class StripeProcessorService {
           limit: 100
         });
 
-        // Подсчитываем оплаченные платежи
-        const paidPayments = allPayments.filter(p => 
-          p.payment_status === 'paid' || p.status === 'processed'
-        );
-        
+        // Подсчитываем только реально оплаченные (payment_status === 'paid')
+        const paidPayments = allPayments.filter(p => p.payment_status === 'paid');
+
         // ВАЖНО: Считаем оплаченную сумму в валюте сделки, а не в PLN
         // totalPaidPln используется только для отчетов, не для бизнес-логики
         const dealCurrency = deal.currency || 'PLN';

@@ -1510,19 +1510,14 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               }
             }
 
-            // Отправляем уведомление для существующих сессий только если есть сессии с валидными URL
+            // Не отправляем повторное уведомление «ссылка на оплату», когда все сессии уже существуют и оплачены —
+            // клиент должен получить одно уведомление только при создании сессий (ветка ниже с sessions.length > 0).
+            // Повторная отправка при каждом срабатывании webhook для «все оплачено» приводила к дублям сообщений.
+            let notificationResult = { success: true, skipped: true, reason: 'All sessions already exist and paid, no resend' };
             if (existingSessions.length === 0) {
-              logger.warn(`⚠️  Не удалось получить URL для существующих сессий, уведомление не отправлено | Deal: ${dealId} | Всего сессий: ${existingPayments.length}`);
+              logger.warn(`⚠️  Не удалось получить URL для существующих сессий | Deal: ${dealId} | Всего сессий: ${existingPayments.length}`);
             } else {
-              logger.info(`📧 Отправка уведомления для существующих сессий | Deal: ${dealId} | График: ${paymentSchedule} | Сессий с URL: ${existingSessions.length} из ${existingPayments.length}`);
-              const notificationResult = await stripeProcessor.sendPaymentNotificationForDeal(dealId, {
-                paymentSchedule,
-                sessions: existingSessions,
-                currency,
-                totalAmount
-              });
-
-              logger.info(`📧 Результат отправки уведомления для существующих сессий | Deal: ${dealId} | Успех: ${notificationResult.success} | Ошибка: ${notificationResult.error || 'нет'}`);
+              logger.info(`📧 Пропуск уведомления для существующих сессий (клиент уже получил при создании) | Deal: ${dealId} | Сессий с URL: ${existingSessions.length}`);
             }
 
           return res.status(200).json({
@@ -1612,11 +1607,34 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
                 throw new Error(`Failed to create deposit session: ${depositResult.error || 'unknown'}`);
               }
               }
+            } else if (hasDeposit && !depositPaid) {
+              // Первый платеж есть, но не оплачен — создаём новую сессию (старая могла истечь в Stripe; в БД status может быть processed)
+              logger.info(`💳 Создание нового первого платежа (предыдущий не оплачен) | Deal: ${dealId}`);
+              const depositAmount = totalAmount / 2;
+              const depositResult = await stripeProcessor.createCheckoutSessionForDeal(dealWithWebhookData, {
+                trigger: 'pipedrive_webhook',
+                runId,
+                paymentType: 'deposit',
+                paymentSchedule: '50/50',
+                paymentIndex: 1
+              });
+              if (depositResult.success && depositResult.sessionId) {
+                const depositSessionAmount = typeof depositResult.amount === 'number'
+                  ? depositResult.amount
+                  : parseFloat(depositResult.amount) || depositAmount;
+                sessions.push({
+                  id: depositResult.sessionId,
+                  url: depositResult.sessionUrl,
+                  type: 'deposit',
+                  amount: depositSessionAmount
+                });
+                logger.info(`✅ Новый первый платеж создан | Deal: ${dealId} | Session ID: ${depositResult.sessionId}`);
+              } else {
+                logger.error(`❌ Ошибка создания нового первого платежа | Deal: ${dealId} | ${depositResult.error || 'unknown'}`);
+              }
             } else {
               if (depositPaid) {
                 logger.info(`✅ Первый платеж уже существует И оплачен, пропускаем | Deal: ${dealId}`);
-              } else {
-                logger.info(`⚠️  Первый платеж существует, но не оплачен, создаем новый | Deal: ${dealId}`);
               }
             }
 
@@ -1812,37 +1830,35 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
           // Создаем заметку в сделке с графиком платежей и ссылками для мониторинга (даже если уведомление не ушло)
           try {
             const formatAmount = (amount) => parseFloat(amount).toFixed(2);
-            const stripeBaseUrl = 'https://dashboard.stripe.com';
+            const getStripeSessionUrl = require('../utils/urlHelper').getStripeCheckoutSessionUrl;
             const searchLink = buildStripeSearchUrl(String(dealId));
             
-            // Создаем один ноут с информацией о графике платежей и ссылками
+            // Создаем один ноут с информацией о графике платежей и ссылками (live — без /test/)
             let noteContent = `💳 *График платежей: ${paymentSchedule}*\n\n`;
             
             // Добавляем информацию о каждом платеже с ссылкой на Stripe Dashboard
             if (paymentSchedule === '50/50' && sessions.length === 1) {
-              // Только первый платеж (deposit) создан
               const firstSession = sessions[0];
               noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(firstSession.amount)} ${currency}\n`;
-              noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${firstSession.id})\n\n`;
+              noteContent += `   [Stripe Dashboard](${getStripeSessionUrl(firstSession.id)})\n\n`;
               noteContent += `2️⃣ *Остаток 50%:* будет создан позже\n\n`;
             } else if (paymentSchedule === '50/50' && sessions.length >= 2) {
-              // Оба платежа созданы
               const depositSession = sessions.find(s => s.type === 'deposit');
               const restSession = sessions.find(s => s.type === 'rest');
               
               if (depositSession) {
                 noteContent += `1️⃣ *Предоплата 50%:* ${formatAmount(depositSession.amount)} ${currency}\n`;
-                noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${depositSession.id})\n\n`;
+                noteContent += `   [Stripe Dashboard](${getStripeSessionUrl(depositSession.id)})\n\n`;
               }
               
               if (restSession) {
                 noteContent += `2️⃣ *Остаток 50%:* ${formatAmount(restSession.amount)} ${currency}\n`;
-                noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${restSession.id})\n\n`;
+                noteContent += `   [Stripe Dashboard](${getStripeSessionUrl(restSession.id)})\n\n`;
               }
             } else if (paymentSchedule === '100%' && sessions.length >= 1) {
               const singleSession = sessions[0];
               noteContent += `💳 *Полная оплата:* ${formatAmount(singleSession.amount)} ${currency}\n`;
-              noteContent += `   [Stripe Dashboard](${stripeBaseUrl}/checkout_sessions/${singleSession.id})\n\n`;
+              noteContent += `   [Stripe Dashboard](${getStripeSessionUrl(singleSession.id)})\n\n`;
             }
             
             noteContent += `*Итого:* ${formatAmount(totalAmount)} ${currency}\n\n`;

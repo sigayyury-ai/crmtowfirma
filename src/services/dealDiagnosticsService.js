@@ -123,6 +123,16 @@ class DealDiagnosticsService {
         cronTasks
       });
 
+      // Подсказка: прямые ссылки на сессию в Stripe часто не открываются; надёжно — Payments + поиск по metadata
+      const stripeSearchHint = payments.stripe.length > 0
+        ? {
+            message: 'Прямые ссылки на сессию в Stripe Dashboard часто не открываются (ограничение Stripe).',
+            howToFind: `Откройте https://dashboard.stripe.com/payments и в поиске введите: metadata:deal_id=${dealId} или deal_id:${dealId}`,
+            sessionIds: payments.stripe.map(p => p.session_id).filter(Boolean),
+            docs: 'https://docs.stripe.com/dashboard/search#metadata-searches'
+          }
+        : null;
+
       return {
         success: true,
         dealId: parseInt(dealId),
@@ -142,6 +152,7 @@ class DealDiagnosticsService {
           initial: initialPaymentSchedule,
           current: currentPaymentSchedule
         },
+        stripeSearchHint, // Как искать сессии в Stripe (по deal через metadata)
         generatedAt: new Date().toISOString()
       };
     } catch (error) {
@@ -233,7 +244,7 @@ class DealDiagnosticsService {
         allPayments.stripe = (stripePayments || []).map(p => ({
           id: p.id || p.session_id,
           sessionId: p.session_id,
-          sessionUrl: p.session_id ? `https://dashboard.stripe.com/checkout_sessions/${p.session_id}` : null,
+          sessionUrl: p.session_id ? require('../utils/urlHelper').getStripeCheckoutSessionUrl(p.session_id) : null,
           paymentType: p.payment_type, // deposit, rest, single
           paymentStatus: p.payment_status, // paid, unpaid
           status: p.status, // processed, pending_metadata, refunded, deleted
