@@ -1,0 +1,99 @@
+openapi: 3.0.0
+info:
+  title: Event Bus API
+  description: API для публикации и подписки на события между микросервисами
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/event-bus
+    description: Local development server
+
+paths:
+  /publish:
+    post:
+      summary: Публикация события
+      description: Публикует событие в Event Bus для обработки подписчиками
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - event_type
+                - data
+              properties:
+                event_type:
+                  type: string
+                  enum:
+                    - session.created
+                    - session.updated
+                    - session.expired
+                    - payment.received
+                    - payment.failed
+                    - payment.refunded
+                    - payment.amount.changed
+                    - hybrid.payment.completed
+                    - crm.status.updated
+                    - notification.sent
+                    - reminder.due
+                    - session.recreated
+                    - validation.failed
+                  description: Тип события
+                data:
+                  type: object
+                  description: Данные события
+                correlation_id:
+                  type: string
+                  description: Correlation ID для трейсинга
+      responses:
+        '200':
+          description: Событие опубликовано
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  event_id:
+                    type: string
+
+  /subscribe:
+    post:
+      summary: Подписка на события
+      description: Подписывает микросервис на определенные типы событий
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - service_name
+                - event_types
+                - handler_url
+              properties:
+                service_name:
+                  type: string
+                  description: Имя микросервиса
+                event_types:
+                  type: array
+                  items:
+                    type: string
+                  description: Типы событий для подписки
+                handler_url:
+                  type: string
+                  format: uri
+                  description: URL обработчика событий
+      responses:
+        '200':
+          description: Подписка создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  subscription_id:
+                    type: string

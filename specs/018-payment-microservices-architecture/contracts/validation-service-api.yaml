@@ -1,0 +1,221 @@
+openapi: 3.0.0
+info:
+  title: Validation Service API
+  description: API для валидации данных платежей и сессий
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/validation
+    description: Local development server
+
+paths:
+  /validate/session:
+    post:
+      summary: Валидация данных для создания сессии
+      description: Валидирует данные перед созданием Stripe Checkout Session. Проверяет обязательные поля: продукт, цена, адрес, имя клиента, email, валюта.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+                - email
+                - amount
+                - currency
+                - product
+                - address
+                - customer_name
+              properties:
+                deal_id:
+                  type: string
+                  description: ID сделки в Pipedrive
+                email:
+                  type: string
+                  format: email
+                  description: Email клиента (обязательное поле)
+                amount:
+                  type: number
+                  minimum: 0.01
+                  exclusiveMinimum: true
+                  description: Сумма платежа (обязательное поле, должна быть > 0)
+                currency:
+                  type: string
+                  enum: [PLN, EUR, USD, GBP]
+                  description: Валюта платежа (обязательное поле)
+                product:
+                  type: object
+                  description: Продукт сделки (обязательное поле)
+                  required:
+                    - id
+                    - name
+                  properties:
+                    id:
+                      type: string
+                      description: ID продукта в CRM
+                    name:
+                      type: string
+                      description: Название продукта
+                    price:
+                      type: number
+                      description: Цена продукта
+                    quantity:
+                      type: number
+                      description: Количество
+                address:
+                  type: object
+                  description: Адрес клиента (обязательное поле)
+                  required:
+                    - country
+                  properties:
+                    street:
+                      type: string
+                      description: Улица
+                    city:
+                      type: string
+                      description: Город
+                    postal_code:
+                      type: string
+                      description: Почтовый индекс
+                    country:
+                      type: string
+                      description: Страна (ISO код: PL, US, GB и т.д.)
+                    validated:
+                      type: boolean
+                      description: Флаг валидации адреса
+                customer_name:
+                  type: string
+                  description: Имя клиента (обязательное поле) - Person name для B2C или Organization name для B2B
+                customer_type:
+                  type: string
+                  enum: [person, company]
+                  description: Тип клиента (B2C или B2B)
+                payment_type:
+                  type: string
+                  enum: [deposit, rest, single, addon]
+                  description: Тип платежа
+                payment_schedule:
+                  type: string
+                  enum: ['50/50', '100%']
+                  description: График платежей
+                deal_amount:
+                  type: number
+                  description: Сумма сделки (для проверки что amount не превышает deal_amount)
+                deal_status:
+                  type: string
+                  description: Статус сделки (не должен быть 'lost' или 'deleted')
+                customer_type:
+                  type: string
+                  enum: [person, company]
+                  description: Тип клиента (B2C или B2B)
+                organization_id:
+                  type: string
+                  description: ID организации в Pipedrive (обязательно для B2B)
+                organization:
+                  type: object
+                  description: Данные организации из Pipedrive (обязательно для B2B)
+                  properties:
+                    id:
+                      type: string
+                    name:
+                      type: string
+                      description: Название компании (обязательно для B2B)
+                    nip:
+                      type: string
+                      description: NIP (для Польши)
+                    tax_id:
+                      type: string
+                      description: Tax ID
+                    vat_number:
+                      type: string
+                      description: VAT номер
+                company_name:
+                  type: string
+                  description: Название компании (для B2B, из organization.name)
+                company_tax_id:
+                  type: string
+                  description: Business ID - налоговый ID компании (NIP/VAT, обязательно для B2B)
+                sendpulse_id:
+                  type: string
+                  description: SendPulse ID клиента для отправки уведомлений через Telegram/Instagram (рекомендуется, но не обязательно - email используется как резервный канал)
+                telegram_chat_id:
+                  type: string
+                  description: Telegram Chat ID для отправки уведомлений (альтернатива sendpulse_id, рекомендуется, но не обязательно)
+                notification_channel_available:
+                  type: boolean
+                  description: Флаг наличия хотя бы одного канала уведомлений (sendpulse_id или telegram_chat_id). Если false - генерируется предупреждение, но сессия создается успешно (email используется как резервный канал)
+      responses:
+        '200':
+          description: Результат валидации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    description: Прошла ли валидация
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        field:
+                          type: string
+                        message:
+                          type: string
+                        code:
+                          type: string
+                  field_errors:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  missing_fields:
+                    type: array
+                    items:
+                      type: string
+                  invalid_fields:
+                    type: array
+                    items:
+                      type: string
+
+  /validate/payment:
+    post:
+      summary: Валидация данных платежа
+      description: Валидирует данные платежа перед обработкой
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+                - deal_id
+              properties:
+                session_id:
+                  type: string
+                  description: Stripe Checkout Session ID
+                deal_id:
+                  type: string
+                  description: ID сделки в Pipedrive
+                payment_status:
+                  type: string
+                  description: Статус платежа от Stripe
+                amount:
+                  type: number
+                  description: Сумма платежа
+      responses:
+        '200':
+          description: Результат валидации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: object

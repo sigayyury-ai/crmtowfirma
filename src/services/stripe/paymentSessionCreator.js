@@ -7,6 +7,7 @@ const PipedriveClient = require('../pipedrive');
 const { getStripeClient } = require('./client');
 const { roundBankers, toMinorUnit, normaliseCurrency } = require('../../utils/currency');
 const { extractCashFields } = require('../cash/cashFieldParser');
+const ValidationService = require('../microservices/validationService');
 
 /**
  * PaymentSessionCreator
@@ -41,6 +42,7 @@ class PaymentSessionCreator {
       logger: this.logger
     });
     this.amountCalculator = DealAmountCalculator;
+    this.validationService = options.validationService || new ValidationService({ logger: this.logger });
   }
 
   /**
@@ -99,40 +101,35 @@ class PaymentSessionCreator {
         });
       }
 
-      // 2. Определить график платежей
+      // 2. Получить данные клиента (нужны для валидации)
+      const person = fullDealResult.person;
+      const organization = fullDealResult.organization;
+      const customerEmail = person?.email?.[0]?.value || person?.email || 
+                           organization?.email?.[0]?.value || organization?.email || null;
+
+      // 2.5. РАННЯЯ ВАЛИДАЦИЯ - проверяем базовые поля ДО получения продуктов
+      // Это позволяет валидировать все поля, включая отсутствие продуктов
+      
+      // Получаем продукты для валидации (но не останавливаемся если их нет)
+      const dealProductsResult = await this.pipedriveClient.getDealProducts(dealId);
+      const products = dealProductsResult.success && dealProductsResult.products ? dealProductsResult.products : [];
+      const firstProduct = products.length > 0 ? products[0] : null;
+
+      // Определяем график платежей (нужен для расчета суммы)
       let schedule = null;
       if (paymentSchedule) {
-        // Если график передан явно, используем его
         const closeDate = fullDeal.expected_close_date || fullDeal.close_date;
         schedule = this.scheduleService.determineSchedule(closeDate, new Date(), { dealId });
-        schedule.schedule = paymentSchedule; // Переопределяем график
+        schedule.schedule = paymentSchedule;
       } else {
-        // Определяем график автоматически
         schedule = this.scheduleService.determineScheduleFromDeal(fullDeal);
       }
 
-      // 3. Получить продукты сделки
-      const dealProductsResult = await this.pipedriveClient.getDealProducts(dealId);
-      if (!dealProductsResult.success || !dealProductsResult.products || dealProductsResult.products.length === 0) {
-        return {
-          success: false,
-          error: 'No products found in deal'
-        };
-      }
-
-      const products = dealProductsResult.products;
-      const firstProduct = products[0];
-
-      // 4. Рассчитать сумму платежа
-      let paymentAmount;
+      // Рассчитываем сумму платежа (может быть 0 если нет продуктов, но это валидируется)
+      let paymentAmount = 0;
       if (customAmount && customAmount > 0) {
         paymentAmount = customAmount;
-        this.logger.debug('Using custom amount for payment', {
-          dealId,
-          customAmount,
-          paymentType
-        });
-      } else {
+      } else if (products.length > 0) {
         paymentAmount = this.amountCalculator.calculatePaymentAmount(
           fullDeal,
           products,
@@ -141,21 +138,295 @@ class PaymentSessionCreator {
         );
       }
 
-      // 5. Получить валюту
+      // Получаем валюту
       const rawCurrency = fullDeal.currency || 'PLN';
       const currency = normaliseCurrency(rawCurrency);
 
-      // 6. Получить данные клиента
-      const person = fullDealResult.person;
-      const organization = fullDealResult.organization;
-      const customerEmail = person?.email?.[0]?.value || person?.email || 
-                           organization?.email?.[0]?.value || organization?.email || null;
+      // ВАЛИДАЦИЯ ДАННЫХ ПЕРЕД СОЗДАНИЕМ СЕССИИ
+      // ВАЖНО: Валидация выполняется ПЕРЕД созданием Stripe Checkout Session,
+      // когда менеджер создает сессию, а не когда клиент оплачивает
+      
+      // Определяем тип клиента (B2B или B2C)
+      const isB2B = Boolean(organization || fullDeal.organization_id);
+      const organizationId = fullDeal.organization_id || organization?.id;
 
-      if (!customerEmail) {
+      // Подготовка данных для валидации
+      const validationData = {
+        deal_id: String(dealId),
+        email: customerEmail,
+        amount: paymentAmount,
+        currency: currency,
+        deal_amount: parseFloat(fullDeal.value) || null,
+        deal_status: fullDeal.status,
+        deal_deleted: fullDeal.deleted,
+        product: firstProduct ? {
+          id: firstProduct.product_id || firstProduct.product?.id,
+          name: firstProduct.name || firstProduct.product?.name || fullDeal.title,
+          price: paymentAmount,
+          quantity: parseFloat(firstProduct.quantity) || 1
+        } : null,
+        address: {
+          street: person?.address_street || organization?.address_street || null,
+          city: person?.address_city || organization?.address_city || null,
+          postal_code: person?.address_postal_code || organization?.address_postal_code || null,
+          country: person?.address_country || organization?.address_country || null,
+          validated: false
+        },
+        customer_name: person?.name || organization?.name || null,
+        customer_type: isB2B ? 'company' : 'person',
+        organization_id: organizationId,
+        organization: organization ? {
+          id: organization.id,
+          name: organization.name,
+          nip: organization.nip,
+          tax_id: organization.tax_id,
+          vat_number: organization.vat_number
+        } : null,
+        company_name: organization?.name || null,
+        company_tax_id: organization?.nip || organization?.tax_id || organization?.vat_number || null,
+        // Notification channels
+        sendpulse_id: person?.custom_fields?.['ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c'] || null,
+        telegram_chat_id: person?.custom_fields?.[process.env.PIPEDRIVE_TELEGRAM_CHAT_ID_FIELD_KEY] || null,
+        person: person ? {
+          sendpulse_id: person.custom_fields?.['ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c'],
+          telegram_chat_id: person.custom_fields?.[process.env.PIPEDRIVE_TELEGRAM_CHAT_ID_FIELD_KEY]
+        } : null,
+        payment_type: paymentType,
+        payment_schedule: schedule.schedule
+      };
+
+      // Выполняем валидацию
+      const validationResult = await this.validationService.validateSessionData(validationData);
+
+      // Обработка ошибок валидации (блокируют создание сессии)
+      if (!validationResult.valid) {
+        // Сохраняем ошибки в БД
+        await this.validationService.saveValidationError(
+          dealId,
+          'session_creation',
+          validationResult,
+          validationData
+        );
+
+        // Формируем сообщение об ошибках для менеджера с улучшенным форматированием на русском языке
+        // Маппинг полей на русские названия
+        const fieldNamesRu = {
+          'product': 'Продукт',
+          'amount': 'Сумма платежа',
+          'address': 'Адрес клиента',
+          'customer_name': 'Имя клиента',
+          'email': 'Email клиента',
+          'currency': 'Валюта',
+          'deal_id': 'ID сделки',
+          'organization': 'Организация (B2B)',
+          'company_tax_id': 'Business ID (NIP/VAT)',
+          'company_name': 'Название компании',
+          'deal_status': 'Статус сделки'
+        };
+
+        // Маппинг сообщений об ошибках на русский язык
+        const getErrorMessageRu = (error) => {
+          const fieldRu = fieldNamesRu[error.field] || error.field;
+          
+          if (error.code === 'REQUIRED_FIELD') {
+            if (error.field === 'product') return 'Не указан продукт в сделке';
+            if (error.field === 'amount') return 'Не указана сумма платежа';
+            if (error.field === 'address') return 'Не указан адрес клиента';
+            if (error.field === 'customer_name') return 'Не указано имя клиента';
+            if (error.field === 'email') return 'Не указан email клиента';
+            if (error.field === 'currency') return 'Не указана валюта';
+            if (error.field === 'organization') return 'Не указана организация в CRM (требуется для B2B)';
+            if (error.field === 'company_tax_id') return 'Не указан Business ID (NIP/VAT) (требуется для B2B)';
+            if (error.field === 'company_name') return 'Не указано название компании (требуется для B2B)';
+            return `${fieldRu} не указано`;
+          }
+          
+          if (error.code === 'INVALID_VALUE') {
+            if (error.field === 'amount') return 'Сумма должна быть больше нуля';
+            if (error.field === 'currency') return 'Неподдерживаемая валюта';
+            return `${fieldRu} имеет некорректное значение`;
+          }
+          
+          if (error.code === 'INVALID_TYPE') {
+            return `${fieldRu} имеет некорректный тип данных`;
+          }
+          
+          if (error.code === 'INVALID_FORMAT') {
+            if (error.field === 'email') return 'Некорректный формат email';
+            return `${fieldRu} имеет некорректный формат`;
+          }
+          
+          if (error.code === 'INVALID_DEAL_STATUS') {
+            return 'Сделка закрыта или удалена, нельзя создать сессию';
+          }
+          
+          if (error.code === 'AMOUNT_EXCEEDS_DEAL') {
+            return 'Сумма платежа превышает сумму сделки';
+          }
+          
+          if (error.code === 'INCOMPLETE_ADDRESS') {
+            return 'Адрес неполный (для VAT требуется: улица, город, почтовый индекс)';
+          }
+          
+          // Fallback на оригинальное сообщение, если нет перевода
+          return error.message;
+        };
+
+        // Формируем список ошибок - одна ошибка на строку
+        const errorMessagesRu = validationResult.errors.map((e, index) => {
+          const fieldRu = fieldNamesRu[e.field] || e.field;
+          const messageRu = getErrorMessageRu(e);
+          return `${index + 1}. ${fieldRu}: ${messageRu}`;
+        }).join('\n');
+
+        // Формируем список недостающих полей
+        const missingFieldsRu = validationResult.missing_fields.length > 0
+          ? validationResult.missing_fields.map(f => fieldNamesRu[f] || f).join(', ')
+          : '';
+
+        // Формируем список некорректных полей
+        const invalidFieldsRu = validationResult.invalid_fields.length > 0
+          ? validationResult.invalid_fields.map(f => fieldNamesRu[f] || f).join(', ')
+          : '';
+
+        // Формируем итоговое сообщение с улучшенным форматированием
+        // Используем двойные переносы строк для разделения секций
+        let taskMessage = '❌ Ошибки валидации при создании платежной сессии\n\n';
+        taskMessage += 'Обнаружены следующие ошибки:\n';
+        taskMessage += errorMessagesRu;
+        
+        if (missingFieldsRu) {
+          taskMessage += `\n\n📋 Недостающие поля: ${missingFieldsRu}`;
+        }
+        
+        if (invalidFieldsRu) {
+          taskMessage += `\n\n⚠️ Некорректные поля: ${invalidFieldsRu}`;
+        }
+        
+        taskMessage += '\n\n💡 Действия:\n';
+        taskMessage += '1. Исправьте указанные ошибки в сделке\n';
+        taskMessage += '2. Перезапустите создание платежной сессии';
+
+        // Создаем задачу в CRM для менеджера
+        try {
+          // Используем owner_id сделки вместо user_id (owner_id может быть объектом или ID)
+          const taskOwnerId = (fullDeal.owner_id?.id || fullDeal.owner_id) || (fullDeal.user_id?.id || fullDeal.user_id) || null;
+          
+          await this.pipedriveClient.createTask({
+            deal_id: dealId,
+            subject: 'Ошибки валидации при создании платежной сессии',
+            note: taskMessage,
+            public_description: taskMessage, // Дублируем в public_description для отображения в интерфейсе
+            type: 'task',
+            due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Завтра
+            assigned_to_user_id: taskOwnerId, // Используем owner_id вместо user_id
+            person_id: person?.id || null
+          });
+          
+          this.logger.info('Validation error task created in CRM', { dealId, taskOwnerId });
+        } catch (taskError) {
+          // Если не удалось создать с assigned_to_user_id, пробуем без него
+          try {
+            await this.pipedriveClient.createTask({
+              deal_id: dealId,
+              subject: 'Ошибки валидации при создании платежной сессии',
+              note: taskMessage,
+              public_description: taskMessage, // Используем public_description для лучшего форматирования
+              type: 'task',
+              due_date: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              // Не указываем assigned_to_user_id - задача будет назначена текущему пользователю API
+              person_id: person?.id || null
+            });
+            this.logger.info('Validation error task created in CRM (without assigned user)', { dealId });
+          } catch (retryError) {
+            this.logger.warn('Failed to create validation error task in CRM', {
+              dealId,
+              error: retryError.message,
+              originalError: taskError.message
+            });
+          }
+        }
+
         return {
           success: false,
-          error: 'No email found for customer'
+          error: 'Validation failed',
+          validation_errors: validationResult.errors,
+          missing_fields: validationResult.missing_fields,
+          invalid_fields: validationResult.invalid_fields,
+          field_errors: validationResult.field_errors
         };
+      }
+
+      // Обработка предупреждений валидации (НЕ блокируют создание сессии)
+      if (validationResult.warnings && validationResult.warnings.length > 0) {
+        // Сохраняем предупреждения в БД
+        await this.validationService.saveValidationWarning(
+          dealId,
+          'session_creation',
+          validationResult.warnings,
+          validationData
+        );
+
+        // Логируем предупреждения
+        this.logger.warn('Validation warnings (non-blocking)', {
+          dealId,
+          warnings: validationResult.warnings.map(w => `${w.field}: ${w.message}`)
+        });
+
+        // Создаем задачу в CRM для менеджера о предупреждениях
+        // Маппинг полей на русские названия
+        const fieldNamesRu = {
+          'notification_channel_id': 'Каналы уведомлений'
+        };
+        
+        const warningMessagesRu = validationResult.warnings.map((w, index) => {
+          const fieldRu = fieldNamesRu[w.field] || w.field;
+          let messageRu = w.message;
+          
+          if (w.field === 'notification_channel_id') {
+            messageRu = 'Не указан SendPulse ID или Telegram Chat ID. Уведомления будут отправляться только по email. Рекомендуется добавить SendPulse ID или Telegram Chat ID для улучшения коммуникации.';
+          }
+          
+          return `${index + 1}. ${fieldRu}: ${messageRu}`;
+        }).join('\n');
+        try {
+          // Используем owner_id сделки вместо user_id (owner_id может быть объектом или ID)
+          const taskOwnerId = (fullDeal.owner_id?.id || fullDeal.owner_id) || (fullDeal.user_id?.id || fullDeal.user_id) || null;
+          
+          const warningTaskMessage = `⚠️ Предупреждения при создании платежной сессии<br><br><strong>Обнаружены следующие предупреждения:</strong><br>${warningMessagesRu.replace(/\n/g, '<br>')}<br><br>✅ Сессия создана успешно, но рекомендуется исправить предупреждения для улучшения качества данных.`;
+          
+          await this.pipedriveClient.createTask({
+            deal_id: dealId,
+            subject: 'Предупреждения валидации: отсутствуют каналы уведомлений',
+            note: warningTaskMessage,
+            public_description: warningTaskMessage, // Используем public_description для лучшего форматирования
+            type: 'task',
+            due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // Через неделю
+            assigned_to_user_id: taskOwnerId,
+            person_id: person?.id || null
+          });
+          
+          this.logger.info('Validation warning task created in CRM', { dealId, taskOwnerId });
+        } catch (taskError) {
+          // Если не удалось создать с assigned_to_user_id, пробуем без него
+          try {
+            await this.pipedriveClient.createTask({
+              deal_id: dealId,
+              subject: 'Предупреждения валидации: отсутствуют каналы уведомлений',
+              note: `Предупреждения при создании платежной сессии:\n\n${warningMessages}\n\nСессия создана успешно, но рекомендуется добавить SendPulse ID или Telegram Chat ID для лучшей коммуникации с клиентом.`,
+              type: 'task',
+              due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+              person_id: person?.id || null
+            });
+            this.logger.info('Validation warning task created in CRM (without assigned user)', { dealId });
+          } catch (retryError) {
+            this.logger.warn('Failed to create validation warning task in CRM', {
+              dealId,
+              error: retryError.message,
+              originalError: taskError.message
+            });
+          }
+        }
       }
 
       // 7. Получить или создать Stripe Product

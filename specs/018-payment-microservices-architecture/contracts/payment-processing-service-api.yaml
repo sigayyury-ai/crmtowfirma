@@ -1,0 +1,82 @@
+openapi: 3.0.0
+info:
+  title: Payment Processing Service API
+  description: API для обработки и сохранения платежей
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/payment-processing
+    description: Local development server
+
+paths:
+  /process:
+    post:
+      summary: Обработка платежа
+      description: Валидирует, обрабатывает и сохраняет платеж в БД
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+                - event_data
+              properties:
+                session_id:
+                  type: string
+                  description: Stripe Checkout Session ID
+                event_data:
+                  type: object
+                  description: Данные события от Stripe webhook
+      responses:
+        '200':
+          description: Платеж обработан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  payment_id:
+                    type: string
+                    format: uuid
+                  session_id:
+                    type: string
+
+  /update-amount:
+    post:
+      summary: Изменение суммы платежа
+      description: Изменяет сумму платежа с сохранением истории
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - payment_id
+                - new_amount
+                - reason
+              properties:
+                payment_id:
+                  type: string
+                  format: uuid
+                new_amount:
+                  type: number
+                reason:
+                  type: string
+                  description: Причина изменения суммы
+      responses:
+        '200':
+          description: Сумма обновлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  history_id:
+                    type: string
+                    format: uuid

@@ -1,0 +1,86 @@
+openapi: 3.0.0
+info:
+  title: CRM Status Service API
+  description: API для автоматического обновления статусов сделок в CRM
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/crm-status
+    description: Local development server
+
+paths:
+  /update-status:
+    post:
+      summary: Обновление статуса сделки
+      description: Рассчитывает и обновляет статус сделки в CRM на основе платежей
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+              properties:
+                deal_id:
+                  type: string
+                  description: ID сделки в Pipedrive
+                payment_data:
+                  type: object
+                  description: Данные платежа для расчета статуса
+                context:
+                  type: object
+                  description: Контекст обновления (источник, причина)
+      responses:
+        '200':
+          description: Статус обновлен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  deal_id:
+                    type: string
+                  old_stage_id:
+                    type: integer
+                    nullable: true
+                  new_stage_id:
+                    type: integer
+                  stage_name:
+                    type: string
+                  reason:
+                    type: string
+                    description: Причина изменения статуса
+
+  /calculate-status:
+    post:
+      summary: Расчет целевого статуса
+      description: Рассчитывает целевой статус сделки без обновления в CRM
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+              properties:
+                deal_id:
+                  type: string
+      responses:
+        '200':
+          description: Расчет выполнен
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  target_stage_id:
+                    type: integer
+                  stage_name:
+                    type: string
+                  reason:
+                    type: string
+                  calculation_details:
+                    type: object

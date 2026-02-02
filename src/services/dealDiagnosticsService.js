@@ -108,6 +108,9 @@ class DealDiagnosticsService {
       // 11. Определяем текущий график платежей
       const currentPaymentSchedule = this.determinePaymentSchedule(dealInfo);
       
+      // 11.5. Получаем информацию о валидации
+      const validation = await this.getValidationInfo(dealId);
+      
       // 12. Анализируем проблемы
       const issues = this.analyzeIssues({
         dealInfo,
@@ -118,7 +121,8 @@ class DealDiagnosticsService {
         automations,
         notifications,
         initialPaymentSchedule,
-        currentPaymentSchedule
+        currentPaymentSchedule,
+        validation
       });
       
       // 13. Рассчитываем сводку
@@ -157,6 +161,7 @@ class DealDiagnosticsService {
         success: true,
         dealId: parseInt(dealId),
         dealInfo,
+        validation,
         summary,
         payments,
         proformas,
@@ -660,6 +665,127 @@ class DealDiagnosticsService {
   }
 
   /**
+   * Получить информацию о валидации для сделки
+   */
+  async getValidationInfo(dealId) {
+    try {
+      if (!this.supabase) return null;
+      
+      const dealIdStr = String(dealId);
+      
+      // 1. Получить ошибки и предупреждения валидации из БД
+      const { data: validationErrors } = await this.supabase
+        .from('validation_errors')
+        .select('*')
+        .eq('deal_id', dealIdStr)
+        .order('created_at', { ascending: false });
+      
+      if (!validationErrors || validationErrors.length === 0) {
+        return {
+          currentStatus: null,
+          validationErrors: [],
+          validationWarnings: [],
+          lastValidationAttempt: null,
+          recommendations: []
+        };
+      }
+      
+      // Разделить на ошибки и предупреждения
+      const errors = (validationErrors || []).filter(e => e.severity === 'error' && (e.status === 'pending' || !e.status));
+      const warnings = (validationErrors || []).filter(e => e.severity === 'warning');
+      
+      // 2. Получить последнюю попытку валидации
+      const lastError = errors[0] || null;
+      const lastWarning = warnings[0] || null;
+      const lastValidationAttempt = lastError || lastWarning || null;
+      
+      // 3. Сформировать рекомендации
+      const recommendations = [];
+      
+      if (lastError) {
+        if (lastError.missing_fields && lastError.missing_fields.length > 0) {
+          lastError.missing_fields.forEach(field => {
+            let message = '';
+            let priority = 'high';
+            
+            switch (field) {
+              case 'product':
+                message = 'Добавьте продукт в сделку для создания платежной сессии';
+                break;
+              case 'address':
+                message = 'Заполните адрес клиента (Person или Organization)';
+                break;
+              case 'customer_name':
+                message = 'Укажите имя клиента (Person name или Organization name)';
+                break;
+              case 'email':
+                message = 'Укажите email клиента';
+                break;
+              case 'organization':
+                message = 'Создайте Organization в CRM и свяжите её со сделкой (для B2B)';
+                break;
+              case 'company_tax_id':
+                message = 'Заполните Business ID (NIP/VAT) для B2B сделки';
+                break;
+              case 'company_name':
+                message = 'Укажите название компании для B2B сделки';
+                break;
+              default:
+                message = `Заполните поле: ${field}`;
+            }
+            
+            recommendations.push({ field, action: `add_${field}`, message, priority });
+          });
+        }
+        
+        if (lastError.invalid_fields && lastError.invalid_fields.length > 0) {
+          lastError.invalid_fields.forEach(field => {
+            recommendations.push({
+              field,
+              action: `fix_${field}`,
+              message: `Исправьте некорректное значение поля: ${field}`,
+              priority: 'high'
+            });
+          });
+        }
+      }
+      
+      if (lastWarning) {
+        warnings.forEach(warning => {
+          if (warning.errors && warning.errors.length > 0) {
+            warning.errors.forEach(w => {
+              if (w.field === 'notification_channel_id') {
+                recommendations.push({
+                  field: 'notification_channel_id',
+                  action: 'add_sendpulse_id',
+                  message: 'Рекомендуется добавить SendPulse ID или Telegram Chat ID для улучшения коммуникации',
+                  priority: 'low'
+                });
+              }
+            });
+          }
+        });
+      }
+      
+      return {
+        currentStatus: null, // Можно добавить проверку текущего состояния, если нужно
+        validationErrors: errors,
+        validationWarnings: warnings,
+        lastValidationAttempt: lastValidationAttempt ? {
+          timestamp: lastValidationAttempt.created_at,
+          success: false,
+          errors: lastValidationAttempt.errors || [],
+          warnings: lastValidationAttempt.severity === 'warning' ? (lastValidationAttempt.errors || []) : []
+        } : null,
+        recommendations
+      };
+    } catch (error) {
+      this.logger.warn('Error fetching validation info', { dealId, error: error.message });
+      return null;
+    }
+  }
+
+  /**
    * Определить график платежей на основе expected_close_date
    */
   determinePaymentSchedule(dealInfo) {
@@ -723,7 +849,7 @@ class DealDiagnosticsService {
   /**
    * Анализ проблем и ошибок
    */
-  analyzeIssues({ dealInfo, payments, proformas, refunds, cashPayments, automations, notifications, initialPaymentSchedule, currentPaymentSchedule }) {
+  analyzeIssues({ dealInfo, payments, proformas, refunds, cashPayments, automations, notifications, initialPaymentSchedule, currentPaymentSchedule, validation }) {
     const issues = [];
     
     // Проверка 1: Сделка не найдена
@@ -1058,6 +1184,69 @@ class DealDiagnosticsService {
         message: `Найдено ${unconfirmedCash.length} неподтвержденных наличных платежей`,
         details: { count: unconfirmedCash.length }
       });
+    }
+    
+    // Проверка валидации: Ошибки (блокируют создание сессии)
+    if (validation && validation.validationErrors && validation.validationErrors.length > 0) {
+      const unresolvedErrors = validation.validationErrors.filter(e => 
+        e.status === 'pending' || e.status === null
+      );
+      
+      if (unresolvedErrors.length > 0) {
+        const latestError = unresolvedErrors[0];
+        
+        issues.push({
+          severity: 'critical',
+          category: 'validation',
+          code: 'VALIDATION_ERRORS',
+          message: 'Обнаружены ошибки валидации, блокирующие создание платежной сессии',
+          details: {
+            errors: latestError.errors || [],
+            missing_fields: latestError.missing_fields || [],
+            invalid_fields: latestError.invalid_fields || [],
+            field_errors: latestError.field_errors || {},
+            validation_error_id: latestError.id,
+            created_at: latestError.created_at,
+            process_type: latestError.process_type,
+            action_required: 'Исправьте ошибки и перезапустите создание сессии',
+            can_retry: true,
+            recommendations: validation.recommendations?.filter(r => 
+              latestError.missing_fields?.includes(r.field) || 
+              latestError.invalid_fields?.includes(r.field)
+            ) || []
+          }
+        });
+      }
+    }
+    
+    // Проверка валидации: Предупреждения (не блокируют)
+    if (validation && validation.validationWarnings && validation.validationWarnings.length > 0) {
+      const recentWarnings = validation.validationWarnings.filter(w => {
+        const warningDate = new Date(w.created_at);
+        const daysAgo = (Date.now() - warningDate.getTime()) / (1000 * 60 * 60 * 24);
+        return daysAgo <= 7; // Показывать предупреждения за последние 7 дней
+      });
+      
+      if (recentWarnings.length > 0) {
+        issues.push({
+          severity: 'warning',
+          category: 'validation',
+          code: 'VALIDATION_WARNINGS',
+          message: 'Обнаружены предупреждения валидации (рекомендуется исправить)',
+          details: {
+            warnings: recentWarnings.map(w => ({
+              field: w.missing_fields?.[0] || 'unknown',
+              message: w.errors?.[0]?.message || w.message || 'Validation warning',
+              code: w.errors?.[0]?.code || 'WARNING',
+              created_at: w.created_at
+            })),
+            action_required: 'Рекомендуется исправить предупреждения для улучшения качества данных',
+            recommendations: validation.recommendations?.filter(r => 
+              recentWarnings.some(w => w.missing_fields?.includes(r.field))
+            ) || []
+          }
+        });
+      }
     }
     
     return issues;
@@ -1474,15 +1663,15 @@ class DealDiagnosticsService {
     });
 
     // Действие: Очистить Stripe из БД — всегда показываем
-    const hasStripePayments = payments.stripe.length > 0;
+    const hasStripePaymentsForClear = payments.stripe.length > 0;
     actions.push({
       id: 'clear-stripe-payments',
       name: 'Очистить Stripe из БД',
       description: 'Удалить записи о Stripe-платежах по сделке из БД (история в Stripe не трогается). Помогает упростить логику при множестве сессий.',
       endpoint: `/api/pipedrive/deals/${dealIdForEndpoint}/diagnostics/actions/clear-stripe-payments`,
       method: 'POST',
-      available: hasStripePayments,
-      reason: hasStripePayments ? `В БД ${payments.stripe.length} записей Stripe` : 'Нет Stripe-платежей в БД'
+      available: hasStripePaymentsForClear,
+      reason: hasStripePaymentsForClear ? `В БД ${payments.stripe.length} записей Stripe` : 'Нет Stripe-платежей в БД'
     });
 
     // Действие: Пересоздать истекшую сессию — всегда показываем

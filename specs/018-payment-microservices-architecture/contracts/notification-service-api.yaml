@@ -1,0 +1,137 @@
+openapi: 3.0.0
+info:
+  title: Notification Service API
+  description: API для отправки уведомлений клиентам и менеджерам
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/notification
+    description: Local development server
+
+paths:
+  /send/payment-link:
+    post:
+      summary: Отправка ссылки на оплату
+      description: Отправляет клиенту уведомление со ссылкой на оплату Stripe сессии
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+                - session_url
+                - customer_email
+              properties:
+                deal_id:
+                  type: string
+                  description: ID сделки в Pipedrive
+                session_url:
+                  type: string
+                  format: uri
+                  description: URL Stripe Checkout Session
+                customer_email:
+                  type: string
+                  format: email
+                  description: Email клиента
+                customer_name:
+                  type: string
+                  description: Имя клиента
+                sendpulse_id:
+                  type: string
+                  description: SendPulse ID клиента (для Telegram)
+                amount:
+                  type: number
+                  description: Сумма платежа
+                currency:
+                  type: string
+                  description: Валюта платежа
+      responses:
+        '200':
+          description: Уведомление отправлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  notification_id:
+                    type: string
+                    format: uuid
+                  sent_at:
+                    type: string
+                    format: date-time
+
+  /send/payment-confirmation:
+    post:
+      summary: Отправка подтверждения оплаты
+      description: Отправляет клиенту уведомление об успешной оплате
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+                - customer_email
+              properties:
+                deal_id:
+                  type: string
+                customer_email:
+                  type: string
+                  format: email
+                customer_name:
+                  type: string
+                amount:
+                  type: number
+                currency:
+                  type: string
+      responses:
+        '200':
+          description: Уведомление отправлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /send/reminder:
+    post:
+      summary: Отправка напоминания о платеже
+      description: Отправляет клиенту напоминание о предстоящем или просроченном платеже
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+                - reminder_type
+              properties:
+                deal_id:
+                  type: string
+                reminder_type:
+                  type: string
+                  enum: [second_payment_reminder, overdue_payment_reminder, upcoming_payment_reminder]
+                customer_email:
+                  type: string
+                  format: email
+                session_url:
+                  type: string
+                  format: uri
+                  description: URL для оплаты (если доступен)
+      responses:
+        '200':
+          description: Напоминание отправлено
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean

@@ -1,0 +1,193 @@
+openapi: 3.0.0
+info:
+  title: Duplicate Prevention Service API
+  description: API для предотвращения дубликатов сессий, уведомлений и событий
+  version: 1.0.0
+servers:
+  - url: http://localhost:3000/api/microservices/duplicate-prevention
+    description: Local development server
+
+paths:
+  /check/session:
+    post:
+      summary: Проверка дубликата сессии
+      description: Проверяет наличие активной сессии того же типа для сделки
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - deal_id
+                - payment_type
+              properties:
+                deal_id:
+                  type: string
+                  description: ID сделки в Pipedrive
+                payment_type:
+                  type: string
+                  enum: [deposit, rest, single]
+                  description: Тип платежа
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hasDuplicate:
+                    type: boolean
+                    description: Найден ли дубликат
+                  existingSession:
+                    type: object
+                    nullable: true
+                    properties:
+                      session_id:
+                        type: string
+                      status:
+                        type: string
+                      checkout_url:
+                        type: string
+                        nullable: true
+
+  /check/notification:
+    post:
+      summary: Проверка дубликата уведомления
+      description: Проверяет, было ли отправлено уведомление получателю в пределах TTL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - recipient
+                - notification_type
+              properties:
+                recipient:
+                  type: string
+                  description: Email или SendPulse ID получателя
+                notification_type:
+                  type: string
+                  enum: [payment_link_created, payment_received, payment_reminder, session_expired, payment_refunded]
+                  description: Тип уведомления
+                ttl_hours:
+                  type: integer
+                  default: 24
+                  description: TTL в часах
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  canSend:
+                    type: boolean
+                    description: Можно ли отправить уведомление
+                  lastSentAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: Время последней отправки
+
+  /check/event:
+    post:
+      summary: Проверка дубликата события
+      description: Проверяет, было ли событие уже обработано
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - event_id
+              properties:
+                event_id:
+                  type: string
+                  description: ID события (Stripe event ID или внутренний)
+      responses:
+        '200':
+          description: Результат проверки
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  alreadyProcessed:
+                    type: boolean
+                    description: Обработано ли событие уже
+                  processedAt:
+                    type: string
+                    format: date-time
+                    nullable: true
+
+  /record/session:
+    post:
+      summary: Запись создания сессии
+      description: Записывает факт создания сессии для предотвращения дубликатов
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - session_id
+                - deal_id
+                - payment_type
+              properties:
+                session_id:
+                  type: string
+                deal_id:
+                  type: string
+                payment_type:
+                  type: string
+      responses:
+        '200':
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  /record/notification:
+    post:
+      summary: Запись отправки уведомления
+      description: Записывает факт отправки уведомления для предотвращения дубликатов
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - recipient
+                - notification_type
+              properties:
+                recipient:
+                  type: string
+                notification_type:
+                  type: string
+                deal_id:
+                  type: string
+                ttl_hours:
+                  type: integer
+                  default: 24
+      responses:
+        '200':
+          description: Запись создана
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
