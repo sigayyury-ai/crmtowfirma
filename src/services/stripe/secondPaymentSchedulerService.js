@@ -424,28 +424,42 @@ class SecondPaymentSchedulerService {
 
   /**
    * Найти все будущие задачи по созданию вторых платежей (включая те, что еще не наступили)
+   * @param {Object} [options] - Опции
+   * @param {number} [options.forDealIdOnly] - Проверить только эту сделку (для диагностики; без загрузки всех сделок)
    * @returns {Promise<Array>} - Массив сделок с информацией о будущих задачах
    */
-  async findAllUpcomingTasks() {
+  async findAllUpcomingTasks(options = {}) {
     try {
-      // Получаем все сделки со статусом "Stripe" (invoice_type = 75)
+      const forDealIdOnly = options.forDealIdOnly != null ? Number(options.forDealIdOnly) : null;
+      const singleDealMode = forDealIdOnly != null && !Number.isNaN(forDealIdOnly);
+
       const invoiceTypeFieldKey = 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
       const stripeTriggerValue = '75';
 
-      const dealsResult = await this.pipedriveClient.getDeals({
-        filter_id: null,
-        status: 'all_not_deleted',
-        limit: 500, // Увеличиваем лимит для получения всех сделок
-        start: 0
-      });
+      let dealsToCheck;
 
-      if (!dealsResult.success || !dealsResult.deals) {
-        return [];
+      if (singleDealMode) {
+        const dealResult = await this.pipedriveClient.getDeal(forDealIdOnly);
+        if (!dealResult.success || !dealResult.deal) {
+          return [];
+        }
+        dealsToCheck = [dealResult.deal];
+      } else {
+        const dealsResult = await this.pipedriveClient.getDeals({
+          filter_id: null,
+          status: 'all_not_deleted',
+          limit: 500,
+          start: 0
+        });
+        if (!dealsResult.success || !dealsResult.deals) {
+          return [];
+        }
+        dealsToCheck = dealsResult.deals;
       }
 
       const upcomingTasks = [];
 
-      for (const deal of dealsResult.deals) {
+      for (const deal of dealsToCheck) {
         // Проверяем, что invoice_type = "Stripe" (75)
         const invoiceType = deal[invoiceTypeFieldKey];
         if (String(invoiceType) !== stripeTriggerValue) {
@@ -608,27 +622,31 @@ class SecondPaymentSchedulerService {
   /**
    * Найти все задачи-напоминания о втором платеже (сессия создана, но не оплачена)
    * Ищем по платежам в базе данных И в Stripe напрямую (для просроченных сессий)
+   * @param {Object} [options] - Опции
+   * @param {number} [options.forDealIdOnly] - Проверить только эту сделку (для диагностики; без загрузки всех сделок)
    * @returns {Promise<Array>} - Массив задач для напоминаний
    */
-  async findReminderTasks() {
+  async findReminderTasks(options = {}) {
     try {
-      // Получаем все неоплаченные вторые платежи из базы данных
-      const allPayments = await this.repository.listPayments({});
-      
-      // Фильтруем только вторые платежи (rest/second/final), которые не оплачены
-      const unpaidSecondPayments = allPayments.filter(p => 
-        (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
-        p.payment_status !== 'paid' &&
-        p.deal_id // Должен быть deal_id
-      );
+      const forDealIdOnly = options.forDealIdOnly != null ? Number(options.forDealIdOnly) : null;
+      const singleDealMode = forDealIdOnly != null && !Number.isNaN(forDealIdOnly);
 
-      // Также ищем просроченные сессии в Stripe напрямую (которые могут не быть в базе)
-      const expiredSessionsFromStripe = await this.findExpiredUnpaidSessionsFromStripe();
+      let allDealIds;
 
-      // Объединяем deal_id из базы и из Stripe
-      const dealIdsFromDb = [...new Set(unpaidSecondPayments.map(p => p.deal_id))];
-      const dealIdsFromStripe = [...new Set(expiredSessionsFromStripe.map(s => s.dealId))];
-      const allDealIds = [...new Set([...dealIdsFromDb, ...dealIdsFromStripe])];
+      if (singleDealMode) {
+        allDealIds = [String(forDealIdOnly)];
+      } else {
+        const allPayments = await this.repository.listPayments({});
+        const unpaidSecondPayments = allPayments.filter(p => 
+          (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+          p.payment_status !== 'paid' &&
+          p.deal_id // Должен быть deal_id
+        );
+        const expiredSessionsFromStripe = await this.findExpiredUnpaidSessionsFromStripe();
+        const dealIdsFromDb = [...new Set(unpaidSecondPayments.map(p => p.deal_id))];
+        const dealIdsFromStripe = [...new Set(expiredSessionsFromStripe.map(s => s.dealId))];
+        allDealIds = [...new Set([...dealIdsFromDb, ...dealIdsFromStripe])];
+      }
 
       if (allDealIds.length === 0) {
         return [];
@@ -711,7 +729,8 @@ class SecondPaymentSchedulerService {
           const secondPaymentPaid = paidSecondPaymentTotal >= expectedSecondPayment * 0.9;
           
           if (secondPaymentPaid) {
-            this.logger.info('Skipping reminder task - second payment already paid', {
+            const logSkip = singleDealMode ? this.logger.debug.bind(this.logger) : this.logger.info.bind(this.logger);
+            logSkip('Skipping reminder task - second payment already paid', {
               dealId,
               expectedSecondPayment: expectedSecondPayment,
               paidSecondPaymentTotal: paidSecondPaymentTotal,
@@ -731,7 +750,8 @@ class SecondPaymentSchedulerService {
           // Защита от дубликатов работает постоянно (не только на один день), так как cron работает раз в день
           const alreadySent = await this.wasReminderSentEver(dealId, secondPaymentDate);
           if (alreadySent) {
-            this.logger.info('Skipping reminder task - reminder already sent for this deal and second payment date', {
+            const logAlreadySent = singleDealMode ? this.logger.debug.bind(this.logger) : this.logger.info.bind(this.logger);
+            logAlreadySent('Skipping reminder task - reminder already sent for this deal and second payment date', {
               dealId,
               secondPaymentDate: this.normalizeDate(secondPaymentDate)
             });
@@ -1585,29 +1605,20 @@ class SecondPaymentSchedulerService {
                   s.metadata?.deal_id === String(dealId)
                 );
                 
-                // Ищем активные deposit сессии
+                // Ищем активные deposit сессии: если есть ЛЮБАЯ открытая deposit — не пересоздаём
                 for (const stripeSession of stripeSessionsWithDealId) {
                   const isTestSession = stripeSession.id.startsWith('cs_test_');
                   if (isTestSession) continue;
                   
                   const paymentType = stripeSession.metadata?.payment_type;
                   if (paymentType === 'deposit' && stripeSession.status === 'open') {
-                    // Есть активная открытая deposit сессия
-                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                    const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
-                    
-                    if (expiredDate < activeCreated) {
-                      // Истекшая сессия старше активной - пропускаем
-                      this.logger.info('Skipping expired deposit session, active deposit session exists', {
-                        dealId,
-                        expiredSessionId: expiredSession.sessionId,
-                        activeSessionId: stripeSession.id,
-                        expiredDate: expiredDate.toISOString(),
-                        activeCreated: activeCreated.toISOString()
-                      });
-                      hasActiveDepositSession = true;
-                      break;
-                    }
+                    this.logger.info('Skipping expired deposit session, active deposit session exists', {
+                      dealId,
+                      expiredSessionId: expiredSession.sessionId,
+                      activeSessionId: stripeSession.id
+                    });
+                    hasActiveDepositSession = true;
+                    break;
                   }
                 }
                 
@@ -1626,22 +1637,13 @@ class SecondPaymentSchedulerService {
                       
                       const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
                       if (stripeSession.status === 'open') {
-                        // Есть активная открытая deposit сессия
-                        const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                        const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
-                        
-                        if (expiredDate < activeCreated) {
-                          // Истекшая сессия старше активной - пропускаем
-                          this.logger.info('Skipping expired deposit session, active deposit session exists', {
-                            dealId,
-                            expiredSessionId: expiredSession.sessionId,
-                            activeSessionId: activeDepositPayment.session_id,
-                            expiredDate: expiredDate.toISOString(),
-                            activeCreated: activeCreated.toISOString()
-                          });
-                          hasActiveDepositSession = true;
-                          break;
-                        }
+                        this.logger.info('Skipping expired deposit session, active deposit session exists (from DB)', {
+                          dealId,
+                          expiredSessionId: expiredSession.sessionId,
+                          activeSessionId: activeDepositPayment.session_id
+                        });
+                        hasActiveDepositSession = true;
+                        break;
                       }
                     } catch (error) {
                       this.logger.warn('Failed to check active deposit session status', {
@@ -1667,6 +1669,53 @@ class SecondPaymentSchedulerService {
             } 
             // Для второго платежа (rest/second/final) - проверяем условия
             else if (isRest) {
+              // ВАЖНО: Если уже есть открытая rest/second/final сессия — не пересоздаём
+              let hasActiveRestSession = false;
+              try {
+                const sevenDaysAgoRest = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+                const openSessionsRest = await this.stripeProcessor.stripe.checkout.sessions.list({
+                  limit: 100,
+                  status: 'open',
+                  created: { gte: sevenDaysAgoRest }
+                });
+                const dealOpenRest = (openSessionsRest.data || []).filter(s =>
+                  s.metadata?.deal_id === String(dealId) &&
+                  (s.metadata?.payment_type === 'rest' || s.metadata?.payment_type === 'second' || s.metadata?.payment_type === 'final')
+                );
+                if (dealOpenRest.length > 0) {
+                  this.logger.info('Skipping expired rest session, active rest/second/final session exists', {
+                    dealId,
+                    expiredSessionId: expiredSession.sessionId,
+                    activeSessionId: dealOpenRest[0].id
+                  });
+                  hasActiveRestSession = true;
+                }
+                if (!hasActiveRestSession) {
+                  const openRestFromDb = payments.filter(p =>
+                    (p.payment_type === 'rest' || p.payment_type === 'second' || p.payment_type === 'final') &&
+                    (p.status === 'open' || (p.status === 'processed' && p.payment_status === 'unpaid'))
+                  );
+                  for (const p of openRestFromDb) {
+                    if (!p.session_id || p.session_id.startsWith('cs_test_')) continue;
+                    const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+                    if (stripeSession.status === 'open') {
+                      this.logger.info('Skipping expired rest session, active rest session exists (from DB)', {
+                        dealId,
+                        expiredSessionId: expiredSession.sessionId,
+                        activeSessionId: p.session_id
+                      });
+                      hasActiveRestSession = true;
+                      break;
+                    }
+                  }
+                }
+              } catch (err) {
+                this.logger.warn('Failed to check active rest sessions', { dealId, error: err.message });
+              }
+              if (hasActiveRestSession) {
+                continue;
+              }
+
               // КРИТИЧЕСКИ ВАЖНО: Проверяем, есть ли уже ОПЛАЧЕННЫЙ второй платеж
               // Если второй платеж уже оплачен, не пересоздаем просроченную сессию
               // Используем переменную payments, которая уже объявлена выше в этом методе
@@ -1734,29 +1783,20 @@ class SecondPaymentSchedulerService {
                   s.metadata?.deal_id === String(dealId)
                 );
                 
-                // Ищем активные single сессии
+                // Ищем активные single сессии: если есть ЛЮБАЯ открытая single — не пересоздаём
                 for (const stripeSession of stripeSessionsWithDealId) {
                   const isTestSession = stripeSession.id.startsWith('cs_test_');
                   if (isTestSession) continue;
                   
                   const paymentType = stripeSession.metadata?.payment_type;
                   if (paymentType === 'single' && stripeSession.status === 'open') {
-                    // Есть активная открытая single сессия
-                    const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                    const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
-                    
-                    if (expiredDate < activeCreated) {
-                      // Истекшая сессия старше активной - пропускаем
-                      this.logger.info('Skipping expired single session, active single session exists', {
-                        dealId,
-                        expiredSessionId: expiredSession.sessionId,
-                        activeSessionId: stripeSession.id,
-                        expiredDate: expiredDate.toISOString(),
-                        activeCreated: activeCreated.toISOString()
-                      });
-                      hasActiveSingleSession = true;
-                      break;
-                    }
+                    this.logger.info('Skipping expired single session, active single session exists', {
+                      dealId,
+                      expiredSessionId: expiredSession.sessionId,
+                      activeSessionId: stripeSession.id
+                    });
+                    hasActiveSingleSession = true;
+                    break;
                   }
                 }
                 
@@ -1775,22 +1815,13 @@ class SecondPaymentSchedulerService {
                       
                       const stripeSession = await this.stripeProcessor.stripe.checkout.sessions.retrieve(sessionId);
                       if (stripeSession.status === 'open') {
-                        // Есть активная открытая single сессия
-                        const activeCreated = stripeSession.created ? new Date(stripeSession.created * 1000) : new Date(0);
-                        const expiredDate = expiredSession.expiresAt ? new Date(expiredSession.expiresAt * 1000) : new Date(0);
-                        
-                        if (expiredDate < activeCreated) {
-                          // Истекшая сессия старше активной - пропускаем
-                          this.logger.info('Skipping expired single session, active single session exists', {
-                            dealId,
-                            expiredSessionId: expiredSession.sessionId,
-                            activeSessionId: activeSinglePayment.session_id,
-                            expiredDate: expiredDate.toISOString(),
-                            activeCreated: activeCreated.toISOString()
-                          });
-                          hasActiveSingleSession = true;
-                          break;
-                        }
+                        this.logger.info('Skipping expired single session, active single session exists (from DB)', {
+                          dealId,
+                          expiredSessionId: expiredSession.sessionId,
+                          activeSessionId: activeSinglePayment.session_id
+                        });
+                        hasActiveSingleSession = true;
+                        break;
                       }
                     } catch (error) {
                       this.logger.warn('Failed to check active single session status', {
@@ -1982,19 +2013,46 @@ class SecondPaymentSchedulerService {
    * @returns {Promise<Object>} - Статистика обработки
    */
   async processExpiredSessions(options = {}) {
-    const { trigger = 'manual', runId = null } = options;
+    const { trigger = 'manual', runId = null, dryRun = false } = options;
     const summary = {
       totalFound: 0,
       recreated: 0,
       errors: [],
-      skipped: []
+      skipped: [],
+      tasks: []
     };
 
     try {
-      this.logger.info('Starting expired sessions processing cycle', { trigger, runId });
+      this.logger.info('Starting expired sessions processing cycle', { trigger, runId, dryRun });
+
+      // В dry-run сначала получаем сырой список истекших сессий из Stripe (по сделкам)
+      if (dryRun) {
+        const rawSessions = await this.findExpiredUnpaidSessionsFromStripe();
+        summary.rawSessions = rawSessions;
+        const byDeal = new Map();
+        for (const s of rawSessions) {
+          const did = String(s.dealId);
+          if (!byDeal.has(did)) byDeal.set(did, []);
+          byDeal.get(did).push(s);
+        }
+        summary.rawByDeal = Object.fromEntries(
+          [...byDeal.entries()].map(([dealId, sessions]) => [dealId, { count: sessions.length, sessions }])
+        );
+      }
 
       const expiredTasks = await this.findExpiredSessionTasks();
       summary.totalFound = expiredTasks.length;
+      if (dryRun) {
+        summary.tasks = expiredTasks;
+        this.logger.info('Dry run: returning task list without recreating sessions', {
+          rawCount: summary.rawSessions?.length ?? 0,
+          dealsWithExpired: summary.rawByDeal ? Object.keys(summary.rawByDeal).length : 0,
+          tasksCount: expiredTasks.length,
+          trigger,
+          runId
+        });
+        return summary;
+      }
 
       this.logger.info('Found expired session tasks', {
         count: expiredTasks.length,

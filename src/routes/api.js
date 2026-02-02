@@ -742,7 +742,6 @@ router.post('/stripe/events-cabinet/monitor', requireStripeAccess, async (req, r
 router.use('/stripe', requireStripeAccess, stripeRouter);
 router.use('/reports/stripe-events', requireStripeAccess, stripeEventReportRouter);
 router.use('/analytics', analyticsRouter);
-router.use('/', proformaAdjustmentRoutes);
 
 // ==================== PIPEDRIVE ENDPOINTS ====================
 
@@ -1107,7 +1106,15 @@ router.get('/pipedrive/deals/:id/diagnostics', async (req, res) => {
     const diagnosticsService = new DealDiagnosticsService();
     
     const diagnostics = await diagnosticsService.getDealDiagnostics(dealId);
-    
+
+    if (diagnostics.success && diagnostics.payments) {
+      logger.debug('Deal diagnostics payments', {
+        dealId,
+        stripeCount: diagnostics.payments.stripe?.length ?? 0,
+        proformaCount: diagnostics.payments.proforma?.length ?? 0
+      });
+    }
+
     res.json(diagnostics);
   } catch (error) {
     logger.error('Error getting deal diagnostics:', error);
@@ -1196,20 +1203,40 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/create-stripe-session', as
     }
 
     const deal = dealResult.deal;
-    const { paymentType, paymentSchedule, customAmount, sendNotification = true } = req.body;
+    let { paymentType, paymentSchedule, customAmount, sendNotification = true } = req.body || {};
 
-    // Определяем параметры для создания сессии
+    // Если тип/график не переданы — определяем по состоянию сделки (чтобы ручное действие всегда создавало нужную сессию)
+    if (!paymentType || !paymentSchedule) {
+      try {
+        const PaymentStateAnalyzer = require('../services/stripe/paymentStateAnalyzer');
+        const PaymentScheduleService = require('../services/stripe/paymentScheduleService');
+        const schedule = PaymentScheduleService.determineScheduleFromDeal(deal);
+        const stateAnalyzer = new PaymentStateAnalyzer();
+        const paymentState = await stateAnalyzer.analyzePaymentState(dealId, schedule);
+        if (!paymentSchedule) paymentSchedule = paymentState.schedule || '50/50';
+        if (!paymentType) {
+          if (paymentState.needsDeposit) paymentType = 'deposit';
+          else if (paymentState.needsRest) paymentType = 'rest';
+          else if (paymentState.needsSingle) paymentType = 'single';
+          else paymentType = paymentSchedule === '50/50' ? 'deposit' : 'single';
+        }
+      } catch (err) {
+        logger.warn('Failed to determine payment type from state, using defaults', { dealId, error: err.message });
+        if (!paymentSchedule) paymentSchedule = '50/50';
+        if (!paymentType) paymentType = 'deposit';
+      }
+    }
+
     const sessionContext = {
       trigger: 'manual_diagnostics',
       runId: `diagnostics_${Date.now()}`,
-      paymentType: paymentType || null, // Будет определен автоматически если не указан
-      paymentSchedule: paymentSchedule || null, // Будет определен автоматически если не указан
+      paymentType: paymentType || null,
+      paymentSchedule: paymentSchedule || null,
       customAmount: customAmount || null,
       skipNotification: !sendNotification,
-      setInvoiceTypeDone: false // Не меняем invoice_type при ручном создании
+      setInvoiceTypeDone: false
     };
 
-    // Создаем сессию
     const sessionResult = await stripeProcessor.createCheckoutSessionForDeal(deal, sessionContext);
 
     if (!sessionResult.success) {
@@ -1398,35 +1425,36 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/send-payment-notification'
         sessionUrl = p.raw_payload.url;
       }
       
-      // Если URL все еще не найден, получаем из Stripe API
-      if (!sessionUrl) {
-        try {
-          const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
-          if (session && session.url) {
-            sessionUrl = session.url;
-            // Сохраняем URL в DB для будущего использования
-            try {
-              await repository.savePayment({
-                session_id: p.session_id,
-                checkout_url: sessionUrl
-              });
-            } catch (saveError) {
-              logger.warn('Failed to save checkout_url to DB', {
-                dealId,
-                sessionId: p.session_id,
-                error: saveError.message
-              });
-            }
-          }
-        } catch (error) {
-          logger.warn('Failed to retrieve session URL from Stripe', {
-            dealId,
-            sessionId: p.session_id,
-            error: error.message
-          });
+      // Получаем сессию из Stripe: только активные (open) сессии — истекшие не отправляем
+      try {
+        const session = await stripeProcessor.stripe.checkout.sessions.retrieve(p.session_id);
+        if (session && session.status !== 'open') {
+          continue; // Истекшая или завершённая — не включаем в уведомление
         }
+        if (session && session.url) {
+          sessionUrl = session.url;
+          try {
+            await repository.savePayment({
+              session_id: p.session_id,
+              checkout_url: sessionUrl
+            });
+          } catch (saveError) {
+            logger.warn('Failed to save checkout_url to DB', {
+              dealId,
+              sessionId: p.session_id,
+              error: saveError.message
+            });
+          }
+        }
+      } catch (error) {
+        logger.warn('Failed to retrieve session URL from Stripe', {
+          dealId,
+          sessionId: p.session_id,
+          error: error.message
+        });
+        continue;
       }
-      
+
       if (sessionUrl) {
         sessions.push({
           id: p.session_id,
@@ -1483,6 +1511,128 @@ router.post('/pipedrive/deals/:id/diagnostics/actions/send-payment-notification'
   } catch (error) {
     logger.error('Error sending payment notification via diagnostics:', error);
     res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/delete-stripe-session
+ * Удалить одну Stripe-сессию: истечь в Stripe и удалить запись из БД (чтобы начать с нуля).
+ * Body: { sessionId: "cs_live_..." } — обязательно.
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/delete-stripe-session', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    const { sessionId } = req.body;
+    if (isNaN(dealId) || !sessionId || typeof sessionId !== 'string') {
+      return res.status(400).json({ success: false, error: 'deal ID and sessionId (body) required' });
+    }
+
+    const StripeRepository = require('../services/stripe/repository');
+    const StripeProcessorService = require('../services/stripe/processor');
+    const repository = new StripeRepository();
+    const processor = new StripeProcessorService();
+
+    let payments = await repository.listPayments({ dealId: String(dealId), limit: 50 });
+    if (!payments || payments.length === 0) {
+      payments = await repository.listPayments({ dealId: Number(dealId), limit: 50 });
+    }
+    const sessionIdNorm = String(sessionId).trim();
+    let payment = (payments || []).find(p => String(p.session_id || '').trim() === sessionIdNorm);
+    if (!payment && (payments || []).length > 0) {
+      payment = (payments || []).find(p => (p.session_id || '').includes(sessionIdNorm) || sessionIdNorm.includes(String(p.session_id || '')));
+    }
+    if (!payment || !payment.id) {
+      logger.warn('delete-stripe-session: session not found', {
+        dealId,
+        sessionId: sessionIdNorm,
+        paymentsCount: (payments || []).length,
+        sessionIdsInDeal: (payments || []).map(p => (p.session_id || '').substring(0, 30))
+      });
+      return res.status(404).json({
+        success: false,
+        error: 'Session not found for this deal',
+        hint: 'Проверьте, что запись есть в БД (диагностика показывает её). При необходимости выполните синхронизацию: node scripts/sync-missing-stripe-sessions-to-db.js'
+      });
+    }
+
+    // Истечь сессию в Stripe (если ещё open)
+    try {
+      const session = await processor.stripe.checkout.sessions.retrieve(sessionId);
+      if (session && session.status === 'open') {
+        await processor.stripe.checkout.sessions.expire(sessionId);
+      }
+    } catch (stripeErr) {
+      logger.warn('Stripe expire session (may already be expired)', { sessionId, error: stripeErr.message });
+    }
+
+    const del = await repository.deletePayment(payment.id);
+    if (!del.success) {
+      return res.status(500).json({ success: false, error: del.error || 'Failed to delete from DB' });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Сессия истекла в Stripe и удалена из БД',
+      sessionId
+    });
+  } catch (error) {
+    logger.error('Error deleting stripe session via diagnostics:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pipedrive/deals/:id/diagnostics/actions/clear-stripe-payments
+ * Удалить записи о Stripe-платежах по сделке из БД (история в Stripe не трогается).
+ * Body: { sessionIds?: string[] } — если указан, удаляются только эти сессии; иначе все по сделке.
+ */
+router.post('/pipedrive/deals/:id/diagnostics/actions/clear-stripe-payments', async (req, res) => {
+  try {
+    const dealId = parseInt(req.params.id);
+    if (isNaN(dealId)) {
+      return res.status(400).json({ success: false, error: 'Invalid deal ID' });
+    }
+
+    const StripeRepository = require('../services/stripe/repository');
+    const repository = new StripeRepository();
+    if (!repository.isEnabled()) {
+      return res.status(503).json({ success: false, error: 'Stripe repository not available' });
+    }
+
+    const { sessionIds } = req.body;
+
+    if (sessionIds && Array.isArray(sessionIds) && sessionIds.length > 0) {
+      const payments = await repository.listPayments({ dealId: String(dealId), limit: 100 });
+      const toDelete = payments.filter(p => p.session_id && sessionIds.includes(p.session_id));
+      let deleted = 0;
+      for (const p of toDelete) {
+        if (p.id) {
+          const result = await repository.deletePayment(p.id);
+          if (result.success) deleted++;
+        }
+      }
+      return res.json({
+        success: true,
+        deleted,
+        total: toDelete.length,
+        message: `Удалено записей: ${deleted}`
+      });
+    }
+
+    const result = await repository.deletePaymentsByDealId(dealId);
+    return res.json({
+      success: true,
+      deleted: result.deleted,
+      sessions: result.sessions,
+      message: `Удалено записей: ${result.deleted}`
+    });
+  } catch (error) {
+    logger.error('Error clearing stripe payments via diagnostics:', error);
+    return res.status(500).json({
       success: false,
       error: 'Internal server error',
       message: error.message
@@ -1849,6 +1999,9 @@ router.get('/pipedrive/persons/:id', async (req, res) => {
     });
   }
 });
+
+// Роуты проформ — после всех конкретных маршрутов, чтобы не перехватывать /pipedrive/...
+router.use('/', proformaAdjustmentRoutes);
 
 // ==================== INVOICE PROCESSING ENDPOINTS ====================
 

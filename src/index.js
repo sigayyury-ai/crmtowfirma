@@ -118,6 +118,11 @@ app.use('/api', stripeWebhookRoutes);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Внутренний API для диагностических действий (create-stripe-session и т.д.)
+// Авторизация по INTERNAL_API_KEY, без Google OAuth
+const internalDiagnosticsRoutes = require('./routes/internal/diagnosticsActionsRoutes');
+app.use('/api/internal', internalDiagnosticsRoutes);
+
 // Auth роуты (должны быть доступны без авторизации)
 app.use('/auth', authRoutes);
 

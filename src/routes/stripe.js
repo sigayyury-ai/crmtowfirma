@@ -208,6 +208,68 @@ router.get('/checkout-sessions', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/stripe/checkout-sessions/:sessionId/in-db
+ * Проверить, есть ли Stripe Checkout Session в нашей БД (таблица stripe_payments).
+ * Session ID можно взять из ссылки checkout.stripe.com/c/pay/cs_live_... или cs_test_...
+ */
+router.get('/checkout-sessions/:sessionId/in-db', async (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    return res.status(400).json({
+      success: false,
+      error: 'BadRequest',
+      message: 'sessionId is required'
+    });
+  }
+
+  try {
+    const StripeRepository = require('../services/stripe/repository');
+    const repo = new StripeRepository();
+    if (!repo.isEnabled()) {
+      return res.status(503).json({
+        success: false,
+        inDb: false,
+        error: 'Database not configured (stripe_payments unavailable)'
+      });
+    }
+
+    const payment = await repo.findPaymentBySessionId(sessionId);
+    if (!payment) {
+      return res.json({
+        success: true,
+        inDb: false,
+        sessionId,
+        message: 'Session not found in stripe_payments'
+      });
+    }
+
+    return res.json({
+      success: true,
+      inDb: true,
+      sessionId,
+      payment: {
+        deal_id: payment.deal_id,
+        session_id: payment.session_id,
+        payment_type: payment.payment_type,
+        payment_status: payment.payment_status,
+        original_amount: payment.original_amount,
+        currency: payment.currency,
+        checkout_url: payment.checkout_url ? true : false,
+        created_at: payment.created_at,
+        updated_at: payment.updated_at
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to check session in DB', { sessionId, message: error.message });
+    return res.status(500).json({
+      success: false,
+      inDb: false,
+      error: error.message
+    });
+  }
+});
+
 router.get('/checkout-sessions/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   if (!sessionId) {

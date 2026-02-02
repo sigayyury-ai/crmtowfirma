@@ -1,6 +1,7 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
 const StripeAnalyticsService = require('../stripe/analyticsService');
+const PaymentRevenueReportService = require('./paymentRevenueReportService');
 
 const CRM_DEAL_BASE_URL = 'https://comoon.pipedrive.com/deal/';
 
@@ -118,6 +119,7 @@ class ProductReportService {
     if (!supabase) {
       logger.warn('Supabase client is not configured. Product report features will be unavailable.');
     }
+    this.paymentRevenueReportService = new PaymentRevenueReportService();
   }
 
   async getProductSummary({ includeStripeData = true } = {}) {
@@ -398,13 +400,13 @@ class ProductReportService {
     const totalExpenses = this.calculateExpenseTotals(linkedPayments).totalPln;
     const totalParticipants = this.calculateParticipantsCount(proformas, stripePayments);
     const expensesPerParticipant = totalParticipants > 0 ? totalExpenses / totalParticipants : 0;
-    const monthlyBreakdown = this.calculateMonthlyBreakdown(
-      proformas, 
-      stripePayments, 
+    const monthlyBreakdown = await this.calculateMonthlyBreakdownFromPaymentReport({
+      productId: entry.productId,
+      proformas,
+      stripePayments,
       linkedPayments,
-      expensesPerParticipant,
-      cashMonthly
-    );
+      expensesPerParticipant
+    });
 
     return {
       productId: entry.productId,
@@ -1612,138 +1614,114 @@ class ProductReportService {
       .filter(Boolean);
   }
 
-  calculateMonthlyBreakdown(
-    proformas,
-    stripePayments,
-    linkedPayments = { incoming: [] },
-    expensesPerParticipant = 0,
-    cashMonthly = []
-  ) {
-    const monthlyMap = new Map();
+  resolveProductDetailDateRange({ proformas = [], stripePayments = [], linkedPayments = { incoming: [] } } = {}) {
+    const dates = [];
+    (proformas || []).forEach((p) => p?.date && dates.push(p.date));
+    (stripePayments || []).forEach((p) => (p?.createdAt || p?.processedAt) && dates.push(p.createdAt || p.processedAt));
+    (linkedPayments?.incoming || []).forEach((p) => p?.operationDate && dates.push(p.operationDate));
+
+    const parsed = dates
+      .map((d) => new Date(d))
+      .filter((d) => !Number.isNaN(d.getTime()));
+
+    if (!parsed.length) {
+      // Fallback: last 24 months
+      const now = new Date();
+      const from = new Date(Date.UTC(now.getUTCFullYear() - 2, 0, 1));
+      const to = new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
+      return { dateFrom: from, dateTo: to };
+    }
+
+    const min = new Date(Math.min(...parsed.map((d) => d.getTime())));
+    const max = new Date(Math.max(...parsed.map((d) => d.getTime())));
+    const from = new Date(Date.UTC(min.getUTCFullYear(), 0, 1));
+    const to = new Date(Date.UTC(max.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
+    return { dateFrom: from, dateTo: to };
+  }
+
+  buildMonthlyVatInvoiceRows(monthlyTotals = []) {
     const MARGIN_RATE = 0.35; // 35% маржа
     const VAT_RATE = 0.23; // 23% НДС
 
-    const ensureMonth = (monthKey) => {
-      if (!monthKey) return null;
+    return (monthlyTotals || [])
+      .map((entry) => {
+        const razemBrutto = Number((toNumber(entry.amountPln) || 0).toFixed(2));
+        const quantity = Number(entry.count) || 0;
+
+        const expenses = Number((razemBrutto * MARGIN_RATE).toFixed(2));
+        const netMargin = Number((razemBrutto - expenses).toFixed(2));
+        const vatAmount = Number((netMargin * VAT_RATE).toFixed(2));
+        const totalWithVat = Number((razemBrutto + vatAmount).toFixed(2));
+
+        return {
+          month: entry.monthKey,
+          razemBrutto,
+          quantity,
+          expenses,
+          netMargin,
+          vatRate: VAT_RATE,
+          vatAmount,
+          totalWithVat
+        };
+      })
+      .sort((a, b) => b.month.localeCompare(a.month));
+  }
+
+  async calculateMonthlyBreakdownFromPaymentReport({
+    productId,
+    proformas = [],
+    stripePayments = [],
+    linkedPayments = { incoming: [] },
+    expensesPerParticipant = 0
+  }) {
+    if (!productId) {
+      return [];
+    }
+
+    const { dateFrom, dateTo } = this.resolveProductDetailDateRange({
+      proformas,
+      stripePayments,
+      linkedPayments
+    });
+
+    // Use the same aggregation source as /api/vat-margin/payment-report
+    const report = await this.paymentRevenueReportService.getReport({
+      dateFrom,
+      dateTo,
+      status: 'approved'
+    });
+
+    const groups = Array.isArray(report?.products) ? report.products : [];
+    const group = groups.find((g) => Number(g.product_id) === Number(productId)) || null;
+    if (!group) {
+      return [];
+    }
+
+    const monthlyMap = new Map(); // monthKey -> { monthKey, amountPln, count }
+    const ensure = (monthKey) => {
       if (!monthlyMap.has(monthKey)) {
-        monthlyMap.set(monthKey, {
-          month: monthKey,
-          amount: 0,
-          count: 0
-        });
+        monthlyMap.set(monthKey, { monthKey, amountPln: 0, count: 0 });
       }
       return monthlyMap.get(monthKey);
     };
 
-    // 1) Входящие платежи из linkedPayments (реальные даты поступления денег)
-    // ВАЖНО: НЕ делаем "месячную дедупликацию" со Stripe — это приводит к недосчёту.
-    if (Array.isArray(linkedPayments.incoming)) {
-      linkedPayments.incoming.forEach((payment) => {
-        // Учитываем только реальные платежи (direction === 'in' и есть дата операции)
-        if (!payment.operationDate || payment.direction !== 'in') return;
-
-        // Align with PNL: exclude non-real sources
-        if (payment.source === 'facebook_ads') return;
-
-        // Align with PNL: exclude unapproved bank payments (linked payments can include drafts)
-        if (payment.manualStatus && payment.manualStatus !== 'approved') return;
-
-        const monthKey = this.toMonthKeyUtc(payment.operationDate);
+    // Walk through the same payment entries used in payment-report totals
+    (group.entries || []).forEach((agg) => {
+      (agg.payments || []).forEach((payment) => {
+        const monthKey = this.toMonthKeyUtc(payment.date);
         if (!monthKey) return;
-
-        // IMPORTANT: if currency != PLN and we don't have explicit PLN amount, don't assume it's PLN
-        const currency = (payment.currency || 'PLN').toUpperCase();
-        const rawAmount = toNumber(payment.amount) || 0;
-        if (rawAmount <= 0) return;
-
-        const amountPln = currency === 'PLN' ? rawAmount : null;
-        if (!Number.isFinite(amountPln) || amountPln <= 0) {
-          return;
-        }
-
-        const entry = ensureMonth(monthKey);
-        if (!entry) return;
-        entry.amount += amountPln;
-        entry.count += 1;
+        const amountPln = toNumber(payment.amount_pln);
+        if (!Number.isFinite(amountPln) || amountPln <= 0) return;
+        const row = ensure(monthKey);
+        row.amountPln += amountPln;
+        row.count += 1;
       });
-    }
+    });
 
-    // 2) Stripe платежи (используем дату фактической оплаты — createdAt; fallback processedAt)
-    // Align with PNL: Stripe grouping should be by real payment date, not sync date.
-    if (Array.isArray(stripePayments)) {
-      stripePayments.forEach((payment) => {
-        const dateStr = payment.createdAt || payment.processedAt;
-        if (!dateStr) return;
+    // Keep signature compatibility; expensesPerParticipant is not used in month totals
+    void expensesPerParticipant;
 
-        const monthKey = this.toMonthKeyUtc(dateStr);
-        if (!monthKey) return;
-
-        const amount = toNumber(payment.amountPln) || 0;
-        if (amount <= 0) return;
-
-        const entry = ensureMonth(monthKey);
-        if (!entry) return;
-        entry.amount += amount;
-        entry.count += 1;
-      });
-    }
-
-    // 3) Cash payments monthly (if available)
-    if (Array.isArray(cashMonthly)) {
-      cashMonthly.forEach((row) => {
-        const monthKey = row?.monthKey;
-        const amountPln = toNumber(row?.amountPln) || 0;
-        if (!monthKey || amountPln <= 0) return;
-        const entry = ensureMonth(monthKey);
-        if (!entry) return;
-        entry.amount += amountPln;
-        entry.count += 1;
-      });
-    }
-
-    // Преобразуем в массив и рассчитываем поля для фактуры маржи
-    // Формула: Razem (брутто) = Cena zakupu + Marża netto
-    // При маржинальности 35%: Marża netto = 35% от Razem, значит Cena zakupu = 65% от Razem
-    // Или: Razem = Cena zakupu / 0.65, или Marża netto = Razem * 0.35
-    const breakdown = Array.from(monthlyMap.values())
-      .map((entry) => {
-        // amount - это реально оплаченная сумма (Razem / brutto)
-        const razemBrutto = Number(entry.amount.toFixed(2));
-        const count = entry.count || 0;
-        
-        // Расчет полей для фактуры маржи
-        // Количество (Ilość) - количество участников/платежей
-        const quantity = count;
-        
-        // Наши расходы - 35% от Razem (брутто)
-        const expenses = Number((razemBrutto * MARGIN_RATE).toFixed(2));
-        
-        // Чистая маржа (Marża netto) - Razem - Расходы = 65% от Razem
-        const netMargin = Number((razemBrutto - expenses).toFixed(2));
-        
-        // Ставка НДС (Stawka) - 23%
-        const vatRate = VAT_RATE;
-        
-        // НДС к оплате - 23% от маржи
-        const vatAmount = Number((netMargin * VAT_RATE).toFixed(2));
-        
-        // Итого с НДС - Razem + НДС
-        const totalWithVat = Number((razemBrutto + vatAmount).toFixed(2));
-        
-        return {
-          month: entry.month,
-          razemBrutto: razemBrutto, // Итого (Razem / brutto) = Расходы + Marża netto
-          quantity: quantity,
-          expenses: expenses, // Наши расходы - 35% от Razem
-          netMargin: netMargin,
-          vatRate: vatRate,
-          vatAmount: vatAmount,
-          totalWithVat: totalWithVat
-        };
-      })
-      .sort((a, b) => b.month.localeCompare(a.month));
-
-    return breakdown;
+    return this.buildMonthlyVatInvoiceRows(Array.from(monthlyMap.values()));
   }
 }
 

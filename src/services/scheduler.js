@@ -958,14 +958,15 @@ class SchedulerService {
    * Запустить цикл обработки просроченных сессий
    * @param {Object} options - Опции запуска
    * @param {string} options.trigger - Триггер запуска
+   * @param {boolean} options.dryRun - Только найти задачи, не пересоздавать сессии
    * @returns {Promise<Object>} - Результат обработки
    */
-  async runExpiredSessionsCycle({ trigger = 'manual' }) {
+  async runExpiredSessionsCycle({ trigger = 'manual', dryRun = false } = {}) {
     const runId = randomUUID();
-    logger.info('Expired sessions cycle started', { trigger, runId });
+    logger.info('Expired sessions cycle started', { trigger, runId, dryRun });
 
     try {
-      const result = await this.secondPaymentScheduler.processExpiredSessions({ trigger, runId });
+      const result = await this.secondPaymentScheduler.processExpiredSessions({ trigger, runId, dryRun });
       if (result.errors.length > 0) {
         logger.error('Expired sessions processing finished with errors', {
           trigger,

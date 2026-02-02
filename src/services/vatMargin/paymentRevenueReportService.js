@@ -1069,18 +1069,30 @@ class PaymentRevenueReportService {
 
     let paymentDateMap = new Map();
     if (sessionIds.length) {
-      const { data: payments, error: paymentsError } = await this.supabase
-        .from('stripe_payments')
-        .select('session_id, processed_at, created_at')
-        .in('session_id', sessionIds);
-
-      if (paymentsError) {
-        throw new Error(`Failed to load stripe payments for events: ${paymentsError.message}`);
+      // Supabase can reject very large IN() lists (URL too long / limits).
+      // Load in chunks and merge into a single map.
+      const chunkSize = 200;
+      const chunks = [];
+      for (let i = 0; i < sessionIds.length; i += chunkSize) {
+        chunks.push(sessionIds.slice(i, i + chunkSize));
       }
 
-      paymentDateMap = new Map(
-        (payments || []).map((row) => [row.session_id, row])
-      );
+      const allPayments = [];
+      for (const chunk of chunks) {
+        const { data: payments, error: paymentsError } = await this.supabase
+          .from('stripe_payments')
+          .select('session_id, processed_at, created_at')
+          .in('session_id', chunk);
+
+        if (paymentsError) {
+          throw new Error(`Failed to load stripe payments for events: ${paymentsError.message}`);
+        }
+        if (Array.isArray(payments) && payments.length) {
+          allPayments.push(...payments);
+        }
+      }
+
+      paymentDateMap = new Map(allPayments.map((row) => [row.session_id, row]));
     }
 
     const catalogByName = productCatalog?.byNormalizedName instanceof Map

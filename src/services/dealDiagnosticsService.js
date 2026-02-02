@@ -1,5 +1,6 @@
 const supabase = require('./supabaseClient');
 const logger = require('../utils/logger');
+const urlHelper = require('../utils/urlHelper');
 const PipedriveClient = require('./pipedrive');
 const StripeRepository = require('./stripe/repository');
 const ProformaRepository = require('./proformaRepository');
@@ -33,7 +34,26 @@ class DealDiagnosticsService {
       
       // 2. Получаем все платежи (Stripe, Proforma, Cash)
       const payments = await this.getAllPayments(dealIdStr);
-      
+
+      // Проверяем, есть ли хотя бы одна активная (open) Stripe-сессия — для SendPulse отправлять только по активным
+      payments.hasActiveStripeSession = false;
+      const unpaidWithSession = (payments.stripe || []).filter(p => p.paymentStatus !== 'paid' && p.sessionId);
+      if (unpaidWithSession.length > 0 && process.env.STRIPE_API_KEY) {
+        try {
+          const Stripe = require('stripe');
+          const stripe = new Stripe(process.env.STRIPE_API_KEY, { apiVersion: '2024-04-10' });
+          for (let i = 0; i < Math.min(5, unpaidWithSession.length); i++) {
+            const session = await stripe.checkout.sessions.retrieve(unpaidWithSession[i].sessionId);
+            if (session && session.status === 'open') {
+              payments.hasActiveStripeSession = true;
+              break;
+            }
+          }
+        } catch (err) {
+          this.logger.debug('Could not check Stripe session status for active session', { dealId, error: err.message });
+        }
+      }
+
       // 3. Получаем информацию о проформах
       const proformas = await this.getProformas(dealIdStr);
       
@@ -58,13 +78,13 @@ class DealDiagnosticsService {
         const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
         const schedulerService = new SecondPaymentSchedulerService();
         
-        // Проверяем, есть ли эта сделка в будущих задачах (создание второго платежа)
-        const upcomingTasks = await schedulerService.findAllUpcomingTasks();
-        const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === parseInt(dealId));
+        // Проверяем только эту сделку (без загрузки всех сделок и без логов по другим)
+        const dealIdNum = parseInt(dealId);
+        const upcomingTasks = await schedulerService.findAllUpcomingTasks({ forDealIdOnly: dealIdNum });
+        const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === dealIdNum) || upcomingTasks[0];
         
-        // Проверяем, есть ли эта сделка в задачах-напоминаниях
-        const reminderTasks = await schedulerService.findReminderTasks();
-        const dealReminderTask = reminderTasks.find(t => t.dealId === parseInt(dealId));
+        const reminderTasks = await schedulerService.findReminderTasks({ forDealIdOnly: dealIdNum });
+        const dealReminderTask = reminderTasks.find(t => t.dealId === dealIdNum) || reminderTasks[0];
         
         cronTasks = {
           hasUpcomingSecondPayment: !!dealUpcomingTask,
@@ -112,9 +132,9 @@ class DealDiagnosticsService {
         currentPaymentSchedule
       });
       
-      // Определяем доступные действия для этой сделки
+      // Определяем доступные действия для этой сделки (dealId всегда передаём для построения endpoint)
       const availableActions = this.determineAvailableActions({
-        dealInfo,
+        dealInfo: { ...dealInfo, dealId: parseInt(dealId) },
         payments,
         proformas,
         notifications,
@@ -196,9 +216,18 @@ class DealDiagnosticsService {
         }
       }
       
+      // Ключ кастомного поля SendPulse ID в Pipedrive (person)
+      const SENDPULSE_ID_FIELD_KEY = process.env.PIPEDRIVE_SENDPULSE_ID_FIELD_KEY || 'ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c';
+      const personSendpulseId = person?.[SENDPULSE_ID_FIELD_KEY];
+      const sendpulseIdValue = (personSendpulseId != null && String(personSendpulseId).trim() !== '') ? String(personSendpulseId).trim() : null;
+
+      const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+      const invoiceTypeValue = deal[INVOICE_TYPE_FIELD_KEY];
+      const invoiceType = invoiceTypeValue != null ? String(invoiceTypeValue).trim() : null;
+
       return {
         found: true,
-        id: deal.id,
+        id: deal.id ?? Number(dealId),
         title: deal.title,
         value: deal.value,
         currency: deal.currency,
@@ -206,11 +235,13 @@ class DealDiagnosticsService {
         stageName: stageName || `ID: ${deal.stage_id}`,
         closeDate: deal.close_date,
         expectedCloseDate: deal.expected_close_date,
+        invoiceType,
         person: person ? {
           id: person.id,
           name: person.name,
           email: person.email?.[0]?.value || null,
-          phone: person.phone?.[0]?.value || null
+          phone: person.phone?.[0]?.value || null,
+          sendpulseId: sendpulseIdValue
         } : null,
         organization: organization ? {
           id: organization.id,
@@ -237,30 +268,44 @@ class DealDiagnosticsService {
       total: 0
     };
     
-    // Stripe платежи
+    // Stripe платежи (диагностика читает из БД stripe_payments; сессии из Stripe без записи в БД не отображаются)
     try {
       if (this.stripeRepository.isEnabled()) {
-        const stripePayments = await this.stripeRepository.listPayments({ dealId });
-        allPayments.stripe = (stripePayments || []).map(p => ({
-          id: p.id || p.session_id,
-          sessionId: p.session_id,
-          sessionUrl: p.session_id ? require('../utils/urlHelper').getStripeCheckoutSessionUrl(p.session_id) : null,
-          paymentType: p.payment_type, // deposit, rest, single
-          paymentStatus: p.payment_status, // paid, unpaid
-          status: p.status, // processed, pending_metadata, refunded, deleted
-          amount: p.original_amount || p.amount,
-          currency: p.currency || 'PLN',
-          amountPln: p.amount_pln,
-          exchangeRate: p.exchange_rate,
-          paymentSchedule: p.payment_schedule,
-          createdAt: p.created_at,
-          updatedAt: p.updated_at,
-          processedAt: p.processed_at,
-          invoiceNumber: p.invoice_number,
-          receiptNumber: p.receipt_number,
-          // Добавляем информацию о webhook событиях для проверки факта оплаты
-          webhookVerified: p.payment_status === 'paid' && p.status === 'processed'
-        }));
+        let stripePayments = await this.stripeRepository.listPayments({ dealId });
+        // Если по строковому dealId пусто — пробуем числовой (на случай integer в БД)
+        if ((!stripePayments || stripePayments.length === 0) && dealId && !Number.isNaN(Number(dealId))) {
+          const byNumeric = await this.stripeRepository.listPayments({ dealId: Number(dealId) });
+          if (byNumeric && byNumeric.length > 0) stripePayments = byNumeric;
+        }
+        allPayments.stripe = (stripePayments || []).map(p => {
+          let sessionUrl = null;
+          try {
+            sessionUrl = p.session_id && typeof urlHelper.getStripeCheckoutSessionUrl === 'function'
+              ? urlHelper.getStripeCheckoutSessionUrl(p.session_id)
+              : null;
+          } catch (urlErr) {
+            this.logger.debug('Stripe session URL helper failed for payment', { sessionId: p.session_id, error: urlErr.message });
+          }
+          return {
+            id: p.id || p.session_id,
+            sessionId: p.session_id,
+            sessionUrl,
+            paymentType: p.payment_type, // deposit, rest, single
+            paymentStatus: p.payment_status, // paid, unpaid
+            status: p.status, // processed, pending_metadata, refunded, deleted
+            amount: p.original_amount || p.amount,
+            currency: p.currency || 'PLN',
+            amountPln: p.amount_pln,
+            exchangeRate: p.exchange_rate,
+            paymentSchedule: p.payment_schedule,
+            createdAt: p.created_at,
+            updatedAt: p.updated_at,
+            processedAt: p.processed_at,
+            invoiceNumber: p.invoice_number,
+            receiptNumber: p.receipt_number,
+            webhookVerified: p.payment_status === 'paid' && p.status === 'processed'
+          };
+        });
       }
     } catch (error) {
       this.logger.warn('Error fetching Stripe payments', { dealId, error: error.message });
@@ -700,7 +745,9 @@ class DealDiagnosticsService {
         category: 'proformas',
         code: 'NO_PROFORMAS_OR_PAYMENTS',
         message: 'Нет проформ, Stripe платежей или наличных платежей для этой сделки',
-        details: {}
+        details: {
+          hint: 'Диагностика показывает только записи из БД. Если Stripe-сессии были созданы, но не попали в БД — выполните синхронизацию: node scripts/sync-missing-stripe-sessions-to-db.js [limit]'
+        }
       });
     }
     
@@ -1180,13 +1227,12 @@ class DealDiagnosticsService {
               const SecondPaymentSchedulerService = require('./stripe/secondPaymentSchedulerService');
               const schedulerService = new SecondPaymentSchedulerService();
               
-              // Проверяем, есть ли эта сделка в будущих задачах (создание второго платежа)
-              const upcomingTasks = await schedulerService.findAllUpcomingTasks();
-              const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === parseInt(dealId));
+              const dealIdNum = parseInt(dealId);
+              const upcomingTasks = await schedulerService.findAllUpcomingTasks({ forDealIdOnly: dealIdNum });
+              const dealUpcomingTask = upcomingTasks.find(t => t.deal?.id === dealIdNum) || upcomingTasks[0];
               
-              // Проверяем, есть ли эта сделка в задачах-напоминаниях
-              const reminderTasks = await schedulerService.findReminderTasks();
-              const dealReminderTask = reminderTasks.find(t => t.dealId === parseInt(dealId));
+              const reminderTasks = await schedulerService.findReminderTasks({ forDealIdOnly: dealIdNum });
+              const dealReminderTask = reminderTasks.find(t => t.dealId === dealIdNum) || reminderTasks[0];
               
               cronTasks = {
                 hasUpcomingSecondPayment: !!dealUpcomingTask,
@@ -1379,6 +1425,7 @@ class DealDiagnosticsService {
    */
   determineAvailableActions({ dealInfo, payments, proformas, notifications, issues, tasks, cronTasks }) {
     const actions = [];
+    const dealIdForEndpoint = dealInfo.id ?? dealInfo.dealId;
 
     // Проверяем, можно ли создать Stripe сессию
     const hasStripePayments = payments.stripe.length > 0;
@@ -1401,93 +1448,73 @@ class DealDiagnosticsService {
                                hasPaidDeposit && 
                                !hasSecondPayment;
 
-    // Действие: Создать Stripe сессию
-    if (isStripeInvoiceType || !hasAnyPayments) {
-      const unpaidStripe = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
-      const hasUnpaidSessions = unpaidStripe.length > 0;
-      
-      // Можно создать, если:
-      // 1. Нет платежей
-      // 2. Есть неоплаченные сессии
-      // 3. Нужен второй платеж по исходной схеме 50/50 (даже если текущая схема 100%)
-      if (!hasAnyPayments || hasUnpaidSessions || needsSecondPayment) {
-        let reason = !hasAnyPayments ? 'Нет платежей' : 
-                     hasUnpaidSessions ? 'Есть неоплаченные сессии' : 
-                     'Нужен второй платеж по исходной схеме 50/50';
-        
-        actions.push({
-          id: 'create-stripe-session',
-          name: needsSecondPayment ? 'Создать второй платеж (rest, 50%)' : 'Создать Stripe сессию',
-          description: needsSecondPayment 
-            ? 'Создать второй платеж по исходной схеме 50/50 (клиент уже оплатил deposit)'
-            : 'Создать новую Stripe Checkout Session для оплаты',
-          endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/create-stripe-session`,
-          method: 'POST',
-          available: true,
-          reason: reason,
-          metadata: needsSecondPayment ? {
-            paymentType: 'rest',
-            paymentSchedule: '50/50',
-            paymentIndex: 2,
-            initialSchedule: initialSchedule.schedule,
-            note: 'Используется исходная схема 50/50 из первого платежа, даже если текущая схема 100%'
-          } : null
-        });
-      }
-    }
+    // Действие: Создать Stripe сессию — всегда показываем и делаем доступным для ручного создания «с нуля» (без вебхука CRM)
+    const unpaidForCreate = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
+    const hasUnpaidSessions = unpaidForCreate.length > 0;
+    const canCreateSessionAuto = (isStripeInvoiceType || !hasAnyPayments) && (!hasAnyPayments || hasUnpaidSessions || needsSecondPayment);
+    const alwaysAllowCreate = true; // Ручное создание из диагностики: сессия создаётся, данные пишутся в БД и CRM без вебхука
+    const canCreateSession = canCreateSessionAuto || alwaysAllowCreate;
+    actions.push({
+      id: 'create-stripe-session',
+      name: needsSecondPayment ? 'Создать второй платеж (rest, 50%)' : 'Создать Stripe сессию',
+      description: needsSecondPayment
+        ? 'Создать второй платеж по исходной схеме 50/50 (клиент уже оплатил deposit)'
+        : 'Создать Stripe Checkout Session вручную. Данные записываются в БД и CRM без вебхука.',
+      endpoint: `/api/pipedrive/deals/${dealIdForEndpoint}/diagnostics/actions/create-stripe-session`,
+      method: 'POST',
+      available: true,
+      reason: canCreateSessionAuto
+        ? (!hasAnyPayments ? 'Нет платежей' : hasUnpaidSessions ? 'Есть неоплаченные сессии' : 'Нужен второй платеж по схеме 50/50')
+        : 'Создать сессию вручную с нуля — данные в БД и CRM без вебхука',
+      metadata: (canCreateSession && needsSecondPayment)
+        ? { paymentType: 'rest', paymentSchedule: '50/50', paymentIndex: 2, initialSchedule: initialSchedule.schedule }
+        : (canCreateSession
+          ? { paymentType: 'deposit', paymentSchedule: initialSchedule.schedule || '50/50' }
+          : undefined)
+    });
 
-    // Действие: Отправить SendPulse уведомление
-    const hasSendPulseId = dealInfo.person?.sendpulseId || 
-      (dealInfo.person && dealInfo.person['ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c']);
-    const hasActiveSessions = payments.stripe.some(p => 
-      p.paymentStatus === 'unpaid' && p.sessionId
-    );
+    // Действие: Очистить Stripe из БД — всегда показываем
+    const hasStripePayments = payments.stripe.length > 0;
+    actions.push({
+      id: 'clear-stripe-payments',
+      name: 'Очистить Stripe из БД',
+      description: 'Удалить записи о Stripe-платежах по сделке из БД (история в Stripe не трогается). Помогает упростить логику при множестве сессий.',
+      endpoint: `/api/pipedrive/deals/${dealIdForEndpoint}/diagnostics/actions/clear-stripe-payments`,
+      method: 'POST',
+      available: hasStripePayments,
+      reason: hasStripePayments ? `В БД ${payments.stripe.length} записей Stripe` : 'Нет Stripe-платежей в БД'
+    });
 
-    if (hasSendPulseId && hasActiveSessions) {
-      actions.push({
-        id: 'send-payment-notification',
-        name: 'Отправить SendPulse уведомление',
-        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
-        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
-        method: 'POST',
-        available: true,
-        reason: 'Есть активные сессии и SendPulse ID'
-      });
-    } else if (!hasSendPulseId) {
-      actions.push({
-        id: 'send-payment-notification',
-        name: 'Отправить SendPulse уведомление',
-        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
-        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
-        method: 'POST',
-        available: false,
-        reason: 'SendPulse ID не найден у персоны'
-      });
-    } else if (!hasActiveSessions) {
-      actions.push({
-        id: 'send-payment-notification',
-        name: 'Отправить SendPulse уведомление',
-        description: 'Отправить уведомление о платеже через SendPulse (Telegram)',
-        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/send-payment-notification`,
-        method: 'POST',
-        available: false,
-        reason: 'Нет активных сессий для уведомления'
-      });
-    }
-
-    // Действие: Пересоздать истекшую сессию
+    // Действие: Пересоздать истекшую сессию — всегда показываем
     const unpaidStripe = payments.stripe.filter(p => p.paymentStatus === 'unpaid');
-    if (unpaidStripe.length > 0) {
-      actions.push({
-        id: 'recreate-expired-session',
-        name: 'Пересоздать истекшую сессию',
-        description: 'Создать новую сессию вместо истекшей',
-        endpoint: `/api/pipedrive/deals/${dealInfo.dealId}/diagnostics/actions/recreate-expired-session`,
-        method: 'POST',
-        available: true,
-        reason: `Найдено ${unpaidStripe.length} неоплаченных сессий`
-      });
-    }
+    actions.push({
+      id: 'recreate-expired-session',
+      name: 'Пересоздать истекшую сессию',
+      description: 'Создать новую сессию вместо истекшей',
+      endpoint: `/api/pipedrive/deals/${dealIdForEndpoint}/diagnostics/actions/recreate-expired-session`,
+      method: 'POST',
+      available: unpaidStripe.length > 0,
+      reason: unpaidStripe.length > 0 ? `Найдено ${unpaidStripe.length} неоплаченных сессий` : 'Нет неоплаченных сессий'
+    });
+
+    // Действие: Отправить SendPulse — только при активной (open) Stripe-сессии
+    const hasSendPulseId = dealInfo.person?.sendpulseId ||
+      (dealInfo.person && dealInfo.person['ff1aa263ac9f0e54e2ae7bec6d7215d027bf1b8c']);
+    const hasActiveStripeSession = payments.hasActiveStripeSession === true;
+
+    actions.push({
+      id: 'send-payment-notification',
+      name: 'Отправить SendPulse уведомление',
+      description: 'Отправить уведомление о платеже через SendPulse (Telegram). Только для активной Stripe-сессии.',
+      endpoint: `/api/pipedrive/deals/${dealIdForEndpoint}/diagnostics/actions/send-payment-notification`,
+      method: 'POST',
+      available: !!(hasSendPulseId && hasActiveStripeSession),
+      reason: !hasSendPulseId
+        ? 'SendPulse ID не найден у персоны'
+        : !hasActiveStripeSession
+          ? 'Нет активной (open) Stripe-сессии — только по активной ссылке'
+          : 'Есть активная сессия и SendPulse ID'
+    });
 
     return actions;
   }

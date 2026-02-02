@@ -3211,6 +3211,17 @@ body.modal-open {
     background: rgba(59, 130, 246, 0.3);
 }
 
+/* Поле ID сделки в диагностике — в стиле остальных инпутов */
+#payments-diagnostics .controls .input-field.diagnostics-deal-id-input,
+.diagnostics-deal-id-input.input-field {
+    width: 150px;
+    padding: 8px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 14px;
+    margin-right: 10px;
+}
+
 /* Flow Sections */
 .diagnostics-flow-section {
     margin-bottom: 30px;

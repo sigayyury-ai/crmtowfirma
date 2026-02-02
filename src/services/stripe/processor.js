@@ -5394,7 +5394,7 @@ class StripeProcessorService {
       }
     }
 
-    // Защита от дублирования уведомлений: проверяем, не было ли уже отправлено уведомление для этой сделки
+    // Защита от дублирования уведомлений: in-memory кэш + персистентная проверка в БД (для крона/рестарта)
     const now = Date.now();
     const lastNotificationTime = this.notificationCache.get(dealId);
     const timeSinceLastNotification = lastNotificationTime ? now - lastNotificationTime : Infinity;
@@ -5416,6 +5416,29 @@ class StripeProcessorService {
         reason: `Notification already sent ${minutesSinceLastNotification} minutes ago`,
         lastNotificationTime: new Date(lastNotificationTime).toISOString()
       };
+    }
+
+    // Персистентная проверка в БД: уведомление уже отправлялось недавно (кроны/рестарт не сбрасывают)
+    if (!forceSend && this.repository.isEnabled()) {
+      const { sentAt } = await this.repository.getLastPaymentLinkNotificationSent(dealId);
+      if (sentAt) {
+        const timeSinceDb = now - sentAt.getTime();
+        if (timeSinceDb < this.notificationCacheTTL) {
+          const minutesSinceDb = Math.floor(timeSinceDb / 60000);
+          this.logger.info(`⏭️  Пропуск дублирующего уведомления (из БД) | Deal ID: ${dealId} | Отправлено: ${minutesSinceDb} мин. назад`, {
+            dealId,
+            sentAt: sentAt.toISOString(),
+            timeSinceDb,
+            notificationCacheTTL: this.notificationCacheTTL
+          });
+          return {
+            success: true,
+            skipped: true,
+            reason: `Notification already sent (DB) ${minutesSinceDb} minutes ago`,
+            lastNotificationTime: sentAt.toISOString()
+          };
+        }
+      }
     }
 
     this.logger.info(`📧 Попытка отправить уведомление о платеже | Deal ID: ${dealId} | Sessions: ${sessions.length}`, {
@@ -6067,8 +6090,11 @@ class StripeProcessorService {
       const result = await this.sendpulseClient.sendTelegramMessage(sendpulseId, message);
 
       if (result.success) {
-        // Сохраняем timestamp успешной отправки для защиты от дублирования
+        // Сохраняем timestamp успешной отправки для защиты от дублирования (in-memory + БД)
         this.notificationCache.set(dealId, now);
+        if (this.repository.isEnabled()) {
+          await this.repository.persistPaymentLinkNotificationSent(dealId, sessions[0]?.id);
+        }
         
         // Очищаем старые записи из кэша (старше TTL)
         this.cleanupNotificationCache();

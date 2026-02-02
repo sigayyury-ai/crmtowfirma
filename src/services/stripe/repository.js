@@ -636,6 +636,73 @@ class StripeRepository {
       return { success: false, error: err.message };
     }
   }
+
+  /**
+   * Дата-заглушка для записей "уведомление о ссылке на оплату отправлено" в stripe_reminder_logs
+   * (в таблице second_payment_date NOT NULL, для payment_link_sent используем фиксированную дату)
+   */
+  static PAYMENT_LINK_SENTINEL_DATE = '2000-01-01';
+
+  /**
+   * Получить время последней отправки уведомления о ссылке на оплату по сделке (из БД).
+   * Используется для защиты от дублирования при перезапуске и кроне.
+   * @param {number|string} dealId - ID сделки
+   * @returns {Promise<{ sentAt: Date | null }>}
+   */
+  async getLastPaymentLinkNotificationSent(dealId) {
+    if (!this.isEnabled()) return { sentAt: null };
+    try {
+      const { data, error } = await this.supabase
+        .from('stripe_reminder_logs')
+        .select('sent_at')
+        .eq('deal_id', parseInt(dealId, 10))
+        .eq('second_payment_date', StripeRepository.PAYMENT_LINK_SENTINEL_DATE)
+        .eq('action_type', 'payment_link_sent')
+        .order('sent_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) {
+        if (isTableMissing(error)) return { sentAt: null };
+        logger.warn('Failed to get last payment link notification sent', { dealId, error: error.message });
+        return { sentAt: null };
+      }
+      const sentAt = data?.sent_at ? new Date(data.sent_at) : null;
+      return { sentAt };
+    } catch (err) {
+      logger.warn('Exception getLastPaymentLinkNotificationSent', { dealId, error: err.message });
+      return { sentAt: null };
+    }
+  }
+
+  /**
+   * Сохранить факт отправки уведомления о ссылке на оплату (персистентно в БД).
+   * @param {number|string} dealId - ID сделки
+   * @param {string} [sessionId] - ID сессии, для которой отправлено уведомление
+   */
+  async persistPaymentLinkNotificationSent(dealId, sessionId = null) {
+    if (!this.isEnabled()) return;
+    try {
+      const payload = {
+        deal_id: parseInt(dealId, 10),
+        second_payment_date: StripeRepository.PAYMENT_LINK_SENTINEL_DATE,
+        session_id: sessionId || '',
+        sent_date: new Date().toISOString().split('T')[0],
+        sent_at: new Date().toISOString(),
+        action_type: 'payment_link_sent'
+      };
+      const { error } = await this.supabase
+        .from('stripe_reminder_logs')
+        .upsert(payload, {
+          onConflict: 'deal_id,second_payment_date,action_type',
+          ignoreDuplicates: false
+        });
+      if (error) {
+        logger.warn('Failed to persist payment link notification sent', { dealId, error: error.message });
+      }
+    } catch (err) {
+      logger.warn('Exception persistPaymentLinkNotificationSent', { dealId, error: err.message });
+    }
+  }
 }
 
 module.exports = StripeRepository;

@@ -3375,81 +3375,27 @@ function renderDiagnostics(data) {
     return;
   }
   
-  const { dealInfo, summary, payments, proformas, refunds, cashPayments, automations, notifications, issues, paymentSchedules, availableActions, tasks, cronTasks } = data;
+  const { dealInfo, summary, payments: paymentsRaw, proformas, refunds, cashPayments, automations, notifications, issues, paymentSchedules, availableActions, tasks, cronTasks } = data;
+  const payments = paymentsRaw && typeof paymentsRaw === 'object'
+    ? { stripe: Array.isArray(paymentsRaw.stripe) ? paymentsRaw.stripe : [], proforma: Array.isArray(paymentsRaw.proforma) ? paymentsRaw.proforma : [] }
+    : { stripe: [], proforma: [] };
+
+  let html = `<div class="diagnostics-container" data-deal-id="${data.dealId}">`;
   
-  let html = '<div class="diagnostics-container">';
-  
-  // Заголовок с иконкой и метаданными
+  // Заголовок: сделка + текущий статус в одной строке
   html += `<div class="diagnostics-header">
     <div class="diagnostics-header-main">
       <div class="diagnostics-icon">🔍</div>
       <div class="diagnostics-title">
         <h2>Диагностика сделки #${data.dealId}</h2>
-        <div class="diagnostics-meta">
-          <span class="meta-item">🕐 ${new Date(data.generatedAt).toLocaleString('ru-RU')}</span>
-        </div>
+        ${dealInfo.found
+          ? `<div class="diagnostics-current-stage">Текущий статус: <span class="status-badge stage">${escapeHtml(dealInfo.stageName || `ID: ${dealInfo.stageId}`)}</span></div>`
+          : `<div class="diagnostics-current-stage error">Сделка не найдена</div>`}
       </div>
     </div>
-    ${issues && issues.length > 0 
-      ? `<div class="diagnostics-status-badge ${issues.some(i => i.severity === 'critical') ? 'critical' : issues.some(i => i.severity === 'warning') ? 'warning' : 'info'}">
-          ${issues.filter(i => i.severity === 'critical').length > 0 ? '🔴 Критические проблемы' : 
-            issues.filter(i => i.severity === 'warning').length > 0 ? '🟡 Есть предупреждения' : 
-            'ℹ️ Информация'}
-        </div>`
-      : `<div class="diagnostics-status-badge success">✅ Проблем не обнаружено</div>`}
   </div>`;
-  
-  // 1. ИНФОРМАЦИЯ О СДЕЛКЕ (Flow Step 1)
-  if (dealInfo.found) {
-    html += `<div class="diagnostics-flow-section" data-flow-step="1">
-      <div class="flow-section-header">
-        <div class="flow-step-number">1</div>
-        <h3>📋 Информация о сделке</h3>
-      </div>
-      <div class="diagnostics-card">
-        <div class="deal-info-grid">
-          <div class="info-item">
-            <div class="info-label">Название</div>
-            <div class="info-value">${escapeHtml(dealInfo.title || 'N/A')}</div>
-          </div>
-          <div class="info-item highlight">
-            <div class="info-label">Сумма сделки</div>
-            <div class="info-value large">${dealInfo.value || 0} ${dealInfo.currency || 'PLN'}</div>
-          </div>
-          <div class="info-item">
-            <div class="info-label">Текущий статус</div>
-            <div class="info-value">
-              <span class="status-badge stage">${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</span>
-            </div>
-          </div>
-          ${dealInfo.closeDate ? `<div class="info-item">
-            <div class="info-label">Дата закрытия</div>
-            <div class="info-value">${new Date(dealInfo.closeDate).toLocaleDateString('ru-RU')}</div>
-          </div>` : ''}
-          ${dealInfo.person ? `<div class="info-item">
-            <div class="info-label">Клиент</div>
-            <div class="info-value">${escapeHtml(dealInfo.person.name || 'N/A')}</div>
-          </div>` : ''}
-          ${dealInfo.person?.email ? `<div class="info-item">
-            <div class="info-label">Email</div>
-            <div class="info-value"><a href="mailto:${escapeHtml(dealInfo.person.email)}">${escapeHtml(dealInfo.person.email)}</a></div>
-          </div>` : ''}
-        </div>
-      </div>
-    </div>`;
-  } else {
-    html += `<div class="diagnostics-flow-section error" data-flow-step="1">
-      <div class="flow-section-header">
-        <div class="flow-step-number error">1</div>
-        <h3>❌ Сделка не найдена</h3>
-      </div>
-      <div class="diagnostics-card error">
-        <p>${dealInfo.error || 'Неизвестная ошибка'}</p>
-      </div>
-    </div>`;
-  }
-  
-  // 2. СВОДКА ПЛАТЕЖЕЙ (Flow Step 2)
+
+  // 1. СВОДКА ПЛАТЕЖЕЙ (Flow Step 1)
   const dealCurrency = summary.dealCurrency || dealInfo.currency || 'PLN';
   const progressPercent = summary.paymentProgress || 0;
   const progressColor = progressPercent >= 100 ? '#10b981' : progressPercent >= 50 ? '#f59e0b' : '#ef4444';
@@ -3537,45 +3483,6 @@ function renderDiagnostics(data) {
             </div>`
           : ''}
       </div>` : ''}
-      
-      <div class="payment-stats-grid">
-        <div class="stat-item">
-          <div class="stat-icon">💳</div>
-          <div class="stat-content">
-            <div class="stat-value">${summary.stripePaymentsCount || 0}</div>
-            <div class="stat-label">Stripe платежей</div>
-            <div class="stat-sublabel">оплачено: ${summary.stripePaidCount || 0}, webhook: ${summary.stripeWebhookVerifiedCount || 0}</div>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon">🧾</div>
-          <div class="stat-content">
-            <div class="stat-value">${summary.proformaPaymentsCount || 0}</div>
-            <div class="stat-label">Proforma платежей</div>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon">📄</div>
-          <div class="stat-content">
-            <div class="stat-value">${summary.proformasCount || 0}</div>
-            <div class="stat-label">Проформ</div>
-          </div>
-        </div>
-        <div class="stat-item">
-          <div class="stat-icon">💵</div>
-          <div class="stat-content">
-            <div class="stat-value">${summary.cashPaymentsCount || 0}</div>
-            <div class="stat-label">Наличных платежей</div>
-          </div>
-        </div>
-        ${summary.refundsCount > 0 ? `<div class="stat-item warning">
-          <div class="stat-icon">↩️</div>
-          <div class="stat-content">
-            <div class="stat-value">${summary.refundsCount || 0}</div>
-            <div class="stat-label">Возвратов</div>
-          </div>
-        </div>` : ''}
-      </div>
     </div>
   </div>`;
   
@@ -3684,10 +3591,13 @@ function renderDiagnostics(data) {
             ? `<div class="webhook-events-count">${p.webhookEvents.length} событий</div>` 
             : ''}
         </td>
-        <td>${p.sessionUrl ? `<a href="${p.sessionUrl}" target="_blank" class="action-link">Открыть в Stripe</a>` : '-'}</td>
+        <td>${p.sessionId
+          ? `<a href="${p.sessionUrl || 'https://dashboard.stripe.com/payments'}" target="_blank" class="action-link">Payments в Stripe</a><br><small class="session-id-hint" title="Скопируйте и вставьте в поиск дашборда">${escapeHtml(p.sessionId)}</small><br>
+          <button type="button" class="btn btn-secondary btn-sm diagnostics-delete-session" data-deal-id="${data.dealId}" data-session-id="${escapeHtml(p.sessionId)}" title="Истечь сессию в Stripe и удалить запись из БД">Удалить (БД + Stripe)</button>`
+          : '-'}</td>
       </tr>`;
     });
-    
+
     html += `</tbody></table></div></div>`;
   }
   
@@ -3815,41 +3725,11 @@ function renderDiagnostics(data) {
     html += `</div></div>`;
   }
   
-  // 7. АВТОМАТИЗАЦИИ (Flow Step 7)
-  if (automations) {
+  // 7. УВЕДОМЛЕНИЯ (Flow Step 7)
+  if (notifications && notifications.proformaReminders.length > 0) {
     html += `<div class="diagnostics-flow-section" data-flow-step="7">
       <div class="flow-section-header">
         <div class="flow-step-number">7</div>
-        <h3>🤖 Автоматизации статусов</h3>
-      </div>
-      <div class="diagnostics-card">
-        <div class="automation-info">
-          <div class="automation-item">
-            <div class="automation-label">Текущий статус</div>
-            <div class="automation-value">
-              <span class="status-badge stage">${dealInfo.stageName || `ID: ${dealInfo.stageId}`}</span>
-            </div>
-          </div>
-          ${automations.expectedStage ? `<div class="automation-item">
-            <div class="automation-label">Ожидаемый статус</div>
-            <div class="automation-value">
-              <span class="status-badge stage">${automations.expectedStageName || `ID: ${automations.expectedStage}`}</span>
-            </div>
-          </div>` : ''}
-          ${automations.calculation ? `<div class="automation-item">
-            <div class="automation-label">Расчет автоматизации</div>
-            <div class="automation-value">${escapeHtml(automations.calculation.reason || 'N/A')}</div>
-          </div>` : ''}
-        </div>
-      </div>
-    </div>`;
-  }
-  
-  // 8. УВЕДОМЛЕНИЯ (Flow Step 8)
-  if (notifications && notifications.proformaReminders.length > 0) {
-    html += `<div class="diagnostics-flow-section" data-flow-step="8">
-      <div class="flow-section-header">
-        <div class="flow-step-number">8</div>
         <h3>📨 Уведомления</h3>
         <div class="issues-count"><span class="count-badge">${notifications.proformaReminders.length}</span></div>
       </div>
@@ -3882,11 +3762,11 @@ function renderDiagnostics(data) {
     html += `</tbody></table></div></div></div>`;
   }
   
-  // 9. ДОСТУПНЫЕ ДЕЙСТВИЯ (Flow Step 9)
+  // 8. ДОСТУПНЫЕ ДЕЙСТВИЯ (Flow Step 8)
   if (availableActions && availableActions.length > 0) {
-    html += `<div class="diagnostics-flow-section" data-flow-step="9">
+    html += `<div class="diagnostics-flow-section" data-flow-step="8">
       <div class="flow-section-header">
-        <div class="flow-step-number">9</div>
+        <div class="flow-step-number">8</div>
         <h3>⚡ Ручные действия</h3>
         <div class="issues-count"><span class="count-badge">${availableActions.length}</span></div>
       </div>
@@ -3911,7 +3791,9 @@ function renderDiagnostics(data) {
               <button class="btn btn-primary btn-sm action-execute-btn" 
                       data-action-id="${action.id}" 
                       data-endpoint="${action.endpoint}"
-                      data-method="${action.method || 'POST'}">
+                      data-method="${action.method || 'POST'}"
+                      data-payment-type="${(action.metadata && action.metadata.paymentType) ? escapeHtml(action.metadata.paymentType) : ''}"
+                      data-payment-schedule="${(action.metadata && action.metadata.paymentSchedule) ? escapeHtml(action.metadata.paymentSchedule) : ''}">
                 Выполнить
               </button>
             </div>
@@ -3985,7 +3867,12 @@ function renderDiagnostics(data) {
     document.querySelectorAll('.action-execute-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const actionId = e.target.dataset.actionId;
-        const endpoint = e.target.dataset.endpoint;
+        let endpoint = e.target.dataset.endpoint;
+        const container = contentEl.querySelector('.diagnostics-container');
+        const dealIdFromContainer = container?.dataset?.dealId;
+        if (endpoint && typeof endpoint === 'string' && endpoint.includes('/deals/undefined/') && dealIdFromContainer) {
+          endpoint = endpoint.replace('/deals/undefined/', `/deals/${dealIdFromContainer}/`);
+        }
         const method = e.target.dataset.method || 'POST';
         
         if (!confirm(`Выполнить действие "${e.target.closest('.action-item').querySelector('strong').textContent}"?`)) {
@@ -3995,20 +3882,30 @@ function renderDiagnostics(data) {
         e.target.disabled = true;
         e.target.textContent = 'Выполняется...';
         
+        const paymentType = e.target.dataset.paymentType || undefined;
+        const paymentSchedule = e.target.dataset.paymentSchedule || undefined;
+        const body = method === 'POST' ? JSON.stringify(
+          (paymentType || paymentSchedule) ? { paymentType, paymentSchedule } : {}
+        ) : undefined;
+        
         try {
           const response = await fetch(endpoint, {
             method: method,
+            credentials: 'include',
             headers: {
               'Content-Type': 'application/json'
             },
-            body: method === 'POST' ? JSON.stringify({}) : undefined
+            body: body
           });
           
+          const contentType = response.headers.get('content-type');
+          if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Ответ не JSON (${response.status} ${response.statusText}). Возможно, нужна авторизация.`);
+          }
           const result = await response.json();
           
           if (result.success) {
             alert(`✅ Действие выполнено успешно!\n\n${JSON.stringify(result, null, 2)}`);
-            // Перезагружаем диагностику
             loadDealDiagnostics();
           } else {
             alert(`❌ Ошибка выполнения действия:\n\n${result.error || result.message || 'Неизвестная ошибка'}`);
@@ -4022,6 +3919,79 @@ function renderDiagnostics(data) {
       });
     });
   }
+
+  // Кнопка удаления одной сессии (БД + Stripe) в каждой строке таблицы
+  document.querySelectorAll('.diagnostics-delete-session').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      const dealId = button.dataset.dealId;
+      const sessionId = button.dataset.sessionId;
+      if (!dealId || !sessionId) return;
+      if (!confirm('Истечь сессию в Stripe и удалить запись из БД? После этого можно будет создать сессию заново.')) return;
+
+      const endpoint = `/api/pipedrive/deals/${dealId}/diagnostics/actions/delete-stripe-session`;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = 'Удаление...';
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId })
+        });
+        const contentType = response.headers.get('content-type');
+        const isJson = contentType && contentType.includes('application/json');
+        const result = isJson ? await response.json().catch(() => ({})) : {};
+        if (response.ok && result.success) {
+          alert('✅ ' + (result.message || 'Готово'));
+          loadDealDiagnostics();
+        } else {
+          alert('❌ ' + (result.error || result.message || (response.status ? `Ошибка ${response.status}` : 'Ошибка ответа')));
+        }
+      } catch (err) {
+        alert('❌ ' + err.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    });
+  });
+
+  // Кнопки быстрых действий в блоке Stripe (Очистить из БД, Пересоздать истекшую)
+  document.querySelectorAll('.diagnostics-quick-action').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const dealId = e.target.dataset.dealId;
+      const action = e.target.dataset.action;
+      const confirmMsg = e.target.dataset.confirm;
+      if (!dealId || !action) return;
+      if (confirmMsg && !confirm(confirmMsg)) return;
+
+      const endpoint = `/api/pipedrive/deals/${dealId}/diagnostics/actions/${action}`;
+      e.target.disabled = true;
+      e.target.textContent = 'Выполняется...';
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        const result = await response.json().catch(() => ({}));
+        if (result.success) {
+          alert('✅ Готово.\n\n' + (result.message || JSON.stringify(result)));
+          loadDealDiagnostics();
+        } else {
+          alert('❌ Ошибка: ' + (result.error || result.message || response.statusText));
+        }
+      } catch (err) {
+        alert('❌ Ошибка: ' + err.message);
+      } finally {
+        e.target.disabled = false;
+        e.target.textContent = action === 'clear-stripe-payments' ? 'Очистить Stripe из БД' : 'Пересоздать истекшую сессию';
+      }
+    });
+  });
 }
 
 function formatIssueDetails(details) {
