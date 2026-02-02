@@ -22,7 +22,17 @@
 const getCallbackURL = () => {
   // Если указана переменная окружения, используем её (приоритет)
   if (process.env.GOOGLE_CALLBACK_URL) {
-    return process.env.GOOGLE_CALLBACK_URL;
+    const callbackUrl = process.env.GOOGLE_CALLBACK_URL.trim();
+    // Если это полный URL, возвращаем как есть
+    if (callbackUrl.startsWith('http://') || callbackUrl.startsWith('https://')) {
+      return callbackUrl;
+    }
+    // Если относительный путь, преобразуем в полный URL
+    const baseUrl = process.env.BASE_URL || 
+      (process.env.NODE_ENV === 'production' 
+        ? 'https://invoices.comoon.io' 
+        : 'http://localhost:3000');
+    return `${baseUrl}${callbackUrl.startsWith('/') ? callbackUrl : '/' + callbackUrl}`;
   }
   
   // В production ВСЕГДА используем кастомный домен (не Render subdomain)
@@ -30,8 +40,10 @@ const getCallbackURL = () => {
     return 'https://invoices.comoon.io/auth/google/callback';
   }
   
-  // В development используем относительный путь
-  return '/auth/google/callback';
+  // В development используем полный URL с localhost
+  // Passport.js требует полный URL, а не относительный путь
+  const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+  return `${baseUrl}/auth/google/callback`;
 };
 
 module.exports = {
