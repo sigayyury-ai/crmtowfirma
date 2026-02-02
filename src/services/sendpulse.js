@@ -405,6 +405,133 @@ class SendPulseClient {
   }
 
   /**
+   * Получить баланс аккаунта и остатки скидок для сообщений в SendPulse
+   * @returns {Promise<Object>} - Информация о балансе и остатках
+   */
+  async getAccountBalance() {
+    try {
+      const accessToken = await this.getAccessToken();
+      
+      // Пробуем различные возможные эндпоинты для получения баланса
+      const possibleEndpoints = [
+        '/balance',
+        '/account/balance',
+        '/user/balance',
+        '/account',
+        '/user'
+      ];
+      
+      const headers = {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      };
+      
+      let balanceInfo = null;
+      let lastError = null;
+      
+      // Пробуем каждый эндпоинт до первого успешного ответа
+      for (const endpoint of possibleEndpoints) {
+        try {
+          const url = `${this.baseURL}${endpoint}`;
+          logger.debug('Trying SendPulse balance endpoint:', { url });
+          
+          const response = await axios.get(url, { headers });
+          
+          if (response.status === 200 && response.data) {
+            balanceInfo = {
+              endpoint,
+              data: response.data
+            };
+            logger.info('SendPulse balance retrieved successfully', {
+              endpoint,
+              hasData: !!response.data
+            });
+            break;
+          }
+        } catch (error) {
+          // 404 или другие ошибки - пробуем следующий эндпоинт
+          if (error.response?.status === 404) {
+            logger.debug('SendPulse balance endpoint not found (404)', {
+              endpoint,
+              tryingNext: true
+            });
+            lastError = error;
+            continue;
+          }
+          // Другие ошибки - логируем и пробуем следующий
+          logger.debug('SendPulse balance endpoint error', {
+            endpoint,
+            status: error.response?.status,
+            error: error.message
+          });
+          lastError = error;
+        }
+      }
+      
+      if (balanceInfo) {
+        // Парсим данные баланса (структура может отличаться в зависимости от эндпоинта)
+        const balanceData = balanceInfo.data;
+        
+        // Пытаемся извлечь информацию о балансе из различных возможных структур ответа
+        const balance = balanceData.balance || 
+                       balanceData.account_balance || 
+                       balanceData.credit || 
+                       balanceData.credits ||
+                       balanceData.amount ||
+                       null;
+        
+        const currency = balanceData.currency || 'USD';
+        
+        const remainingMessages = balanceData.remaining_messages ||
+                                balanceData.messages_left ||
+                                balanceData.quota_remaining ||
+                                null;
+        
+        const totalQuota = balanceData.total_quota ||
+                          balanceData.messages_limit ||
+                          balanceData.quota ||
+                          null;
+        
+        const discount = balanceData.discount ||
+                        balanceData.discount_percent ||
+                        balanceData.bonus ||
+                        null;
+        
+        return {
+          success: true,
+          balance: balance,
+          currency: currency,
+          remainingMessages: remainingMessages,
+          totalQuota: totalQuota,
+          discount: discount,
+          rawData: balanceData,
+          endpoint: balanceInfo.endpoint
+        };
+      } else {
+        // Если ни один эндпоинт не сработал, возвращаем ошибку
+        logger.warn('SendPulse balance endpoints not available', {
+          triedEndpoints: possibleEndpoints,
+          lastError: lastError?.response?.status || lastError?.message
+        });
+        
+        return {
+          success: false,
+          error: 'Balance endpoint not found in SendPulse API',
+          triedEndpoints: possibleEndpoints,
+          details: lastError?.response?.data || lastError?.message
+        };
+      }
+    } catch (error) {
+      logger.error('Error getting SendPulse account balance:', error);
+      return {
+        success: false,
+        error: error.response?.data?.message || error.message,
+        details: error.response?.data
+      };
+    }
+  }
+
+  /**
    * Тест подключения к SendPulse API
    * @returns {Promise<Object>} - Результат теста
    */

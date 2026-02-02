@@ -5555,7 +5555,16 @@ class StripeProcessorService {
           if (deal[field] !== null && deal[field] !== undefined && deal[field] !== '') {
             const value = typeof deal[field] === 'number' ? deal[field] : parseFloat(deal[field]);
             if (!isNaN(value) && value > 0) {
-              return { value, type: field.includes('percent') ? 'percent' : 'amount' };
+              // Определяем тип по названию поля
+              let type = field.includes('percent') ? 'percent' : 'amount';
+              
+              // Если поле не содержит явного указания типа, пытаемся определить по значению
+              if (!field.includes('percent') && !field.includes('amount')) {
+                // Если значение меньше 100, скорее всего это процент
+                type = value < 100 ? 'percent' : 'amount';
+              }
+              
+              return { value, type };
             }
           }
         }
@@ -5576,10 +5585,68 @@ class StripeProcessorService {
                 : parseFloat(firstProduct.discount);
               
               if (!isNaN(discountValue) && discountValue > 0) {
-                const discountType = firstProduct.discount_type === 'percent' ? 'percent' : 'amount';
                 const itemPrice = typeof firstProduct.item_price === 'number' 
                   ? firstProduct.item_price 
                   : parseFloat(firstProduct.item_price) || 0;
+                const sumPrice = typeof firstProduct.sum === 'number'
+                  ? firstProduct.sum
+                  : parseFloat(firstProduct.sum) || 0;
+                
+                // Определяем тип скидки
+                let discountType = firstProduct.discount_type;
+                
+                // Нормализуем тип скидки (percentage -> percent)
+                if (discountType === 'percentage') {
+                  discountType = 'percent';
+                }
+                
+                // Если тип не указан явно, пытаемся определить автоматически
+                if (!discountType || (discountType !== 'percent' && discountType !== 'amount')) {
+                  // Если значение меньше 100 и больше 0, скорее всего это процент
+                  // Проверяем расчет: если itemPrice * (1 - discountValue/100) ≈ sumPrice, то это процент
+                  if (discountValue < 100 && discountValue > 0 && itemPrice > 0) {
+                    const calculatedAsPercent = roundBankers(itemPrice * (1 - discountValue / 100));
+                    const calculatedAsAmount = Math.max(0, itemPrice - discountValue);
+                    
+                    // Сравниваем с фактической суммой (sumPrice)
+                    const diffPercent = Math.abs(calculatedAsPercent - sumPrice);
+                    const diffAmount = Math.abs(calculatedAsAmount - sumPrice);
+                    
+                    // Если расчет как процент ближе к фактической сумме, то это процент
+                    if (diffPercent < diffAmount && diffPercent < 0.01) {
+                      discountType = 'percent';
+                      this.logger.debug('💰 Автоопределение типа скидки: процент', {
+                        dealId,
+                        discountValue,
+                        itemPrice,
+                        sumPrice,
+                        calculatedAsPercent,
+                        diffPercent
+                      });
+                    } else if (diffAmount < diffPercent && diffAmount < 0.01) {
+                      discountType = 'amount';
+                      this.logger.debug('💰 Автоопределение типа скидки: фиксированная сумма', {
+                        dealId,
+                        discountValue,
+                        itemPrice,
+                        sumPrice,
+                        calculatedAsAmount,
+                        diffAmount
+                      });
+                    } else {
+                      // По умолчанию, если значение < 100, считаем процентом
+                      discountType = discountValue < 100 ? 'percent' : 'amount';
+                      this.logger.debug('💰 Автоопределение типа скидки по значению', {
+                        dealId,
+                        discountValue,
+                        discountType
+                      });
+                    }
+                  } else {
+                    // Если значение >= 100, скорее всего это фиксированная сумма
+                    discountType = 'amount';
+                  }
+                }
                 
                 return {
                   value: discountValue,
