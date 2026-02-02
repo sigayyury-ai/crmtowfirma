@@ -398,11 +398,15 @@ class StripeRepository {
       .neq('status', 'event_placeholder');
 
     // Filter by processed_at (payment date) if available, fallback to created_at
+    // ВАЖНО: Используем processed_at как основную дату платежа, created_at только если processed_at отсутствует
     if (filters.dateFrom) {
       // Use processed_at for filtering payment date, but also check created_at for sessions without processed_at
+      // Только если processed_at отсутствует, используем created_at
       query = query.or(`processed_at.gte.${filters.dateFrom},and(processed_at.is.null,created_at.gte.${filters.dateFrom})`);
     }
     if (filters.dateTo) {
+      // Use processed_at for filtering payment date, but also check created_at for sessions without processed_at
+      // Только если processed_at отсутствует, используем created_at
       query = query.or(`processed_at.lte.${filters.dateTo},and(processed_at.is.null,created_at.lte.${filters.dateTo})`);
     }
     if (filters.productIds?.length) {
@@ -413,6 +417,10 @@ class StripeRepository {
     }
     if (filters.status) {
       query = query.eq('status', filters.status);
+    }
+    // Filter by payment_status (paid, unpaid, pending) if provided
+    if (filters.paymentStatus) {
+      query = query.eq('payment_status', filters.paymentStatus);
     }
     if (filters.limit) {
       query = query.limit(filters.limit);

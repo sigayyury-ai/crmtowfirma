@@ -343,17 +343,35 @@ class PaymentRevenueReportService {
         }
       : null;
 
+    // Определяем статус платежа
+    // Для Stripe платежей статус определяется по stripe_payment_status, а не по наличию проформы
     let status = { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
+    
+    // Приоритет 1: Если есть проформа - определяем статус по сумме проформы
     if (proforma) {
       status = determinePaymentStatus(paymentSummary.total_pln, paymentSummary.paid_pln);
-    } else if (payment.manual_status === 'rejected') {
+    }
+    // Приоритет 2: Для Stripe платежей определяем статус по stripe_payment_status
+    else if (payment.source === 'stripe' || payment.source === 'stripe_event') {
+      const stripeStatus = payment.stripe_payment_status || payment.payment_status || null;
+      if (stripeStatus === 'paid') {
+        status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+      } else if (stripeStatus === 'pending' || stripeStatus === 'processing') {
+        status = { code: 'pending', label: 'В обработке', className: 'needs_review' };
+      } else if (stripeStatus === 'failed' || stripeStatus === 'canceled') {
+        status = { code: 'failed', label: 'Не удалось', className: 'unmatched' };
+      } else {
+        // Если статус неизвестен, но это Stripe платеж - считаем оплаченным (Stripe показывает только оплаченные)
+        status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+      }
+    }
+    // Приоритет 3: Отклоненные платежи
+    else if (payment.manual_status === 'rejected') {
       status = { code: 'rejected', label: 'Отклонено', className: 'unmatched manual' };
-    } else if (
-      (payment.source === 'stripe' || payment.source === 'stripe_event')
-      && payment.stripe_payment_status === 'paid'
-    ) {
-      // Stripe payments that are paid but not linked to proforma should show as "paid"
-      status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+    }
+    // Приоритет 4: Для банковских платежей без проформы - "Не привязан"
+    else {
+      status = { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
     }
 
     return {
@@ -391,7 +409,7 @@ class PaymentRevenueReportService {
     };
   }
 
-  aggregateProducts(payments, proformaMap, productLinksMap = new Map(), productCatalog = null) {
+  aggregateProducts(payments, proformaMap, productLinksMap = new Map(), productCatalog = null, dateFrom = null, dateTo = null) {
     const productMap = new Map();
     const summary = {
       payments_count: 0,
@@ -400,6 +418,50 @@ class PaymentRevenueReportService {
       total_pln: 0,
       unmatched_count: 0
     };
+    
+    // Фильтруем платежи по дате, если указан диапазон дат
+    // Это предотвращает включение старых платежей, которые не попадают в диапазон дат
+    // ВАЖНО: Платежи уже отфильтрованы на уровне загрузки (loadPayments),
+    // но эта проверка нужна для дополнительной безопасности и для случаев,
+    // когда платежи могут попасть через проформы
+    let filteredPayments = payments;
+    if (dateFrom || dateTo) {
+      filteredPayments = payments.filter((payment) => {
+        // Если у платежа нет даты операции, включаем его (может быть старый платеж)
+        if (!payment.operation_date) {
+          // Для Stripe платежей проверяем stripe_payment_status
+          // Если это unpaid платеж без даты операции, исключаем его
+          if (payment.source === 'stripe' || payment.source === 'stripe_event') {
+            if (payment.stripe_payment_status === 'unpaid') {
+              return false;
+            }
+          }
+          return true; // Включаем платежи без даты для обратной совместимости
+        }
+        const paymentDate = parseDate(payment.operation_date);
+        if (!paymentDate) {
+          // Если дату не удалось распарсить, включаем платеж
+          return true;
+        }
+        
+        if (dateFrom && paymentDate < dateFrom) return false;
+        if (dateTo && paymentDate > dateTo) return false;
+        
+        return true;
+      });
+      
+      // Логируем, если были отфильтрованы платежи
+      if (filteredPayments.length !== payments.length) {
+        const filteredIds = payments.filter(p => !filteredPayments.includes(p)).map(p => p.id);
+        logger.info('Фильтрация платежей по дате в aggregateProducts', {
+          originalCount: payments.length,
+          filteredCount: filteredPayments.length,
+          filteredIds: filteredIds.slice(0, 10), // Логируем только первые 10
+          dateFrom: dateFrom?.toISOString(),
+          dateTo: dateTo?.toISOString()
+        });
+      }
+    }
 
     const catalogById = productCatalog?.byId instanceof Map ? productCatalog.byId : new Map();
     const catalogByName = productCatalog?.byNormalizedName instanceof Map
@@ -424,7 +486,7 @@ class PaymentRevenueReportService {
       return catalogByName.get(normalized) || null;
     };
 
-    payments.forEach((payment) => {
+    filteredPayments.forEach((payment) => {
       summary.payments_count += 1;
       const amount = toNumber(payment.amount) ?? 0;
       if (payment.currency) {
@@ -441,6 +503,21 @@ class PaymentRevenueReportService {
         proformaInfo = proformaMap.byFullnumber.get(String(proformaFullnumber).trim()) || null;
       }
       const paymentEntry = this.buildPaymentEntry(payment, proformaInfo);
+      
+      // Диагностическое логирование для deal #2106
+      if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+        logger.info('🔍 [Deal #2106] После buildPaymentEntry', {
+          paymentId: payment.id,
+          paymentCurrency: payment.currency,
+          paymentAmount: payment.amount,
+          paymentSource: payment.source,
+          paymentEntryAmount: paymentEntry.amount,
+          paymentEntryCurrency: paymentEntry.currency,
+          paymentEntryAmountPln: paymentEntry.amount_pln,
+          hasProforma: !!proformaInfo
+        });
+      }
+      
       if (Number.isFinite(paymentEntry.amount_pln)) {
         summary.total_pln += paymentEntry.amount_pln;
       }
@@ -611,10 +688,13 @@ class PaymentRevenueReportService {
         productId = proformaInfo.product.id || null;
       }
 
-      // CRITICAL: Deduplicate products by productId BEFORE creating/accessing the group
+      // CRITICAL: Deduplicate products by productId and name BEFORE creating/accessing the group
       // This must happen AFTER all productId determination logic but BEFORE productMap.has() check
+      // Goal: merge groups with same productId OR same normalized name to prevent duplicates
+      const normalizedName = normalizeProductKey(productName);
+      
       if (productId !== null && productId !== undefined && productId !== '') {
-        // First, check if there's already a group with this productId (by iterating through all entries)
+        // Case 1: We have productId - check for existing group with same ID first
         let foundExistingKey = null;
         for (const [existingKey, existingProduct] of productMap.entries()) {
           if (existingProduct.product_id === productId) {
@@ -631,27 +711,40 @@ class PaymentRevenueReportService {
         if (foundExistingKey) {
           productKey = foundExistingKey;
         } else {
-          // If no existing group found, ensure we use id:${productId} format
-          // This ensures all products with the same ID use the same key
+          // No group with same ID found - ensure we use id:${productId} format
+          // Migration of groups with same name but no ID will happen when creating the new group
           productKey = `id:${productId}`;
         }
-      } else if (productKey !== 'unmatched' && productName !== 'Без категории') {
-        // If we don't have productId but have a productName, check if there's already a group with the same normalized name
-        const normalizedName = normalizeProductKey(productName);
-        if (normalizedName && normalizedName !== 'без названия') {
-          for (const [existingKey, existingProduct] of productMap.entries()) {
-            const existingNormalizedName = normalizeProductKey(existingProduct.name);
-            if (existingNormalizedName === normalizedName) {
-              // If existing product has an ID, use it and merge
-              if (existingProduct.product_id) {
-                productKey = existingKey;
-                productId = existingProduct.product_id;
-                if (existingProduct.name && existingProduct.name !== 'Без названия') {
-                  productName = existingProduct.name;
-                }
-                break;
-              }
+      } else if (productKey !== 'unmatched' && productName !== 'Без категории' && normalizedName && normalizedName !== 'без названия') {
+        // Case 3: We don't have productId, but have a productName
+        // Check if there's already a group with the same normalized name
+        let foundGroupWithId = null;
+        let foundGroupWithoutId = null;
+        
+        for (const [existingKey, existingProduct] of productMap.entries()) {
+          const existingNormalizedName = normalizeProductKey(existingProduct.name);
+          if (existingNormalizedName === normalizedName) {
+            // Prefer groups with ID (they are more reliable)
+            if (existingProduct.product_id && !foundGroupWithId) {
+              foundGroupWithId = { key: existingKey, product: existingProduct };
+            } else if (!existingProduct.product_id && !foundGroupWithoutId) {
+              foundGroupWithoutId = { key: existingKey, product: existingProduct };
             }
+          }
+        }
+        
+        // Use group with ID if found (prefer ID-based grouping)
+        if (foundGroupWithId) {
+          productKey = foundGroupWithId.key;
+          productId = foundGroupWithId.product.product_id;
+          if (foundGroupWithId.product.name && foundGroupWithId.product.name !== 'Без названия') {
+            productName = foundGroupWithId.product.name;
+          }
+        } else if (foundGroupWithoutId) {
+          // Use existing group without ID if no group with ID found
+          productKey = foundGroupWithoutId.key;
+          if (foundGroupWithoutId.product.name && foundGroupWithoutId.product.name !== 'Без названия') {
+            productName = foundGroupWithoutId.product.name;
           }
         }
       }
@@ -672,7 +765,24 @@ class PaymentRevenueReportService {
 
       // Now check if group exists (after deduplication logic)
       if (!productMap.has(productKey)) {
-        productMap.set(productKey, {
+        // Before creating new group with ID, check if there's an existing group with same name but no ID
+        // This handles the case where some payments were grouped by name before ID was determined
+        let groupToMigrate = null;
+        let groupToMigrateKey = null;
+        if (productId !== null && productId !== undefined && productId !== '' && normalizedName && normalizedName !== 'без названия') {
+          for (const [existingKey, existingProduct] of productMap.entries()) {
+            const existingNormalizedName = normalizeProductKey(existingProduct.name);
+            if (existingNormalizedName === normalizedName && !existingProduct.product_id) {
+              // Found group with same name but no ID - migrate its data
+              groupToMigrate = existingProduct;
+              groupToMigrateKey = existingKey;
+              break;
+            }
+          }
+        }
+        
+        // Create new group
+        const newGroup = {
           key: productKey,
           name: productName,
           product_id: productId,
@@ -684,7 +794,35 @@ class PaymentRevenueReportService {
             proforma_ids: new Set()
           },
           aggregates: new Map()
-        });
+        };
+        
+        // If we found a group to migrate, merge its data into the new group
+        if (groupToMigrate) {
+          // Merge totals
+          newGroup.totals.payments_count = groupToMigrate.totals.payments_count || 0;
+          newGroup.totals.pln_total = groupToMigrate.totals.pln_total || 0;
+          newGroup.totals.proforma_ids = new Set(groupToMigrate.totals.proforma_ids || []);
+          
+          // Merge currency totals
+          Object.entries(groupToMigrate.totals.currency_totals || {}).forEach(([cur, amount]) => {
+            newGroup.totals.currency_totals[cur] = (newGroup.totals.currency_totals[cur] || 0) + amount;
+          });
+          
+          // Merge aggregates
+          groupToMigrate.aggregates.forEach((aggregate, aggKey) => {
+            newGroup.aggregates.set(aggKey, aggregate);
+          });
+          
+          // Use the better name if available
+          if (groupToMigrate.name && groupToMigrate.name !== 'Без названия' && groupToMigrate.name !== productName) {
+            newGroup.name = groupToMigrate.name;
+          }
+          
+          // Remove old group
+          productMap.delete(groupToMigrateKey);
+        }
+        
+        productMap.set(productKey, newGroup);
       }
 
       const group = productMap.get(productKey);
@@ -696,8 +834,22 @@ class PaymentRevenueReportService {
         group.totals.pln_total += paymentEntry.amount_pln;
       }
       if (paymentEntry.currency) {
-        group.totals.currency_totals[paymentEntry.currency] =
-          (group.totals.currency_totals[paymentEntry.currency] || 0) + (toNumber(paymentEntry.amount) ?? 0);
+        const currencyKey = paymentEntry.currency.toUpperCase();
+        const amountToAdd = toNumber(paymentEntry.amount) ?? 0;
+        group.totals.currency_totals[currencyKey] =
+          (group.totals.currency_totals[currencyKey] || 0) + amountToAdd;
+        
+        // Диагностическое логирование для deal #2106
+        if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+          logger.info('🔍 [Deal #2106] Добавление в currency_totals', {
+            paymentId: payment.id,
+            paymentEntryCurrency: paymentEntry.currency,
+            currencyKey,
+            amountToAdd,
+            currentTotal: group.totals.currency_totals[currencyKey],
+            allCurrencyTotals: Object.keys(group.totals.currency_totals)
+          });
+        }
       }
       if (proformaInfo?.id) {
         group.totals.proforma_ids.add(proformaInfo.id);
@@ -739,8 +891,22 @@ class PaymentRevenueReportService {
       aggregate.payments.push(paymentEntry);
       aggregate.totals.payment_count += 1;
       if (paymentEntry.currency) {
-        aggregate.totals.currency_totals[paymentEntry.currency] =
-          (aggregate.totals.currency_totals[paymentEntry.currency] || 0) + (toNumber(paymentEntry.amount) ?? 0);
+        const currencyKey = paymentEntry.currency.toUpperCase();
+        const amountToAdd = toNumber(paymentEntry.amount) ?? 0;
+        aggregate.totals.currency_totals[currencyKey] =
+          (aggregate.totals.currency_totals[currencyKey] || 0) + amountToAdd;
+        
+        // Диагностическое логирование для deal #2106
+        if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+          logger.info('🔍 [Deal #2106] Добавление в aggregate currency_totals', {
+            paymentId: payment.id,
+            paymentEntryCurrency: paymentEntry.currency,
+            currencyKey,
+            amountToAdd,
+            currentTotal: aggregate.totals.currency_totals[currencyKey],
+            allCurrencyTotals: Object.keys(aggregate.totals.currency_totals)
+          });
+        }
       }
       if (Number.isFinite(paymentEntry.amount_pln)) {
         aggregate.totals.pln_total += paymentEntry.amount_pln;
@@ -770,8 +936,12 @@ class PaymentRevenueReportService {
 
     const products = Array.from(productMap.values()).map((group) => {
       const entries = Array.from(group.aggregates.values()).map((entry) => {
+        // Нормализуем ключи валют к верхнему регистру при сериализации
         entry.totals.currency_totals = Object.fromEntries(
-          Object.entries(entry.totals.currency_totals).map(([cur, value]) => [cur, Number(value.toFixed(2))])
+          Object.entries(entry.totals.currency_totals).map(([cur, value]) => {
+            const normalizedCur = (cur || 'PLN').toUpperCase();
+            return [normalizedCur, Number(value.toFixed(2))];
+          })
         );
         entry.totals.pln_total = Number(entry.totals.pln_total.toFixed(2));
         entry.payer_names = Array.from(entry.payer_names.values());
@@ -787,23 +957,56 @@ class PaymentRevenueReportService {
         entry.lifetime_payment_count = lifetimePaymentCount;
 
         if (entry.proforma) {
+          // Если есть проформа - определяем статус по сумме проформы
+          // ВАЖНО: Используем сумму платежей из диапазона дат (entry.totals.pln_total),
+          // а не все платежи проформы (payments_total_pln), чтобы правильно определить статус
           const targetTotalPln = Number.isFinite(entry.proforma.total_pln)
             ? entry.proforma.total_pln
             : convertToPln(entry.proforma.total, entry.proforma.currency, entry.proforma.currency_exchange);
-          const paidPln = Number.isFinite(entry.proforma.payments_total_pln)
-            ? entry.proforma.payments_total_pln
-            : entry.totals.pln_total;
+          // Используем сумму платежей из диапазона дат, а не все платежи проформы
+          const paidPln = Number.isFinite(entry.totals.pln_total)
+            ? entry.totals.pln_total
+            : 0;
           entry.status = determinePaymentStatus(targetTotalPln, paidPln);
+          
+          // Логируем для диагностики сделки #2077
+          if (entry.proforma.pipedrive_deal_id === '2077') {
+            logger.info('🔍 [Deal #2077] Определение статуса проформы', {
+              proformaId: entry.proforma.id,
+              proformaFullnumber: entry.proforma.fullnumber,
+              targetTotalPln,
+              paidPlnInRange: paidPln,
+              paidPlnAll: entry.proforma.payments_total_pln,
+              paymentsCount: entry.payments.length,
+              paymentIds: entry.payments.map(p => p.id).slice(0, 5),
+              status: entry.status
+            });
+          }
         } else {
+          // Если нет проформы - используем статус из платежей
+          // Для Stripe платежей статус уже определен в buildPaymentEntry по stripe_payment_status
           const firstStatus = entry.payments.find((item) => item.status)?.status
             || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
           entry.status = firstStatus;
+          
+          // Дополнительная проверка: если это Stripe платеж без проформы, но статус "Не привязан"
+          // проверяем stripe_payment_status напрямую
+          if (firstStatus.code === 'unmatched' && entry.payments.length > 0) {
+            const stripePayment = entry.payments.find(p => p.source === 'stripe' || p.source === 'stripe_event');
+            if (stripePayment) {
+              // Используем статус из stripe_payment_status, если он есть
+              const stripeStatus = stripePayment.stripe_payment_status || stripePayment.payment_status;
+              if (stripeStatus === 'paid') {
+                entry.status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+              }
+            }
+          }
         }
 
         return entry;
       });
 
-      return {
+      const finalProduct = {
         key: group.key,
         name: group.name,
         product_id: group.product_id,
@@ -811,13 +1014,30 @@ class PaymentRevenueReportService {
         totals: {
           payments_count: group.totals.payments_count,
           proforma_count: Array.from(group.totals.proforma_ids).length,
+          // Нормализуем ключи валют к верхнему регистру при сериализации
           currency_totals: Object.fromEntries(
-            Object.entries(group.totals.currency_totals).map(([cur, value]) => [cur, Number(value.toFixed(2))])
+            Object.entries(group.totals.currency_totals).map(([cur, value]) => {
+              const normalizedCur = (cur || 'PLN').toUpperCase();
+              return [normalizedCur, Number(value.toFixed(2))];
+            })
           ),
           pln_total: Number(group.totals.pln_total.toFixed(2))
         },
         entries
       };
+      
+      // Диагностическое логирование для deal #2106
+      if (group.product_id === 57 || group.name?.includes('Girls retreat')) {
+        logger.info('🔍 [Deal #2106] Финальный продукт перед возвратом', {
+          productId: finalProduct.product_id,
+          productName: finalProduct.name,
+          currencyTotals: finalProduct.totals.currency_totals,
+          entriesCount: finalProduct.entries.length,
+          firstEntryCurrencyTotals: finalProduct.entries[0]?.totals?.currency_totals
+        });
+      }
+      
+      return finalProduct;
     });
 
     summary.products_count = products.length;
@@ -899,11 +1119,25 @@ class PaymentRevenueReportService {
     let stripeEventPayments = [];
     try {
       if (this.stripeRepository.isEnabled()) {
+        // Загружаем Stripe платежи с фильтрацией по дате и статусу
+        // ВАЖНО: Не фильтруем по paymentStatus на уровне БД, чтобы не исключить старые платежи
+        // Фильтрация по payment_status будет выполнена в коде ниже
         const stripeData = await this.stripeRepository.listPayments({
           dateFrom: fromIso || null,
           dateTo: toIso || null,
           status: 'processed'
+          // Не фильтруем по paymentStatus здесь, чтобы включить старые платежи без этого поля
         });
+        
+        // Логируем количество загруженных Stripe платежей для диагностики
+        if (stripeData && stripeData.length > 0) {
+          logger.debug('Загружено Stripe платежей для отчета', {
+            count: stripeData.length,
+            dateFrom: fromIso,
+            dateTo: toIso,
+            sampleIds: stripeData.slice(0, 3).map(sp => sp.session_id || sp.id)
+          });
+        }
 
         // Get list of refunded payments to exclude them from reports
         let refundedPaymentIds = new Set();
@@ -938,9 +1172,36 @@ class PaymentRevenueReportService {
 
         // Convert Stripe payments to payment report format and filter out refunded payments
         stripePayments = (stripeData || [])
+          .map((sp) => {
+            // Диагностическое логирование для deal #2106
+            if (sp.deal_id === '2106' || sp.session_id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+              logger.info('🔍 [Deal #2106] Данные из базы для Stripe платежа', {
+                sessionId: sp.session_id,
+                dealId: sp.deal_id,
+                original_amount: sp.original_amount,
+                original_amount_type: typeof sp.original_amount,
+                amount_pln: sp.amount_pln,
+                amount_pln_type: typeof sp.amount_pln,
+                currency: sp.currency,
+                currency_type: typeof sp.currency,
+                rawPayload: sp.raw_payload ? {
+                  amount_subtotal: sp.raw_payload.amount_subtotal,
+                  amount_total: sp.raw_payload.amount_total,
+                  currency: sp.raw_payload.currency
+                } : null
+              });
+            }
+            return sp;
+          })
           .filter((sp) => {
             // Exclude payments that have been refunded
             if (sp.session_id && refundedPaymentIds.has(String(sp.session_id))) {
+              return false;
+            }
+            // Exclude payments that are explicitly not paid (unpaid, pending, etc.)
+            // Но включаем платежи, у которых payment_status отсутствует или null (старые платежи)
+            // Это важно для обратной совместимости со старыми данными
+            if (sp.payment_status !== undefined && sp.payment_status !== null && sp.payment_status !== 'paid') {
               return false;
             }
             const metadata = (sp.raw_payload && sp.raw_payload.metadata) || {};
@@ -951,10 +1212,38 @@ class PaymentRevenueReportService {
             // Use processed_at as payment date, fallback to created_at
             const paymentDate = sp.processed_at || sp.created_at || null;
             
-            // Use original_amount if available (before conversion), otherwise use amount_pln converted back
-            const amount = sp.original_amount !== null && sp.original_amount !== undefined
-              ? sp.original_amount
-              : (sp.amount_pln || 0);
+            // Фильтрация по дате уже выполнена в запросе к БД через listPayments,
+            // поэтому здесь не нужно дублировать проверку
+            // Оставляем только преобразование данных
+            
+            // Determine amount and currency for Stripe payments
+            // Priority 1: Use original_amount if available (sum in original currency before conversion)
+            // Priority 2: If original_amount is null/undefined but amount_pln exists, use amount_pln with PLN currency
+            // Priority 3: Fallback to 0
+            // IMPORTANT: Convert to number to handle string values from database
+            const originalAmountNum = toNumber(sp.original_amount);
+            const amountPlnNum = toNumber(sp.amount_pln);
+            const hasOriginalAmount = originalAmountNum !== null && originalAmountNum !== undefined && originalAmountNum !== 0;
+            const hasAmountPln = amountPlnNum !== null && amountPlnNum !== undefined && amountPlnNum !== 0;
+            const paymentCurrency = (sp.currency || 'PLN').toUpperCase();
+            
+            let amount;
+            let currency;
+            
+            if (hasOriginalAmount) {
+              // Use original_amount with its currency (this is the correct way for Stripe payments)
+              amount = originalAmountNum;
+              currency = paymentCurrency;
+            } else if (hasAmountPln) {
+              // If no original_amount, use amount_pln (already in PLN)
+              // This should only happen for very old records or edge cases
+              amount = amountPlnNum;
+              currency = 'PLN';
+            } else {
+              // Fallback: try to use amount field if exists, otherwise 0
+              amount = toNumber(sp.amount) || 0;
+              currency = paymentCurrency;
+            }
             
             // Determine document number: invoice_number for B2B, receipt_number for B2C
             // These fields may not exist in older database schemas, so check safely
@@ -968,12 +1257,30 @@ class PaymentRevenueReportService {
             const stripeCrmProductId = metadata.product_id ? String(metadata.product_id) : null;
             const stripeProductName = metadata.product_name || metadata.crm_product_name || null;
             
-            return {
+            // Диагностическое логирование для проверки валюты и суммы
+            if (sp.deal_id === '2106' || sp.session_id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+              logger.info('🔍 [Deal #2106] Формирование Stripe платежа для отчета', {
+                sessionId: sp.session_id,
+                dbOriginalAmount: sp.original_amount,
+                dbCurrency: sp.currency,
+                dbAmountPln: sp.amount_pln,
+                hasOriginalAmount,
+                hasAmountPln,
+                paymentCurrency,
+                finalAmount: amount,
+                finalCurrency: currency,
+                rawPayloadAmountSubtotal: sp.raw_payload?.amount_subtotal,
+                rawPayloadAmountTotal: sp.raw_payload?.amount_total,
+                rawPayloadCurrency: sp.raw_payload?.currency
+              });
+            }
+
+            const paymentObject = {
               id: `stripe_${sp.session_id || sp.id}`,
               operation_date: paymentDate,
               description: `Stripe payment: ${sp.session_id || 'unknown'}`,
               amount: amount,
-              currency: sp.currency || 'PLN',
+              currency: currency,
               direction: 'in',
               payer_name: sp.customer_name || sp.company_name || null,
               payer_normalized_name: null,
@@ -990,6 +1297,7 @@ class PaymentRevenueReportService {
               stripe_session_id: sp.session_id,
               stripe_product_id: sp.product_id, // This is product_link.id (UUID), not stripe_product_id from Stripe
               stripe_deal_id: sp.deal_id,
+              deal_id: sp.deal_id, // Add deal_id for tracking
               stripe_amount_pln: sp.amount_pln || null,
               stripe_payment_status: sp.payment_status || null, // 'paid', 'pending', etc.
               stripe_invoice_number: sp.invoice_number || null,
@@ -997,7 +1305,20 @@ class PaymentRevenueReportService {
               stripe_crm_product_id: stripeCrmProductId,
               stripe_product_name: stripeProductName
             };
-          });
+            
+            // Диагностическое логирование перед возвратом
+            if (sp.deal_id === '2106' || sp.session_id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+              logger.info('🔍 [Deal #2106] Возвращаемый объект платежа', {
+                paymentId: paymentObject.id,
+                paymentAmount: paymentObject.amount,
+                paymentCurrency: paymentObject.currency,
+                dealId: paymentObject.deal_id
+              });
+            }
+            
+            return paymentObject;
+          })
+          .filter((p) => p !== null); // Удаляем null значения (отфильтрованные платежи)
       }
     } catch (error) {
       logger.warn('Failed to load Stripe payments for payment report', {
@@ -1432,7 +1753,7 @@ class PaymentRevenueReportService {
       // Aggregate products - ensure it always returns valid structure
       let aggregation;
       try {
-        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap, productCatalog);
+        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap, productCatalog, dateRange.dateFrom, dateRange.dateTo);
       } catch (error) {
         logger.error('Failed to aggregate products for report', {
           error: error.message,
