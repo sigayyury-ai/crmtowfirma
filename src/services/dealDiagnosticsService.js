@@ -1441,10 +1441,10 @@ class DealDiagnosticsService {
           // Проверяем на застрявшие платежи
           const stuckIssues = [];
           if (includeStuckPayments) {
-            const hasStripePayments = dealDiagnostics.payments.stripe.length > 0;
+            const hasStripePaymentsForStuck = dealDiagnostics.payments.stripe.length > 0;
             const hasProformas = dealDiagnostics.proformas.length > 0;
             const hasCashPayments = dealDiagnostics.cashPayments.length > 0;
-            const hasAnyPayments = hasStripePayments || hasProformas || hasCashPayments;
+            const hasAnyPayments = hasStripePaymentsForStuck || hasProformas || hasCashPayments;
 
             // Проверяем дату закрытия
             const closeDate = dealDiagnostics.dealInfo.expectedCloseDate || dealDiagnostics.dealInfo.closeDate;
