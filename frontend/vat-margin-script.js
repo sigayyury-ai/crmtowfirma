@@ -1433,12 +1433,154 @@ function determinePaymentStatus(totalPln, paidPln) {
 }
 
 function formatCurrency(amount, currency = 'PLN') {
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(Number(amount) || 0);
+  // КРИТИЧЕСКАЯ ПРОВЕРКА: если валюта не передана или пустая, используем дефолт
+  if (!currency || currency === 'undefined' || currency === 'null' || currency === '') {
+    console.warn('⚠️ formatCurrency: пустая валюта, используем PLN', { currency, amount });
+    currency = 'PLN';
+  }
+  
+  // Нормализуем валюту к верхнему регистру и проверяем валидность
+  const normalizedCurrency = (currency || 'PLN').toUpperCase();
+  
+  // Список поддерживаемых валют для Intl.NumberFormat
+  const supportedCurrencies = ['PLN', 'EUR', 'USD', 'GBP', 'CHF', 'CZK', 'UAH', 'RUB'];
+  const finalCurrency = supportedCurrencies.includes(normalizedCurrency) ? normalizedCurrency : 'PLN';
+  
+  // ВАЖНО: Если валюта была EUR, но не попала в supportedCurrencies, это ошибка
+  if (normalizedCurrency === 'EUR' && finalCurrency !== 'EUR') {
+    console.error('❌ formatCurrency: EUR не попала в supportedCurrencies!', {
+      normalizedCurrency,
+      finalCurrency,
+      supportedCurrencies
+    });
+  }
+  
+  // Выбираем локаль в зависимости от валюты для корректного отображения
+  // Для EUR используем 'en-US' (более универсальная локаль), для остальных 'ru-RU'
+  let locale = 'ru-RU';
+  if (finalCurrency === 'EUR') {
+    locale = 'en-US'; // Используем en-US для EUR - более универсальная локаль
+  } else if (finalCurrency === 'USD' || finalCurrency === 'GBP') {
+    locale = 'en-US';
+  }
+  
+  try {
+    const formatter = new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: finalCurrency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+    
+    const formatted = formatter.format(Number(amount) || 0);
+    const resolvedOptions = formatter.resolvedOptions();
+    
+    // Проверяем, что форматирование действительно использует правильную валюту
+    if (resolvedOptions.currency !== finalCurrency) {
+      console.error(`❌ Currency mismatch in formatter: expected ${finalCurrency}, got ${resolvedOptions.currency}`, {
+        inputCurrency: currency,
+        normalizedCurrency,
+        finalCurrency,
+        resolvedCurrency: resolvedOptions.currency,
+        formatted,
+        resolvedOptions: resolvedOptions
+      });
+      
+      // Если валюта не совпадает, используем ручное форматирование
+      if (finalCurrency === 'EUR') {
+        return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
+      }
+    }
+    
+    // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если мы форматируем EUR, но результат содержит PLN
+    if (finalCurrency === 'EUR' && (formatted.includes('PLN') || formatted.includes('zł'))) {
+      console.error(`❌ formatCurrency: форматировали EUR, но получили PLN в результате!`, {
+        inputCurrency: currency,
+        normalizedCurrency,
+        finalCurrency,
+        resolvedCurrency: resolvedOptions.currency,
+        formatted,
+        resolvedOptions: resolvedOptions
+      });
+      // Используем ручное форматирование
+      return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
+    }
+    
+    // Для отладки - всегда логируем для EUR
+    if (normalizedCurrency === 'EUR' || finalCurrency === 'EUR') {
+      console.log('🔍 formatCurrency debug - ДО возврата', {
+        inputAmount: amount,
+        inputCurrency: currency,
+        normalizedCurrency,
+        finalCurrency,
+        locale,
+        formatted,
+        formattedType: typeof formatted,
+        formattedString: String(formatted),
+        resolvedCurrency: resolvedOptions.currency,
+        resolvedLocale: resolvedOptions.locale,
+        formattedContainsEUR: formatted.includes('EUR') || formatted.includes('€'),
+        formattedContainsPLN: formatted.includes('PLN') || formatted.includes('zł'),
+        formattedCharCodes: Array.from(formatted).slice(0, 20).map(c => `${c}(${c.charCodeAt(0)})`)
+      });
+    }
+    
+    // КРИТИЧЕСКАЯ ПРОВЕРКА: если мы форматируем EUR, но получили PLN - это ошибка!
+    if ((normalizedCurrency === 'EUR' || finalCurrency === 'EUR') && 
+        (formatted.includes('PLN') || formatted.includes('zł'))) {
+      console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: formatCurrency получил EUR, но вернул PLN!', {
+        inputAmount: amount,
+        inputCurrency: currency,
+        normalizedCurrency,
+        finalCurrency,
+        locale,
+        formatted,
+        resolvedCurrency: resolvedOptions.currency,
+        resolvedLocale: resolvedOptions.locale,
+        formatterOptions: formatter.resolvedOptions()
+      });
+      
+      // Пробуем форматировать вручную как fallback
+      return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
+    }
+    
+    return formatted;
+  } catch (error) {
+    // Fallback если валюта не поддерживается
+    console.error(`❌ Failed to format currency ${finalCurrency} with locale ${locale}`, {
+      error: error.message,
+      amount,
+      currency,
+      normalizedCurrency,
+      finalCurrency,
+      locale
+    });
+    
+    // Пробуем с другой локалью для EUR
+    if (finalCurrency === 'EUR') {
+      try {
+        const fallbackFormatter = new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'EUR',
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        });
+        const fallbackFormatted = fallbackFormatter.format(Number(amount) || 0);
+        console.log('✅ Used fallback locale en-US for EUR', { formatted: fallbackFormatted });
+        return fallbackFormatted;
+      } catch (fallbackError) {
+        console.error('❌ Fallback also failed', fallbackError);
+      }
+    }
+    
+    // Последний fallback - PLN
+    return new Intl.NumberFormat('ru-RU', {
+      style: 'currency',
+      currency: 'PLN',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(Number(amount) || 0);
+  }
 }
 
 function formatDate(value) {
@@ -1495,6 +1637,27 @@ async function loadPaymentReportData({ silent = false } = {}) {
 
     if (!result?.success) {
       throw new Error(result?.error || 'Ошибка загрузки отчёта');
+    }
+
+    // Диагностическое логирование для deal #2106
+    const deal2106Groups = (result.data || []).filter(g => 
+      g.product_id === 57 || g.name?.includes('Girls retreat')
+    );
+    if (deal2106Groups.length > 0) {
+      console.log('🔍 [Deal #2106 Frontend] Данные из API', {
+        groupsCount: deal2106Groups.length,
+        groups: deal2106Groups.map(g => ({
+          productId: g.product_id,
+          productName: g.name,
+          groupCurrencyTotals: g.totals?.currency_totals,
+          entriesCount: g.entries?.length,
+          entriesCurrencyTotals: g.entries?.map(e => ({
+            currencyTotals: e.totals?.currency_totals,
+            stripeDealId: e.stripe_deal_id,
+            proformaDealId: e.proforma?.pipedrive_deal_id
+          }))
+        }))
+      });
     }
 
     paymentReportState.groups = Array.isArray(result.data) ? result.data : [];
@@ -1597,12 +1760,30 @@ function renderPaymentReport(groups) {
     const paymentsCount = group.totals?.payments_count || 0;
     
     // Формируем ссылку на детальный отчет продукта
+    // API ожидает формат: id-<id> для продуктов с ID или slug-<normalized_name> для продуктов без ID
     let productSlug = null;
     if (group.product_id) {
-      productSlug = String(group.product_id);
+      // Если есть product_id из базы данных - используем формат id-<id>
+      productSlug = `id-${group.product_id}`;
     } else if (group.key) {
-      // Убираем префикс 'id:' или 'key:' из ключа
-      productSlug = group.key.replace(/^(id|key):/, '');
+      // Если есть ключ, проверяем его формат
+      const keyStr = String(group.key);
+      if (keyStr.startsWith('id:')) {
+        // Ключ в формате id:123 - преобразуем в id-123
+        const id = keyStr.replace('id:', '');
+        productSlug = `id-${id}`;
+      } else if (keyStr.startsWith('key:')) {
+        // Ключ в формате key:name - используем как slug-<name>
+        const normalizedName = keyStr.replace('key:', '');
+        productSlug = `slug-${normalizedName}`;
+      } else {
+        // Просто нормализованное название - используем как slug-<name>
+        productSlug = `slug-${keyStr}`;
+      }
+    } else if (group.name) {
+      // Если нет ни ID, ни ключа, но есть название - нормализуем и используем как slug
+      const normalizedName = normalizeProductKey(group.name);
+      productSlug = `slug-${normalizedName}`;
     }
     const productDetailUrl = productSlug ? `/vat-margin-product.html?product=${encodeURIComponent(productSlug)}` : null;
 
@@ -1641,9 +1822,20 @@ function renderPaymentReport(groups) {
         const existingCurrencyTotals = existing.entry.totals.currency_totals || {};
         const newCurrencyTotals = entry.totals?.currency_totals || {};
         Object.entries(newCurrencyTotals).forEach(([cur, amount]) => {
-          existingCurrencyTotals[cur] = (existingCurrencyTotals[cur] || 0) + (Number(amount) || 0);
+          // Нормализуем валюту к верхнему регистру для консистентности
+          const normalizedCur = (cur || 'PLN').toUpperCase();
+          existingCurrencyTotals[normalizedCur] = (existingCurrencyTotals[normalizedCur] || 0) + (Number(amount) || 0);
         });
         existing.entry.totals.currency_totals = existingCurrencyTotals;
+        
+        // Диагностическое логирование для deal #2106
+        if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106' || existing.entry.proforma?.pipedrive_deal_id === '2106' || existing.entry.stripe_deal_id === '2106') {
+          console.log('🔍 [Deal #2106 Frontend] Объединение entries', {
+            existingCurrencyTotals: existing.entry.totals.currency_totals,
+            newCurrencyTotals: entry.totals?.currency_totals,
+            mergedCurrencyTotals: existingCurrencyTotals
+          });
+        }
         
         // Обновляем диапазон дат (первая и последняя дата платежей)
         if (entry.first_payment_date) {
@@ -1667,10 +1859,91 @@ function renderPaymentReport(groups) {
 
     const rows = Array.from(entriesMap.values()).map(({ entry, entryIndex }) => {
       const paymentCount = entry.totals?.payment_count || 0;
+      
+      // Диагностическое логирование для deal #2106
+      if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106') {
+        console.log('🔍 [Deal #2106 Frontend] Формирование строки таблицы', {
+          entryIndex,
+          currencyTotals: entry.totals?.currency_totals,
+          currencyTotalsType: typeof entry.totals?.currency_totals,
+          currencyTotalsKeys: entry.totals?.currency_totals ? Object.keys(entry.totals.currency_totals) : [],
+          plnTotal: entry.totals?.pln_total,
+          proformaDealId: entry.proforma?.pipedrive_deal_id,
+          stripeDealId: entry.stripe_deal_id,
+          entryFull: entry
+        });
+      }
+      
+      // Проверяем что именно в currency_totals перед форматированием
+      if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106') {
+        console.log('🔍 [Deal #2106 Frontend] ПЕРЕД форматированием entryCurrencyTotals', {
+          currencyTotalsRaw: entry.totals?.currency_totals,
+          currencyTotalsType: typeof entry.totals?.currency_totals,
+          currencyTotalsKeys: entry.totals?.currency_totals ? Object.keys(entry.totals.currency_totals) : [],
+          currencyTotalsEntries: entry.totals?.currency_totals ? Object.entries(entry.totals.currency_totals) : []
+        });
+      }
+      
       const entryCurrencyTotals = Object.entries(entry.totals?.currency_totals || {})
         .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
-        .map(([cur, amount]) => formatCurrency(amount, cur))
+        .map(([cur, amount]) => {
+          // Нормализуем валюту к верхнему регистру для корректной работы Intl.NumberFormat
+          const normalizedCurrency = (cur || 'PLN').toUpperCase();
+          
+          // КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся что валюта не пустая и не undefined
+          if (!cur || cur === 'undefined' || cur === 'null') {
+            console.error('❌ [Deal #2106 Frontend] ПУСТАЯ ВАЛЮТА!', {
+              cur,
+              curType: typeof cur,
+              normalizedCurrency,
+              amount,
+              entry: entry.totals?.currency_totals
+            });
+          }
+          
+          // Вызываем formatCurrency и сразу проверяем результат
+          const formatted = formatCurrency(amount, normalizedCurrency);
+          
+          // КРИТИЧЕСКАЯ ПРОВЕРКА: если валюта была EUR, но форматирование вернуло PLN
+          if (normalizedCurrency === 'EUR' && (formatted.includes('PLN') || formatted.includes('zł'))) {
+            console.error('❌ [Deal #2106 Frontend] formatCurrency вернул PLN вместо EUR!', {
+              cur,
+              normalizedCurrency,
+              amount,
+              formatted,
+              formattedType: typeof formatted,
+              formattedString: String(formatted)
+            });
+            // Используем ручное форматирование как fallback
+            return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
+          }
+          
+          // Диагностическое логирование для deal #2106
+          if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106') {
+            console.log('🔍 [Deal #2106 Frontend] Форматирование валюты', {
+              originalCurrency: cur,
+              originalCurrencyType: typeof cur,
+              normalizedCurrency: normalizedCurrency,
+              amount: amount,
+              amountType: typeof amount,
+              formatted: formatted,
+              formattedLength: formatted?.length,
+              formattedIncludesEUR: formatted?.includes('EUR') || formatted?.includes('€'),
+              formattedIncludesPLN: formatted?.includes('PLN') || formatted?.includes('zł'),
+              formattedStartsWith: formatted?.substring(0, 10)
+            });
+          }
+          return formatted;
+        })
         .join(' + ') || '—';
+      
+      // Дополнительное логирование для deal #2106
+      if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106') {
+        console.log('🔍 [Deal #2106 Frontend] Итоговый entryCurrencyTotals', {
+          entryCurrencyTotals,
+          finalResult: entryCurrencyTotals
+        });
+      }
       const entryPlnTotal = formatCurrency(entry.totals?.pln_total || 0, 'PLN');
 
       const proforma = entry.proforma || null;
@@ -1731,6 +2004,25 @@ function renderPaymentReport(groups) {
           `
         : payerLabel;
 
+      // Финальное логирование перед рендерингом для deal #2106
+      if (entry.proforma?.pipedrive_deal_id === '2106' || entry.stripe_deal_id === '2106') {
+        // Проверяем что именно будет в HTML
+        const amountCellHTML = `<td class="amount">${entryCurrencyTotals}</td>`;
+        console.log('🔍 [Deal #2106 Frontend] ФИНАЛЬНЫЙ РЕНДЕРИНГ СТРОКИ', {
+          entryCurrencyTotals,
+          entryCurrencyTotalsType: typeof entryCurrencyTotals,
+          entryCurrencyTotalsLength: entryCurrencyTotals?.length,
+          entryCurrencyTotalsIncludesEUR: entryCurrencyTotals?.includes('EUR') || entryCurrencyTotals?.includes('€'),
+          entryCurrencyTotalsIncludesPLN: entryCurrencyTotals?.includes('PLN') || entryCurrencyTotals?.includes('zł'),
+          entryPlnTotal,
+          currencyTotalsObject: entry.totals?.currency_totals,
+          currencyTotalsKeys: entry.totals?.currency_totals ? Object.keys(entry.totals.currency_totals) : [],
+          amountCellHTML,
+          amountCellHTMLIncludesEUR: amountCellHTML.includes('EUR') || amountCellHTML.includes('€'),
+          amountCellHTMLIncludesPLN: amountCellHTML.includes('PLN') || amountCellHTML.includes('zł')
+        });
+      }
+
       return `
         <tr>
           <td>
@@ -1747,9 +2039,26 @@ function renderPaymentReport(groups) {
       `;
     }).join('');
 
+    // Подготовка мета-информации о продукте для удобной идентификации через курсор
+    // Используем ID из базы данных (таблица products) - это основной идентификатор
+    const productId = group.product_id ? String(group.product_id) : null; // ID из БД (products.id)
+    const productKey = group.key ? String(group.key) : null; // Ключ продукта (может быть id:123 или key:name)
+    const productMetaAttrs = [];
+    if (productId) {
+      // Основной атрибут - ID из базы данных
+      productMetaAttrs.push(`data-product-id="${escapeHtml(productId)}"`);
+    }
+    if (productKey) {
+      productMetaAttrs.push(`data-product-key="${escapeHtml(productKey)}"`);
+    }
+    if (productSlug) {
+      productMetaAttrs.push(`data-product-slug="${escapeHtml(productSlug)}"`);
+    }
+    const productMetaAttrsStr = productMetaAttrs.length > 0 ? ' ' + productMetaAttrs.join(' ') : '';
+
     return `
-      <div class="product-group">
-        <div class="product-group-header">
+      <div class="product-group"${productMetaAttrsStr}>
+        <div class="product-group-header"${productMetaAttrsStr}>
           <div class="product-title">
             ${productDetailUrl 
               ? `<a href="${productDetailUrl}" class="product-name-link" style="text-decoration: none; color: inherit; cursor: pointer;" title="Открыть детальный отчет по продукту">
@@ -1857,6 +2166,19 @@ async function openPayerPaymentsModal({ groupIndex, entryIndex, payerName }) {
   }
   if (proforma?.fullnumber) {
     params.set('proforma', proforma.fullnumber.trim());
+  }
+  // Добавляем фильтрацию по дате из текущего отчета
+  if (paymentReportState.filters?.dateFrom) {
+    params.set('dateFrom', paymentReportState.filters.dateFrom);
+  }
+  if (paymentReportState.filters?.dateTo) {
+    params.set('dateTo', paymentReportState.filters.dateTo);
+  }
+  // Добавляем фильтрацию по сделке, если есть
+  if (proforma?.pipedrive_deal_id) {
+    params.set('dealId', proforma.pipedrive_deal_id);
+  } else if (entry.stripe_deal_id) {
+    params.set('dealId', entry.stripe_deal_id);
   }
 
   let fetchedPayments = [];
@@ -2022,16 +2344,95 @@ function renderPayerPaymentsModal({
     ? `${visiblePayments.length} из ${totalPayments}`
     : `${visiblePayments.length}`;
 
+  // Функция для форматирования ID платежа
+  // Используем ID из базы данных (как для проформ), а не ID сессии Stripe
+  const formatPaymentId = (payment) => {
+    if (!payment?.id) return '—';
+    
+    // Приоритет: используем stripe_payment_id (реальный ID из stripe_payments), если есть
+    // Иначе используем обычный id (может быть числовым для банковских платежей или UUID для Stripe)
+    const displayId = payment.stripe_payment_id || payment.id;
+    const idStr = String(displayId);
+    
+    // Если это числовой ID (для банковских платежей) - показываем как есть
+    if (typeof displayId === 'number' || /^\d+$/.test(idStr)) {
+      return escapeHtml(String(displayId));
+    }
+    
+    // Если это UUID (для Stripe платежей из stripe_payments) - показываем короткую версию
+    if (idStr.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const shortId = idStr.substring(0, 8) + '...';
+      return `<span title="${escapeHtml(idStr)}">${escapeHtml(shortId)}</span>`;
+    }
+    
+    // Если ID начинается с stripe_ (синтетический ID из отчета) - показываем короткую версию
+    if (idStr.startsWith('stripe_')) {
+      const shortId = idStr.length > 30 ? idStr.substring(0, 30) + '...' : idStr;
+      return `<span title="${escapeHtml(idStr)}">${escapeHtml(shortId)}</span>`;
+    }
+    
+    // Для остальных случаев показываем ID как есть
+    return escapeHtml(idStr);
+  };
+  
+  // Функция для форматирования описания платежа
+  const formatPaymentDescription = (payment) => {
+    if (!payment) return '—';
+    
+    const parts = [];
+    
+    // Для Stripe платежей добавляем информацию о статусе и ID сессии
+    if (payment.source === 'stripe' || payment.source === 'stripe_event') {
+      // Добавляем ID сессии Stripe в описание
+      if (payment.stripe_session_id) {
+        const sessionId = payment.stripe_session_id;
+        const shortSessionId = sessionId.length > 30 ? sessionId.substring(0, 30) + '...' : sessionId;
+        parts.push(`<span style="color: #666; font-size: 0.9em;">Stripe Session: <code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px;">${escapeHtml(shortSessionId)}</code></span>`);
+      }
+      
+      // Добавляем статус платежа
+      if (payment.stripe_payment_status) {
+        const statusLabels = {
+          'paid': '✅ Оплачено',
+          'pending': '⏳ В обработке',
+          'unpaid': '❌ Не оплачено',
+          'failed': '❌ Не удалось',
+          'canceled': '❌ Отменено'
+        };
+        const statusLabel = statusLabels[payment.stripe_payment_status] || payment.stripe_payment_status;
+        parts.push(statusLabel);
+      }
+      
+      // Добавляем информацию о продукте, если есть
+      if (payment.stripe_product_name) {
+        parts.push(`Продукт: ${escapeHtml(payment.stripe_product_name)}`);
+      }
+      
+      // Добавляем ссылку на Stripe dashboard, если есть session_id
+      if (payment.stripe_session_id) {
+        const stripeUrl = `https://dashboard.stripe.com/payments/${payment.stripe_session_id}`;
+        parts.push(`<a href="${stripeUrl}" target="_blank" rel="noopener noreferrer" style="color: #635bff; text-decoration: none;">Stripe Dashboard →</a>`);
+      }
+    }
+    
+    // Добавляем обычное описание, если есть
+    if (payment.description && !payment.description.includes('Stripe')) {
+      parts.push(escapeHtml(payment.description));
+    }
+    
+    return parts.length > 0 ? parts.join('<br>') : '—';
+  };
+  
   const rows = visiblePayments.length
     ? visiblePayments
       .map((payment) => `
         <tr>
-          <td>${payment?.id != null ? escapeHtml(String(payment.id)) : '—'}</td>
+          <td>${formatPaymentId(payment)}</td>
           <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
           <td>${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
           <td>${Number.isFinite(Number(payment.amount_pln)) ? formatCurrency(Number(payment.amount_pln), 'PLN') : '—'}</td>
-          <td>${escapeHtml(payment.description || '—')}</td>
-          <td>${escapeHtml(payment.status?.label || '—')}</td>
+          <td>${formatPaymentDescription(payment)}</td>
+          <td>${escapeHtml(payment.status?.label || payment.stripe_payment_status || payment.manual_status || payment.match_status || '—')}</td>
           <td class="actions-col">
             <button
               type="button"

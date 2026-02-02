@@ -1204,6 +1204,19 @@ async function openProductPayerPaymentsModal({ payerName, proformaFullnumber, de
   if (proformaFullnumber) {
     params.set('proforma', proformaFullnumber.trim());
   }
+  // Добавляем фильтрацию по сделке, если есть
+  if (dealId) {
+    params.set('dealId', dealId);
+  }
+  // Добавляем фильтрацию по дате из текущего отчета (если доступна)
+  // Для страницы продукта нужно получить даты из URL или из состояния
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('dateFrom')) {
+    params.set('dateFrom', urlParams.get('dateFrom'));
+  }
+  if (urlParams.get('dateTo')) {
+    params.set('dateTo', urlParams.get('dateTo'));
+  }
 
   let payments = [];
   let totalCount = 0;
@@ -1308,16 +1321,95 @@ function renderProductPayerPaymentsModal({
     ? `${visiblePayments.length} из ${totalPayments}`
     : `${visiblePayments.length}`;
 
+  // Функция для форматирования ID платежа
+  // Используем ID из базы данных (как для проформ), а не ID сессии Stripe
+  const formatPaymentId = (payment) => {
+    if (!payment?.id) return '—';
+    
+    // Приоритет: используем stripe_payment_id (реальный ID из stripe_payments), если есть
+    // Иначе используем обычный id (может быть числовым для банковских платежей или UUID для Stripe)
+    const displayId = payment.stripe_payment_id || payment.id;
+    const idStr = String(displayId);
+    
+    // Если это числовой ID (для банковских платежей) - показываем как есть
+    if (typeof displayId === 'number' || /^\d+$/.test(idStr)) {
+      return escapeHtml(String(displayId));
+    }
+    
+    // Если это UUID (для Stripe платежей из stripe_payments) - показываем короткую версию
+    if (idStr.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)) {
+      const shortId = idStr.substring(0, 8) + '...';
+      return `<span title="${escapeHtml(idStr)}">${escapeHtml(shortId)}</span>`;
+    }
+    
+    // Если ID начинается с stripe_ (синтетический ID из отчета) - показываем короткую версию
+    if (idStr.startsWith('stripe_')) {
+      const shortId = idStr.length > 30 ? idStr.substring(0, 30) + '...' : idStr;
+      return `<span title="${escapeHtml(idStr)}">${escapeHtml(shortId)}</span>`;
+    }
+    
+    // Для остальных случаев показываем ID как есть
+    return escapeHtml(idStr);
+  };
+  
+  // Функция для форматирования описания платежа
+  const formatPaymentDescription = (payment) => {
+    if (!payment) return '—';
+    
+    const parts = [];
+    
+    // Для Stripe платежей добавляем информацию о статусе и ID сессии
+    if (payment.source === 'stripe' || payment.source === 'stripe_event') {
+      // Добавляем ID сессии Stripe в описание
+      if (payment.stripe_session_id) {
+        const sessionId = payment.stripe_session_id;
+        const shortSessionId = sessionId.length > 30 ? sessionId.substring(0, 30) + '...' : sessionId;
+        parts.push(`<span style="color: #666; font-size: 0.9em;">Stripe Session: <code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px;">${escapeHtml(shortSessionId)}</code></span>`);
+      }
+      
+      // Добавляем статус платежа
+      if (payment.stripe_payment_status) {
+        const statusLabels = {
+          'paid': '✅ Оплачено',
+          'pending': '⏳ В обработке',
+          'unpaid': '❌ Не оплачено',
+          'failed': '❌ Не удалось',
+          'canceled': '❌ Отменено'
+        };
+        const statusLabel = statusLabels[payment.stripe_payment_status] || payment.stripe_payment_status;
+        parts.push(statusLabel);
+      }
+      
+      // Добавляем информацию о продукте, если есть
+      if (payment.stripe_product_name) {
+        parts.push(`Продукт: ${escapeHtml(payment.stripe_product_name)}`);
+      }
+      
+      // Добавляем ссылку на Stripe dashboard, если есть session_id
+      if (payment.stripe_session_id) {
+        const stripeUrl = `https://dashboard.stripe.com/payments/${payment.stripe_session_id}`;
+        parts.push(`<a href="${stripeUrl}" target="_blank" rel="noopener noreferrer" style="color: #635bff; text-decoration: none;">Stripe Dashboard →</a>`);
+      }
+    }
+    
+    // Добавляем обычное описание, если есть
+    if (payment.description && !payment.description.includes('Stripe')) {
+      parts.push(escapeHtml(payment.description));
+    }
+    
+    return parts.length > 0 ? parts.join('<br>') : '—';
+  };
+  
   const rows = visiblePayments.length
     ? visiblePayments
       .map((payment) => `
         <tr>
-          <td>${payment?.id != null ? escapeHtml(String(payment.id)) : '—'}</td>
+          <td>${formatPaymentId(payment)}</td>
           <td>${escapeHtml(formatDate(payment.date) || '—')}</td>
           <td>${formatCurrency(payment.amount || 0, payment.currency || 'PLN')}</td>
           <td>${Number.isFinite(Number(payment.amount_pln)) ? formatCurrency(Number(payment.amount_pln), 'PLN') : '—'}</td>
-          <td>${escapeHtml(payment.description || '—')}</td>
-          <td>${escapeHtml(payment.status?.label || payment.manual_status || payment.match_status || '—')}</td>
+          <td>${formatPaymentDescription(payment)}</td>
+          <td>${escapeHtml(payment.status?.label || payment.stripe_payment_status || payment.manual_status || payment.match_status || '—')}</td>
           <td class="actions-col">
             <button
               type="button"

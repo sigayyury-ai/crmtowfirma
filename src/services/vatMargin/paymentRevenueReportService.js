@@ -505,7 +505,8 @@ class PaymentRevenueReportService {
       const paymentEntry = this.buildPaymentEntry(payment, proformaInfo);
       
       // Диагностическое логирование для deal #2106
-      if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+      const paymentIdStr = payment.id ? String(payment.id) : '';
+      if (payment.deal_id === '2106' || paymentIdStr.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
         logger.info('🔍 [Deal #2106] После buildPaymentEntry', {
           paymentId: payment.id,
           paymentCurrency: payment.currency,
@@ -840,7 +841,8 @@ class PaymentRevenueReportService {
           (group.totals.currency_totals[currencyKey] || 0) + amountToAdd;
         
         // Диагностическое логирование для deal #2106
-        if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+        const paymentIdStr2 = payment.id ? String(payment.id) : '';
+        if (payment.deal_id === '2106' || paymentIdStr2.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
           logger.info('🔍 [Deal #2106] Добавление в currency_totals', {
             paymentId: payment.id,
             paymentEntryCurrency: paymentEntry.currency,
@@ -897,7 +899,8 @@ class PaymentRevenueReportService {
           (aggregate.totals.currency_totals[currencyKey] || 0) + amountToAdd;
         
         // Диагностическое логирование для deal #2106
-        if (payment.deal_id === '2106' || payment.id?.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
+        const paymentIdStr3 = payment.id ? String(payment.id) : '';
+        if (payment.deal_id === '2106' || paymentIdStr3.includes('a1PC44eNoHrrmdaLCNV1aYwOD2exzFkYplh5Rtl0WRKuyd67oksVW6DGvT')) {
           logger.info('🔍 [Deal #2106] Добавление в aggregate currency_totals', {
             paymentId: payment.id,
             paymentEntryCurrency: paymentEntry.currency,
@@ -1327,16 +1330,60 @@ class PaymentRevenueReportService {
     }
 
     // Load Stripe event items as synthetic payments
+    // ВАЖНО: Исключаем дублирование - если платеж уже есть в stripePayments, не добавляем его из stripeEventPayments
     try {
-      stripeEventPayments = await this.loadStripeEventItems({
+      const allStripeEventPayments = await this.loadStripeEventItems({
         dateFrom,
         dateTo,
         productCatalog
       });
+      
+      // Создаем Set session_id из уже загруженных Stripe платежей
+      // Используем stripe_session_id из объекта платежа
+      const stripeSessionIds = new Set(
+        stripePayments
+          .map(p => {
+            // Пытаемся извлечь session_id из разных полей
+            if (p.stripe_session_id) return p.stripe_session_id;
+            // Если id имеет формат stripe_<session_id>, извлекаем session_id
+            if (p.id && p.id.startsWith('stripe_')) {
+              return p.id.replace('stripe_', '');
+            }
+            return null;
+          })
+          .filter(Boolean)
+      );
+      
+      // Фильтруем event items - исключаем те, которые уже есть в stripePayments
+      stripeEventPayments = allStripeEventPayments.filter((eventPayment) => {
+        // Извлекаем session_id из event item
+        // В loadStripeEventItems session_id сохраняется в поле stripe_session_id
+        const eventSessionId = eventPayment.stripe_session_id || 
+          (eventPayment.session_id ? eventPayment.session_id : null);
+        
+        // Если session_id есть в stripePayments, исключаем этот event item
+        if (eventSessionId && stripeSessionIds.has(eventSessionId)) {
+          return false;
+        }
+        
+        return true;
+      });
+      
+      // Логируем, если были исключены дубликаты
+      if (allStripeEventPayments.length !== stripeEventPayments.length) {
+        const excludedCount = allStripeEventPayments.length - stripeEventPayments.length;
+        logger.info('Исключены дублирующиеся Stripe event items', {
+          totalEventItems: allStripeEventPayments.length,
+          excludedCount,
+          includedCount: stripeEventPayments.length,
+          stripePaymentsCount: stripePayments.length
+        });
+      }
     } catch (error) {
       logger.warn('Failed to load Stripe event payments for payment report', {
         error: error.message
       });
+      stripeEventPayments = [];
     }
 
     // Combine bank, Stripe, and Stripe event payments
@@ -1507,6 +1554,7 @@ class PaymentRevenueReportService {
           stripe_amount_pln: Number(item.amount_pln) || 0,
           stripe_product_id: null,
           stripe_crm_product_id: resolvedProductId ? String(resolvedProductId) : null,
+          stripe_session_id: item.session_id || null, // Сохраняем session_id для дедупликации
           product_id: resolvedProductId || null,
           paid_at: paidAt
         };

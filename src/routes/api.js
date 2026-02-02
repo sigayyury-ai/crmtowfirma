@@ -3548,6 +3548,26 @@ router.get('/vat-margin/payment-report', async (req, res) => {
       });
     }
 
+    // Диагностическое логирование для deal #2106
+    const deal2106Products = (report.products || []).filter(p => 
+      p.product_id === 57 || p.name?.includes('Girls retreat')
+    );
+    if (deal2106Products.length > 0) {
+      logger.info('🔍 [Deal #2106 API] Возвращаемые продукты в ответе API', {
+        productsCount: deal2106Products.length,
+        products: deal2106Products.map(p => ({
+          productId: p.product_id,
+          productName: p.name,
+          groupCurrencyTotals: p.totals?.currency_totals,
+          entriesCount: p.entries?.length,
+          entriesCurrencyTotals: p.entries?.map(e => ({
+            currencyTotals: e.totals?.currency_totals,
+            stripeDealId: e.stripe_deal_id
+          }))
+        }))
+      });
+    }
+
     res.json({
       success: true,
       data: Array.isArray(report.products) ? report.products : [],
@@ -3613,7 +3633,7 @@ router.get('/vat-margin/payment-report/export', async (req, res) => {
 
 router.get('/vat-margin/payer-payments', async (req, res) => {
   try {
-    const { payer, proforma } = req.query;
+    const { payer, proforma, dateFrom, dateTo, dealId, productId } = req.query;
 
     if ((!payer || !payer.trim()) && (!proforma || !proforma.trim())) {
       return res.status(400).json({
@@ -3641,7 +3661,9 @@ router.get('/vat-margin/payer-payments', async (req, res) => {
         manual_proforma_fullnumber,
         direction,
         income_category_id,
-        expense_category_id
+        expense_category_id,
+        source,
+        deal_id
       `)
       .eq('direction', 'in')
       .is('deleted_at', null)
@@ -3659,15 +3681,188 @@ router.get('/vat-margin/payer-payments', async (req, res) => {
       );
     }
 
+    // Фильтрация по диапазону дат
+    if (dateFrom) {
+      query = query.gte('operation_date', dateFrom);
+    }
+    if (dateTo) {
+      query = query.lte('operation_date', dateTo);
+    }
+
+    // Фильтрация по сделке
+    // ВАЖНО: Если указан dealId, показываем ТОЛЬКО платежи этой сделки
+    // Это предотвращает показ платежей от того же плательщика, но из других сделок/продуктов
+    if (dealId) {
+      // Собираем все условия для фильтрации по сделке
+      const dealConditions = [];
+      
+      // 1. Прямая фильтрация по deal_id для Stripe платежей (в таблице payments)
+      // ВАЖНО: Поле deal_id может быть строкой или числом
+      dealConditions.push(`deal_id.eq.${dealId}`);
+      
+      // 2. Фильтрация через проформы для банковских платежей
+      const { data: proformasForDeal } = await supabase
+        .from('proformas')
+        .select('id, fullnumber')
+        .eq('pipedrive_deal_id', dealId)
+        .is('deleted_at', null);
+      
+      if (proformasForDeal && proformasForDeal.length > 0) {
+        const proformaIds = proformasForDeal.map(p => p.id);
+        const proformaFullnumbers = proformasForDeal.map(p => p.fullnumber).filter(Boolean);
+        
+        if (proformaIds.length > 0) {
+          dealConditions.push(`proforma_id.in.(${proformaIds.join(',')})`);
+          dealConditions.push(`manual_proforma_id.in.(${proformaIds.join(',')})`);
+        }
+        if (proformaFullnumbers.length > 0) {
+          const escapedFullnumbers = proformaFullnumbers.map(fn => `"${fn.replace(/"/g, '\\"')}"`).join(',');
+          dealConditions.push(`proforma_fullnumber.in.(${escapedFullnumbers})`);
+          dealConditions.push(`manual_proforma_fullnumber.in.(${escapedFullnumbers})`);
+        }
+      }
+      
+      // Применяем фильтрацию по сделке
+      if (dealConditions.length > 0) {
+        // ВАЖНО: Если указан dealId, применяем фильтрацию по сделке
+        // Это означает: показываем ТОЛЬКО платежи этой сделки (независимо от плательщика)
+        // Если также указан payer, это дополнительно фильтрует результат
+        query = query.or(dealConditions.join(','));
+        
+        // Логируем для диагностики сделки #2077
+        if (dealId === '2077') {
+          logger.info('🔍 [Deal #2077] Фильтрация платежей по сделке', {
+            dealId,
+            payer,
+            dateFrom,
+            dateTo,
+            dealConditions,
+            proformasCount: proformasForDeal?.length || 0
+          });
+        }
+      } else {
+        // Если проформ нет и нет прямых Stripe платежей с deal_id,
+        // возвращаем пустой результат (даже если указан payer)
+        // Это важно, чтобы не показывать платежи плательщика из других сделок
+        logger.info('Фильтрация по сделке: не найдено условий', {
+          dealId,
+          payer,
+          proformasCount: proformasForDeal?.length || 0
+        });
+        return res.json({
+          success: true,
+          payments: [],
+          count: 0,
+          message: `Для сделки #${dealId} не найдено платежей`
+        });
+      }
+    }
+
     const { data, error } = await query;
     if (error) {
       throw error;
     }
 
+    // Для Stripe платежей получаем дополнительную информацию из таблицы stripe_payments
+    const stripePaymentIds = (data || [])
+      .filter(p => p.source === 'stripe' && p.id)
+      .map(p => {
+        // Извлекаем session_id из id платежа
+        const idStr = String(p.id);
+        if (idStr.startsWith('stripe_')) {
+          return idStr.replace('stripe_', '');
+        }
+        return null;
+      })
+      .filter(Boolean);
+    
+    const stripePaymentsMap = new Map();
+    if (stripePaymentIds.length > 0) {
+      // Загружаем информацию о Stripe платежах батчами
+      const chunkSize = 100;
+      for (let i = 0; i < stripePaymentIds.length; i += chunkSize) {
+        const chunk = stripePaymentIds.slice(i, i + chunkSize);
+        const { data: stripePayments } = await supabase
+          .from('stripe_payments')
+          .select('id, session_id, payment_status, product_id, deal_id, customer_name, original_amount, currency, amount_pln')
+          .in('session_id', chunk);
+        
+        if (stripePayments) {
+          stripePayments.forEach(sp => {
+            stripePaymentsMap.set(sp.session_id, sp);
+          });
+        }
+      }
+    }
+    
+    // Получаем информацию о продуктах для Stripe платежей
+    const productIds = Array.from(new Set(
+      Array.from(stripePaymentsMap.values())
+        .map(sp => sp.product_id)
+        .filter(Boolean)
+    ));
+    
+    const productsMap = new Map();
+    if (productIds.length > 0) {
+      const { data: productLinks } = await supabase
+        .from('product_links')
+        .select('id, crm_product_name')
+        .in('id', productIds);
+      
+      if (productLinks) {
+        productLinks.forEach(pl => {
+          productsMap.set(pl.id, pl.crm_product_name || null);
+        });
+      }
+    }
+    
     const payments = (data || []).map((payment) => {
       const baseAmount = typeof payment.amount === 'number' ? payment.amount : Number(payment.amount) || 0;
+      
+      // Для Stripe платежей получаем дополнительную информацию
+      let stripeInfo = null;
+      if (payment.source === 'stripe' || payment.source === 'stripe_event') {
+        // Извлекаем session_id из id, если это Stripe платеж
+        let sessionId = null;
+        if (payment.id && typeof payment.id === 'string') {
+          if (payment.id.startsWith('stripe_')) {
+            sessionId = payment.id.replace('stripe_', '').replace('stripe_event_', '');
+          }
+        }
+        
+        // Получаем информацию из stripe_payments, если есть
+        const stripePayment = sessionId ? stripePaymentsMap.get(sessionId) : null;
+        const productName = stripePayment?.product_id ? productsMap.get(stripePayment.product_id) : null;
+        
+        stripeInfo = {
+          session_id: sessionId,
+          payment_status: stripePayment?.payment_status || payment.stripe_payment_status || null,
+          product_name: productName || payment.stripe_product_name || null,
+          deal_id: stripePayment?.deal_id || payment.deal_id || null,
+          customer_name: stripePayment?.customer_name || null,
+          original_amount: stripePayment?.original_amount || null,
+          amount_pln: stripePayment?.amount_pln || null
+        };
+      }
+      
+      // Для Stripe платежей пытаемся найти реальный ID из stripe_payments
+      let paymentId = payment.id;
+      let stripePaymentId = null;
+      
+      if (stripeInfo?.session_id) {
+        const stripePayment = stripePaymentsMap.get(stripeInfo.session_id);
+        if (stripePayment?.id) {
+          // Используем реальный ID из stripe_payments
+          stripePaymentId = stripePayment.id;
+          // Если payment.id это синтетический ID (stripe_...), заменяем на реальный
+          if (typeof payment.id === 'string' && payment.id.startsWith('stripe_')) {
+            paymentId = stripePayment.id; // Используем UUID из stripe_payments
+          }
+        }
+      }
+      
       return {
-        id: payment.id,
+        id: paymentId, // Используем реальный ID из базы данных
         amount: baseAmount,
         amount_raw: payment.amount_raw || null,
         currency: payment.currency || 'PLN',
@@ -3681,7 +3876,14 @@ router.get('/vat-margin/payer-payments', async (req, res) => {
         proforma_fullnumber: payment.manual_proforma_fullnumber || payment.proforma_fullnumber || null,
         direction: payment.direction,
         income_category_id: payment.income_category_id || null,
-        amount_pln: payment.currency === 'PLN' ? baseAmount : null
+        amount_pln: stripeInfo?.amount_pln || (payment.currency === 'PLN' ? baseAmount : null),
+        source: payment.source || null,
+        // Добавляем Stripe-специфичные поля
+        stripe_session_id: stripeInfo?.session_id || null,
+        stripe_payment_status: stripeInfo?.payment_status || null,
+        stripe_product_name: stripeInfo?.product_name || null,
+        stripe_payment_id: stripePaymentId || null, // Реальный ID из stripe_payments
+        deal_id: stripeInfo?.deal_id || payment.deal_id || null
       };
     });
 
