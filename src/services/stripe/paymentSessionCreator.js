@@ -633,6 +633,9 @@ class PaymentSessionCreator {
     const quantity = parseFloat(firstProduct.quantity) || 1;
     const amountInMinorUnits = toMinorUnit(paymentAmount, currency);
 
+    // Определяем, является ли это B2B сделкой
+    const isB2B = Boolean(organization || fullDeal.organization_id);
+
     // Line item
     const lineItem = {
       price_data: {
@@ -669,6 +672,16 @@ class PaymentSessionCreator {
       run_id: runId || null
     };
 
+    // Добавляем метаданные компании для B2B
+    if (isB2B && organization) {
+      if (organization.name) {
+        metadata.company_name = organization.name;
+      }
+      if (organization.nip || organization.tax_id || organization.vat_number) {
+        metadata.company_tax_id = organization.nip || organization.tax_id || organization.vat_number;
+      }
+    }
+
     // Session parameters
     const sessionParams = {
       mode: 'payment',
@@ -689,6 +702,19 @@ class PaymentSessionCreator {
         address: 'auto'
       }
     };
+
+    // Включаем опцию "оплатить как компания" для B2B сделок
+    // Это позволяет клиенту указать налоговый ID (NIP/VAT) при оплате
+    if (isB2B) {
+      sessionParams.tax_id_collection = {
+        enabled: true
+      };
+      
+      this.logger.info('B2B payment: tax_id_collection enabled', {
+        dealId,
+        organizationId: organization?.id || fullDeal.organization_id
+      });
+    }
 
     return sessionParams;
   }
