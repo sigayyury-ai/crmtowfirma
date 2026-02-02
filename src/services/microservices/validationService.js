@@ -145,18 +145,24 @@ class ValidationService extends BaseMicroservice {
     }
 
     // 7. Проверка B2B специфичных полей (если это B2B сделка)
-    // ВАЖНО: B2B валидация включается ТОЛЬКО если есть organization_id (не пустой, не 0, не null)
-    // customer_type === 'company' сам по себе не достаточен для B2B валидации
+    // ВАЖНО: B2B валидация - это ОТДЕЛЬНЫЙ КЕЙС
+    // Если есть organization_id → это B2B → проверяем дополнительные поля:
+    // - Business ID (NIP/VAT)
+    // - Company Name
+    // - Полный адрес компании (особенно для PL)
+    // Если нет organization_id → это B2C → B2B валидация не срабатывает
+    
     const hasOrganizationId = data.organization_id && 
                                data.organization_id !== '0' && 
                                data.organization_id !== null && 
                                data.organization_id !== '';
-    const isB2B = hasOrganizationId || (data.organization && data.organization.id);
+    const hasOrganization = data.organization && data.organization.id;
+    const isB2B = hasOrganizationId || hasOrganization;
     
     if (isB2B) {
-      // Если isB2B = true, значит organization_id уже есть, можно сразу проверять B2B-специфичные поля
+      // Это B2B сделка - проверяем обязательные B2B-специфичные поля
       
-      // Проверка Business ID (NIP/VAT)
+      // Проверка Business ID (NIP/VAT) - обязателен для B2B
       const businessId = data.company_tax_id || 
                         data.organization?.nip || 
                         data.organization?.tax_id || 
@@ -172,7 +178,7 @@ class ValidationService extends BaseMicroservice {
         fieldErrors.company_tax_id = 'Business ID (NIP/VAT) is required for B2B deals';
       }
 
-      // Проверка названия компании
+      // Проверка названия компании - обязательно для B2B
       const companyName = data.company_name || data.organization?.name;
       if (!companyName || String(companyName).trim() === '') {
         errors.push({ 
@@ -184,7 +190,7 @@ class ValidationService extends BaseMicroservice {
         fieldErrors.company_name = 'Company name is required for B2B deals';
       }
 
-      // Для B2B адрес должен быть полным (особенно для PL)
+      // Проверка адреса компании - для B2B адрес должен быть полным (особенно для PL)
       if (data.address && data.address.country === 'PL') {
         if (!data.address.street || !data.address.city || !data.address.postal_code) {
           errors.push({ 
