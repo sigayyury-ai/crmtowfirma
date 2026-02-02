@@ -145,20 +145,17 @@ class ValidationService extends BaseMicroservice {
     }
 
     // 7. Проверка B2B специфичных полей (если это B2B сделка)
-    const isB2B = data.customer_type === 'company' || data.organization_id || data.organization;
+    // ВАЖНО: B2B валидация включается ТОЛЬКО если есть organization_id (не пустой, не 0, не null)
+    // customer_type === 'company' сам по себе не достаточен для B2B валидации
+    const hasOrganizationId = data.organization_id && 
+                               data.organization_id !== '0' && 
+                               data.organization_id !== null && 
+                               data.organization_id !== '';
+    const isB2B = hasOrganizationId || (data.organization && data.organization.id);
     
     if (isB2B) {
-      // Проверка Organization в CRM
-      if (!data.organization_id || data.organization_id === '0' || data.organization_id === null) {
-        errors.push({ 
-          field: 'organization', 
-          message: 'Organization is required for B2B deals - deal must be linked to Organization in CRM', 
-          code: 'REQUIRED_FIELD' 
-        });
-        missingFields.push('organization');
-        fieldErrors.organization = 'Organization is required for B2B deals';
-      }
-
+      // Если isB2B = true, значит organization_id уже есть, можно сразу проверять B2B-специфичные поля
+      
       // Проверка Business ID (NIP/VAT)
       const businessId = data.company_tax_id || 
                         data.organization?.nip || 
