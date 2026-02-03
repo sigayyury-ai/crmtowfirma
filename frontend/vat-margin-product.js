@@ -783,7 +783,10 @@ function renderVatMarginTable(detail) {
   const monthlyBreakdownHtml = monthlyBreakdown.length > 0
     ? `
       <div class="monthly-breakdown" style="margin: 20px 0; padding: 15px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 6px;">
-        <h3 style="margin: 0 0 15px 0; font-size: 1.1em; font-weight: 600; color: #333;">Поступления по месяцам (для фактуры маржи)</h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+          <h3 style="margin: 0; font-size: 1.1em; font-weight: 600; color: #333;">Поступления по месяцам (для фактуры маржи)</h3>
+          <button id="monthly-breakdown-export" class="btn btn-secondary" style="padding: 6px 12px; font-size: 0.9em; cursor: pointer; background: #6c757d; color: white; border: none; border-radius: 4px;">Экспорт CSV</button>
+        </div>
         <div style="overflow-x: auto;">
           <table class="detail-table monthly-breakdown-table" style="width: 100%; min-width: 800px; font-size: 0.9em;">
             <thead>
@@ -895,6 +898,98 @@ function renderVatMarginTable(detail) {
     </div>
     ${monthlyBreakdownHtml}
   `;
+
+  // Настраиваем обработчик экспорта monthly-breakdown в CSV
+  const monthlyBreakdownExportButton = document.getElementById('monthly-breakdown-export');
+  if (monthlyBreakdownExportButton) {
+    monthlyBreakdownExportButton.addEventListener('click', () => {
+      exportMonthlyBreakdownCsv(detail, monthlyBreakdown, context);
+    });
+  }
+}
+
+function exportMonthlyBreakdownCsv(detail, monthlyBreakdown, context) {
+  if (!monthlyBreakdown || monthlyBreakdown.length === 0) {
+    showAlert('info', 'Нет данных для экспорта');
+    return;
+  }
+
+  const headers = [
+    'Месяц',
+    'Итого (брутто) / Razem / brutto (PLN)',
+    'Наши расходы / Cena zakupu (PLN)',
+    'Чистая маржа / Marża netto (PLN)',
+    'Ставка НДС / Stawka (%)',
+    'НДС к оплате (PLN)'
+  ];
+
+  const rows = monthlyBreakdown.map((item) => [
+    formatMonthLabel(item.month),
+    Number((item.razemBrutto || item.amount || 0).toFixed(2)),
+    Number((item.expenses || item.purchasePrice || 0).toFixed(2)),
+    Number((item.netMargin || 0).toFixed(2)),
+    item.vatRate ? Number((item.vatRate * 100).toFixed(0)) : '',
+    Number((item.vatAmount || 0).toFixed(2))
+  ]);
+
+  // Добавляем строку "Итого"
+  const totalRazemBrutto = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
+  const totalExpenses = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
+  const totalNetMargin = monthlyBreakdown.reduce((sum, item) => sum + (item.netMargin || 0), 0);
+  const totalVatAmount = monthlyBreakdown.reduce((sum, item) => sum + (item.vatAmount || 0), 0);
+
+  rows.push([
+    'Итого',
+    Number(totalRazemBrutto.toFixed(2)),
+    Number(totalExpenses.toFixed(2)),
+    Number(totalNetMargin.toFixed(2)),
+    '',
+    Number(totalVatAmount.toFixed(2))
+  ]);
+
+  // Добавляем строку "Дельта"
+  const paidPln = detail.totals?.paidPln || 0;
+  const totalExpensesPln = context.totalExpenses || 0;
+  const margin = paidPln - totalExpensesPln;
+  const marginNetto = margin > 0 ? margin / 1.23 : 0;
+  const totalVat = marginNetto > 0 ? marginNetto * 0.23 : 0;
+
+  const deltaRazemBrutto = paidPln - totalRazemBrutto;
+  const deltaExpenses = totalExpensesPln - totalExpenses;
+  const deltaNetMargin = marginNetto - totalNetMargin;
+  const deltaVat = totalVat - totalVatAmount;
+
+  rows.push([
+    'Дельта',
+    Number(deltaRazemBrutto.toFixed(2)),
+    Number(deltaExpenses.toFixed(2)),
+    Number(deltaNetMargin.toFixed(2)),
+    '',
+    Number(deltaVat.toFixed(2))
+  ]);
+
+  const csvContent = [headers, ...rows]
+    .map((row) => row.map((cell) => {
+      const value = cell === undefined || cell === null ? '' : String(cell);
+      if (value.includes('"') || value.includes(',') || value.includes('\n')) {
+        return `"${value.replace(/"/g, '""')}"`;
+      }
+      return value;
+    }).join(','))
+    .join('\n');
+
+  const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const safeName = (detail.productName || 'product')
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '');
+  anchor.href = url;
+  anchor.download = `${safeName}_monthly_breakdown.csv`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function buildVatMarginContext(detail) {
