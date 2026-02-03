@@ -558,7 +558,7 @@ function renderSummaryCards(detail) {
     },
     {
       label: 'Наличка',
-      value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '') + (cashPlusPln > 0 ? ` + ${formatCurrency(cashPlusPln, 'PLN')}` : '')
+      value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '')
     },
     {
       label: 'PIT (налог)',
