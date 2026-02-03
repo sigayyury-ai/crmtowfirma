@@ -488,9 +488,16 @@ function renderSummaryCards(detail) {
     || calculateExpenseTotals(detail.linkedPayments).currencyTotals;
   
   // Получаем сумму расходов в PLN
+  // ВАЖНО: всегда пересчитываем из linkedPayments, чтобы учесть все платежи с актуальными amountPln
+  // detail.expenseTotals может содержать устаревшие данные до обновления amount_pln в базе
+  const calculatedExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
   const expenseTotalsPln = detail.expenseTotals?.totalPln;
-  const fallbackExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
-  const totalExpensesPln = Number.isFinite(expenseTotalsPln) ? expenseTotalsPln : fallbackExpenses || 0;
+  
+  // Используем пересчитанное значение, если оно больше (значит есть новые платежи с amount_pln)
+  // Или если expenseTotalsPln отсутствует/некорректно
+  const totalExpensesPln = (calculatedExpenses > 0 && calculatedExpenses > (expenseTotalsPln || 0)) 
+    ? calculatedExpenses 
+    : (Number.isFinite(expenseTotalsPln) ? expenseTotalsPln : calculatedExpenses || 0);
   
   // Вычисляем PIT: 9% от разницы между "Оплачено" и "Расходы"
   const paidPln = totals.paidPln || 0;
@@ -852,9 +859,12 @@ function buildVatMarginContext(detail) {
     return null;
   }
 
+  // ВАЖНО: всегда пересчитываем из linkedPayments, чтобы учесть все платежи с актуальными amountPln
+  const calculatedExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
   const expenseTotals = detail.expenseTotals?.totalPln;
-  const fallbackExpenses = calculateExpenseTotals(detail.linkedPayments || {}).totalPln;
-  const totalExpensesPln = Number.isFinite(expenseTotals) ? expenseTotals : fallbackExpenses || 0;
+  const totalExpensesPln = (calculatedExpenses > 0 && calculatedExpenses > (expenseTotals || 0))
+    ? calculatedExpenses
+    : (Number.isFinite(expenseTotals) ? expenseTotals : calculatedExpenses || 0);
   const expensesPerParticipant = participants.length
     ? Number((totalExpensesPln / participants.length).toFixed(2))
     : 0;
