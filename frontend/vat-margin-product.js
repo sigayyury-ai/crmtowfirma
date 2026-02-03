@@ -574,10 +574,7 @@ function renderSummaryCards(detail) {
         const realEarnings = paidPln - totalExpensesPln - pit - totalVat;
         const totalCash = cashTotalPln + cashPlusPln;
         const finalEarnings = realEarnings + totalCash;
-        if (totalCash > 0) {
-          return `${formatCurrency(realEarnings, 'PLN')} + ${formatCurrency(totalCash, 'PLN')} = ${formatCurrency(finalEarnings, 'PLN')}`;
-        }
-        return formatCurrency(realEarnings, 'PLN');
+        return formatCurrency(finalEarnings, 'PLN');
       })()
     }
   ];
