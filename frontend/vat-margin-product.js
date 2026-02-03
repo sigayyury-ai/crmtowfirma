@@ -923,13 +923,21 @@ function exportMonthlyBreakdownCsv(detail, monthlyBreakdown, context) {
     'НДС к оплате (PLN)'
   ];
 
+  // Функция для форматирования чисел с запятой как десятичным разделителем
+  const formatNumberWithComma = (value) => {
+    if (value === null || value === undefined || value === '') return '';
+    const num = Number(value);
+    if (!Number.isFinite(num)) return '';
+    return num.toFixed(2).replace('.', ',');
+  };
+
   const rows = monthlyBreakdown.map((item) => [
     formatMonthLabel(item.month),
-    Number((item.razemBrutto || item.amount || 0).toFixed(2)),
-    Number((item.expenses || item.purchasePrice || 0).toFixed(2)),
-    Number((item.netMargin || 0).toFixed(2)),
-    item.vatRate ? Number((item.vatRate * 100).toFixed(0)) : '',
-    Number((item.vatAmount || 0).toFixed(2))
+    formatNumberWithComma(item.razemBrutto || item.amount || 0),
+    formatNumberWithComma(item.expenses || item.purchasePrice || 0),
+    formatNumberWithComma(item.netMargin || 0),
+    item.vatRate ? String(Number((item.vatRate * 100).toFixed(0))) : '',
+    formatNumberWithComma(item.vatAmount || 0)
   ]);
 
   // Добавляем строку "Итого"
@@ -940,11 +948,11 @@ function exportMonthlyBreakdownCsv(detail, monthlyBreakdown, context) {
 
   rows.push([
     'Итого',
-    Number(totalRazemBrutto.toFixed(2)),
-    Number(totalExpenses.toFixed(2)),
-    Number(totalNetMargin.toFixed(2)),
+    formatNumberWithComma(totalRazemBrutto),
+    formatNumberWithComma(totalExpenses),
+    formatNumberWithComma(totalNetMargin),
     '',
-    Number(totalVatAmount.toFixed(2))
+    formatNumberWithComma(totalVatAmount)
   ]);
 
   // Добавляем строку "Дельта"
@@ -961,11 +969,11 @@ function exportMonthlyBreakdownCsv(detail, monthlyBreakdown, context) {
 
   rows.push([
     'Дельта',
-    Number(deltaRazemBrutto.toFixed(2)),
-    Number(deltaExpenses.toFixed(2)),
-    Number(deltaNetMargin.toFixed(2)),
+    formatNumberWithComma(deltaRazemBrutto),
+    formatNumberWithComma(deltaExpenses),
+    formatNumberWithComma(deltaNetMargin),
     '',
-    Number(deltaVat.toFixed(2))
+    formatNumberWithComma(deltaVat)
   ]);
 
   const csvContent = [headers, ...rows]
