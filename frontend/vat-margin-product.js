@@ -529,6 +529,12 @@ function renderSummaryCards(detail) {
   const cashTotalPln = detail.cashTotalPln || 0;
   const cashDealsCount = detail.cashDealsCount || 0;
   
+  // Рассчитываем наличку плюсом (из проформ)
+  const cashPlusPln = (detail.proformas || []).reduce((sum, proforma) => {
+    const cashPln = proforma.payments_total_cash_pln || proforma.paymentsTotalCashPln || 0;
+    return sum + (Number(cashPln) || 0);
+  }, 0);
+  
   const summaryItems = [
     {
       label: 'Суммарная выручка (PLN)',
@@ -552,7 +558,7 @@ function renderSummaryCards(detail) {
     },
     {
       label: 'Наличка',
-      value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '')
+      value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '') + (cashPlusPln > 0 ? ` + ${formatCurrency(cashPlusPln, 'PLN')}` : '')
     },
     {
       label: 'PIT (налог)',
