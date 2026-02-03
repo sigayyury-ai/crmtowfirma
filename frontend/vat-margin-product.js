@@ -812,28 +812,6 @@ function renderVatMarginTable(detail) {
               </tr>
             </tfoot>
           </table>
-          <table class="detail-table monthly-breakdown-table" style="width: 100%; min-width: 800px; font-size: 0.9em; margin-top: 20px;">
-            <thead>
-              <tr>
-                <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Финальная фактура</th>
-                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; font-weight: 600; background: #e8f4f8;">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto (PLN)</span></th>
-                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu (PLN)</span></th>
-                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto (PLN)</span></th>
-                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">Ставка НДС<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Stawka</span></th>
-                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; background: #e8f4f8;">НДС к оплате<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">(PLN)</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr style="background: #f0f8ff; font-weight: 600;">
-                <td style="padding: 10px 8px; border-bottom: 1px solid #ddd;">Данные для корректирующей фактуры</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; font-weight: 600; background: #e0f0ff;">${formatCurrency(finalInvoiceBrutto, 'PLN')}</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; font-weight: 600;">${formatCurrency(finalInvoiceExpenses, 'PLN')}</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; color: #0066cc; font-weight: 600;">${formatCurrency(finalInvoiceBrutto - finalInvoiceExpenses, 'PLN')}</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd;">23%</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-bottom: 1px solid #ddd; color: #d9534f; font-weight: 600;">${formatCurrency((finalInvoiceBrutto - finalInvoiceExpenses) * 0.23, 'PLN')}</td>
-              </tr>
-            </tbody>
-          </table>
         </div>
         <div style="margin-top: 10px; padding: 15px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; font-size: 0.85em; color: #856404;">
           <div style="margin-bottom: 10px;">
