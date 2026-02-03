@@ -1117,6 +1117,20 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
     
     if (!currentInvoiceType) {
       logger.info(`⚠️  invoice_type не найден | Deal: ${dealId} | Проверяем webhook и API, но значение отсутствует`);
+      
+      // ВАЖНО: Если invoice_type отсутствует, но есть активная блокировка обработки Stripe платежей,
+      // это может быть webhook от сброса invoice_type на null. Пропускаем обработку, чтобы не мешать первому webhook'у.
+      const lockTimestamp = stripeProcessingLocks.get(dealId);
+      const now = Date.now();
+      
+      if (lockTimestamp && (now - lockTimestamp) < STRIPE_LOCK_TTL_MS) {
+        logger.info(`⏸️  Webhook с invoice_type=null получен во время обработки Stripe платежей, пропускаем | Deal: ${dealId} | Блокировка до: ${new Date(lockTimestamp + STRIPE_LOCK_TTL_MS).toISOString()}`);
+        return res.status(200).json({
+          success: true,
+          message: 'Webhook ignored: invoice_type is null and Stripe processing is in progress',
+          dealId
+        });
+      }
     } else {
       // Stripe trigger - используем только ID "75" (основной метод)
       const STRIPE_TRIGGER_VALUE = String(process.env.PIPEDRIVE_STRIPE_INVOICE_TYPE_VALUE || '75').trim();
@@ -1797,12 +1811,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.info(`ℹ️  Новые сессии не созданы (все уже существуют) | Deal: ${dealId} | График: ${paymentSchedule}`);
           }
 
-          if (sessions.length > 0) {
-            const marker = formatStripeInvoiceMarker(sessions[0]?.id);
-            if (marker) {
-              await updateInvoiceNumberField(dealId, marker);
-            }
-          }
+          // ВАЖНО: Не обновляем invoice_number для Stripe платежей, чтобы избежать дополнительного webhook'а
+          // invoice_number используется только для проформ (wFirma), для Stripe это не критично
 
           // Отправляем уведомление в SendPulse с графиком платежей и ссылками на сессии
           logger.info(`📧 Отправка уведомления в SendPulse | Deal: ${dealId} | График: ${paymentSchedule} | Сессий: ${sessions.length}`);
@@ -1870,20 +1880,24 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
             logger.warn(`⚠️  Не удалось добавить заметку в сделку | Deal: ${dealId}`, { error: noteError.message });
           }
           
-          // Сбрасываем invoice_type на пустое значение, чтобы избежать повторного срабатывания webhook'а
-          try {
-            const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
-            logger.info(`🔄 Сброс invoice_type | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
-            await stripeProcessor.pipedriveClient.updateDeal(dealId, {
-              [INVOICE_TYPE_FIELD_KEY]: null
-            });
-            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
-          } catch (resetError) {
-            logger.warn(`⚠️  Не удалось сбросить invoice_type | Deal: ${dealId}`, { error: resetError.message });
-          }
-          
           // Снимаем блокировку после обработки (даже если уведомление не отправилось)
           stripeProcessingLocks.delete(dealId);
+          
+          // ВАЖНО: Откладываем сброс invoice_type на null, чтобы избежать нового webhook'а до завершения обработки
+          // Сбрасываем invoice_type через 2 секунды после снятия блокировки, чтобы дать время первому webhook'у завершиться
+          // invoice_number для Stripe платежей не обновляем (используется только для проформ)
+          setTimeout(async () => {
+            try {
+              const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              logger.info(`🔄 Отложенный сброс invoice_type | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
+              await stripeProcessor.pipedriveClient.updateDeal(dealId, {
+                [INVOICE_TYPE_FIELD_KEY]: null
+              });
+              logger.info(`✅ invoice_type убран (отложенно): Stripe (75) → null | Deal: ${dealId}`);
+            } catch (resetError) {
+              logger.warn(`⚠️  Не удалось сбросить invoice_type (отложенно) | Deal: ${dealId}`, { error: resetError.message });
+            }
+          }, 2000); // 2 секунды задержка после снятия блокировки
 
           return res.status(200).json({
             success: true,
@@ -1900,20 +1914,23 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
         } catch (error) {
           logger.error(`❌ Ошибка создания Stripe платежей | Deal: ${dealId}`, { error: error.message });
           
-          // Сбрасываем invoice_type при исключении, чтобы избежать повторных попыток
-          try {
-            const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
-            logger.info(`🔄 Сброс invoice_type после исключения | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
-            await stripeProcessor.pipedriveClient.updateDeal(dealId, {
-              [INVOICE_TYPE_FIELD_KEY]: null
-            });
-            logger.info(`✅ invoice_type убран: Stripe (75) → null | Deal: ${dealId}`);
-          } catch (resetError) {
-            logger.warn(`⚠️  Не удалось сбросить invoice_type после исключения | Deal: ${dealId}`, { error: resetError.message });
-          }
-          
           // Снимаем блокировку после обработки (даже при исключении)
           stripeProcessingLocks.delete(dealId);
+          
+          // ВАЖНО: Откладываем сброс invoice_type на null даже при ошибке, чтобы избежать нового webhook'а до завершения обработки
+          // Сбрасываем invoice_type через 2 секунды после снятия блокировки
+          setTimeout(async () => {
+            try {
+              const INVOICE_TYPE_FIELD_KEY = process.env.PIPEDRIVE_INVOICE_TYPE_FIELD_KEY || 'ad67729ecfe0345287b71a3b00910e8ba5b3b496';
+              logger.info(`🔄 Отложенный сброс invoice_type после исключения | Deal: ${dealId} | Было: Stripe (75) | Будет: null`);
+              await stripeProcessor.pipedriveClient.updateDeal(dealId, {
+                [INVOICE_TYPE_FIELD_KEY]: null
+              });
+              logger.info(`✅ invoice_type убран (отложенно после исключения): Stripe (75) → null | Deal: ${dealId}`);
+            } catch (resetError) {
+              logger.warn(`⚠️  Не удалось сбросить invoice_type (отложенно после исключения) | Deal: ${dealId}`, { error: resetError.message });
+            }
+          }, 2000); // 2 секунды задержка после снятия блокировки
           
           return res.status(200).json({
             success: false,
@@ -1988,12 +2005,8 @@ router.post('/webhooks/pipedrive', express.json({ limit: '10mb' }), async (req, 
               });
               
               if (result.success) {
-                if (result.sessionId) {
-                  const marker = formatStripeInvoiceMarker(result.sessionId);
-                  if (marker) {
-                    await updateInvoiceNumberField(dealId, marker);
-                  }
-                }
+                // ВАЖНО: Не обновляем invoice_number для Stripe платежей, чтобы избежать дополнительного webhook'а
+                // invoice_number используется только для проформ (wFirma), для Stripe это не критично
                 return res.status(200).json({
                   success: true,
                   message: 'Checkout Sessions created via workflow automation',
