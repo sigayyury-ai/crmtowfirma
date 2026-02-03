@@ -539,7 +539,7 @@ function renderSummaryCards(detail) {
     },
     {
       label: 'Расходы (привязанные)',
-      value: Object.keys(expenseTotals).length ? formatCurrencyMap(expenseTotals) : '0 PLN'
+      value: formatCurrency(totalExpensesPln, 'PLN')
     },
     {
       label: 'Наличка',
@@ -924,11 +924,17 @@ function calculateExpenseTotals(linkedPayments) {
 
   expenses.forEach((item) => {
     const amount = Number(item.amount);
-    if (!Number.isFinite(amount)) return;
+    if (!Number.isFinite(amount) || amount === 0) return;
     const currency = (item.currency || 'PLN').toUpperCase();
     totals.currencyTotals[currency] = (totals.currencyTotals[currency] || 0) + amount;
-    if (currency === 'PLN') {
-      totals.totalPln += amount;
+    
+    // Все платежи при загрузке в базу уже конвертируются в PLN (amount_pln)
+    // Суммируем только amount_pln - это единственный метод вывода всех расходов в PLN
+    // ВАЖНО: учитываем все платежи с amountPln, включая отрицательные (возвраты уменьшают расходы)
+    const amountPln = Number(item.amountPln);
+    
+    if (Number.isFinite(amountPln) && amountPln !== null && amountPln !== undefined) {
+      totals.totalPln += amountPln;
     }
   });
 

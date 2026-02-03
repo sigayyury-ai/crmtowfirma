@@ -82,8 +82,10 @@ function createEmptyEntry({ mapKey, productId, productName, productKey, slug, so
   const resolvedProductKey = productKey
     || normalizeProductName(resolvedProductName)
     || 'без названия';
+  // Для slug заменяем пробелы на дефисы для URL-friendly формата
+  const slugKey = resolvedProductKey.replace(/\s+/g, '-');
   const resolvedSlug = slug
-    || (productId ? `id-${productId}` : `slug-${resolvedProductKey}`);
+    || (productId ? `id-${productId}` : `slug-${slugKey}`);
 
   return {
     mapKey: mapKey || null,
@@ -1043,7 +1045,9 @@ class ProductReportService {
       const productKey = productRecord.normalized_name
         || normalizeProductName(productName)
         || 'без названия';
-      const slug = productId ? `id-${productId}` : `slug-${productKey}`;
+      // Для slug заменяем пробелы на дефисы для URL-friendly формата
+      const slugKey = productKey.replace(/\s+/g, '-');
+      const slug = productId ? `id-${productId}` : `slug-${slugKey}`;
 
       const mapKey = productId ? `id:${productId}` : `key:${productKey}`;
 
@@ -1372,55 +1376,76 @@ class ProductReportService {
       return { incoming: [], outgoing: [] };
     }
 
-    // Load bank payment links
-    const { data, error } = await supabase
+    // Load bank payment links - сначала загружаем связи, потом платежи отдельным запросом
+    const { data: linksData, error: linksError } = await supabase
       .from('payment_product_links')
-      .select(`
-        id,
-        payment_id,
-        product_id,
-        direction,
-        linked_by,
-        linked_at,
-        payment:payment_id (
-          id,
-          operation_date,
-          description,
-          amount,
-          currency,
-          direction,
-          payer_name,
-          manual_status,
-          manual_proforma_fullnumber,
-          income_category_id,
-          expense_category_id,
-          source,
-          expense_category:expense_category_id (
-            id,
-            name
-          )
-        )
-      `)
+      .select('id, payment_id, product_id, direction, linked_by, linked_at')
       .eq('product_id', productId)
       .order('linked_at', { ascending: false });
 
-    if (error) {
+    if (linksError) {
       logger.error('Failed to load payment-product links for detail', {
         productId,
-        error: error.message
+        error: linksError.message
       });
     }
 
-    const mapped = (data || [])
+    // Загружаем платежи отдельным запросом
+    let paymentsMap = new Map();
+    if (linksData && linksData.length > 0) {
+      const paymentIds = linksData.map(link => link.payment_id);
+      
+      const { data: paymentsData, error: paymentsError } = await supabase
+        .from('payments')
+        .select('id, operation_date, description, amount, amount_pln, currency, currency_exchange, direction, payer_name, manual_status, manual_proforma_fullnumber, income_category_id, expense_category_id, source')
+        .in('id', paymentIds);
+
+      if (paymentsError) {
+        logger.error('Failed to load payments for product links', {
+          productId,
+          error: paymentsError.message
+        });
+      } else if (paymentsData) {
+        // Загружаем категории расходов отдельно
+        const categoryIds = paymentsData
+          .map(p => p.expense_category_id)
+          .filter(Boolean);
+        
+        let categoriesMap = new Map();
+        if (categoryIds.length > 0) {
+          const { data: categoriesData } = await supabase
+            .from('pnl_expense_categories')
+            .select('id, name')
+            .in('id', categoryIds);
+          
+          if (categoriesData) {
+            categoriesData.forEach(cat => {
+              categoriesMap.set(cat.id, cat.name);
+            });
+          }
+        }
+        
+        paymentsData.forEach(payment => {
+          paymentsMap.set(payment.id, {
+            ...payment,
+            expenseCategoryName: payment.expense_category_id ? categoriesMap.get(payment.expense_category_id) : null
+          });
+        });
+      }
+    }
+
+    const mapped = (linksData || [])
       .map((row) => {
-        const payment = row.payment || {};
+        const payment = paymentsMap.get(row.payment_id) || {};
         const amount = toNumber(payment.amount);
         return {
           linkId: row.id,
           paymentId: row.payment_id,
           direction: payment.direction || row.direction || null,
           amount: Number((amount || 0).toFixed(2)),
+          amountPln: toNumber(payment.amount_pln),
           currency: (payment.currency || 'PLN').toUpperCase(),
+          currencyExchange: toNumber(payment.currency_exchange),
           description: payment.description || null,
           payerName: payment.payer_name || null,
           operationDate: payment.operation_date || null,
@@ -1430,7 +1455,7 @@ class ProductReportService {
           linkedBy: row.linked_by || null,
           linkedAt: row.linked_at || null,
           expenseCategoryId: payment.expense_category_id || null,
-          expenseCategoryName: payment.expense_category?.name || null
+          expenseCategoryName: payment.expenseCategoryName || null
         };
       })
       .filter((item) => Number.isFinite(item.amount));
@@ -1460,27 +1485,31 @@ class ProductReportService {
     });
 
     const facebookAdsMapped = (facebookAdsData || [])
-      .map((expense) => ({
-        linkId: null,
-        paymentId: null,
-        direction: 'out',
-        amount: Number((toNumber(expense.amount_pln) || 0).toFixed(2)),
-        currency: (expense.currency || 'PLN').toUpperCase(),
-        description: `Facebook Ads: ${expense.campaign_name}`,
-        payerName: expense.campaign_name || null,
-        operationDate: expense.report_end_date || null,
-        manualStatus: null,
-        manualProforma: null,
-        source: 'facebook_ads',
-        linkedBy: null,
-        linkedAt: expense.created_at || null,
-        expenseCategoryId: null,
-        expenseCategoryName: 'Facebook Ads',
-        campaignName: expense.campaign_name,
-        reportStartDate: expense.report_start_date,
-        reportEndDate: expense.report_end_date,
-        isCampaignActive: expense.is_campaign_active
-      }))
+      .map((expense) => {
+        const amountPln = toNumber(expense.amount_pln) || 0;
+        return {
+          linkId: null,
+          paymentId: null,
+          direction: 'out',
+          amount: Number(amountPln.toFixed(2)),
+          amountPln: amountPln, // Facebook Ads уже в PLN
+          currency: (expense.currency || 'PLN').toUpperCase(),
+          description: `Facebook Ads: ${expense.campaign_name}`,
+          payerName: expense.campaign_name || null,
+          operationDate: expense.report_end_date || null,
+          manualStatus: null,
+          manualProforma: null,
+          source: 'facebook_ads',
+          linkedBy: null,
+          linkedAt: expense.created_at || null,
+          expenseCategoryId: null,
+          expenseCategoryName: 'Facebook Ads',
+          campaignName: expense.campaign_name,
+          reportStartDate: expense.report_start_date,
+          reportEndDate: expense.report_end_date,
+          isCampaignActive: expense.is_campaign_active
+        };
+      })
       .filter((item) => Number.isFinite(item.amount) && item.amount > 0);
 
     logger.info('Facebook Ads expenses mapped for product', {
@@ -1532,18 +1561,37 @@ class ProductReportService {
 
     linkedPayments.outgoing.forEach((item) => {
       const amount = toNumber(item.amount);
-      if (!Number.isFinite(amount)) {
+      if (!Number.isFinite(amount) || amount === 0) {
         return;
       }
       const currency = (item.currency || 'PLN').toUpperCase();
       totals.currencyTotals[currency] = (totals.currencyTotals[currency] || 0) + amount;
-      if (currency === 'PLN') {
-        totals.totalPln += amount;
+      
+      // Все платежи при загрузке в базу уже конвертируются в PLN (amount_pln)
+      // Суммируем только amount_pln - это единственный метод вывода всех расходов в PLN
+      // ВАЖНО: учитываем все платежи с amountPln, включая отрицательные (возвраты уменьшают расходы)
+      const amountPln = toNumber(item.amountPln);
+      
+      if (Number.isFinite(amountPln) && amountPln !== null && amountPln !== undefined) {
+        totals.totalPln += amountPln;
       }
     });
 
     totals.currencyTotals = roundCurrencyMap(totals.currencyTotals);
     totals.totalPln = Number(totals.totalPln.toFixed(2));
+    
+    logger.info('Expense totals calculated', {
+      outgoingCount: linkedPayments.outgoing.length,
+      totalPln: totals.totalPln,
+      currencyTotals: totals.currencyTotals,
+      sampleItems: linkedPayments.outgoing.slice(0, 3).map(item => ({
+        amount: item.amount,
+        amountPln: item.amountPln,
+        currency: item.currency,
+        source: item.source
+      }))
+    });
+    
     return totals;
   }
 
