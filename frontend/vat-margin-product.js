@@ -824,7 +824,18 @@ function renderVatMarginTable(detail) {
                   const delta = realPaidPln - totalFromTable;
                   return formatCurrency(delta, 'PLN');
                 })()}</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd; ${(() => {
+                  const totalExpensesFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
+                  const realTotalExpensesPln = context.totalExpenses || 0;
+                  const delta = realTotalExpensesPln - totalExpensesFromTable;
+                  const deltaColor = delta >= 0 ? '#28a745' : '#dc3545';
+                  return `color: ${deltaColor};`;
+                })()}">${(() => {
+                  const totalExpensesFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
+                  const realTotalExpensesPln = context.totalExpenses || 0;
+                  const delta = realTotalExpensesPln - totalExpensesFromTable;
+                  return formatCurrency(delta, 'PLN');
+                })()}</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
