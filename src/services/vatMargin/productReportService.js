@@ -198,10 +198,17 @@ class ProductReportService {
     }
 
     // Создаем карту Stripe платежей по deal_id для учета в paidPln проформ
+    // ВАЖНО: учитываем только оплаченные Stripe платежи
     const stripePaymentsByDealId = new Map();
     if (Array.isArray(entry.stripePayments)) {
       entry.stripePayments.forEach((payment) => {
-        if (payment.dealId) {
+        // Проверяем статус оплаты
+        const isPaid = payment.paymentStatus?.code === 'paid' 
+          || payment.stripe_payment_status === 'paid'
+          || payment.payment_status === 'paid'
+          || (!payment.paymentStatus && !payment.stripe_payment_status && !payment.payment_status && payment.amountPln > 0); // Если статус не определен, но есть amountPln - считаем оплаченным
+        
+        if (payment.dealId && isPaid) {
           const dealIdStr = String(payment.dealId);
           if (!stripePaymentsByDealId.has(dealIdStr)) {
             stripePaymentsByDealId.set(dealIdStr, []);
@@ -222,9 +229,18 @@ class ProductReportService {
           const stripePaymentsForDeal = stripePaymentsByDealId.get(dealIdStr) || [];
           
           if (stripePaymentsForDeal.length > 0) {
-            // Суммируем все Stripe платежи для этой сделки
+            // Суммируем только оплаченные Stripe платежи для этой сделки
             const stripePaidPln = stripePaymentsForDeal.reduce((sum, p) => {
-              return sum + (toNumber(p.amountPln) || 0);
+              // Проверяем статус оплаты
+              const isPaid = p.paymentStatus?.code === 'paid' 
+                || p.stripe_payment_status === 'paid'
+                || p.payment_status === 'paid'
+                || (!p.paymentStatus && !p.stripe_payment_status && !p.payment_status); // Если статус не определен, но платеж есть - считаем оплаченным
+              
+              if (isPaid) {
+                return sum + (toNumber(p.amountPln) || 0);
+              }
+              return sum;
             }, 0);
             
             // Добавляем Stripe платежи к paidPln проформы
@@ -343,7 +359,8 @@ class ProductReportService {
         paymentMode: payment.paymentMode || null,
         createdAt: payment.createdAt || null,
         processedAt: payment.processedAt || null,
-        dealId: payment.dealId || null // Сохраняем deal_id для отображения
+        dealId: payment.dealId || null, // Сохраняем deal_id для отображения
+        paymentStatus: payment.paymentStatus || null // Сохраняем статус оплаты
       }))
       : [];
 
@@ -396,6 +413,33 @@ class ProductReportService {
     const proformaCount = entry.proformaIds.size;
     const averageDealSize = proformaCount > 0 ? Number((proformaGrossPln / proformaCount).toFixed(2)) : 0;
 
+    // Пересчитываем paidPln с учетом всех оплаченных Stripe платежей
+    // entry.totals.paidPln включает только оплаченные проформы
+    // Нужно добавить оплаченные Stripe платежи, которые не связаны с проформами
+    let totalPaidPln = Number(entry.totals.paidPln.toFixed(2));
+    
+    // Суммируем оплаченные Stripe платежи, которые не учтены в проформах
+    if (Array.isArray(stripePayments) && stripePayments.length > 0) {
+      const paidStripePayments = stripePayments.filter(p => {
+        const isPaid = p.paymentStatus?.code === 'paid' 
+          || p.paymentStatus?.label === 'Оплачено'
+          || (!p.paymentStatus && p.amountPln > 0); // Если статус не определен, но есть amountPln - считаем оплаченным
+        return isPaid;
+      });
+      
+      // Получаем deal_id всех проформ, чтобы исключить Stripe платежи, которые уже учтены в проформах
+      const proformaDealIds = new Set(
+        proformas.map(p => p.dealId || p.pipedrive_deal_id).filter(Boolean).map(String)
+      );
+      
+      // Суммируем только те Stripe платежи, которые не связаны с проформами
+      const standaloneStripePaidPln = paidStripePayments
+        .filter(p => !p.dealId || !proformaDealIds.has(String(p.dealId)))
+        .reduce((sum, p) => sum + (Number(p.amountPln) || 0), 0);
+      
+      totalPaidPln += standaloneStripePaidPln;
+    }
+
     // Рассчитываем месячную сводку платежей
     // Используем linkedPayments для получения реальных дат платежей
     // Передаем расходы на участника для расчета фактуры маржи
@@ -421,7 +465,7 @@ class ProductReportService {
       proformaCount,
       totals: {
         grossPln,
-        paidPln: Number(entry.totals.paidPln.toFixed(2)),
+        paidPln: Number(totalPaidPln.toFixed(2)), // Используем пересчитанное значение с учетом всех оплаченных Stripe платежей
         netPln,
         marginPln,
         averageDealSize,
@@ -962,6 +1006,24 @@ class ProductReportService {
         entry.lastSaleDate = createdAt;
       }
 
+      // Определяем статус оплаты для Stripe платежа
+      let paymentStatus = null;
+      if (payment.stripe_payment_status) {
+        paymentStatus = payment.stripe_payment_status === 'paid' 
+          ? { code: 'paid', label: 'Оплачено', className: 'matched' }
+          : payment.stripe_payment_status === 'unpaid' || payment.stripe_payment_status === 'expired'
+          ? { code: 'unpaid', label: 'Не оплачено', className: 'unmatched' }
+          : null;
+      } else if (payment.payment_status) {
+        paymentStatus = payment.payment_status === 'paid'
+          ? { code: 'paid', label: 'Оплачено', className: 'matched' }
+          : null;
+      }
+      // Если статус не определен, но есть amountPln > 0, считаем оплаченным
+      if (!paymentStatus && amountPln > 0) {
+        paymentStatus = { code: 'paid', label: 'Оплачено', className: 'matched' };
+      }
+
       entry.stripePayments.push({
         sessionId: payment.sessionId || null,
         paymentType: payment.paymentType || null,
@@ -981,7 +1043,8 @@ class ProductReportService {
         paymentMode: payment.paymentMode || null,
         createdAt,
         processedAt: payment.processedAt || null,
-        dealId: payment.dealId || null // Сохраняем deal_id для связи с проформами
+        dealId: payment.dealId || null, // Сохраняем deal_id для связи с проформами
+        paymentStatus: paymentStatus // Добавляем статус оплаты
       });
     });
 
