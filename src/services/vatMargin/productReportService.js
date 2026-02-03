@@ -1834,8 +1834,47 @@ class ProductReportService {
 
     const groups = Array.isArray(report?.products) ? report.products : [];
     const group = groups.find((g) => Number(g.product_id) === Number(productId)) || null;
+    
+    // Если продукт не найден в payment-report, пробуем построить monthlyBreakdown из linkedPayments
     if (!group) {
-      return [];
+      // Fallback: используем linkedPayments для построения monthlyBreakdown
+      const monthlyMap = new Map(); // monthKey -> { monthKey, amountPln, count }
+      const ensure = (monthKey) => {
+        if (!monthlyMap.has(monthKey)) {
+          monthlyMap.set(monthKey, { monthKey, amountPln: 0, count: 0 });
+        }
+        return monthlyMap.get(monthKey);
+      };
+
+      // Обрабатываем входящие платежи из linkedPayments
+      (linkedPayments?.incoming || []).forEach((payment) => {
+        const date = payment.date || payment.operation_date || payment.createdAt || payment.processedAt;
+        const monthKey = this.toMonthKeyUtc(date);
+        if (!monthKey) return;
+        const amountPln = toNumber(payment.amountPln || payment.amount_pln);
+        if (!Number.isFinite(amountPln) || amountPln <= 0) return;
+        const row = ensure(monthKey);
+        row.amountPln += amountPln;
+        row.count += 1;
+      });
+
+      // Также обрабатываем Stripe платежи
+      (stripePayments || []).forEach((payment) => {
+        const date = payment.createdAt || payment.processedAt;
+        const monthKey = this.toMonthKeyUtc(date);
+        if (!monthKey) return;
+        const amountPln = toNumber(payment.amountPln);
+        if (!Number.isFinite(amountPln) || amountPln <= 0) return;
+        const row = ensure(monthKey);
+        row.amountPln += amountPln;
+        row.count += 1;
+      });
+
+      if (monthlyMap.size === 0) {
+        return [];
+      }
+
+      return this.buildMonthlyVatInvoiceRows(Array.from(monthlyMap.values()));
     }
 
     const monthlyMap = new Map(); // monthKey -> { monthKey, amountPln, count }
