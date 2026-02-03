@@ -539,12 +539,8 @@ function renderSummaryCards(detail) {
       value: formatCurrency(paidPln, 'PLN')
     },
     {
-      label: 'Проформ',
-      value: (detail.proformaCount || 0).toLocaleString('ru-RU')
-    },
-    {
-      label: 'Платежей Stripe',
-      value: (detail.stripeTotals?.paymentsCount || 0).toLocaleString('ru-RU')
+      label: 'Проформ / Stripe',
+      value: `${(detail.proformaCount || 0).toLocaleString('ru-RU')} / ${(detail.stripeTotals?.paymentsCount || 0).toLocaleString('ru-RU')}`
     },
     {
       label: 'Расходы (привязанные)',
