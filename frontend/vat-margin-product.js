@@ -763,15 +763,21 @@ function renderVatMarginTable(detail) {
   // Получаем месячную сводку из detail
   const monthlyBreakdown = detail.monthlyBreakdown || [];
   
+  // Рассчитываем реальную маржу нетто для сравнения с таблицей
+  const paidPln = detail.totals?.paidPln || 0;
+  const totalExpensesPln = context.totalExpenses || 0;
+  const margin = paidPln - totalExpensesPln; // Маржа брутто
+  const marginNetto = margin > 0 ? margin / 1.23 : 0; // Маржа нетто (без НДС)
+  
   // Рассчитываем сумму всех предыдущих месячных отчетов для финальной фактуры
   const totalPreviousReports = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
   const totalPreviousExpenses = monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0);
   
   // Финальная фактура: Итого (брутто) = Все оплаченные поступления - Уже поданные в предыдущих месяцах
-  const finalInvoiceBrutto = Math.max(0, (detail.totals?.paidPln || 0) - totalPreviousReports);
+  const finalInvoiceBrutto = Math.max(0, paidPln - totalPreviousReports);
   
   // Финальная фактура: Наши расходы = Все расходы - Уже поданные расходы в предыдущих месяцах
-  const finalInvoiceExpenses = Math.max(0, (context.totalExpenses || 0) - totalPreviousExpenses);
+  const finalInvoiceExpenses = Math.max(0, totalExpensesPln - totalPreviousExpenses);
   
   const monthlyBreakdownHtml = monthlyBreakdown.length > 0
     ? `
@@ -836,7 +842,16 @@ function renderVatMarginTable(detail) {
                   const delta = realTotalExpensesPln - totalExpensesFromTable;
                   return formatCurrency(delta, 'PLN');
                 })()}</td>
-                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd; ${(() => {
+                  const totalNetMarginFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.netMargin || 0), 0);
+                  const delta = marginNetto - totalNetMarginFromTable;
+                  const deltaColor = delta >= 0 ? '#28a745' : '#dc3545';
+                  return `color: ${deltaColor};`;
+                })()}">${(() => {
+                  const totalNetMarginFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.netMargin || 0), 0);
+                  const delta = marginNetto - totalNetMarginFromTable;
+                  return formatCurrency(delta, 'PLN');
+                })()}</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 1px solid #ddd;">—</td>
               </tr>
