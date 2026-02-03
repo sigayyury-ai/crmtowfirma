@@ -405,39 +405,58 @@ class ProductReportService {
       }
     }
 
+    // ВАЖНО: entry.totals.grossPln может уже включать Stripe события (если source === 'stripe_event')
+    // В этом случае не нужно добавлять stripeTotals.grossRevenuePln повторно
     const proformaGrossPln = Number(entry.totals.grossPln.toFixed(2));
     const stripeGrossPln = entry.stripeTotals?.grossRevenuePln || 0;
-    const grossPln = Number((proformaGrossPln + stripeGrossPln).toFixed(2)); // Включаем и проформы, и Stripe платежи
+    
+    // Если источник - Stripe события, то grossPln уже включает Stripe платежи
+    // Если источник - проформы, то нужно добавить Stripe платежи
+    let grossPln;
+    if (entry.source === 'stripe_event') {
+      // Для Stripe событий grossPln уже включает все платежи
+      grossPln = proformaGrossPln;
+    } else {
+      // Для проформ добавляем Stripe платежи
+      grossPln = Number((proformaGrossPln + stripeGrossPln).toFixed(2));
+    }
     const netPln = grossPln; // net = gross для проформ без VAT
     const marginPln = netPln; // margin = net для проформ
     const proformaCount = entry.proformaIds.size;
     const averageDealSize = proformaCount > 0 ? Number((proformaGrossPln / proformaCount).toFixed(2)) : 0;
 
     // Пересчитываем paidPln с учетом всех оплаченных Stripe платежей
-    // entry.totals.paidPln включает только оплаченные проформы
-    // Нужно добавить оплаченные Stripe платежи, которые не связаны с проформами
-    let totalPaidPln = Number(entry.totals.paidPln.toFixed(2));
-    
-    // Суммируем оплаченные Stripe платежи, которые не учтены в проформах
-    if (Array.isArray(stripePayments) && stripePayments.length > 0) {
-      const paidStripePayments = stripePayments.filter(p => {
-        const isPaid = p.paymentStatus?.code === 'paid' 
-          || p.paymentStatus?.label === 'Оплачено'
-          || (!p.paymentStatus && p.amountPln > 0); // Если статус не определен, но есть amountPln - считаем оплаченным
-        return isPaid;
-      });
+    // ВАЖНО: Для Stripe событий (source === 'stripe_event') paidPln уже включает все платежи
+    // Для проформ нужно добавить оплаченные Stripe платежи, которые не связаны с проформами
+    let totalPaidPln;
+    if (entry.source === 'stripe_event') {
+      // Для Stripe событий paidPln уже включает все платежи
+      totalPaidPln = Number(entry.totals.paidPln.toFixed(2));
+    } else {
+      // Для проформ добавляем оплаченные Stripe платежи
+      totalPaidPln = Number(entry.totals.paidPln.toFixed(2));
       
-      // Получаем deal_id всех проформ, чтобы исключить Stripe платежи, которые уже учтены в проформах
-      const proformaDealIds = new Set(
-        proformas.map(p => p.dealId || p.pipedrive_deal_id).filter(Boolean).map(String)
-      );
-      
-      // Суммируем только те Stripe платежи, которые не связаны с проформами
-      const standaloneStripePaidPln = paidStripePayments
-        .filter(p => !p.dealId || !proformaDealIds.has(String(p.dealId)))
-        .reduce((sum, p) => sum + (Number(p.amountPln) || 0), 0);
-      
-      totalPaidPln += standaloneStripePaidPln;
+      // Суммируем оплаченные Stripe платежи, которые не учтены в проформах
+      if (Array.isArray(stripePayments) && stripePayments.length > 0) {
+        const paidStripePayments = stripePayments.filter(p => {
+          const isPaid = p.paymentStatus?.code === 'paid' 
+            || p.paymentStatus?.label === 'Оплачено'
+            || (!p.paymentStatus && p.amountPln > 0); // Если статус не определен, но есть amountPln - считаем оплаченным
+          return isPaid;
+        });
+        
+        // Получаем deal_id всех проформ, чтобы исключить Stripe платежи, которые уже учтены в проформах
+        const proformaDealIds = new Set(
+          proformas.map(p => p.dealId || p.pipedrive_deal_id).filter(Boolean).map(String)
+        );
+        
+        // Суммируем только те Stripe платежи, которые не связаны с проформами
+        const standaloneStripePaidPln = paidStripePayments
+          .filter(p => !p.dealId || !proformaDealIds.has(String(p.dealId)))
+          .reduce((sum, p) => sum + (Number(p.amountPln) || 0), 0);
+        
+        totalPaidPln += standaloneStripePaidPln;
+      }
     }
 
     // Рассчитываем месячную сводку платежей
