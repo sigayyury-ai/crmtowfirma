@@ -504,11 +504,6 @@ function renderSummaryCards(detail) {
   const profit = paidPln - totalExpensesPln; // Прибыль до налогов
   const pit = profit > 0 ? profit * 0.09 : 0; // PIT = 9% от прибыли
   
-  // Вычисляем НДС: в системе VAT маржи НДС платится только от маржи (доход - расходы)
-  // Формула: НДС = (Оплачено - Расходы) * 0.23
-  const margin = paidPln - totalExpensesPln; // Маржа = Оплачено - Расходы
-  const totalVat = margin > 0 ? margin * 0.23 : 0; // НДС = 23% от маржи (только если маржа положительная)
-  
   // Для месячной сводки используем детальный расчет по месяцам
   const monthlyBreakdown = detail.monthlyBreakdown || [];
   const totalPreviousReports = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
@@ -522,6 +517,18 @@ function renderSummaryCards(detail) {
   const finalInvoiceExpenses = Math.max(0, totalExpensesPln - totalPreviousExpenses);
   const finalInvoiceMargin = finalInvoiceBrutto - finalInvoiceExpenses;
   const vatFromFinalInvoice = finalInvoiceMargin > 0 ? finalInvoiceMargin * 0.23 : 0;
+  
+  // Вычисляем НДС: используем НДС из месячной сводки + НДС финальной фактуры
+  // Если месячной сводки нет, используем формулу: НДС = (Оплачено - Расходы) * 0.23
+  const margin = paidPln - totalExpensesPln; // Маржа = Оплачено - Расходы
+  let totalVat;
+  if (vatFromMonthlyBreakdown > 0 || monthlyBreakdown.length > 0) {
+    // Если есть месячная сводка, используем НДС из сводки + НДС финальной фактуры
+    totalVat = vatFromMonthlyBreakdown + vatFromFinalInvoice;
+  } else {
+    // Если месячной сводки нет, используем формулу 23% от маржи
+    totalVat = margin > 0 ? margin * 0.23 : 0;
+  }
   
   // Получаем сумму наличных платежей и количество сделок с наличкой
   const cashTotalPln = detail.cashTotalPln || 0;
