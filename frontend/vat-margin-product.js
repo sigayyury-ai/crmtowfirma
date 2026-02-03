@@ -783,6 +783,7 @@ function renderVatMarginTable(detail) {
               <tr>
                 <th style="text-align: left; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Месяц</th>
                 <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap; font-weight: 600;">Итого (брутто)<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Razem / brutto (PLN)</span></th>
+                <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Дельта</th>
                 <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Наши расходы<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Cena zakupu (PLN)</span></th>
                 <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Чистая маржа<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Marża netto (PLN)</span></th>
                 <th class="numeric" style="text-align: right; padding: 8px; border-bottom: 2px solid #ddd; white-space: nowrap;">Ставка НДС<br><span style="font-weight: normal; font-size: 0.85em; color: #666;">Stawka</span></th>
@@ -794,6 +795,7 @@ function renderVatMarginTable(detail) {
                 <tr>
                   <td style="padding: 8px; border-bottom: 1px solid #eee; white-space: nowrap;">${formatMonthLabel(item.month)}</td>
                   <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee; font-weight: 600; background: #f0f8ff;">${formatCurrency(item.razemBrutto || item.amount || 0, 'PLN')}</td>
+                  <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee;">—</td>
                   <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee;">${formatCurrency(item.expenses || item.purchasePrice || 0, 'PLN')}</td>
                   <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee; color: #0066cc; font-weight: 500;">${formatCurrency(item.netMargin || 0, 'PLN')}</td>
                   <td class="numeric" style="text-align: right; padding: 8px; border-bottom: 1px solid #eee;">${item.vatRate ? `${(item.vatRate * 100).toFixed(0)}%` : '—'}</td>
@@ -805,6 +807,18 @@ function renderVatMarginTable(detail) {
               <tr style="background: #f5f5f5; font-weight: 600;">
                 <td style="padding: 10px 8px; border-top: 2px solid #ddd;">Итого</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; background: #e0f0ff;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0), 'PLN')}</td>
+                <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; ${(() => {
+                  const totalFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
+                  const realPaidPln = detail.totals?.paidPln || 0;
+                  const delta = realPaidPln - totalFromTable;
+                  const deltaColor = delta >= 0 ? '#28a745' : '#dc3545';
+                  return `color: ${deltaColor};`;
+                })()}">${(() => {
+                  const totalFromTable = monthlyBreakdown.reduce((sum, item) => sum + (item.razemBrutto || item.amount || 0), 0);
+                  const realPaidPln = detail.totals?.paidPln || 0;
+                  const delta = realPaidPln - totalFromTable;
+                  return formatCurrency(delta, 'PLN');
+                })()}</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.expenses || item.purchasePrice || 0), 0), 'PLN')}</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd; color: #0066cc;">${formatCurrency(monthlyBreakdown.reduce((sum, item) => sum + (item.netMargin || 0), 0), 'PLN')}</td>
                 <td class="numeric" style="text-align: right; padding: 10px 8px; border-top: 2px solid #ddd;">—</td>
