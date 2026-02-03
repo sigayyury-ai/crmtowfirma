@@ -570,7 +570,15 @@ function renderSummaryCards(detail) {
     },
     {
       label: 'Реальный заработок',
-      value: formatCurrency(paidPln - totalExpensesPln - pit - totalVat, 'PLN')
+      value: (() => {
+        const realEarnings = paidPln - totalExpensesPln - pit - totalVat;
+        const totalCash = cashTotalPln + cashPlusPln;
+        const finalEarnings = realEarnings + totalCash;
+        if (totalCash > 0) {
+          return `${formatCurrency(realEarnings, 'PLN')} + ${formatCurrency(totalCash, 'PLN')} = ${formatCurrency(finalEarnings, 'PLN')}`;
+        }
+        return formatCurrency(realEarnings, 'PLN');
+      })()
     }
   ];
 
