@@ -547,6 +547,10 @@ function renderSummaryCards(detail) {
       value: formatCurrency(totalExpensesPln, 'PLN')
     },
     {
+      label: 'Маржа нетто',
+      value: formatCurrency(marginNetto, 'PLN')
+    },
+    {
       label: 'Наличка',
       value: formatCurrency(cashTotalPln, 'PLN') + (cashDealsCount > 0 ? ` (${cashDealsCount} ${cashDealsCount === 1 ? 'сделка' : cashDealsCount < 5 ? 'сделки' : 'сделок'})` : '')
     },
