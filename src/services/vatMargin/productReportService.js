@@ -1754,18 +1754,29 @@ class ProductReportService {
       .map((d) => new Date(d))
       .filter((d) => !Number.isNaN(d.getTime()));
 
+    const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth();
+
     if (!parsed.length) {
-      // Fallback: last 24 months
-      const now = new Date();
-      const from = new Date(Date.UTC(now.getUTCFullYear() - 2, 0, 1));
-      const to = new Date(Date.UTC(now.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
+      // Fallback: last 24 months including current month
+      const from = new Date(Date.UTC(currentYear - 2, 0, 1));
+      const to = new Date(Date.UTC(currentYear, currentMonth + 1, 0, 23, 59, 59, 999)); // End of current month
       return { dateFrom: from, dateTo: to };
     }
 
     const min = new Date(Math.min(...parsed.map((d) => d.getTime())));
     const max = new Date(Math.max(...parsed.map((d) => d.getTime())));
     const from = new Date(Date.UTC(min.getUTCFullYear(), 0, 1));
-    const to = new Date(Date.UTC(max.getUTCFullYear(), 11, 31, 23, 59, 59, 999));
+    
+    // ВАЖНО: Всегда включаем текущий месяц, даже если все платежи в прошлом
+    // Это нужно для отображения платежей за текущий месяц в monthlyBreakdown
+    const maxYear = Math.max(max.getUTCFullYear(), currentYear);
+    const maxMonth = maxYear === currentYear 
+      ? Math.max(max.getUTCMonth(), currentMonth)
+      : max.getUTCMonth();
+    
+    const to = new Date(Date.UTC(maxYear, maxMonth + 1, 0, 23, 59, 59, 999)); // End of month
     return { dateFrom: from, dateTo: to };
   }
 
