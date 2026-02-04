@@ -6,6 +6,7 @@ const StripeRepository = require('./stripe/repository');
 const ProformaRepository = require('./proformaRepository');
 const PaymentService = require('./payments/paymentService');
 const CrmStatusAutomationService = require('./crm/statusAutomationService');
+const { extractCashFields } = require('./cash/cashFieldParser');
 
 /**
  * Сервис для диагностики сделок - собирает полную информацию о платежах,
@@ -230,6 +231,11 @@ class DealDiagnosticsService {
       const invoiceTypeValue = deal[INVOICE_TYPE_FIELD_KEY];
       const invoiceType = invoiceTypeValue != null ? String(invoiceTypeValue).trim() : null;
 
+      // Извлекаем информацию о наличных платежах из кастомных полей
+      const cashFields = extractCashFields(deal);
+      const hasCashAmount = cashFields.amount != null && cashFields.amount > 0;
+      const isHybridPayment = hasCashAmount;
+
       return {
         found: true,
         id: deal.id ?? Number(dealId),
@@ -241,6 +247,11 @@ class DealDiagnosticsService {
         closeDate: deal.close_date,
         expectedCloseDate: deal.expected_close_date,
         invoiceType,
+        cashAmount: cashFields.amount || null,
+        cashReceivedAmount: cashFields.receivedAmount || null,
+        cashExpectedDate: cashFields.expectedDate || null,
+        cashStatus: cashFields.status || null,
+        isHybridPayment,
         person: person ? {
           id: person.id,
           name: person.name,
@@ -1012,11 +1023,66 @@ class DealDiagnosticsService {
       });
     }
     
+    // Проверка 3.1.5: Проверка гибридных платежей (Stripe + наличные)
+    const cashAmountFromDeal = Number(dealInfo.cashAmount) || 0;
+    const isHybridPayment = dealInfo.isHybridPayment || cashAmountFromDeal > 0;
+    
+    if (isHybridPayment && cashAmountFromDeal > 0) {
+      const expectedStripeAmount = dealValue - cashAmountFromDeal;
+      const tolerance = 0.01;
+      
+      // Проверяем сумму Stripe сессий (даже неоплаченных) для гибридных платежей
+      const stripeSessionsAmount = payments.stripe
+        .filter(p => p.currency === dealCurrency)
+        .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+      
+      if (stripeSessionsAmount > 0 && Math.abs(stripeSessionsAmount - expectedStripeAmount) > tolerance) {
+        issues.push({
+          severity: 'warning',
+          category: 'hybrid',
+          code: 'HYBRID_STRIPE_AMOUNT_MISMATCH',
+          message: `Для гибридного платежа Stripe сумма (${stripeSessionsAmount} ${dealCurrency}) не соответствует ожидаемой (${expectedStripeAmount} ${dealCurrency})`,
+          details: {
+            dealValue,
+            cashAmount: cashAmountFromDeal,
+            expectedStripeAmount,
+            actualStripeAmount: stripeSessionsAmount,
+            difference: Math.abs(stripeSessionsAmount - expectedStripeAmount),
+            currency: dealCurrency,
+            note: `Для гибридных платежей Stripe сумма должна быть: ${dealValue} - ${cashAmountFromDeal} = ${expectedStripeAmount}`
+          }
+        });
+      }
+      
+      // Проверяем, что сумма cash_amount + Stripe не превышает dealValue
+      if (cashAmountFromDeal + expectedStripeAmount > dealValue + tolerance) {
+        issues.push({
+          severity: 'warning',
+          category: 'hybrid',
+          code: 'HYBRID_TOTAL_EXCEEDS_DEAL_VALUE',
+          message: `Сумма гибридного платежа (Stripe: ${expectedStripeAmount} + Cash: ${cashAmountFromDeal} = ${cashAmountFromDeal + expectedStripeAmount}) превышает сумму сделки (${dealValue})`,
+          details: {
+            dealValue,
+            cashAmount: cashAmountFromDeal,
+            expectedStripeAmount,
+            total: cashAmountFromDeal + expectedStripeAmount,
+            difference: (cashAmountFromDeal + expectedStripeAmount) - dealValue,
+            currency: dealCurrency
+          }
+        });
+      }
+    }
+    
     // Проверка 3.2: Проверка сумм Stripe платежей в оригинальной валюте (с учетом графика платежей)
     if (!hasCurrencyMismatch && stripePaidInOriginalCurrency > 0) {
       const tolerance = 0.01; // Допустимая погрешность
       let expectedAmount = dealValue; // В валюте сделки
       let shouldCheckAmount = true; // Флаг для пропуска проверки, если это нормальная ситуация
+      
+      // Для гибридных платежей ожидаемая сумма Stripe = dealValue - cashAmount
+      if (isHybridPayment && cashAmountFromDeal > 0) {
+        expectedAmount = dealValue - cashAmountFromDeal;
+      }
       
       // Если график 50/50, учитываем, что может быть оплачена только половина
       if (paymentSchedule.schedule === '50/50') {
@@ -1717,9 +1783,27 @@ class DealDiagnosticsService {
     const totalPaid = payments.total; // В PLN (конвертированная сумма)
     const totalProforma = proformas.reduce((sum, p) => sum + (Number(p.total) || 0), 0);
     const totalRefunded = refunds.total;
-    const totalCashExpected = cashPayments.reduce((sum, cp) => sum + (Number(cp.expectedAmount) || 0), 0);
-    const totalCashReceived = cashPayments.filter(cp => cp.status === 'received')
-      .reduce((sum, cp) => sum + (Number(cp.receivedAmount) || 0), 0);
+    
+    // Получаем cash_amount из dealInfo (если заполнено в CRM)
+    const cashAmountFromDeal = Number(dealInfo.cashAmount) || 0;
+    const cashReceivedFromDeal = Number(dealInfo.cashReceivedAmount) || 0;
+    
+    // Объединяем cash из CRM и из БД cash_payments
+    const totalCashExpected = Math.max(
+      cashAmountFromDeal,
+      cashPayments.reduce((sum, cp) => sum + (Number(cp.expectedAmount) || 0), 0)
+    );
+    const totalCashReceived = Math.max(
+      cashReceivedFromDeal,
+      cashPayments.filter(cp => cp.status === 'received')
+        .reduce((sum, cp) => sum + (Number(cp.receivedAmount) || 0), 0)
+    );
+    
+    // Для гибридных платежей: Stripe сумма должна быть dealValue - cashAmount
+    const isHybridPayment = dealInfo.isHybridPayment || cashAmountFromDeal > 0;
+    const expectedStripeAmount = isHybridPayment && cashAmountFromDeal > 0
+      ? dealValue - cashAmountFromDeal
+      : dealValue;
     
     // Рассчитываем оплату в оригинальной валюте сделки
     const stripePaidInOriginalCurrency = payments.stripe
@@ -1730,7 +1814,9 @@ class DealDiagnosticsService {
       .filter(p => (p.manualStatus === 'approved' || p.matchStatus === 'matched') && p.currency === dealCurrency)
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
     
-    const totalPaidInOriginalCurrency = stripePaidInOriginalCurrency + proformaPaidInOriginalCurrency;
+    // Для гибридных платежей учитываем наличные
+    const totalPaidInOriginalCurrency = stripePaidInOriginalCurrency + proformaPaidInOriginalCurrency + 
+      (isHybridPayment ? totalCashReceived : 0);
     
     // Проверяем наличие платежей в другой валюте
     const hasCurrencyMismatch = payments.stripe.some(p => 
@@ -1745,6 +1831,7 @@ class DealDiagnosticsService {
     // Для расчета прогресса используем:
     // 1. Если валюты совпадают - по сумме
     // 2. Если валюты разные - по факту оплаты (webhook verified)
+    // 3. Для гибридных платежей учитываем и Stripe, и наличные
     let paymentProgress = 0;
     if (hasCurrencyMismatch) {
       // Используем факт оплаты: если есть webhook подтверждение - считаем оплаченным
@@ -1764,6 +1851,10 @@ class DealDiagnosticsService {
       totalRefunded,
       totalCashExpected,
       totalCashReceived,
+      cashAmountFromDeal, // Cash amount из CRM поля
+      cashReceivedFromDeal, // Cash received amount из CRM поля
+      isHybridPayment,
+      expectedStripeAmount, // Ожидаемая сумма Stripe для гибридных платежей
       remaining: hasCurrencyMismatch ? null : Math.max(dealValue - totalPaidInOriginalCurrency, 0),
       paymentProgress: Math.min(paymentProgress, 100), // Ограничиваем 100%
       hasCurrencyMismatch,

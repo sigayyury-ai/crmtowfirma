@@ -134,25 +134,38 @@ class DealAmountCalculator {
 
     try {
       const cashFields = extractCashFields(deal);
+      logger.debug('Cash deduction check', {
+        dealId: deal?.id,
+        cashFieldsAmount: cashFields?.amount,
+        originalAmount: amount,
+        hasCashAmount: cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0
+      });
+      
       if (cashFields && Number.isFinite(cashFields.amount) && cashFields.amount > 0) {
         const cashDeduction = roundBankers(cashFields.amount);
         const netAmount = Math.max(amount - cashDeduction, 0);
         
-        if (netAmount !== amount) {
-          logger.debug('Applied cash deduction to deal amount', {
-            dealId: deal.id,
-            originalAmount: amount,
-            cashDeduction,
-            netAmount
-          });
-        }
+        logger.info('Applied cash deduction to deal amount', {
+          dealId: deal.id,
+          originalAmount: amount,
+          cashDeduction,
+          netAmount,
+          currency: deal.currency || 'PLN'
+        });
         
         return roundBankers(netAmount);
+      } else {
+        logger.debug('No cash deduction applied', {
+          dealId: deal?.id,
+          cashFieldsAmount: cashFields?.amount,
+          reason: !cashFields ? 'no cashFields' : !Number.isFinite(cashFields.amount) ? 'invalid amount' : cashFields.amount <= 0 ? 'amount <= 0' : 'unknown'
+        });
       }
     } catch (error) {
       logger.warn('Failed to apply cash deduction', {
         dealId: deal?.id,
-        error: error.message
+        error: error.message,
+        stack: error.stack
       });
     }
 
@@ -249,25 +262,48 @@ class DealAmountCalculator {
       return roundBankers(customAmount);
     }
 
-    // Получаем базовую сумму сделки
+    // Получаем базовую сумму сделки БЕЗ cash deduction для логирования
+    const baseAmountWithoutCash = this.getDealAmount(deal, products, {
+      includeCashDeduction: false,
+      includeDiscounts: true
+    });
+    
+    // Получаем базовую сумму сделки С cash deduction
     const baseAmount = this.getDealAmount(deal, products, {
       includeCashDeduction: true,
       includeDiscounts: true
     });
 
+    logger.info('Calculating payment amount', {
+      dealId: deal?.id,
+      paymentType,
+      paymentSchedule,
+      baseAmountWithoutCash,
+      baseAmount,
+      cashDeductionApplied: baseAmountWithoutCash - baseAmount,
+      currency: deal?.currency || 'PLN'
+    });
+
     // Для графика 50/50 делим пополам
     if (paymentSchedule === '50/50') {
       const splitAmount = baseAmount / 2;
-      logger.debug('Split amount for 50/50 schedule', {
+      logger.info('Split amount for 50/50 schedule', {
         dealId: deal?.id,
         paymentType,
         baseAmount,
-        splitAmount
+        splitAmount,
+        currency: deal?.currency || 'PLN'
       });
       return roundBankers(splitAmount);
     }
 
     // Для графика 100% возвращаем полную сумму
+    logger.info('Using full amount for 100% schedule', {
+      dealId: deal?.id,
+      paymentType,
+      baseAmount,
+      currency: deal?.currency || 'PLN'
+    });
     return roundBankers(baseAmount);
   }
 }
