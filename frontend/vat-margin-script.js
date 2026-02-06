@@ -1245,6 +1245,10 @@ function renderProductSummaryTable(products) {
     console.log(`Filtered products: ${products.length} → ${uniqueProducts.length} (removed ${products.length - uniqueProducts.length} duplicates)`);
   }
 
+  // Сначала «В процессе», затем «Рассчитан» — при смене статуса строка уезжает вниз
+  const statusOrder = (s) => (s === 'in_progress' || s == null || s === '') ? 0 : 1;
+  uniqueProducts.sort((a, b) => statusOrder(a.calculationStatus) - statusOrder(b.calculationStatus));
+
   const rows = uniqueProducts
     .map((product) => {
       const details = [];
@@ -1310,14 +1314,14 @@ function renderProductSummaryTable(products) {
       }
       const detailUrl = `/vat-margin-product.html?product=${encodeURIComponent(slug)}`;
       return `
-        <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
+        <tr data-product-slug="${escapeHtml(slug)}">
           <td>
-            <a class="product-link" href="${detailUrl}" data-product-link="${escapeHtml(product.productSlug || '')}">${escapeHtml(product.productName || 'Без названия')}</a>
+            <a class="product-link" href="${detailUrl}" data-product-link="${escapeHtml(slug)}">${escapeHtml(product.productName || 'Без названия')}</a>
             ${combinedNotes}
           </td>
           <td class="numeric">${(product.proformaCount || 0).toLocaleString('ru-RU')}</td>
           <td>
-            <select class="status-select" data-product-slug="${escapeHtml(product.productSlug || '')}">
+            <select class="status-select" data-product-slug="${escapeHtml(slug)}">
               <option value="in_progress"${product.calculationStatus === 'in_progress' ? ' selected' : ''}>В процессе</option>
               <option value="calculated"${product.calculationStatus === 'calculated' ? ' selected' : ''}>Рассчитан</option>
             </select>
@@ -1326,7 +1330,7 @@ function renderProductSummaryTable(products) {
             <input
               type="month"
               class="due-month-input"
-              data-product-slug="${escapeHtml(product.productSlug || '')}"
+              data-product-slug="${escapeHtml(slug)}"
               value="${product.calculationDueMonth || ''}"
               placeholder="YYYY-MM"
             />
@@ -1394,7 +1398,10 @@ async function handleProductStatusChange(productSlug, nextStatus) {
       throw new Error(result?.error || 'Не удалось обновить статус');
     }
 
-    const target = productSummaryData.find((item) => (item.productSlug || '') === result.data.productSlug);
+    const returnedSlug = result.data.productSlug || '';
+    const target = productSummaryData.find(
+      (item) => (item.productSlug || '') === returnedSlug || (item.productId && `id-${item.productId}` === returnedSlug)
+    );
     if (target) {
       target.calculationStatus = result.data.calculationStatus;
     }
@@ -1419,7 +1426,10 @@ async function handleProductDueMonthChange(productSlug, dueMonthValue) {
       throw new Error(result?.error || 'Не удалось обновить месяц расчёта');
     }
 
-    const target = productSummaryData.find((item) => (item.productSlug || '') === result.data.productSlug);
+    const returnedSlug = result.data.productSlug || '';
+    const target = productSummaryData.find(
+      (item) => (item.productSlug || '') === returnedSlug || (item.productId && `id-${item.productId}` === returnedSlug)
+    );
     if (target) {
       target.calculationDueMonth = result.data.calculationDueMonth || null;
     }
