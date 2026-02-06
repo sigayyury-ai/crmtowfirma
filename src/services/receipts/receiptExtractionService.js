@@ -236,7 +236,9 @@ class ReceiptExtractionService {
    * @returns {Promise<Object>}
    */
   async extractFromImage(imageBuffer, mimeType) {
-    if (!openAIService.enabled) {
+    const hasKey = !!process.env.OPENAI_API_KEY;
+    if (!hasKey) {
+      logger.warn('Receipt extraction skipped: OPENAI_API_KEY is not set in environment');
       return {
         vendor: null,
         date: null,

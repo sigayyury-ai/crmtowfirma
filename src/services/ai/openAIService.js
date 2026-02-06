@@ -7,19 +7,30 @@ const logger = require('../../utils/logger');
  */
 class OpenAIService {
   constructor() {
-    this.apiKey = process.env.OPENAI_API_KEY;
     this.baseURL = 'https://api.openai.com/v1';
-    this.model = process.env.OPENAI_MODEL || 'gpt-4o-mini'; // Use cheaper model by default
-    this.enabled = !!this.apiKey;
-    
-    if (this.enabled) {
+    // Log at load time
+    const key = process.env.OPENAI_API_KEY;
+    if (key) {
       logger.info('OpenAI API configured', {
-        model: this.model,
+        model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
         baseURL: this.baseURL
       });
     } else {
-      logger.warn('OpenAI API key not configured. AI categorization will be disabled.');
+      logger.warn('OpenAI API key not configured. AI categorization and receipt extraction will be disabled.');
     }
+  }
+
+  /** API key read from env at access time (so env is always current) */
+  get apiKey() {
+    return process.env.OPENAI_API_KEY;
+  }
+
+  get model() {
+    return process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  }
+
+  get enabled() {
+    return !!process.env.OPENAI_API_KEY;
   }
 
   /**

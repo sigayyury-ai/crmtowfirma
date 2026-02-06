@@ -15,7 +15,8 @@ logger.info('🚀 Starting application...', {
   hasWfirmaAppKey: !!process.env.WFIRMA_APP_KEY,
   hasWfirmaCompanyId: !!process.env.WFIRMA_COMPANY_ID,
   hasWfirmaAccessKey: !!process.env.WFIRMA_ACCESS_KEY,
-  hasWfirmaSecretKey: !!process.env.WFIRMA_SECRET_KEY
+  hasWfirmaSecretKey: !!process.env.WFIRMA_SECRET_KEY,
+  hasOpenAIKey: !!process.env.OPENAI_API_KEY
 });
 
 // ВАЖНО: Проверка Stripe ключей при старте приложения
