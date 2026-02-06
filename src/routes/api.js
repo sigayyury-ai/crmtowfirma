@@ -3411,20 +3411,19 @@ router.get('/vat-margin/products/:productIdentifier/detail', async (req, res) =>
  */
 router.post('/vat-margin/products/:productIdentifier/status', async (req, res) => {
   try {
-    const { productIdentifier } = req.params;
+    let { productIdentifier } = req.params;
     const { status, dueMonth } = req.body || {};
-    const numericIdMatch = String(productIdentifier).match(/^id-(\d+)$/i);
-    if (!numericIdMatch) {
+    const trimmed = String(productIdentifier).trim();
+    const idFromSlug = trimmed.match(/^id-(\d+)$/i);
+    const numericOnly = /^\d+$/.test(trimmed);
+    if (idFromSlug) {
+      productIdentifier = trimmed;
+    } else if (numericOnly) {
+      productIdentifier = `id-${trimmed}`;
+    } else {
       return res.status(400).json({
         success: false,
-        error: 'Статус можно обновлять только для продуктов из базы'
-      });
-    }
-    const productId = parseInt(numericIdMatch[1], 10);
-    if (!Number.isFinite(productId)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Некорректный идентификатор продукта'
+        error: 'Статус можно обновлять только для продуктов из базы (укажите id продукта, например id-57 или 57)'
       });
     }
 

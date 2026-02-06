@@ -149,6 +149,11 @@ header p {
     opacity: 0.9;
 }
 
+#product-title,
+#product-subtitle {
+    text-align: left;
+}
+
 /* Sections */
 .status-section,
 .controls-section,
@@ -2277,6 +2282,13 @@ h2 {
     .vat-margin-table td {
         padding: 8px;
     }
+}
+
+/* Страница продукта: секция на всю ширину контейнера (как PNL) */
+.container.pnl-container-fullwidth .product-detail-section {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 .product-detail-section {

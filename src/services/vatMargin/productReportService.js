@@ -340,28 +340,33 @@ class ProductReportService {
     }
 
     const stripePayments = Array.isArray(entry.stripePayments)
-      ? entry.stripePayments.map((payment) => ({
-        sessionId: payment.sessionId || null,
-        paymentType: payment.paymentType || null,
-        customerType: payment.customerType || 'person',
-        customerName: payment.customerName || null,
-        customerEmail: payment.customerEmail || null,
-        companyName: payment.companyName || null,
-        companyTaxId: payment.companyTaxId || null,
-        companyCountry: payment.companyCountry || null,
-        currency: payment.currency || 'PLN',
-        amount: toFixedNumber(payment.amount),
-        amountPln: toFixedNumber(payment.amountPln),
-        taxAmount: toFixedNumber(payment.taxAmount),
-        taxAmountPln: toFixedNumber(payment.taxAmountPln),
-        expectedVat: Boolean(payment.expectedVat),
-        addressValidated: payment.addressValidated !== false,
-        paymentMode: payment.paymentMode || null,
-        createdAt: payment.createdAt || null,
-        processedAt: payment.processedAt || null,
-        dealId: payment.dealId || null, // Сохраняем deal_id для отображения
-        paymentStatus: payment.paymentStatus || null // Сохраняем статус оплаты
-      }))
+      ? entry.stripePayments.map((payment) => {
+        const dealId = payment.dealId || null;
+        const dealUrl = dealId ? `${CRM_DEAL_BASE_URL}${encodeURIComponent(dealId)}` : null;
+        return {
+          sessionId: payment.sessionId || null,
+          paymentType: payment.paymentType || null,
+          customerType: payment.customerType || 'person',
+          customerName: payment.customerName || null,
+          customerEmail: payment.customerEmail || null,
+          companyName: payment.companyName || null,
+          companyTaxId: payment.companyTaxId || null,
+          companyCountry: payment.companyCountry || null,
+          currency: payment.currency || 'PLN',
+          amount: toFixedNumber(payment.amount),
+          amountPln: toFixedNumber(payment.amountPln),
+          taxAmount: toFixedNumber(payment.taxAmount),
+          taxAmountPln: toFixedNumber(payment.taxAmountPln),
+          expectedVat: Boolean(payment.expectedVat),
+          addressValidated: payment.addressValidated !== false,
+          paymentMode: payment.paymentMode || null,
+          createdAt: payment.createdAt || null,
+          processedAt: payment.processedAt || null,
+          dealId,
+          dealUrl,
+          paymentStatus: payment.paymentStatus || null
+        };
+      })
       : [];
 
     let linkedPayments = { incoming: [], outgoing: [] };
@@ -1474,6 +1479,7 @@ class ProductReportService {
 
     // Загружаем платежи отдельным запросом
     let paymentsMap = new Map();
+    let paymentIdsWithReceipt = new Set();
     if (linksData && linksData.length > 0) {
       const paymentIds = linksData.map(link => link.payment_id);
       
@@ -1514,12 +1520,26 @@ class ProductReportService {
           });
         });
       }
+
+      // Какие платежи уже имеют привязанные документы (чеки)
+      try {
+        const { data: receiptLinks } = await supabase
+          .from('receipt_payment_links')
+          .select('payment_id')
+          .in('payment_id', paymentIds);
+        if (Array.isArray(receiptLinks)) {
+          receiptLinks.forEach((r) => paymentIdsWithReceipt.add(r.payment_id));
+        }
+      } catch (e) {
+        logger.warn('Failed to load receipt links for linked payments', { error: e.message });
+      }
     }
 
     const mapped = (linksData || [])
       .map((row) => {
         const payment = paymentsMap.get(row.payment_id) || {};
         const amount = toNumber(payment.amount);
+        const hasReceipt = paymentIdsWithReceipt ? paymentIdsWithReceipt.has(row.payment_id) : false;
         return {
           linkId: row.id,
           paymentId: row.payment_id,
@@ -1537,7 +1557,8 @@ class ProductReportService {
           linkedBy: row.linked_by || null,
           linkedAt: row.linked_at || null,
           expenseCategoryId: payment.expense_category_id || null,
-          expenseCategoryName: payment.expenseCategoryName || null
+          expenseCategoryName: payment.expenseCategoryName || null,
+          hasReceipt: Boolean(hasReceipt)
         };
       })
       .filter((item) => Number.isFinite(item.amount));

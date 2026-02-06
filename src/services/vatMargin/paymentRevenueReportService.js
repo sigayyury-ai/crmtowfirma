@@ -150,6 +150,15 @@ class PaymentRevenueReportService {
     this.stripeRepository = new StripeRepository();
     this.incomeCategoryService = new IncomeCategoryService();
     this.refundsIncomeCategoryId = null;
+    this.pipedriveClient = null; // Lazy load when needed
+  }
+
+  async getPipedriveClient() {
+    if (!this.pipedriveClient) {
+      const PipedriveClient = require('../pipedrive');
+      this.pipedriveClient = new PipedriveClient();
+    }
+    return this.pipedriveClient;
   }
 
   async getRefundsIncomeCategoryId() {
@@ -409,7 +418,7 @@ class PaymentRevenueReportService {
     };
   }
 
-  aggregateProducts(payments, proformaMap, productLinksMap = new Map(), productCatalog = null, dateFrom = null, dateTo = null) {
+  async aggregateProducts(payments, proformaMap, productLinksMap = new Map(), productCatalog = null, dateFrom = null, dateTo = null) {
     const productMap = new Map();
     const summary = {
       payments_count: 0,
@@ -937,8 +946,8 @@ class PaymentRevenueReportService {
       }
     });
 
-    const products = Array.from(productMap.values()).map((group) => {
-      const entries = Array.from(group.aggregates.values()).map((entry) => {
+    const products = await Promise.all(Array.from(productMap.values()).map(async (group) => {
+      const entriesPromises = Array.from(group.aggregates.values()).map(async (entry) => {
         // Нормализуем ключи валют к верхнему регистру при сериализации
         entry.totals.currency_totals = Object.fromEntries(
           Object.entries(entry.totals.currency_totals).map(([cur, value]) => {
@@ -961,14 +970,15 @@ class PaymentRevenueReportService {
 
         if (entry.proforma) {
           // Если есть проформа - определяем статус по сумме проформы
-          // ВАЖНО: Используем сумму платежей из диапазона дат (entry.totals.pln_total),
-          // а не все платежи проформы (payments_total_pln), чтобы правильно определить статус
+          // ВАЖНО: Используем общую оплаченную сумму проформы (payments_total_pln),
+          // а не сумму платежей из диапазона дат, чтобы статус отражал реальное состояние оплаты
+          // независимо от выбранного периода отчета
           const targetTotalPln = Number.isFinite(entry.proforma.total_pln)
             ? entry.proforma.total_pln
             : convertToPln(entry.proforma.total, entry.proforma.currency, entry.proforma.currency_exchange);
-          // Используем сумму платежей из диапазона дат, а не все платежи проформы
-          const paidPln = Number.isFinite(entry.totals.pln_total)
-            ? entry.totals.pln_total
+          // Используем общую оплаченную сумму проформы (все платежи, независимо от даты)
+          const paidPln = Number.isFinite(entry.proforma.payments_total_pln)
+            ? entry.proforma.payments_total_pln
             : 0;
           entry.status = determinePaymentStatus(targetTotalPln, paidPln);
           
@@ -986,21 +996,89 @@ class PaymentRevenueReportService {
             });
           }
         } else {
-          // Если нет проформы - используем статус из платежей
-          // Для Stripe платежей статус уже определен в buildPaymentEntry по stripe_payment_status
-          const firstStatus = entry.payments.find((item) => item.status)?.status
-            || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
-          entry.status = firstStatus;
-          
-          // Дополнительная проверка: если это Stripe платеж без проформы, но статус "Не привязан"
-          // проверяем stripe_payment_status напрямую
-          if (firstStatus.code === 'unmatched' && entry.payments.length > 0) {
-            const stripePayment = entry.payments.find(p => p.source === 'stripe' || p.source === 'stripe_event');
-            if (stripePayment) {
-              // Используем статус из stripe_payment_status, если он есть
-              const stripeStatus = stripePayment.stripe_payment_status || stripePayment.payment_status;
-              if (stripeStatus === 'paid') {
-                entry.status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+          // Если нет проформы - определяем статус по сумме сделки и общей оплаченной сумме
+          // ВАЖНО: Для Stripe платежей сравниваем сумму сделки с общей суммой всех оплаченных платежей
+          // независимо от выбранного периода отчета
+          if (entry.stripe_deal_id && entry.payments.length > 0) {
+            try {
+              // Получаем сумму сделки из Pipedrive
+              const pipedriveClient = await this.getPipedriveClient();
+              const dealResult = await pipedriveClient.getDeal(entry.stripe_deal_id);
+              
+              if (dealResult.success && dealResult.deal) {
+                const deal = dealResult.deal;
+                const dealValue = parseFloat(deal.value) || 0;
+                const dealCurrency = deal.currency || 'PLN';
+                
+                // Загружаем ВСЕ Stripe платежи для этой сделки (независимо от периода)
+                const allDealStripePayments = await this.stripeRepository.listPayments({
+                  dealId: entry.stripe_deal_id,
+                  limit: 1000
+                });
+                
+                // Фильтруем только оплаченные платежи
+                const paidPayments = allDealStripePayments.filter(
+                  p => p.payment_status === 'paid' || p.status === 'processed'
+                );
+                
+                // Суммируем все оплаченные платежи в PLN
+                let totalPaidPln = 0;
+                for (const payment of paidPayments) {
+                  const amountPln = parseFloat(payment.amount_pln) || 0;
+                  totalPaidPln += amountPln;
+                }
+                
+                // Конвертируем сумму сделки в PLN для сравнения
+                let dealValuePln = dealValue;
+                if (dealCurrency !== 'PLN') {
+                  // Используем курс из первого платежа или конвертируем
+                  const firstPayment = paidPayments[0];
+                  if (firstPayment && firstPayment.exchange_rate) {
+                    dealValuePln = dealValue * parseFloat(firstPayment.exchange_rate);
+                  } else {
+                    // Fallback: используем простую конвертацию через amount_pln / original_amount
+                    if (paidPayments.length > 0 && paidPayments[0].original_amount) {
+                      const rate = totalPaidPln / (paidPayments.reduce((sum, p) => sum + (parseFloat(p.original_amount) || 0), 0));
+                      dealValuePln = dealValue * rate;
+                    }
+                  }
+                }
+                
+                // Определяем статус по соотношению общей суммы сделки и фактически оплаченной
+                entry.status = determinePaymentStatus(dealValuePln, totalPaidPln);
+              } else {
+                // Если не удалось получить данные сделки, используем статус из платежей
+                const firstStatus = entry.payments.find((item) => item.status)?.status
+                  || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
+                entry.status = firstStatus;
+              }
+            } catch (error) {
+              logger.warn('Failed to determine payment status for Stripe entry', {
+                dealId: entry.stripe_deal_id,
+                error: error.message
+              });
+              // Fallback: используем статус из платежей
+              const firstStatus = entry.payments.find((item) => item.status)?.status
+                || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
+              entry.status = firstStatus;
+            }
+          } else {
+            // Если нет deal_id - используем статус из платежей
+            // Для Stripe платежей статус уже определен в buildPaymentEntry по stripe_payment_status
+            const firstStatus = entry.payments.find((item) => item.status)?.status
+              || { code: 'unmatched', label: 'Не привязан', className: 'unmatched' };
+            entry.status = firstStatus;
+            
+            // Дополнительная проверка: если это Stripe платеж без проформы, но статус "Не привязан"
+            // проверяем stripe_payment_status напрямую
+            if (firstStatus.code === 'unmatched' && entry.payments.length > 0) {
+              const stripePayment = entry.payments.find(p => p.source === 'stripe' || p.source === 'stripe_event');
+              if (stripePayment) {
+                // Используем статус из stripe_payment_status, если он есть
+                const stripeStatus = stripePayment.stripe_payment_status || stripePayment.payment_status;
+                if (stripeStatus === 'paid') {
+                  entry.status = { code: 'paid', label: 'Оплачено', className: 'matched' };
+                }
               }
             }
           }
@@ -1008,6 +1086,8 @@ class PaymentRevenueReportService {
 
         return entry;
       });
+      
+      const entries = await Promise.all(entriesPromises);
 
       const finalProduct = {
         key: group.key,
@@ -1041,7 +1121,7 @@ class PaymentRevenueReportService {
       }
       
       return finalProduct;
-    });
+    }));
 
     summary.products_count = products.length;
     summary.total_pln = Number(summary.total_pln.toFixed(2));
@@ -1115,6 +1195,28 @@ class PaymentRevenueReportService {
         (payment) => payment.income_category_id === null
           || String(payment.income_category_id) !== String(refundsIncomeCategoryId)
       );
+    }
+
+    // Enrich bank payments with product_id from payment_product_links so that
+    // the report reflects link/unlink; after unlink, product_id is not set and payment goes to "Без категории"
+    if (bankPayments.length > 0 && this.supabase) {
+      const bankPaymentIds = bankPayments.map((p) => p.id).filter(Boolean);
+      try {
+        const { data: linksData, error: linksError } = await this.supabase
+          .from('payment_product_links')
+          .select('payment_id, product_id')
+          .in('payment_id', bankPaymentIds);
+
+        if (!linksError && Array.isArray(linksData) && linksData.length > 0) {
+          const linkByPaymentId = new Map(linksData.map((row) => [row.payment_id, row.product_id]));
+          bankPayments = bankPayments.map((p) => {
+            const productId = linkByPaymentId.get(p.id);
+            return productId !== undefined ? { ...p, product_id: productId } : p;
+          });
+        }
+      } catch (err) {
+        logger.warn('Failed to load payment_product_links for report', { error: err.message });
+      }
     }
 
     // Load Stripe payments
@@ -1801,7 +1903,7 @@ class PaymentRevenueReportService {
       // Aggregate products - ensure it always returns valid structure
       let aggregation;
       try {
-        aggregation = this.aggregateProducts(payments, proformaMap, productLinksMap, productCatalog, dateRange.dateFrom, dateRange.dateTo);
+        aggregation = await this.aggregateProducts(payments, proformaMap, productLinksMap, productCatalog, dateRange.dateFrom, dateRange.dateTo);
       } catch (error) {
         logger.error('Failed to aggregate products for report', {
           error: error.message,

@@ -934,19 +934,31 @@ async function loadVatMarginData({ silent = false } = {}) {
 }
 
 function normalizeProductKey(value) {
+  // ВАЖНО: Эта функция должна работать так же, как normalizeProductName в productReportService.js
+  // для обеспечения совместимости slug'ов между фронтендом и бэкендом
   if (value === null || value === undefined) {
-    return 'без названия';
+    return null; // Возвращаем null, как в normalizeProductName, а не 'без названия'
   }
 
-  const normalized = String(value)
+  // Нормализуем пробелы сначала (как в normalizeWhitespace)
+  let trimmed = String(value)
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  if (!trimmed) {
+    return null; // Возвращаем null для пустых строк, как в normalizeProductName
+  }
+
+  // Затем применяем остальные нормализации (как в normalizeProductName)
+  const normalized = trimmed
+    .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s\.\-_/]/gu, '')
+    .replace(/[^\p{L}\p{N}\s.\-_/]/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
 
-  return normalized || 'без названия';
+  return normalized || null; // Возвращаем null вместо 'без названия' для совместимости
 }
 
 function renderVatMarginTable(data) {
@@ -1279,8 +1291,24 @@ function renderProductSummaryTable(products) {
 
       const combinedNotes = [detailHtml, stripeNote].filter(Boolean).join('');
 
-      const slug = encodeURIComponent(product.productSlug || product.productKey || product.productId || 'unknown');
-      const detailUrl = `/vat-margin-product.html?product=${slug}`;
+      // ВАЖНО: Всегда используем формат id-<id>, если есть productId (как в референсе id-2)
+      let slug = null;
+      if (product.productId) {
+        slug = `id-${product.productId}`;
+      } else if (product.productSlug) {
+        slug = product.productSlug;
+      } else if (product.productKey) {
+        // Если ключ в формате id:123, извлекаем ID
+        const keyStr = String(product.productKey);
+        if (keyStr.startsWith('id:')) {
+          slug = `id-${keyStr.replace('id:', '')}`;
+        } else {
+          slug = product.productKey;
+        }
+      } else {
+        slug = 'unknown';
+      }
+      const detailUrl = `/vat-margin-product.html?product=${encodeURIComponent(slug)}`;
       return `
         <tr data-product-slug="${escapeHtml(product.productSlug || '')}">
           <td>
@@ -1760,30 +1788,41 @@ function renderPaymentReport(groups) {
     const paymentsCount = group.totals?.payments_count || 0;
     
     // Формируем ссылку на детальный отчет продукта
-    // API ожидает формат: id-<id> для продуктов с ID или slug-<normalized_name> для продуктов без ID
+    // ВАЖНО: Всегда используем формат id-<id>, если есть product_id (как в референсе id-2)
     let productSlug = null;
+    
+    // Приоритет 1: Используем product_id напрямую, если он есть
     if (group.product_id) {
-      // Если есть product_id из базы данных - используем формат id-<id>
       productSlug = `id-${group.product_id}`;
-    } else if (group.key) {
-      // Если есть ключ, проверяем его формат
+    } 
+    // Приоритет 2: Извлекаем ID из group.key, если он в формате id:123
+    else if (group.key) {
       const keyStr = String(group.key);
       if (keyStr.startsWith('id:')) {
-        // Ключ в формате id:123 - преобразуем в id-123
         const id = keyStr.replace('id:', '');
         productSlug = `id-${id}`;
-      } else if (keyStr.startsWith('key:')) {
-        // Ключ в формате key:name - используем как slug-<name>
-        const normalizedName = keyStr.replace('key:', '');
-        productSlug = `slug-${normalizedName}`;
       } else {
-        // Просто нормализованное название - используем как slug-<name>
-        productSlug = `slug-${keyStr}`;
+        // Если ключ не в формате id:, но есть product_id - используем его
+        if (group.product_id) {
+          productSlug = `id-${group.product_id}`;
+        } else {
+          // Fallback: используем slug только если нет ID вообще
+          const normalizedName = keyStr.startsWith('key:') 
+            ? keyStr.replace('key:', '').replace(/\s+/g, '-')
+            : keyStr.replace(/\s+/g, '-');
+          productSlug = `slug-${normalizedName}`;
+        }
       }
-    } else if (group.name) {
-      // Если нет ни ID, ни ключа, но есть название - нормализуем и используем как slug
+    } 
+    // Приоритет 3: Fallback на slug только если нет ID
+    else if (group.name) {
       const normalizedName = normalizeProductKey(group.name);
-      productSlug = `slug-${normalizedName}`;
+      if (normalizedName) {
+        const slugKey = normalizedName.replace(/\s+/g, '-');
+        productSlug = `slug-${slugKey}`;
+      } else {
+        productSlug = 'slug-без-названия';
+      }
     }
     const productDetailUrl = productSlug ? `/vat-margin-product.html?product=${encodeURIComponent(productSlug)}` : null;
 

@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <div class="container">
+    <div class="container pnl-container-fullwidth">
         <nav class="main-nav">
             <a href="/vat-margin.html" class="nav-link active">Отчеты</a>
             <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
@@ -37,7 +37,6 @@
                 </div>
                 <div class="control-actions">
                     <button id="product-save-status" class="btn btn-primary">💾 Сохранить</button>
-                        <button id="product-export-csv" class="btn btn-secondary">⬇️ Экспорт CSV</button>
                     <a href="/vat-margin.html#tab-products" class="btn btn-secondary">← Назад к сводке</a>
                 </div>
             </div>
@@ -70,9 +69,6 @@
 
             <div class="detail-block">
                 <h2>VAT-маржа</h2>
-                <div class="vat-margin-actions">
-                    <button id="vat-margin-export" class="btn btn-secondary btn-small">⬇️ Экспорт VAT CSV</button>
-                </div>
                 <div id="vat-margin-table" class="table-wrapper">
                     <div class="placeholder">Здесь появится расчёт VAT-маржи</div>
                 </div>

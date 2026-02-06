@@ -23,7 +23,7 @@ class MqlSyncService {
     );
   }
 
-  async run({ year, currentMonthOnly = true } = {}) {
+  async run({ year, currentMonthOnly = true, sharedPipedriveDeals = null } = {}) {
     const targetYear = Number(year) || new Date().getFullYear();
     const now = new Date();
     const currentYear = now.getFullYear();
@@ -31,7 +31,7 @@ class MqlSyncService {
     
     // Если обновляем только текущий месяц, используем специальную логику
     if (currentMonthOnly && targetYear === currentYear) {
-      return await this.runCurrentMonthOnly(targetYear, currentMonth);
+      return await this.runCurrentMonthOnly(targetYear, currentMonth, sharedPipedriveDeals);
     }
     
     // Полная синхронизация для прошлых годов или при явном запросе
@@ -41,8 +41,14 @@ class MqlSyncService {
     if (this.skipPipedrive) {
       logger.warn('Skipping Pipedrive collection (MQL_SKIP_PIPEDRIVE enabled)');
     } else {
-      // Для полной синхронизации не используем cutoffDate, чтобы получить все сделки
-      await this.collectPipedrive(dataset, targetYear, { useCutoffDate: false });
+      // Если есть shared deals, используем их вместо нового запроса к API
+      if (sharedPipedriveDeals && Array.isArray(sharedPipedriveDeals)) {
+        logger.info('Using shared Pipedrive deals', { count: sharedPipedriveDeals.length, year: targetYear });
+        await this.processPipedriveDeals(dataset, targetYear, sharedPipedriveDeals);
+      } else {
+        // Для полной синхронизации не используем cutoffDate, чтобы получить все сделки
+        await this.collectPipedrive(dataset, targetYear, { useCutoffDate: false });
+      }
     }
     await this.collectMarketingExpenses(dataset, targetYear);
     this.applySendpulseBaseline(dataset, targetYear);
@@ -64,7 +70,7 @@ class MqlSyncService {
    * ВАЖНО: Для других месяцев обновляются счетчики won_deals и closed_deals из новых данных Pipedrive,
    * так как сделки могут обновляться (меняться статус) даже после того, как месяц прошел.
    */
-  async runCurrentMonthOnly(year, month) {
+  async runCurrentMonthOnly(year, month, sharedPipedriveDeals = null) {
     logger.info('Running MQL sync for current month only', { year, month });
     
     const monthKey = `${year}-${String(month).padStart(2, '0')}`;
@@ -107,9 +113,19 @@ class MqlSyncService {
     // Это важно, так как сделки могут обновляться (меняться статус) даже после того, как месяц прошел
     await this.collectSendpulse(dataset, year);
     if (!this.skipPipedrive) {
-      // Для обновления won_deals и closed_deals нужно собирать данные для всех месяцев
-      // Но для текущего месяца также обновим pipedrive_mql
-      await this.collectPipedrive(dataset, year);
+      // Если есть shared deals, используем их вместо нового запроса к API
+      if (sharedPipedriveDeals && Array.isArray(sharedPipedriveDeals)) {
+        logger.info('Using shared Pipedrive deals for current month sync', { 
+          count: sharedPipedriveDeals.length, 
+          year 
+        });
+        await this.processPipedriveDeals(dataset, year, sharedPipedriveDeals);
+      } else {
+        // ВАЖНО: Для обновления won_deals и closed_deals нужно собирать данные для ВСЕХ месяцев БЕЗ cutoffDate,
+        // чтобы не пропустить обновленные сделки из прошлых месяцев
+        // useCutoffDate: false гарантирует загрузку всех сделок независимо от даты последнего обновления
+        await this.collectPipedrive(dataset, year, { useCutoffDate: false });
+      }
     }
     await this.collectMarketingExpenses(dataset, year);
     this.applySendpulseBaseline(dataset, year);
@@ -303,32 +319,16 @@ class MqlSyncService {
     dataset.sync.sendpulse = fetchedAt || new Date().toISOString();
   }
 
-  async collectPipedrive(dataset, year, options = {}) {
-    // Для полной синхронизации (useCutoffDate: false) не используем cutoffDate,
-    // чтобы получить все сделки независимо от даты последнего обновления.
-    // Для инкрементального обновления (useCutoffDate: true) используем cutoffDate
-    // для оптимизации, но он может пропустить обновленные сделки из других месяцев.
-    let cutoffDate = null;
-    if (options.useCutoffDate !== false) {
-      cutoffDate = await this.determinePipedriveCutoffDate();
-      if (cutoffDate) {
-        logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
-      }
-    } else {
-      logger.info('Full Pipedrive sync - no cutoff date', { year });
-    }
-
-    const result = await this.pipedriveClient.fetchMqlDeals({
-      resolveFirstSeenFromFlow: true,
-      cutoffDate
-    });
-    const deals = result.deals || [];
-    dataset.sync.pipedrive = result.fetchedAt || new Date().toISOString();
+  /**
+   * Обрабатывает уже загруженные сделки Pipedrive без нового запроса к API
+   * Используется для оптимизации, когда сделки загружены один раз для нескольких годов
+   */
+  async processPipedriveDeals(dataset, year, deals) {
+    dataset.sync.pipedrive = new Date().toISOString();
     
-    logger.info('Collected Pipedrive deals', { 
+    logger.info('Processing Pipedrive deals', { 
       count: deals.length, 
-      year,
-      cutoffUsed: !!cutoffDate 
+      year
     });
 
     deals.forEach((deal) => {
@@ -383,6 +383,37 @@ class MqlSyncService {
         }
       });
     });
+  }
+
+  async collectPipedrive(dataset, year, options = {}) {
+    // Для полной синхронизации (useCutoffDate: false) не используем cutoffDate,
+    // чтобы получить все сделки независимо от даты последнего обновления.
+    // Для инкрементального обновления (useCutoffDate: true) используем cutoffDate
+    // для оптимизации, но он может пропустить обновленные сделки из других месяцев.
+    let cutoffDate = null;
+    if (options.useCutoffDate !== false) {
+      cutoffDate = await this.determinePipedriveCutoffDate();
+      if (cutoffDate) {
+        logger.info('Using incremental Pipedrive cutoff', { cutoffDate: cutoffDate.toISOString() });
+      }
+    } else {
+      logger.info('Full Pipedrive sync - no cutoff date', { year });
+    }
+
+    const result = await this.pipedriveClient.fetchMqlDeals({
+      resolveFirstSeenFromFlow: true,
+      cutoffDate
+    });
+    const deals = result.deals || [];
+    dataset.sync.pipedrive = result.fetchedAt || new Date().toISOString();
+    
+    logger.info('Collected Pipedrive deals', { 
+      count: deals.length, 
+      year,
+      cutoffUsed: !!cutoffDate 
+    });
+
+    await this.processPipedriveDeals(dataset, year, deals);
   }
 
   async collectMarketingExpenses(dataset, year) {

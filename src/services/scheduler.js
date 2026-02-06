@@ -1121,7 +1121,7 @@ class SchedulerService {
     }
 
     const runId = randomUUID();
-    logger.debug('Google Meet reminder processing cycle started', { trigger, runId });
+    logger.info('Google Meet reminder processing cycle started', { trigger, runId });
 
     try {
       const result = await this.googleMeetReminderService.processScheduledReminders({ trigger, runId });
@@ -1133,7 +1133,7 @@ class SchedulerService {
           summary: result
         });
       } else if (result.success) {
-        logger.debug('Google Meet reminder processing completed (no reminders to send)', {
+        logger.info('Google Meet reminder processing completed (no reminders to send)', {
           trigger,
           runId,
           summary: result
@@ -1220,11 +1220,43 @@ class SchedulerService {
       let totalSynced = 0;
       const results = [];
 
+      // ВАЖНО: Загружаем данные Pipedrive ОДИН РАЗ для обоих годов, чтобы не тратить токены
+      // Используем общий кэш сделок для обоих годов
+      let sharedPipedriveDeals = null;
+      if (!this.mqlSyncService.skipPipedrive) {
+        logger.info('Loading Pipedrive deals once for all years', { years, trigger, runId });
+        try {
+          const pipedriveClient = this.mqlSyncService.pipedriveClient;
+          const result = await pipedriveClient.fetchMqlDeals({
+            resolveFirstSeenFromFlow: true,
+            cutoffDate: null // Загружаем все сделки без cutoffDate
+          });
+          sharedPipedriveDeals = result.deals || [];
+          logger.info('Loaded Pipedrive deals for shared use', { 
+            count: sharedPipedriveDeals.length, 
+            trigger, 
+            runId 
+          });
+        } catch (error) {
+          logger.error('Failed to load shared Pipedrive deals', {
+            error: error.message,
+            stack: error.stack,
+            trigger,
+            runId
+          });
+          // Продолжаем без shared deals - каждый год загрузит свои данные
+        }
+      }
+
       for (const year of years) {
         logger.info('Running MQL sync for year', { year, trigger, runId, currentMonthOnly: year === currentYear });
         try {
-          // Для текущего года обновляем только текущий месяц, для прошлого - полная синхронизация
-          await this.mqlSyncService.run({ year, currentMonthOnly: year === currentYear });
+          // Передаем shared deals, если они были загружены
+          await this.mqlSyncService.run({ 
+            year, 
+            currentMonthOnly: year === currentYear,
+            sharedPipedriveDeals: sharedPipedriveDeals
+          });
           totalSynced++;
           results.push({ year, success: true, currentMonthOnly: year === currentYear });
         } catch (error) {

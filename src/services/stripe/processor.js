@@ -660,11 +660,28 @@ class StripeProcessorService {
     
     // VAT НЕ применяется в Stripe, поэтому amount_total = amount_subtotal (нет налога от Stripe)
     // Используем amount_total как базовую сумму (цена из CRM)
-    const amountSubtotal = fromMinorUnit(session.amount_subtotal || session.amount_total || 0, currency);
-    const amountTotal = fromMinorUnit(session.amount_total || 0, currency);
+    // ВАЖНО: Stripe возвращает суммы в минимальных единицах (центах), поэтому используем fromMinorUnit
+    const rawAmountSubtotal = session.amount_subtotal || session.amount_total || 0;
+    const rawAmountTotal = session.amount_total || 0;
+    const amountSubtotal = fromMinorUnit(rawAmountSubtotal, currency);
+    const amountTotal = fromMinorUnit(rawAmountTotal, currency);
     
     // Базовая сумма для расчетов (цена из CRM)
     const amount = amountSubtotal || amountTotal;
+    
+    // Диагностическое логирование для проверки корректности сумм
+    if (rawAmountSubtotal > 0 || rawAmountTotal > 0) {
+      this.logger.debug('💰 Определение суммы платежа из Stripe сессии', {
+        sessionId: session.id,
+        currency,
+        rawAmountSubtotal,
+        rawAmountTotal,
+        amountSubtotal,
+        amountTotal,
+        finalAmount: amount,
+        note: 'Stripe возвращает суммы в центах (minor units), fromMinorUnit конвертирует в основные единицы'
+      });
+    }
     
     const amountConversion = await this.convertAmountWithRate(amount, currency);
     const amountPln = amountConversion.amountPln;

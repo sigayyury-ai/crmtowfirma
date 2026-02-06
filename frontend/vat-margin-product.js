@@ -55,7 +55,6 @@ function cacheDom() {
     statusSelect: document.getElementById('detail-status'),
     dueMonthInput: document.getElementById('detail-due-month'),
     saveButton: document.getElementById('product-save-status'),
-    exportButton: document.getElementById('product-export-csv'),
     summaryContainer: document.getElementById('product-summary'),
     proformasContainer: document.getElementById('product-proformas'),
     linkedPaymentsContainer: document.getElementById('product-linked-payments'),
@@ -94,15 +93,20 @@ function bindEvents() {
     });
   }
 
-  elements.exportButton?.addEventListener('click', () => {
-    exportProductDetailCsv();
-  });
-
-  elements.vatMarginExportButton?.addEventListener('click', () => {
-    exportVatMarginCsv();
-  });
 
   elements.proformasContainer?.addEventListener('click', (event) => {
+    const showMoreBtn = event.target.closest('#show-more-proformas');
+    if (showMoreBtn) {
+      const table = elements.proformasContainer?.querySelector('table.detail-table');
+      if (table) {
+        table.querySelectorAll('tbody tr[data-hidden-row="true"]').forEach((row) => {
+          row.style.display = '';
+          row.removeAttribute('data-hidden-row');
+        });
+      }
+      showMoreBtn.style.display = 'none';
+      return;
+    }
     const trigger = event.target.closest('[data-payer-action="show-payments"]');
     if (!trigger || !elements.proformasContainer.contains(trigger)) {
       return;
@@ -181,6 +185,18 @@ function bindEvents() {
   });
 
   elements.stripePaymentsContainer?.addEventListener('click', (event) => {
+    const showMoreBtn = event.target.closest('#show-more-stripe-payments');
+    if (showMoreBtn) {
+      const table = elements.stripePaymentsContainer?.querySelector('table.payments-table');
+      if (table) {
+        table.querySelectorAll('tbody tr[data-hidden-row="true"]').forEach((row) => {
+          row.style.display = '';
+          row.removeAttribute('data-hidden-row');
+        });
+      }
+      showMoreBtn.style.display = 'none';
+      return;
+    }
     const trigger = event.target.closest('[data-payer-action="show-stripe-payments"]');
     if (!trigger || !elements.stripePaymentsContainer.contains(trigger)) {
       return;
@@ -621,8 +637,16 @@ function renderProformasTable(items, { isStripeOnly = false } = {}) {
     return;
   }
 
+  const PROFORMAS_INITIAL_LIMIT = 10;
+  const hasMoreProformas = validItems.length > PROFORMAS_INITIAL_LIMIT;
+  const remainingProformas = validItems.length - PROFORMAS_INITIAL_LIMIT;
+
   const rows = validItems
-    .map((item) => {
+    .map((item, index) => {
+      const isHidden = index >= PROFORMAS_INITIAL_LIMIT;
+      const hiddenAttr = isHidden ? 'data-hidden-row="true"' : '';
+      const hiddenStyle = isHidden ? 'style="display: none;"' : '';
+
       const buyerName = item.buyerName || item.buyerAltName || null;
       const proformaLabel = escapeHtml(item.fullnumber || '—');
       const proformaCell = item.dealUrl
@@ -661,7 +685,7 @@ function renderProformasTable(items, { isStripeOnly = false } = {}) {
           `;
 
       return `
-        <tr>
+        <tr ${hiddenAttr} ${hiddenStyle}>
           <td>${proformaCell}</td>
           <td>${buyerCell}</td>
           <td>${escapeHtml(formatDate(item.date))}</td>
@@ -689,6 +713,13 @@ function renderProformasTable(items, { isStripeOnly = false } = {}) {
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    ${hasMoreProformas ? `
+      <div style="text-align: center; margin-top: 15px;">
+        <button type="button" id="show-more-proformas" class="btn btn-secondary" style="padding: 8px 20px; font-size: 0.9em;">
+          Показать еще ${remainingProformas} ${remainingProformas === 1 ? 'запись' : remainingProformas < 5 ? 'записи' : 'записей'}
+        </button>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -729,7 +760,14 @@ function renderLinkedPaymentsTables(linkedPayments) {
     ${searchResultsHTML}
     ${linkedPaymentsHTML}
     ${sections.join('')}
+    <input type="file" id="product-receipt-upload-input" accept="image/jpeg,image/png,image/heic,image/heif,application/pdf" style="display:none">
   `;
+
+  const uploadInput = document.getElementById('product-receipt-upload-input');
+  if (uploadInput && !uploadInput.dataset.receiptHandlerAttached) {
+    uploadInput.dataset.receiptHandlerAttached = '1';
+    uploadInput.addEventListener('change', handleProductReceiptUpload);
+  }
 
   // Настраиваем обработчики поиска (обработчики устанавливаются в setupPaymentSearchHandlers)
   setupPaymentSearchHandlers(productId);
@@ -1100,6 +1138,55 @@ function calculateExpenseTotals(linkedPayments) {
   return totals;
 }
 
+async function handleProductReceiptUpload(event) {
+  const input = event.target;
+  const paymentId = input.dataset.paymentId;
+  const file = input.files && input.files[0];
+  input.value = '';
+  input.dataset.paymentId = '';
+  if (!paymentId || !file) return;
+
+  const uploadBtn = elements.linkedPaymentsContainer?.querySelector(`.product-upload-receipt-btn[data-payment-id="${paymentId}"]`);
+  if (uploadBtn) {
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = '…';
+  }
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const uploadRes = await fetch(`${API_BASE}/receipts/upload`, {
+      method: 'POST',
+      body: formData
+    });
+    const uploadPayload = await uploadRes.json();
+    if (!uploadRes.ok || !uploadPayload.success) {
+      throw new Error(uploadPayload?.error || 'Не удалось загрузить файл');
+    }
+    const receiptId = uploadPayload.data?.receiptId;
+    if (!receiptId) {
+      throw new Error('Сервер не вернул идентификатор документа');
+    }
+    const linkRes = await fetch(`${API_BASE}/receipts/${encodeURIComponent(receiptId)}/link-payment`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paymentId: parseInt(paymentId, 10) })
+    });
+    const linkPayload = await linkRes.json();
+    if (!linkRes.ok || !linkPayload.success) {
+      throw new Error(linkPayload?.error || 'Не удалось привязать документ к платежу');
+    }
+    showAlert('success', 'Документ загружен и привязан к платежу');
+    await loadProductDetail();
+  } catch (err) {
+    showAlert('error', err.message || 'Ошибка загрузки документа');
+  } finally {
+    if (uploadBtn) {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = '📤 Документ';
+    }
+  }
+}
+
 function createLinkedPaymentsSection(title, items, options = {}) {
   const showHeader = options.showHeader !== false && Boolean(title);
   const INITIAL_LIMIT = 10;
@@ -1112,13 +1199,19 @@ function createLinkedPaymentsSection(title, items, options = {}) {
       const description = item.description || '—';
       const counterparty = item.payerName || '—';
       const operationDate = item.operationDate ? formatDate(item.operationDate) : '—';
-      const linkedAt = item.linkedAt ? formatDate(item.linkedAt) : '—';
-      const linkedBy = item.linkedBy || '—';
       const amount = formatCurrency(item.amount || 0, item.currency || 'PLN');
       const source = item.source || '—';
       const isHidden = index >= INITIAL_LIMIT;
       const hiddenStyle = isHidden ? 'style="display: none;"' : '';
       const hiddenAttr = isHidden ? 'data-hidden-row="true"' : '';
+      const paymentId = item.paymentId != null ? String(item.paymentId) : '';
+      const hasReceipt = Boolean(item.hasReceipt);
+      const receiptIcon = hasReceipt ? `<span class="product-payment-has-receipt" title="К платежу привязан документ" style="margin-right:6px;">📎</span>` : '';
+      const unlinkBtn = paymentId ? `<button type="button" class="btn btn-secondary btn-sm product-unlink-payment-btn" data-product-unlink-payment-id="${escapeHtml(paymentId)}" title="Отвязать платёж от продукта">✖ Отвязать</button>` : '';
+      const uploadBtn = paymentId ? `<button type="button" class="btn btn-secondary btn-sm product-upload-receipt-btn" data-payment-id="${escapeHtml(paymentId)}" title="Загрузить документ (изображение или PDF)">📤 Документ</button>` : '';
+      const actionsCell = paymentId
+        ? `<td style="white-space: nowrap;">${receiptIcon}${unlinkBtn} ${uploadBtn}</td>`
+        : '<td>—</td>';
 
       return `
         <tr ${hiddenAttr} ${hiddenStyle}>
@@ -1127,8 +1220,7 @@ function createLinkedPaymentsSection(title, items, options = {}) {
           <td>${escapeHtml(counterparty)}</td>
           <td class="numeric">${escapeHtml(amount)}</td>
           <td>${escapeHtml(source)}</td>
-          <td>${escapeHtml(linkedBy)}</td>
-          <td>${escapeHtml(linkedAt)}</td>
+          ${actionsCell}
         </tr>
       `;
     })
@@ -1148,8 +1240,7 @@ function createLinkedPaymentsSection(title, items, options = {}) {
             <th>Контрагент</th>
             <th class="numeric">Сумма</th>
             <th>Источник</th>
-            <th>Связал</th>
-            <th>Дата связи</th>
+            <th>Действия</th>
           </tr>
         </thead>
         <tbody>
@@ -1202,10 +1293,11 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
   // Если сделки разные - показываем отдельными строками
   const dealGroups = new Map();
 
+  const CRM_DEAL_BASE = 'https://comoon.pipedrive.com/deal/';
   items.forEach((payment) => {
     const payerName = payment.customerName || payment.companyName || payment.customerEmail || 'Stripe клиент';
-    const dealId = payment.stripe_deal_id || null;
-    const dealUrl = payment.stripe_deal_url || null;
+    const dealId = payment.dealId ?? payment.stripe_deal_id ?? null;
+    const dealUrl = payment.dealUrl ?? payment.stripe_deal_url ?? (dealId ? `${CRM_DEAL_BASE}${encodeURIComponent(dealId)}` : null);
     
     // Ключ группировки: сделка (если есть) или плательщик (если сделки нет)
     // Если сделки разные - будут разные группы
@@ -1255,8 +1347,17 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
     }
   });
 
-  const rows = Array.from(dealGroups.values())
-    .map((group) => {
+  const groupRows = Array.from(dealGroups.values());
+  const STRIPE_INITIAL_LIMIT = 10;
+  const hasMoreStripe = groupRows.length > STRIPE_INITIAL_LIMIT;
+  const remainingStripe = groupRows.length - STRIPE_INITIAL_LIMIT;
+
+  const rows = groupRows
+    .map((group, index) => {
+      const isHidden = index >= STRIPE_INITIAL_LIMIT;
+      const hiddenAttr = isHidden ? 'data-hidden-row="true"' : '';
+      const hiddenStyle = isHidden ? 'style="display: none;"' : '';
+
       const entryCurrencyTotals = Object.entries(group.currencyTotals)
         .filter(([, amount]) => Number.isFinite(amount) && amount !== 0)
         .map(([cur, amount]) => formatCurrency(amount, cur))
@@ -1295,7 +1396,7 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
         : payerLabel;
 
       return `
-        <tr>
+        <tr ${hiddenAttr} ${hiddenStyle}>
           <td>
             <div>${dateLabel}</div>
           </td>
@@ -1325,6 +1426,13 @@ function renderStripePaymentsTable(items, { stripeTotals = null, isStripeOnly = 
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    ${hasMoreStripe ? `
+      <div style="text-align: center; margin-top: 15px;">
+        <button type="button" id="show-more-stripe-payments" class="btn btn-secondary" style="padding: 8px 20px; font-size: 0.9em;">
+          Показать еще ${remainingStripe} ${remainingStripe === 1 ? 'запись' : remainingStripe < 5 ? 'записи' : 'записей'}
+        </button>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -1779,19 +1887,22 @@ function renderPaymentStatusBadge(status) {
 }
 
 async function saveProductStatus() {
-  if (!productSlug || !elements.saveButton || isSaving) return;
+  const slug = (productDetail?.productSlug || productDetail?.slug || productSlug || '').trim();
+  if (!slug || !elements.saveButton || isSaving) return;
 
   try {
     clearAlert();
     isSaving = true;
     setButtonLoading(elements.saveButton, true, 'Сохранение...');
 
+    const statusValue = elements.statusSelect?.value;
     const payload = {
-      status: elements.statusSelect?.value || undefined,
+      status: (statusValue === 'calculated' || statusValue === 'in_progress') ? statusValue : undefined,
       dueMonth: elements.dueMonthInput?.value || null
     };
+    if (payload.dueMonth === '') payload.dueMonth = null;
 
-    const result = await apiCall(`/vat-margin/products/${encodeURIComponent(productSlug)}/status`, 'POST', payload);
+    const result = await apiCall(`/vat-margin/products/${encodeURIComponent(slug)}/status`, 'POST', payload);
 
     if (!result?.success) {
       throw new Error(result?.error || 'Не удалось сохранить изменения');
@@ -2467,6 +2578,46 @@ function setupPaymentSearchHandlers(productId) {
   // Используем делегирование событий для всех действий в контейнере
   if (!elements.linkedPaymentsContainer.dataset.handlersSetup) {
     elements.linkedPaymentsContainer.addEventListener('click', async (event) => {
+      // Обработка кнопки "Документ" — загрузка и привязка чека к платежу
+      const uploadReceiptBtn = event.target.closest('.product-upload-receipt-btn');
+      if (uploadReceiptBtn) {
+        event.preventDefault();
+        const paymentId = uploadReceiptBtn.getAttribute('data-payment-id');
+        const input = document.getElementById('product-receipt-upload-input');
+        if (paymentId && input) {
+          input.dataset.paymentId = paymentId;
+          input.value = '';
+          input.click();
+        }
+        return;
+      }
+
+      // Обработка кнопок "Отвязать" в таблице связанных платежей
+      const unlinkBtn = event.target.closest('[data-product-unlink-payment-id]');
+      if (unlinkBtn) {
+        event.preventDefault();
+        const paymentId = unlinkBtn.getAttribute('data-product-unlink-payment-id');
+        if (!paymentId || !confirm('Отвязать этот платёж от продукта? Платёж останется в базе, но перестанет учитываться в сводке по продукту.')) {
+          return;
+        }
+        try {
+          unlinkBtn.disabled = true;
+          unlinkBtn.textContent = '…';
+          const response = await fetch(`${API_BASE}/payments/${encodeURIComponent(paymentId)}/link-product`, { method: 'DELETE' });
+          const payload = await response.json();
+          if (!response.ok || !payload.success) {
+            throw new Error(payload?.error || payload?.message || 'Не удалось отвязать платёж');
+          }
+          showAlert('success', 'Платёж отвязан от продукта');
+          await loadProductDetail();
+        } catch (err) {
+          showAlert('error', err.message || 'Не удалось отвязать платёж');
+          unlinkBtn.disabled = false;
+          unlinkBtn.textContent = '✖ Отвязать';
+        }
+        return;
+      }
+
       // Обработка кнопок "Показать больше"
       const showMoreButton = event.target.closest('[id^="show-more-linked-payments-"]');
       if (showMoreButton) {

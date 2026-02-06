@@ -6,6 +6,7 @@ const { normalizeName, normalizeWhitespace } = require('../../utils/normalize');
 const ExpenseCategoryMappingService = require('../pnl/expenseCategoryMappingService');
 const CrmStatusAutomationService = require('../crm/statusAutomationService');
 const paymentBackupService = require('./paymentBackupService');
+const { getRate } = require('../stripe/exchangeRateService');
 
 const AMOUNT_TOLERANCE = 5; // PLN/EUR tolerance
 const MANUAL_STATUS_APPROVED = 'approved';
@@ -828,13 +829,42 @@ class PaymentService {
         }
       }
 
+      // Рассчитываем amount_pln и currency_exchange при импорте
+      const currency = (expense.currency || 'PLN').toUpperCase();
+      let amountPln = null;
+      let currencyExchange = null;
+      
+      if (currency === 'PLN') {
+        // Для PLN используем amount напрямую
+        amountPln = expense.amount;
+        currencyExchange = 1;
+      } else {
+        // Для других валют получаем курс обмена и конвертируем
+        try {
+          const exchangeRate = await getRate(currency, 'PLN');
+          currencyExchange = exchangeRate;
+          amountPln = Number((expense.amount * exchangeRate).toFixed(2));
+        } catch (rateError) {
+          logger.warn('Failed to fetch exchange rate for payment', {
+            currency,
+            amount: expense.amount,
+            error: rateError.message,
+            description: expense.description?.substring(0, 50)
+          });
+          // Если не удалось получить курс, оставляем null
+          // amount_pln будет заполнен позже при необходимости
+        }
+      }
+
       const paymentRecord = {
         operation_date: normalizedOperationDate,
         payment_date: normalizedOperationDate,
         description: expense.description,
         account: expense.account,
         amount: expense.amount,
-        currency: expense.currency || 'PLN',
+        currency: currency,
+        currency_exchange: currencyExchange,
+        amount_pln: amountPln,
         direction: 'out',
         payer_name: expense.payer_name,
         payer_normalized_name: expense.payer_normalized_name,
@@ -895,10 +925,43 @@ class PaymentService {
     }
 
     const matchingContext = await this.buildMatchingContext(income);
-    const enriched = this.applyMatching(income, matchingContext).map((item) => ({
-      ...item,
-      source: PAYMENT_SOURCE_BANK,
-      import_id: importId
+    const matchedIncome = this.applyMatching(income, matchingContext);
+    
+    // Рассчитываем amount_pln и currency_exchange для каждого дохода
+    const enriched = await Promise.all(matchedIncome.map(async (item) => {
+      const currency = (item.currency || 'PLN').toUpperCase();
+      let amountPln = null;
+      let currencyExchange = null;
+      
+      if (currency === 'PLN') {
+        // Для PLN используем amount напрямую
+        amountPln = item.amount;
+        currencyExchange = 1;
+      } else {
+        // Для других валют получаем курс обмена и конвертируем
+        try {
+          const exchangeRate = await getRate(currency, 'PLN');
+          currencyExchange = exchangeRate;
+          amountPln = Number((item.amount * exchangeRate).toFixed(2));
+        } catch (rateError) {
+          logger.warn('Failed to fetch exchange rate for income payment', {
+            currency,
+            amount: item.amount,
+            error: rateError.message,
+            description: item.description?.substring(0, 50)
+          });
+          // Если не удалось получить курс, оставляем null
+          // amount_pln будет заполнен позже при необходимости
+        }
+      }
+      
+      return {
+        ...item,
+        source: PAYMENT_SOURCE_BANK,
+        import_id: importId,
+        currency_exchange: currencyExchange,
+        amount_pln: amountPln
+      };
     }));
 
     // Count statuses
