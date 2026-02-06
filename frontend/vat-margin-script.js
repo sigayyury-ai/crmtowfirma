@@ -1476,32 +1476,25 @@ function formatCurrency(amount, currency = 'PLN') {
     console.warn('⚠️ formatCurrency: пустая валюта, используем PLN', { currency, amount });
     currency = 'PLN';
   }
-  
-  // Нормализуем валюту к верхнему регистру и проверяем валидность
-  const normalizedCurrency = (currency || 'PLN').toUpperCase();
-  
-  // Список поддерживаемых валют для Intl.NumberFormat
-  const supportedCurrencies = ['PLN', 'EUR', 'USD', 'GBP', 'CHF', 'CZK', 'UAH', 'RUB'];
-  const finalCurrency = supportedCurrencies.includes(normalizedCurrency) ? normalizedCurrency : 'PLN';
-  
-  // ВАЖНО: Если валюта была EUR, но не попала в supportedCurrencies, это ошибка
-  if (normalizedCurrency === 'EUR' && finalCurrency !== 'EUR') {
-    console.error('❌ formatCurrency: EUR не попала в supportedCurrencies!', {
-      normalizedCurrency,
-      finalCurrency,
-      supportedCurrencies
-    });
+
+  const num = Number(amount);
+  const value = Number.isFinite(num) ? num : 0;
+  const normalizedCurrency = String(currency || 'PLN').toUpperCase().trim();
+
+  // EUR всегда форматируем вручную, чтобы избежать подмены на PLN в некоторых средах (Intl/locale)
+  if (normalizedCurrency === 'EUR') {
+    return `€${value.toFixed(2).replace('.', ',')}`;
   }
-  
-  // Выбираем локаль в зависимости от валюты для корректного отображения
-  // Для EUR используем 'en-US' (более универсальная локаль), для остальных 'ru-RU'
+
+  // Список поддерживаемых валют для Intl.NumberFormat
+  const supportedCurrencies = ['PLN', 'USD', 'GBP', 'CHF', 'CZK', 'UAH', 'RUB'];
+  const finalCurrency = supportedCurrencies.includes(normalizedCurrency) ? normalizedCurrency : 'PLN';
+
   let locale = 'ru-RU';
-  if (finalCurrency === 'EUR') {
-    locale = 'en-US'; // Используем en-US для EUR - более универсальная локаль
-  } else if (finalCurrency === 'USD' || finalCurrency === 'GBP') {
+  if (finalCurrency === 'USD' || finalCurrency === 'GBP') {
     locale = 'en-US';
   }
-  
+
   try {
     const formatter = new Intl.NumberFormat(locale, {
       style: 'currency',
@@ -1509,115 +1502,22 @@ function formatCurrency(amount, currency = 'PLN') {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2
     });
-    
-    const formatted = formatter.format(Number(amount) || 0);
+
+    const formatted = formatter.format(value);
     const resolvedOptions = formatter.resolvedOptions();
-    
-    // Проверяем, что форматирование действительно использует правильную валюту
+
     if (resolvedOptions.currency !== finalCurrency) {
-      console.error(`❌ Currency mismatch in formatter: expected ${finalCurrency}, got ${resolvedOptions.currency}`, {
-        inputCurrency: currency,
-        normalizedCurrency,
-        finalCurrency,
-        resolvedCurrency: resolvedOptions.currency,
-        formatted,
-        resolvedOptions: resolvedOptions
-      });
-      
-      // Если валюта не совпадает, используем ручное форматирование
-      if (finalCurrency === 'EUR') {
-        return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
+      if (finalCurrency === 'PLN') {
+        return `${value.toFixed(2).replace('.', ',')} zł`;
       }
+      return formatted;
     }
-    
-    // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если мы форматируем EUR, но результат содержит PLN
-    if (finalCurrency === 'EUR' && (formatted.includes('PLN') || formatted.includes('zł'))) {
-      console.error(`❌ formatCurrency: форматировали EUR, но получили PLN в результате!`, {
-        inputCurrency: currency,
-        normalizedCurrency,
-        finalCurrency,
-        resolvedCurrency: resolvedOptions.currency,
-        formatted,
-        resolvedOptions: resolvedOptions
-      });
-      // Используем ручное форматирование
-      return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
-    }
-    
-    // Для отладки - всегда логируем для EUR
-    if (normalizedCurrency === 'EUR' || finalCurrency === 'EUR') {
-      console.log('🔍 formatCurrency debug - ДО возврата', {
-        inputAmount: amount,
-        inputCurrency: currency,
-        normalizedCurrency,
-        finalCurrency,
-        locale,
-        formatted,
-        formattedType: typeof formatted,
-        formattedString: String(formatted),
-        resolvedCurrency: resolvedOptions.currency,
-        resolvedLocale: resolvedOptions.locale,
-        formattedContainsEUR: formatted.includes('EUR') || formatted.includes('€'),
-        formattedContainsPLN: formatted.includes('PLN') || formatted.includes('zł'),
-        formattedCharCodes: Array.from(formatted).slice(0, 20).map(c => `${c}(${c.charCodeAt(0)})`)
-      });
-    }
-    
-    // КРИТИЧЕСКАЯ ПРОВЕРКА: если мы форматируем EUR, но получили PLN - это ошибка!
-    if ((normalizedCurrency === 'EUR' || finalCurrency === 'EUR') && 
-        (formatted.includes('PLN') || formatted.includes('zł'))) {
-      console.error('❌ КРИТИЧЕСКАЯ ОШИБКА: formatCurrency получил EUR, но вернул PLN!', {
-        inputAmount: amount,
-        inputCurrency: currency,
-        normalizedCurrency,
-        finalCurrency,
-        locale,
-        formatted,
-        resolvedCurrency: resolvedOptions.currency,
-        resolvedLocale: resolvedOptions.locale,
-        formatterOptions: formatter.resolvedOptions()
-      });
-      
-      // Пробуем форматировать вручную как fallback
-      return `€${Number(amount || 0).toFixed(2).replace('.', ',')}`;
-    }
-    
+
     return formatted;
   } catch (error) {
-    // Fallback если валюта не поддерживается
-    console.error(`❌ Failed to format currency ${finalCurrency} with locale ${locale}`, {
-      error: error.message,
-      amount,
-      currency,
-      normalizedCurrency,
-      finalCurrency,
-      locale
-    });
-    
-    // Пробуем с другой локалью для EUR
-    if (finalCurrency === 'EUR') {
-      try {
-        const fallbackFormatter = new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'EUR',
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-        });
-        const fallbackFormatted = fallbackFormatter.format(Number(amount) || 0);
-        console.log('✅ Used fallback locale en-US for EUR', { formatted: fallbackFormatted });
-        return fallbackFormatted;
-      } catch (fallbackError) {
-        console.error('❌ Fallback also failed', fallbackError);
-      }
-    }
-    
-    // Последний fallback - PLN
-    return new Intl.NumberFormat('ru-RU', {
-      style: 'currency',
-      currency: 'PLN',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    }).format(Number(amount) || 0);
+    console.warn('formatCurrency fallback', { error: error.message, currency: finalCurrency, amount: value });
+    if (finalCurrency === 'PLN') return `${value.toFixed(2).replace('.', ',')} zł`;
+    return `${value.toFixed(2)} ${finalCurrency}`;
   }
 }
 

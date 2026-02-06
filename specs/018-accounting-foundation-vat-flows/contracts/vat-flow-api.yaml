@@ -1,0 +1,131 @@
+openapi: 3.0.0
+info:
+  title: VAT Flow Classification API
+  description: Extensions to expense categories and reports for two VAT flows (margin_scheme / general)
+  version: 1.0.0
+
+paths:
+  # Expense categories: include vat_flow in response; allow PATCH/PUT to set vat_flow
+  /api/pnl/expense-categories:
+    get:
+      summary: List expense categories (includes vat_flow)
+      tags: [Expense Categories]
+      responses:
+        '200':
+          description: List of categories with vat_flow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        vat_flow: { type: string, enum: [margin_scheme, general] }
+  /api/pnl/expense-categories/{id}:
+    put:
+      summary: Update expense category (including vat_flow)
+      tags: [Expense Categories]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                vat_flow: { type: string, enum: [margin_scheme, general] }
+      responses:
+        '200':
+          description: Category updated
+        '404':
+          description: Category not found
+
+  # Payments: response includes effective_vat_flow when direction=out
+  /api/vat-margin/payments:
+    get:
+      summary: List payments (outgoing include effective_vat_flow)
+      tags: [Payments]
+      parameters:
+        - name: direction
+          in: query
+          schema: { type: string, enum: [in, out] }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: vat_flow
+          in: query
+          description: Filter by effective VAT flow (margin_scheme | general)
+          schema: { type: string, enum: [margin_scheme, general] }
+      responses:
+        '200':
+          description: Payments; each outgoing payment has effective_vat_flow
+
+  # Report: expenses split by VAT flow
+  /api/pnl/expenses-by-vat-flow:
+    get:
+      summary: Expense totals (or breakdown) by VAT flow for a period
+      tags: [Reports]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Totals (or rows) split by margin_scheme and general
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      margin_scheme: { type: object }
+                      general: { type: object }
+
+  # Optional: set/clear vat_flow_override on a payment
+  /api/payments/{id}/vat-flow-override:
+    put:
+      summary: Set VAT flow override for an expense payment
+      tags: [Payments]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vat_flow_override:
+                  type: string
+                  enum: [margin_scheme, general]
+                  nullable: true
+      responses:
+        '200':
+          description: Override updated (null to clear)
+        '400':
+          description: Payment is not an expense (direction != out)
+        '404':
+          description: Payment not found

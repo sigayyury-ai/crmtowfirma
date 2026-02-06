@@ -7,6 +7,7 @@ const ExpenseCategoryMappingService = require('../pnl/expenseCategoryMappingServ
 const CrmStatusAutomationService = require('../crm/statusAutomationService');
 const paymentBackupService = require('./paymentBackupService');
 const { getRate } = require('../stripe/exchangeRateService');
+const { getEffectiveVatFlow } = require('../pnl/vatFlowHelper');
 
 const AMOUNT_TOLERANCE = 5; // PLN/EUR tolerance
 const MANUAL_STATUS_APPROVED = 'approved';
@@ -191,7 +192,9 @@ class PaymentService {
         auto_proforma_id: suggestedProformaId,
         auto_proforma_fullnumber: suggestedProformaFullnumber,
         expense_category_id: record.expense_category_id || null, // Include expense category ID
-        income_category_id: record.income_category_id || null // Include income category ID (for refunds)
+        income_category_id: record.income_category_id || null, // Include income category ID (for refunds)
+        amount_pln: record.amount_pln != null ? Number(record.amount_pln) : null,
+        vat_flow_override: record.vat_flow_override || null
       };
     } catch (error) {
       logger.error('Error in resolvePaymentRecord', {
@@ -254,7 +257,9 @@ class PaymentService {
         manual_updated_at,
         source,
         expense_category_id,
-        income_category_id
+        income_category_id,
+        amount_pln,
+        vat_flow_override
       `)
       .is('deleted_at', null) // Фильтруем удаленные платежи
       .order('operation_date', { ascending: false });
@@ -346,6 +351,32 @@ class PaymentService {
         });
         // Skip this payment but continue processing others
         continue;
+      }
+    }
+
+    // Enrich expense payments with effective_vat_flow (018)
+    const expensePayments = payments.filter(p => p.direction === 'out');
+    if (expensePayments.length > 0) {
+      try {
+        const expenseIds = expensePayments.map(p => p.id);
+        const { data: linkRows } = await supabase
+          .from('payment_product_links')
+          .select('payment_id')
+          .in('payment_id', expenseIds);
+        const paymentIdsWithProductLink = new Set((linkRows || []).map(r => r.payment_id));
+        const ExpenseCategoryService = require('../pnl/expenseCategoryService');
+        const expenseCategoryService = new ExpenseCategoryService();
+        const categories = await expenseCategoryService.listCategories();
+        const categoryVatFlowById = new Map((categories || []).map(c => [c.id, c.vat_flow]));
+        for (const p of expensePayments) {
+          p.effective_vat_flow = getEffectiveVatFlow({
+            vatFlowOverride: p.vat_flow_override || null,
+            hasProductLink: paymentIdsWithProductLink.has(p.id),
+            categoryVatFlow: p.expense_category_id ? categoryVatFlowById.get(p.expense_category_id) : null
+          });
+        }
+      } catch (enrichErr) {
+        logger.warn('Could not enrich effective_vat_flow for expenses', { error: enrichErr.message });
       }
     }
 

@@ -78,6 +78,8 @@ const ManualEntryService = require('../services/pnl/manualEntryService');
 const manualEntryService = new ManualEntryService();
 const PaymentDetailsService = require('../services/pnl/paymentDetailsService');
 const paymentDetailsService = new PaymentDetailsService();
+const expensesByVatFlowService = require('../services/pnl/expensesByVatFlowService');
+const { getEffectiveVatFlow, VALID_FLOWS } = require('../services/pnl/vatFlowHelper');
 const PaymentProductLinkService = require('../services/payments/paymentProductLinkService');
 const proformaAdjustmentRoutes = require('./internal/proformaAdjustmentRoutes');
 const paymentProductLinkService = new PaymentProductLinkService();
@@ -3905,10 +3907,10 @@ router.get('/vat-margin/payer-payments', async (req, res) => {
 });
 
 router.get('/vat-margin/payments', async (req, res) => {
-  let direction, limit, uncategorized, description, amount, date, currency;
+  let direction, limit, uncategorized, description, amount, date, currency, vatFlowFilter;
   
   try {
-    ({ direction, limit, uncategorized, description, amount, date, currency } = req.query);
+    ({ direction, limit, uncategorized, description, amount, date, currency, vat_flow: vatFlowFilter } = req.query);
     
     logger.info('GET /vat-margin/payments', {
       direction,
@@ -4098,8 +4100,41 @@ router.get('/vat-margin/payments', async (req, res) => {
     }
     
     // Ensure we have valid arrays
-    const safePayments = Array.isArray(payments) ? payments : [];
+    let safePayments = Array.isArray(payments) ? payments : [];
     const safeHistory = Array.isArray(history) ? history : [];
+
+    // 018 P3: for outgoing payments (in list), add effective_vat_flow; filter by vat_flow when requested
+    const hasOutPayments = safePayments.some(p => p.direction === 'out');
+    if (hasOutPayments && safePayments.length > 0) {
+      const outPaymentIds = safePayments.filter(p => p.direction === 'out').map(p => p.id).filter(Boolean);
+      const categories = await expenseCategoryService.listCategories();
+      const categoryMap = new Map((categories || []).map(c => [c.id, c]));
+
+      let productLinkPaymentIds = new Set();
+      if (outPaymentIds.length > 0) {
+        const { data: links } = await supabase
+          .from('payment_product_links')
+          .select('payment_id')
+          .in('payment_id', outPaymentIds);
+        productLinkPaymentIds = new Set((links || []).map(r => r.payment_id));
+      }
+
+      for (const p of safePayments) {
+        if (p.direction !== 'out') continue;
+        const category = p.expense_category_id ? categoryMap.get(p.expense_category_id) : null;
+        const hasProductLink = productLinkPaymentIds.has(p.id);
+        p.effective_vat_flow = getEffectiveVatFlow({
+          vatFlowOverride: p.vat_flow_override ?? null,
+          hasProductLink,
+          categoryVatFlow: category?.vat_flow ?? null
+        });
+      }
+
+      if (vatFlowFilter != null && String(vatFlowFilter).trim() !== '' && VALID_FLOWS.includes(String(vatFlowFilter).toLowerCase().trim())) {
+        const flow = String(vatFlowFilter).toLowerCase().trim();
+        safePayments = safePayments.filter(p => p.effective_vat_flow === flow);
+      }
+    }
     
     logger.info('Sending response', {
       paymentsCount: safePayments.length,
@@ -4472,6 +4507,76 @@ router.put('/vat-margin/payments/:id/expense-category', async (req, res) => {
     res.status(status).json({
       success: false,
       error: 'Не удалось обновить категорию',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * PUT /api/vat-margin/payments/:id/vat-flow-override
+ * Set or clear VAT flow override for an expense payment (018).
+ * Body: { vat_flow_override: 'margin_scheme' | 'general' | null }
+ */
+router.put('/vat-margin/payments/:id/vat-flow-override', async (req, res) => {
+  try {
+    const paymentId = parseInt(req.params.id, 10);
+    if (Number.isNaN(paymentId)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment ID'
+      });
+    }
+    let { vat_flow_override } = req.body;
+    if (vat_flow_override !== null && vat_flow_override !== undefined) {
+      const v = String(vat_flow_override).toLowerCase().trim();
+      if (v !== 'margin_scheme' && v !== 'general') {
+        return res.status(400).json({
+          success: false,
+          error: 'vat_flow_override must be "margin_scheme", "general", or null'
+        });
+      }
+      vat_flow_override = v;
+    } else {
+      vat_flow_override = null;
+    }
+
+    const payment = await paymentService.fetchPaymentRaw(paymentId);
+    if (payment.direction !== 'out') {
+      return res.status(400).json({
+        success: false,
+        error: 'VAT flow override is only for expense payments (direction = "out")'
+      });
+    }
+
+    const { data: updated, error } = await supabase
+      .from('payments')
+      .update({ vat_flow_override, updated_at: new Date().toISOString() })
+      .eq('id', paymentId)
+      .select('id, vat_flow_override')
+      .single();
+
+    if (error) {
+      logger.error('Error updating payment vat_flow_override', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update VAT flow override',
+        message: error.message
+      });
+    }
+
+    const result = await paymentService.getPaymentDetails(paymentId);
+    res.json({
+      success: true,
+      payment: result.payment,
+      vat_flow_override: updated.vat_flow_override,
+      message: vat_flow_override ? 'VAT flow override set' : 'VAT flow override cleared'
+    });
+  } catch (error) {
+    const status = error.statusCode || 500;
+    logger.error('Error updating payment vat-flow-override', error);
+    res.status(status).json({
+      success: false,
+      error: 'Nie udało się zaktualizować nadpisania VAT',
       message: error.message
     });
   }
@@ -5631,6 +5736,117 @@ router.get('/pnl/payments', async (req, res) => {
 });
 
 /**
+ * GET /api/pnl/expenses-by-vat-flow/detail
+ * Detail for control: list of payments in one VAT flow for date range. (018)
+ * Query: from (YYYY-MM-DD), to (YYYY-MM-DD), flow (margin_scheme | general)
+ */
+router.get('/pnl/expenses-by-vat-flow/detail', async (req, res) => {
+  try {
+    const from = req.query.from;
+    const to = req.query.to;
+    const flow = (req.query.flow || '').toLowerCase();
+    if (!from || !to) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query params from and to (YYYY-MM-DD) are required'
+      });
+    }
+    if (flow !== 'margin_scheme' && flow !== 'general') {
+      return res.status(400).json({
+        success: false,
+        error: 'Query param flow must be margin_scheme or general'
+      });
+    }
+    const data = await expensesByVatFlowService.getExpensesByVatFlow(from, to);
+    const branch = flow === 'margin_scheme' ? data.margin_scheme : data.general;
+    res.json({
+      success: true,
+      from,
+      to,
+      flow,
+      totalPln: branch.totalPln,
+      count: branch.count,
+      items: branch.items
+    });
+  } catch (error) {
+    logger.error('GET /pnl/expenses-by-vat-flow/detail', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get expenses by VAT flow detail',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/expenses-by-vat-flow
+ * Report: expenses split by VAT flow (margin_scheme / general) for date range. (018)
+ * Query: from (YYYY-MM-DD), to (YYYY-MM-DD)
+ */
+router.get('/pnl/expenses-by-vat-flow', async (req, res) => {
+  try {
+    const from = req.query.from;
+    const to = req.query.to;
+    if (!from || !to) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query params from and to (YYYY-MM-DD) are required'
+      });
+    }
+    const data = await expensesByVatFlowService.getExpensesByVatFlow(from, to);
+    res.json({ success: true, data });
+  } catch (error) {
+    logger.error('GET /pnl/expenses-by-vat-flow', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get expenses by VAT flow',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/pnl/expenses-general/export
+ * Export "wydatki ogólne" (general VAT) for wFirma/JPK. (018)
+ * Query: from (YYYY-MM-DD), to (YYYY-MM-DD), format=csv|json (default json)
+ */
+router.get('/pnl/expenses-general/export', async (req, res) => {
+  try {
+    const from = req.query.from;
+    const to = req.query.to;
+    const format = (req.query.format || 'json').toLowerCase();
+    if (!from || !to) {
+      return res.status(400).json({
+        success: false,
+        error: 'Query params from and to (YYYY-MM-DD) are required'
+      });
+    }
+    const rows = await expensesByVatFlowService.getGeneralExpensesForExport(from, to);
+    if (format === 'csv') {
+      const header = 'data,kwota,kontrahent,kategoria,źródło';
+      const escape = (v) => {
+        const s = String(v ?? '');
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+        return s;
+      };
+      const lines = [header, ...rows.map(r => [r.data, r.kwota, r.kontrahent, r.kategoria, r.źródło].map(escape).join(','))];
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename=wydatki-ogolne-${from}-${to}.csv`);
+      res.send(lines.join('\n'));
+      return;
+    }
+    res.json({ success: true, from, to, rows });
+  } catch (error) {
+    logger.error('GET /pnl/expenses-general/export', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: 'Failed to export general expenses',
+      message: error.message
+    });
+  }
+});
+
+/**
  * GET /api/pnl/expenses
  * Get expenses by category and month
  * Query params: expenseCategoryId (number or 'null' for uncategorized), year (number), month (number 1-12)
@@ -5838,7 +6054,7 @@ router.put('/pnl/payments/:id/unlink', async (req, res) => {
  */
 router.post('/pnl/expense-categories', async (req, res) => {
   try {
-    const { name, description, management_type } = req.body;
+    const { name, description, management_type, exclude_from_vat } = req.body;
 
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
       return res.status(400).json({
@@ -5850,7 +6066,8 @@ router.post('/pnl/expense-categories', async (req, res) => {
     const category = await expenseCategoryService.createCategory({
       name,
       description,
-      management_type
+      management_type,
+      exclude_from_vat
     });
 
     res.status(201).json({
@@ -5940,13 +6157,15 @@ router.put('/pnl/expense-categories/:id', async (req, res) => {
       });
     }
 
-    const { name, description, management_type, display_order } = req.body;
+    const { name, description, management_type, display_order, vat_flow, exclude_from_vat } = req.body;
 
     const category = await expenseCategoryService.updateCategory(id, {
       name,
       description,
       management_type,
-      display_order
+      display_order,
+      vat_flow,
+      exclude_from_vat
     });
 
     res.json({

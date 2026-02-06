@@ -1,5 +1,6 @@
 const supabase = require('../supabaseClient');
 const logger = require('../../utils/logger');
+const { normalizeVatFlow, VALID_FLOWS } = require('./vatFlowHelper');
 
 /**
  * Service for managing PNL expense categories
@@ -105,6 +106,12 @@ class ExpenseCategoryService {
       if (categoryData.management_type !== undefined) {
         insertData.management_type = categoryData.management_type === 'manual' ? 'manual' : 'auto';
       }
+      const vatFlow = normalizeVatFlow(categoryData.vat_flow);
+      if (vatFlow) insertData.vat_flow = vatFlow;
+      else if (!('vat_flow' in insertData)) insertData.vat_flow = 'general';
+      if (categoryData.exclude_from_vat !== undefined) {
+        insertData.exclude_from_vat = Boolean(categoryData.exclude_from_vat);
+      }
 
       // Try to set display_order if column exists
       try {
@@ -132,10 +139,12 @@ class ExpenseCategoryService {
 
       if (error) {
         // Check for column not found error (migration not run)
-        if (error.code === '42703' && error.message?.includes('management_type')) {
-          logger.warn('management_type column does not exist. Creating category without it.');
-          // Remove management_type from insert and retry
-          delete insertData.management_type;
+        const msg = error.message || '';
+        const missingColumn = (error.code === '42703') &&
+          (msg.includes('management_type') ? 'management_type' : msg.includes('vat_flow') ? 'vat_flow' : msg.includes('exclude_from_vat') ? 'exclude_from_vat' : null);
+        if (missingColumn) {
+          logger.warn(`${missingColumn} column does not exist. Creating category without it.`);
+          delete insertData[missingColumn];
           const retryResult = await supabase
             .from(this.tableName)
             .insert(insertData)
@@ -223,6 +232,16 @@ class ExpenseCategoryService {
         // Only add display_order if column exists (migration may not be run yet)
         updateData.display_order = categoryData.display_order;
       }
+      if (categoryData.vat_flow !== undefined) {
+        const vatFlow = normalizeVatFlow(categoryData.vat_flow);
+        if (vatFlow === null && categoryData.vat_flow != null) {
+          throw new Error('vat_flow must be "margin_scheme" or "general"');
+        }
+        if (vatFlow) updateData.vat_flow = vatFlow;
+      }
+      if (categoryData.exclude_from_vat !== undefined) {
+        updateData.exclude_from_vat = Boolean(categoryData.exclude_from_vat);
+      }
 
       const { data, error } = await supabase
         .from(this.tableName)
@@ -233,10 +252,12 @@ class ExpenseCategoryService {
 
       if (error) {
         // Check for column not found error (migration not run)
-        if (error.code === '42703' && error.message?.includes('management_type')) {
-          logger.warn('management_type column does not exist. Please run migration 004_add_expense_categories.sql');
-          // Remove management_type from update and retry
-          delete updateData.management_type;
+        const msg = error.message || '';
+        const missingCol = (error.code === '42703') &&
+          (msg.includes('management_type') ? 'management_type' : msg.includes('vat_flow') ? 'vat_flow' : msg.includes('exclude_from_vat') ? 'exclude_from_vat' : null);
+        if (missingCol) {
+          logger.warn(`${missingCol} column does not exist. Please run migration.`);
+          delete updateData[missingCol];
           const { data: retryData, error: retryError } = await supabase
             .from(this.tableName)
             .update(updateData)

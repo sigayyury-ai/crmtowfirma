@@ -29,15 +29,159 @@ body {
     padding: 20px 40px;
 }
 
-/* Navigation */
+/* Верхнее меню: полупрозрачный закруглённый блок, выделен из общего wrapper */
+.layout-header {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 20px 24px 0;
+    margin-bottom: 12px;
+}
+.layout-header-inner {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+}
+.layout-header .main-nav {
+    margin-bottom: 0;
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Нижнее саб-меню: такой же полупрозрачный закруглённый блок */
+.layout-subnav-bar {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 24px 16px;
+    margin-bottom: 0;
+}
+.layout-subnav-inner {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+.layout-subnav-bar .accounting-subnav {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.layout-subnav-bar .accounting-subnav-link {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.95);
+}
+.layout-subnav-bar .accounting-subnav-link:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+.layout-subnav-bar .accounting-subnav-link.active {
+    background: #fff;
+    color: #667eea;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* Саб-меню страницы (например Отчеты: Отчёт по месяцам, Продукты, Платежи…) — вынесено из wrapper, тот же стиль */
+.layout-page-tabs {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0 24px 16px;
+}
+.layout-page-tabs-inner {
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+.layout-page-tabs .tab-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+}
+.layout-page-tabs .tab-button {
+    border: none;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.95);
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.layout-page-tabs .tab-button:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}
+.layout-page-tabs .tab-button.active {
+    background: #fff;
+    color: #667eea;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* Белая подложка контента — на всю ширину экрана, без боковых отступов */
+.content-card {
+    background: #fff;
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+    padding: 24px 24px 32px;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+}
+.content-card.pnl-container-fullwidth {
+    max-width: 100%;
+}
+
+/* Единый контейнер контента на всю ширину */
+.layout-main-fullwidth {
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+.layout-main-fullwidth.content-card {
+    margin: 0;
+    padding: 24px 24px 32px;
+}
+
+/* Убираем внутренний wrapper: внутри #layout-main контент всегда на всю ширину */
+#layout-main .container,
+#layout-main.container {
+    max-width: none;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+#layout-main .container.pnl-container-fullwidth,
+#layout-main .pnl-container-fullwidth {
+    max-width: none;
+    width: 100%;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Navigation — пункты внутри полупрозрачного блока */
 .main-nav {
     display: flex;
     gap: 10px;
     margin-bottom: 20px;
-    padding: 10px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 8px;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 12px;
     backdrop-filter: blur(10px);
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
 .nav-link {
@@ -57,6 +201,32 @@ body {
 .nav-link.active {
     background: white;
     color: #667eea;
+}
+
+/* Бухгалтерия submenu */
+.accounting-subnav {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    padding: 6px 0;
+}
+.accounting-subnav-link {
+    padding: 8px 16px;
+    color: #475569;
+    text-decoration: none;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.9);
+    font-weight: 500;
+    transition: background 0.2s, color 0.2s;
+}
+.accounting-subnav-link:hover {
+    background: rgba(255, 255, 255, 1);
+    color: #667eea;
+}
+.accounting-subnav-link.active {
+    background: white;
+    color: #667eea;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 /* Sub navigation / tab buttons */
@@ -2949,6 +3119,106 @@ h2 {
 
 body.modal-open {
     overflow: hidden;
+}
+
+/* Бухгалтерия: модальное окно состава потока НДС */
+.vat-flow-detail-modal {
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.vat-flow-detail-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+}
+.vat-flow-detail-content {
+    position: relative;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+    max-width: 900px;
+    width: 100%;
+    max-height: 85vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: modalSlideIn 0.3s ease-out;
+}
+.vat-flow-detail-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+}
+.vat-flow-detail-header h3 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+.vat-flow-detail-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: white;
+    cursor: pointer;
+    padding: 0 8px;
+    line-height: 1;
+}
+.vat-flow-detail-close:hover {
+    opacity: 0.9;
+}
+.vat-flow-detail-hint {
+    padding: 10px 20px;
+    margin: 0;
+    font-size: 0.85rem;
+    color: #64748b;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+}
+.vat-flow-detail-table-wrap {
+    overflow: auto;
+    flex: 1;
+    padding: 0 20px;
+}
+.vat-flow-detail-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+.vat-flow-detail-table th,
+.vat-flow-detail-table td {
+    padding: 10px 12px;
+    text-align: left;
+    border-bottom: 1px solid #e2e8f0;
+}
+.vat-flow-detail-table th {
+    background: #f1f5f9;
+    font-weight: 600;
+    color: #475569;
+}
+.vat-flow-detail-table tbody tr:hover {
+    background: #f8fafc;
+}
+.vat-flow-detail-summary {
+    padding: 12px 20px;
+    margin: 0;
+    font-weight: 600;
+    background: #f1f5f9;
+    border-top: 1px solid #e2e8f0;
+}
+.vat-flow-card:hover {
+    background: #eee !important;
 }
 
 .payer-link {

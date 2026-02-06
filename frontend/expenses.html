@@ -15,18 +15,15 @@
         })();
     </script>
     <style>
-        body {
-            background: transparent !important;
-        }
+        /* Прозрачный фон только при встраивании в iframe (Отчеты → Платежи) */
         body.embedded-expenses {
             background: transparent;
             margin: 0;
             overflow: hidden;
         }
-        body.embedded-expenses .container:first-of-type {
-            display: none;
-        }
         body.embedded-expenses .expenses-header,
+        body.embedded-expenses #layout-header,
+        body.embedded-expenses #layout-subnav,
         body.embedded-expenses .main-nav {
             display: none;
         }
@@ -241,20 +238,12 @@
             }
         })();
     </script>
-    <div class="container">
-        <nav class="main-nav">
-            <a href="/vat-margin.html" class="nav-link">Отчеты</a>
-            <a href="/cash-journal.html" class="nav-link">Cash Journal</a>
-            <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
-            <a href="/analytics/mql-report.html" class="nav-link">Marketing</a>
-            <a href="/expenses.html" class="nav-link active">Расходы</a>
-            <a href="/" class="nav-link">Автоматизация и интеграции</a>
-        </nav>
-    </div>
+    <div id="layout-header"></div>
+    <main id="layout-main">
     <div class="container expenses-container">
         <div class="expenses-header">
-            <h1>Управление расходами</h1>
-            <a href="pnl-report.html" class="btn btn-secondary">← Вернуться к PNL отчету</a>
+            <h1>Платежи</h1>
+            <a href="/accounting.html" class="btn btn-secondary">← Расходы по потокам НДС</a>
         </div>
 
         <!-- Upload Section -->
@@ -291,15 +280,15 @@
         <!-- Statistics -->
         <div class="expenses-stats">
             <div class="stat-card">
-                <div class="label">Всего расходов</div>
+                <div class="label" id="statTotalLabel">Всего расходов</div>
                 <div class="value" id="totalExpenses">0</div>
             </div>
             <div class="stat-card">
-                <div class="label">Без категории</div>
+                <div class="label" id="statSecondLabel">Без категории</div>
                 <div class="value" id="uncategorizedExpenses">0</div>
             </div>
             <div class="stat-card">
-                <div class="label">С категорией</div>
+                <div class="label" id="statThirdLabel">С категорией</div>
                 <div class="value" id="categorizedExpenses">0</div>
             </div>
         </div>
@@ -309,6 +298,14 @@
             <button class="btn btn-secondary" onclick="loadExpenses()">🔄 Обновить</button>
             <button class="btn btn-primary" id="autoCategorizeBtn">🤖 Автокатегоризация</button>
             <label style="display: flex; align-items: center; gap: 10px;">
+                Направление:
+                <select id="directionFilter" class="form-control" style="min-width: 140px;" onchange="onDirectionFilterChange()" autocomplete="off" data-lpignore="true">
+                    <option value="all">Все</option>
+                    <option value="out" selected>Исходящие</option>
+                    <option value="in">Входящие</option>
+                </select>
+            </label>
+            <label style="display: flex; align-items: center; gap: 10px;">
                 🔍 Поиск:
                 <input type="text" id="paymentSearchInput" class="form-control" placeholder="Поиск по описанию, плательщику, сумме..." style="min-width: 250px;" oninput="filterExpenses()" autocomplete="off" data-lpignore="true">
             </label>
@@ -317,6 +314,14 @@
                 <select id="categoryFilter" class="form-control" style="min-width: 200px;" onchange="filterExpenses()" autocomplete="off" data-lpignore="true">
                     <option value="">Все категории</option>
                     <option value="null" selected>Без категории</option>
+                </select>
+            </label>
+            <label id="vatFlowFilterWrap" style="display: flex; align-items: center; gap: 10px;">
+                Поток НДС:
+                <select id="vatFlowFilter" class="form-control" style="min-width: 160px;" onchange="loadExpenses()" autocomplete="off" data-lpignore="true">
+                    <option value="">Все</option>
+                    <option value="margin_scheme">VAT marża</option>
+                    <option value="general">Zwykły VAT</option>
                 </select>
             </label>
         </div>
@@ -331,12 +336,13 @@
                         <th>Плательщик</th>
                         <th>Сумма</th>
                         <th>Категория</th>
+                        <th>Поток НДС</th>
                         <th>Статус</th>
                     </tr>
                 </thead>
                 <tbody id="expensesTableBody">
                     <tr>
-                        <td colspan="6" style="text-align: center; padding: 40px;">
+                        <td colspan="7" style="text-align: center; padding: 40px;">
                             Загрузка расходов...
                         </td>
                     </tr>
@@ -346,7 +352,8 @@
 
         <!-- Detail row will be inserted dynamically by JavaScript -->
     </div>
-
+    </main>
+    <script src="/layout.js"></script>
     <script src="/expenses-script.js"></script>
 </body>
 </html>

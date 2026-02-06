@@ -162,6 +162,7 @@ app.get(['/vat-margin/facebook-ads'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/expenses', '/vat-margin/expenses'], requireAuth, sendPage('vat-margin.html'));
 app.get(['/expenses.html', '/vat-margin/expenses.html'], requireAuth, sendPage('expenses.html'));
 app.get(['/cash-journal', '/vat-margin/cash-journal'], requireAuth, sendPage('cash-journal.html'));
+app.get(['/accounting', '/accounting/', '/accounting.html'], requireAuth, sendPage('accounting.html'));
 app.get(['/settings', '/vat-margin/settings'], requireAuth, sendPage('index.html'));
 
 // Статические файлы (frontend) - защищены авторизацией

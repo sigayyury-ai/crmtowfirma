@@ -121,13 +121,9 @@
     </style>
   </head>
   <body>
+    <div id="layout-header"></div>
+    <main id="layout-main">
     <div class="container pnl-container-fullwidth">
-      <nav class="main-nav">
-        <a href="/pnl-report.html" class="nav-link">PNL</a>
-        <a href="/analytics/mql-report.html" class="nav-link active">Marketing</a>
-        <a href="/" class="nav-link">Настройки</a>
-      </nav>
-
       <section class="pnl-report-section">
         <div class="section-header">
           <div>
@@ -175,7 +171,7 @@
         </div>
       </section>
     </div>
-
+    </main>
     <template id="table-template">
       <table class="mql-table">
         <thead id="table-head"></thead>
@@ -183,6 +179,7 @@
       </table>
     </template>
 
+    <script src="/layout.js"></script>
     <script src="./mql-report.js" type="module"></script>
   </body>
 </html>

@@ -86,7 +86,7 @@ function cacheDom() {
     insightsTrendsContainer: document.getElementById('insights-trends'),
     insightsStrategicContainer: document.getElementById('insights-strategic')
   };
-  
+
   // Set default year to current year
   const currentYear = new Date().getFullYear();
   const yearOptions = Array.from(elements.yearSelect?.options || []).map(opt => Number(opt.value));
@@ -1625,11 +1625,12 @@ function renderExpenseCategories(categories) {
             <div class="category-name">
               ${escapeHtml(category.name)}
               ${category.management_type === 'manual' ? '<span class="category-manual-badge" title="Ручное управление">✏️</span>' : ''}
+              ${category.exclude_from_vat ? '<span class="category-exclude-badge" title="Не для учёта (kasa / szara strefa)">🚫 не для учёта</span>' : ''}
             </div>
             ${category.description ? `<div class="category-description">${escapeHtml(category.description)}</div>` : ''}
           </div>
           <div class="category-actions">
-            <button class="btn btn-secondary btn-sm" data-action="edit" data-expense-category-id="${category.id}" data-expense-category-name="${escapeHtml(category.name)}" data-expense-category-description="${escapeHtml(category.description || '')}" data-expense-category-management-type="${category.management_type || 'auto'}">Редактировать</button>
+            <button class="btn btn-secondary btn-sm" data-action="edit" data-expense-category-id="${category.id}" data-expense-category-name="${escapeHtml(category.name)}" data-expense-category-description="${escapeHtml(category.description || '')}" data-expense-category-management-type="${category.management_type || 'auto'}" data-expense-category-exclude-from-vat="${category.exclude_from_vat ? '1' : '0'}">Редактировать</button>
             <button class="btn btn-danger btn-sm" data-action="delete" data-expense-category-id="${category.id}" data-expense-category-name="${escapeHtml(category.name)}">Удалить</button>
           </div>
         </div>
@@ -1655,7 +1656,8 @@ function renderExpenseCategories(categories) {
         const name = button.getAttribute('data-expense-category-name') || '';
         const description = button.getAttribute('data-expense-category-description') || '';
         const managementType = button.getAttribute('data-expense-category-management-type') || 'auto';
-        editExpenseCategory(expenseCategoryId, name, description, managementType);
+        const excludeFromVat = button.getAttribute('data-expense-category-exclude-from-vat') === '1';
+        editExpenseCategory(expenseCategoryId, name, description, managementType, excludeFromVat);
       } else if (action === 'delete') {
         const name = button.getAttribute('data-expense-category-name') || '';
         deleteExpenseCategory(expenseCategoryId, name);
@@ -1669,7 +1671,7 @@ function renderExpenseCategories(categories) {
   }
 }
 
-function showExpenseCategoryForm(expenseCategoryId = null, name = '', description = '', managementType = 'auto') {
+function showExpenseCategoryForm(expenseCategoryId = null, name = '', description = '', managementType = 'auto', excludeFromVat = false) {
   if (!elements.expenseCategoriesContainer) return;
 
   // Close any existing forms first
@@ -1696,6 +1698,13 @@ function showExpenseCategoryForm(expenseCategoryId = null, name = '', descriptio
           <span>Ручное управление</span>
         </label>
         <div class="form-hint">Если включено, значения вводятся вручную в таблице отчета</div>
+      </div>
+      <div class="form-group">
+        <label class="checkbox-label">
+          <input type="checkbox" id="expense-category-exclude-from-vat-${inputId}" ${excludeFromVat ? 'checked' : ''}>
+          <span>Не для учёта (kasa / szara strefa)</span>
+        </label>
+        <div class="form-hint">Расходы в этой категории не попадают в отчёт по НДС и в экспорт wydatki ogólne</div>
       </div>
       <div class="form-actions">
         <button class="btn btn-primary" onclick="saveExpenseCategoryFromForm('${formId}')">${isEdit ? 'Сохранить' : 'Создать'}</button>
@@ -1730,6 +1739,7 @@ async function saveExpenseCategoryFromForm(formId) {
   const nameInput = document.getElementById(`expense-category-name-${isEdit ? expenseCategoryId : 'new'}`);
   const descriptionInput = document.getElementById(`expense-category-description-${isEdit ? expenseCategoryId : 'new'}`);
   const manualCheckbox = document.getElementById(`expense-category-manual-${isEdit ? expenseCategoryId : 'new'}`);
+  const excludeFromVatCheckbox = document.getElementById(`expense-category-exclude-from-vat-${isEdit ? expenseCategoryId : 'new'}`);
 
   if (!nameInput || !descriptionInput || !manualCheckbox) {
     addLog('error', 'Не найдены поля формы');
@@ -1739,33 +1749,32 @@ async function saveExpenseCategoryFromForm(formId) {
   const name = nameInput.value.trim();
   const description = descriptionInput.value.trim();
   const managementType = manualCheckbox.checked ? 'manual' : 'auto';
+  const excludeFromVat = excludeFromVatCheckbox ? excludeFromVatCheckbox.checked : false;
 
   if (!name) {
     addLog('error', 'Название категории обязательно');
     return;
   }
 
-  await saveExpenseCategory(isEdit ? parseInt(expenseCategoryId, 10) : null, name, description, managementType);
+  await saveExpenseCategory(isEdit ? parseInt(expenseCategoryId, 10) : null, name, description, managementType, excludeFromVat);
 }
 
-async function saveExpenseCategory(expenseCategoryId, name, description, managementType) {
+async function saveExpenseCategory(expenseCategoryId, name, description, managementType, excludeFromVat = false) {
   try {
     const url = expenseCategoryId 
       ? `${API_BASE}/pnl/expense-categories/${expenseCategoryId}`
       : `${API_BASE}/pnl/expense-categories`;
     
     const method = expenseCategoryId ? 'PUT' : 'POST';
-    
+    const body = { name, description, management_type: managementType };
+    if (excludeFromVat !== undefined) body.exclude_from_vat = Boolean(excludeFromVat);
+
     const response = await fetch(url, {
       method,
       headers: {
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        name,
-        description,
-        management_type: managementType
-      })
+      body: JSON.stringify(body)
     });
 
     const result = await response.json();
@@ -1783,8 +1792,8 @@ async function saveExpenseCategory(expenseCategoryId, name, description, managem
   }
 }
 
-function editExpenseCategory(expenseCategoryId, name, description, managementType) {
-  showExpenseCategoryForm(expenseCategoryId, name, description, managementType);
+function editExpenseCategory(expenseCategoryId, name, description, managementType, excludeFromVat = false) {
+  showExpenseCategoryForm(expenseCategoryId, name, description, managementType, excludeFromVat);
 }
 
 async function deleteExpenseCategory(expenseCategoryId, name) {

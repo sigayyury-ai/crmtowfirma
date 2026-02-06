@@ -9,14 +9,9 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <div class="container">
-        <nav class="main-nav">
-            <a href="/vat-margin.html" class="nav-link active">Отчеты</a>
-            <a href="/pnl-report.html" class="nav-link">PNL Отчет</a>
-            <a href="/analytics/mql-report.html" class="nav-link">Marketing</a>
-            <a href="/" class="nav-link">Настройки</a>
-        </nav>
-        <div class="tab-container">
+    <div id="layout-header"></div>
+    <div id="layout-page-tabs" class="layout-page-tabs">
+        <div class="layout-page-tabs-inner">
             <div class="tab-header">
                 <button class="tab-button active" data-tab="report2">Отчёт по месяцам</button>
                 <button class="tab-button" data-tab="products">Продукты</button>
@@ -25,7 +20,11 @@
                 <button class="tab-button" data-tab="deleted">Удалённые проформы</button>
                 <button class="tab-button" data-tab="cash-journal">Cash Journal</button>
             </div>
-
+        </div>
+    </div>
+    <main id="layout-main">
+    <div class="container">
+        <div class="tab-container">
             <div class="tab-content" id="tab-deleted">
                 <section class="deleted-proformas-section">
                     <div class="section-header">
@@ -399,7 +398,8 @@
             </div>
         </div>
     </div>
-
+    </main>
+    <script src="/layout.js"></script>
     <script src="/vat-margin-script.js"></script>
     <script src="/facebook-ads-script.js"></script>
 </body>

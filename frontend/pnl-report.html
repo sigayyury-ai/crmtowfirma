@@ -9,13 +9,9 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+    <div id="layout-header"></div>
+    <main id="layout-main">
     <div class="container pnl-container-fullwidth">
-        <nav class="main-nav">
-            <a href="/vat-margin.html" class="nav-link">Отчеты</a>
-            <a href="/pnl-report.html" class="nav-link active">PNL Отчет</a>
-            <a href="/analytics/mql-report.html" class="nav-link">Marketing</a>
-            <a href="/" class="nav-link">Настройки</a>
-        </nav>
         <!-- Tabs Navigation -->
         <div class="tab-container">
             <div class="tab-header">
@@ -56,6 +52,10 @@
             <div id="pnl-report-container">
                 <div class="placeholder">Нажмите "Обновить" для загрузки данных...</div>
             </div>
+
+            <p class="controls-hint" style="margin-top: 24px;">
+                Расходы по потокам НДС и экспорт wydatki ogólne — в разделе <a href="/accounting.html">Бухгалтерия</a>.
+            </p>
         </div>
         </div>
 
@@ -323,7 +323,8 @@
             </div>
         </div>
     </div>
-
+    </main>
+    <script src="/layout.js"></script>
     <script src="/pnl-report-script.js"></script>
 </body>
 </html>
